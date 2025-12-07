@@ -7,7 +7,7 @@ use libvoid::xdp::{
 use pnet::packet::{
     Packet,
     ethernet::{EtherTypes, EthernetPacket},
-    icmpv6::{Icmpv6Packet, echo_request::EchoRequestPacket},
+    icmpv6::{Icmpv6Packet, Icmpv6Types, echo_request::EchoRequestPacket},
     ip::IpNextHeaderProtocols,
     ipv6::Ipv6Packet,
 };
@@ -54,7 +54,15 @@ fn main() {
                 continue;
             }
         };
-        let request = EchoRequestPacket::new(icmp.payload()).expect("invalid Echo Request packet");
-        println!("Received frame: {:?}", request);
+        let req = match icmp.get_icmpv6_type() {
+            Icmpv6Types::EchoRequest => {
+                EchoRequestPacket::new(icmp.payload()).expect("invalid Echo Request packet")
+            }
+            _ => {
+                println!("Got unknown ICMPv6 packet");
+                continue;
+            }
+        };
+        println!("Received frame: {:?}", req);
     }
 }

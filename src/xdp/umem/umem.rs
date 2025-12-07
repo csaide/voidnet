@@ -12,17 +12,17 @@ use libxdp_sys::{
 
 use crate::xdp::umem::Frame;
 
-use super::{Error, MemoryPool, Result};
+use super::{Error, MemoryArea, Result};
 
-pub struct Umem<P: MemoryPool> {
+pub struct Umem<P: MemoryArea> {
     pool: P,
     umem: Box<xsk_umem>,
     cq: Box<xsk_ring_cons>,
-    fq: Box<xsk_ring_prod>,
+    pub(crate) fq: Box<xsk_ring_prod>,
     free_frames: Vec<u64>,
 }
 
-impl<P: MemoryPool> Umem<P> {
+impl<P: MemoryArea> Umem<P> {
     pub fn new(mut pool: P, completion_ring_size: u32, fill_ring_size: u32) -> Result<Self> {
         let cfg = xsk_umem_config {
             fill_size: fill_ring_size,
@@ -156,7 +156,7 @@ impl<P: MemoryPool> Umem<P> {
     }
 }
 
-impl<P: MemoryPool> Drop for Umem<P> {
+impl<P: MemoryArea> Drop for Umem<P> {
     fn drop(&mut self) {
         // SAFETY: xsk_umem__delete is safe to call even if the umem is not initialized.
         unsafe {
@@ -165,7 +165,7 @@ impl<P: MemoryPool> Drop for Umem<P> {
     }
 }
 
-impl<P: MemoryPool> Deref for Umem<P> {
+impl<P: MemoryArea> Deref for Umem<P> {
     type Target = P;
 
     fn deref(&self) -> &Self::Target {
@@ -173,7 +173,7 @@ impl<P: MemoryPool> Deref for Umem<P> {
     }
 }
 
-impl<P: MemoryPool> DerefMut for Umem<P> {
+impl<P: MemoryArea> DerefMut for Umem<P> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.pool
     }

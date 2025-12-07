@@ -12,4 +12,6 @@ pub enum Error {
     WouldBlock,
     #[error("failed to fill packets: {0}")]
     Umem(#[from] UmemError),
+    #[error("failed to reserve fq: {0}")]
+    ReserveFq(std::io::Error),
 }

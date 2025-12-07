@@ -20,7 +20,7 @@ pub struct Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
-    /// Create a new frame contrainer for using the UMEM memory in userspace. This is meant to wrap a
+    /// Create a new empty frame contrainer for using the UMEM memory in userspace. This is meant to wrap a
     /// contiguous memory region of size `capacity` in the UMEM memory in userspace.
     ///
     /// # Safety
@@ -43,6 +43,25 @@ impl<'a> Frame<'a> {
         Self { addr, len: 0, data }
     }
 
+    /// Create a new frame contrainer for using the UMEM memory in userspace. This is meant to wrap a
+    /// contiguous memory region of size `len` in the UMEM memory in userspace.
+    ///
+    /// # Safety
+    ///
+    /// This function does not check if the address is valid or if it points to a contiguous memory
+    /// region of size `len`. It is the responsibility of the caller to ensure that the address is valid
+    /// and that the pointer points to a contiguous memory region of size `len`.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - The address offset of the UMEM memory in userspace.
+    /// * `ptr` - The pointer to the UMEM memory in userspace.
+    /// * `len` - The length of the frame in bytes.
+    /// * `capacity` - The capacity of the UMEM memory in userspace.
+    ///
+    /// # Returns
+    ///
+    /// A new frame contrainer for using the UMEM memory in userspace. Which can be dereferenced as a slice of bytes.
     pub unsafe fn new_with_len(addr: u64, ptr: *mut u8, len: usize, capacity: usize) -> Self {
         debug_assert!(
             len <= capacity,

@@ -401,6 +401,7 @@ name = "voidnet"
 version = "0.1.0"
 dependencies = [
  "errno",
+ "libc",
  "libxdp-sys",
  "memmap2",
  "pnet",

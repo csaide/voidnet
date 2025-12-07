@@ -7,6 +7,7 @@ edition = "2024"
 errno = { version = "0.3" }
 thiserror = { version = "2" }
 memmap2 = { version = "0.9" }
+libc = { version = "0.2" }
 libxdp-sys = { git = "https://github.com/belowm/libxdp-sys.git", branch = "main" }
 pnet = { version = "0.35" }
 zerocopy = { version = "0.8" }

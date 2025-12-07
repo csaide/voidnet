@@ -2,7 +2,7 @@ use std::os::raw::c_void;
 
 use memmap2::{MmapMut, MmapOptions};
 
-use super::{Error, Frame, MemoryPool, Result};
+use super::{Error, Frame, MemoryArea, Result};
 
 pub struct Mmap {
     map: MmapMut,
@@ -25,7 +25,7 @@ impl Mmap {
     }
 }
 
-impl MemoryPool for Mmap {
+impl MemoryArea for Mmap {
     fn get_frame(&mut self, addr: u64, len: usize) -> Frame<'_> {
         unsafe {
             Frame::new_with_len(
