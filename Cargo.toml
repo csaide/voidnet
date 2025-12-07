@@ -1,0 +1,27 @@
+[package]
+name = "voidnet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+errno = { version = "0.3" }
+thiserror = { version = "2" }
+memmap2 = { version = "0.9" }
+libxdp-sys = { git = "https://github.com/belowm/libxdp-sys.git", branch = "main" }
+pnet = { version = "0.35" }
+zerocopy = { version = "0.8" }
+
+[lib]
+name = "libvoid"
+path = "src/lib.rs"
+test = true
+bench = true
+doctest = true
+
+[[bin]]
+name = "voidctl"
+path = "src/bin/voidctl.rs"
+test = false
+bench = false
+doctest = false
+harness = false
