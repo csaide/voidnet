@@ -4,17 +4,18 @@ use errno::errno;
 use libc::{MSG_DONTWAIT, recvfrom};
 use libxdp_sys::{
     XDP_USE_NEED_WAKEUP, xsk_ring_cons, xsk_ring_cons__peek, xsk_ring_cons__release,
-    xsk_ring_cons__rx_desc, xsk_ring_prod, xsk_ring_prod__needs_wakeup, xsk_ring_prod__reserve,
-    xsk_socket, xsk_socket__create, xsk_socket__delete, xsk_socket__fd, xsk_socket_config,
-    xsk_socket_config__bindgen_ty_1, xsk_umem,
+    xsk_ring_cons__rx_desc, xsk_ring_prod, xsk_ring_prod__fill_addr, xsk_ring_prod__needs_wakeup,
+    xsk_ring_prod__reserve, xsk_ring_prod__submit, xsk_socket, xsk_socket__create,
+    xsk_socket__delete, xsk_socket__fd, xsk_socket_config, xsk_socket_config__bindgen_ty_1,
+    xsk_umem,
 };
 
-use crate::xdp::umem::{Frame, MemoryArea, Umem};
+use crate::xdp::umem::{Frame, Umem};
 
 use super::{Error, Result};
 
-pub struct Socket<P: MemoryArea> {
-    umem: Umem<P>,
+pub struct Socket {
+    umem: Umem,
     _if_name: CString,
     socket: Box<xsk_socket>,
     _fd: std::os::raw::c_int,
@@ -22,11 +23,11 @@ pub struct Socket<P: MemoryArea> {
     _tx: Box<xsk_ring_prod>,
 }
 
-impl<P: MemoryArea> Socket<P> {
+impl Socket {
     pub fn new(
         if_name: &str,
         queue: u32,
-        umem: Umem<P>,
+        umem: Umem,
         rx_ring_size: u32,
         tx_ring_size: u32,
     ) -> Result<Self> {
@@ -71,7 +72,7 @@ impl<P: MemoryArea> Socket<P> {
                 xsk_ptr,
                 if_name_c.as_ptr(),
                 queue as u32,
-                umem.get_ptr() as *mut xsk_umem,
+                umem.umem() as *mut xsk_umem,
                 rx.as_mut(),
                 tx.as_mut(),
                 &cfg,
@@ -111,20 +112,53 @@ impl<P: MemoryArea> Socket<P> {
     fn reserve_fq(&mut self, rcvd: u32) -> Result<u32> {
         let mut idx_fq: u32 = 0;
         let mut ready: u32 =
-            unsafe { xsk_ring_prod__reserve(self.umem.fq.as_mut(), rcvd, &mut idx_fq) };
+            unsafe { xsk_ring_prod__reserve(self.umem.fq_mut(), rcvd, &mut idx_fq) };
         while ready != rcvd {
-            ready = unsafe { xsk_ring_prod__reserve(self.umem.fq.as_mut(), rcvd, &mut idx_fq) };
-            self.maybe_wake(self.umem.fq.as_ref());
+            ready = unsafe { xsk_ring_prod__reserve(self.umem.fq_mut(), rcvd, &mut idx_fq) };
+            self.maybe_wake(self.umem.fq());
         }
 
         Ok(idx_fq)
+    }
+
+    pub fn recv_cb<F>(&mut self, batch_size: u32, mut f: F) -> Result<()>
+    where
+        F: FnMut(Frame<'_>),
+    {
+        let mut idx_rx: u32 = 0;
+        let rcvd = unsafe { xsk_ring_cons__peek(self.rx.as_mut(), batch_size, &mut idx_rx) };
+        if rcvd == 0 {
+            self.maybe_wake(self.umem.fq());
+            return Err(Error::WouldBlock);
+        }
+
+        let mut idx_fq = self.reserve_fq(rcvd)?;
+
+        for _ in 0..rcvd {
+            let desc = unsafe { *xsk_ring_cons__rx_desc(self.rx.as_mut(), idx_rx) };
+
+            f(self.umem.get_frame(desc.addr, desc.len as usize));
+
+            unsafe {
+                *xsk_ring_prod__fill_addr(self.umem.fq_mut(), idx_fq) = desc.addr as u64;
+            }
+
+            idx_rx += 1;
+            idx_fq += 1;
+        }
+
+        unsafe {
+            xsk_ring_prod__submit(self.umem.fq_mut(), rcvd);
+            xsk_ring_cons__release(self.rx.as_mut(), rcvd);
+        }
+
+        Ok(())
     }
 
     pub fn recv(&mut self) -> Result<Frame<'_>> {
         self.umem.fill_packets()?;
 
         let mut idx_rx: u32 = 0;
-
         let rcvd = unsafe { xsk_ring_cons__peek(self.rx.as_mut(), 1, &mut idx_rx) };
         if rcvd != 1 {
             return Err(Error::WouldBlock);
@@ -143,7 +177,7 @@ impl<P: MemoryArea> Socket<P> {
     }
 }
 
-impl<P: MemoryArea> Drop for Socket<P> {
+impl Drop for Socket {
     fn drop(&mut self) {
         unsafe {
             // No null pointer check here because it is initialized to null and if the create fails,
