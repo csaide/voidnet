@@ -7,8 +7,8 @@ use std::{
 
 use clap::Parser;
 use libc::{
-    AF_INET6, IPPROTO_UDP, SOCK_DGRAM, bind, htons, in6addr_any, recvfrom, sockaddr, sockaddr_in6,
-    socket,
+    AF_INET6, IPPROTO_UDP, SOCK_DGRAM, bind, htons, in6_addr, in6addr_any, recvfrom, sendto,
+    sockaddr, sockaddr_in6, socket,
 };
 use libxdp_sys::{XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS};
 use pnet::packet::{
@@ -236,7 +236,7 @@ fn xdp_tx() {
     }
 }
 
-fn std() {
+fn std_rx() {
     let fd = unsafe { socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP) };
     if fd == -1 {
         eprintln!(
@@ -300,6 +300,67 @@ fn std() {
     }
 }
 
+fn std_tx() {
+    let fd = unsafe { socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP) };
+    if fd == -1 {
+        eprintln!(
+            "Failed to create socket: {}",
+            std::io::Error::last_os_error()
+        );
+        std::process::exit(1);
+    }
+
+    let server_addr = unsafe {
+        sockaddr_in6 {
+            sin6_family: AF_INET6 as u16,
+            sin6_port: htons(8008),
+            sin6_addr: in6addr_any,
+            sin6_scope_id: 0,
+            sin6_flowinfo: 0,
+        }
+    };
+    let client_addr_len = std::mem::size_of::<sockaddr_in6>() as u32;
+    let ipv6: Ipv6Addr = "fc00:dead:cafe:1::2".parse().unwrap();
+    let client_addr = sockaddr_in6 {
+        sin6_family: AF_INET6 as u16,
+        sin6_port: htons(8008),
+        sin6_addr: in6_addr {
+            s6_addr: ipv6.octets(),
+        },
+        sin6_scope_id: 0,
+        sin6_flowinfo: 0,
+    };
+
+    let ret = unsafe {
+        bind(
+            fd,
+            &server_addr as *const sockaddr_in6 as *const sockaddr,
+            std::mem::size_of::<sockaddr_in6>() as u32,
+        )
+    };
+    if ret == -1 {
+        eprintln!("Failed to bind socket: {}", std::io::Error::last_os_error());
+        std::process::exit(1);
+    }
+    println!("Socket created");
+    let buf: &[u8] = b"Hello, UDP!";
+    loop {
+        let n = unsafe {
+            sendto(
+                fd,
+                buf.as_ptr() as *const c_void,
+                buf.len(),
+                0,
+                &client_addr as *const sockaddr_in6 as *const sockaddr,
+                client_addr_len,
+            )
+        };
+        if n < 0 {
+            panic!("Failed to send data: {}", std::io::Error::last_os_error());
+        }
+        STATS.update(n as usize);
+    }
+}
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 enum Args {
@@ -308,7 +369,9 @@ enum Args {
     #[command(about = "Run XDP TX program")]
     XdpTx,
     #[command(about = "Run standard program")]
-    Std,
+    StdRx,
+    #[command(about = "Run standard TX program")]
+    StdTx,
 }
 
 fn main() {
@@ -316,6 +379,7 @@ fn main() {
     match args {
         Args::XdpRx => xdp_rx(),
         Args::XdpTx => xdp_tx(),
-        Args::Std => std(),
+        Args::StdRx => std_rx(),
+        Args::StdTx => std_tx(),
     }
 }
