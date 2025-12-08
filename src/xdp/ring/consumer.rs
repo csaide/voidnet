@@ -3,6 +3,7 @@ use libxdp_sys::{
     xsk_ring_cons__rx_desc,
 };
 
+/// A consumer ring is a ring of descriptors that are used to transfer packets from the kernel to the user.
 pub struct Consumer {
     ring: Box<xsk_ring_cons>,
 }

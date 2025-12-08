@@ -7,9 +7,13 @@ use libxdp_sys::{
     xsk_ring_prod__reserve, xsk_ring_prod__submit, xsk_ring_prod__tx_desc,
 };
 
+/// A TX producer ring is a ring of descriptors that are used to transfer packets from the user to the kernel for write purposes.
 pub struct Tx;
+
+/// A FQ producer ring is a ring of descriptors that are used to transfer packets from the user to the kernelf ror read purposes.
 pub struct Fq;
 
+/// A producer ring is a ring of descriptors that are used to transfer packets from the user to the kernel.
 pub struct Producer<T> {
     ring: Box<xsk_ring_prod>,
     phantom: PhantomData<T>,

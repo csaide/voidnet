@@ -22,8 +22,8 @@ use pnet::util::MacAddr;
 use std::net::Ipv6Addr;
 
 use libvoid::xdp::{
-    socket::{Error, FinalizedFrame, SendFrame, Socket},
-    umem::{Frame, Umem},
+    socket::{Error, Socket},
+    umem::{FinalizedFrame, Frame, SendFrame, Umem},
 };
 
 const FILL_RING_SIZE: u32 = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2;

@@ -9,6 +9,6 @@ mod mmap;
 mod umem;
 
 pub use error::{Error, Result};
-pub use frame::Frame;
+pub use frame::{FinalizedFrame, Frame, SendFrame};
 pub use mmap::Mmap;
 pub use umem::Umem;

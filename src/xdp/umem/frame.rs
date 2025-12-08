@@ -1,7 +1,52 @@
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 use super::Result;
 
+/// A finalized frame is a frame that has been committed or aborted.
+#[derive(Debug)]
+pub enum FinalizedFrame {
+    Committed(Frame),
+    Aborted(Frame),
+}
+
+/// A send frame is a frame that is used to send a packet to the kernel.
+#[derive(Debug)]
+pub struct SendFrame {
+    frame: Frame,
+}
+
+impl SendFrame {
+    /// Create a new send frame from the given frame.
+    pub fn new(frame: Frame) -> Self {
+        Self { frame }
+    }
+
+    /// Commit the send frame, this will return a finalized frame that can be used to send the packet.
+    pub fn commit(self) -> FinalizedFrame {
+        FinalizedFrame::Committed(self.frame)
+    }
+
+    /// Abort the send frame, this will return a finalized frame that can be used to abort the packet.
+    pub fn abort(self) -> FinalizedFrame {
+        FinalizedFrame::Aborted(self.frame)
+    }
+}
+
+impl Deref for SendFrame {
+    type Target = Frame;
+
+    fn deref(&self) -> &Self::Target {
+        &self.frame
+    }
+}
+
+impl DerefMut for SendFrame {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.frame
+    }
+}
+
+/// A frame is a contiguous memory region that is used to store data for a packet, this is a simple wrapper around a pointer to a MMAP'd memory region.
 #[derive(Debug)]
 pub struct Frame {
     addr: u64,

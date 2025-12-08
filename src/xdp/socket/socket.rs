@@ -8,11 +8,10 @@ use libxdp_sys::{
 
 use crate::xdp::{
     ring::{Consumer, Producer, Tx},
-    socket::FinalizedFrame,
-    umem::{Frame, Umem},
+    umem::{FinalizedFrame, Frame, SendFrame, Umem},
 };
 
-use super::{Error, Result, SendFrame};
+use super::{Error, Result};
 
 pub struct Socket {
     umem: Umem,
