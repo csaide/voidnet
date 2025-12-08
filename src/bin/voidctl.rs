@@ -195,7 +195,7 @@ fn xdp_rx() {
 
     println!("Socket created");
     loop {
-        match socket.recv_cb(1_000_000, handle_frame) {
+        match socket.recv_cb(handle_frame) {
             Ok(_) => {}
             Err(Error::WouldBlock) => {
                 // thread::sleep(Duration::from_millis(100));
@@ -223,7 +223,7 @@ fn xdp_tx() {
 
     println!("Socket created");
     loop {
-        match socket.send_cb(COMPLETION_RING_SIZE, send_frame()) {
+        match socket.send_cb(send_frame()) {
             Ok(_) => {}
             Err(Error::WouldBlock) => {
                 continue;

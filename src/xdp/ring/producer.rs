@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, ptr::null_mut};
+use std::{cmp::min, marker::PhantomData, ptr::null_mut};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom, sendto};
@@ -49,6 +49,7 @@ impl<T> Producer<T> {
     /// * `batch_size` - The maximum batch size to reserve.
     pub fn reserve(&mut self, batch_size: u32) -> Option<(u32, u32)> {
         let mut idx: u32 = 0;
+        let batch_size = min(batch_size, self.size());
         let ready: u32 =
             unsafe { xsk_ring_prod__reserve(self.ring.as_mut(), batch_size, &mut idx) };
         if ready == 0 { None } else { Some((idx, ready)) }

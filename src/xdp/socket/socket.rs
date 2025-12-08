@@ -83,11 +83,11 @@ impl Socket {
         Ok(idx_fq)
     }
 
-    pub fn recv_cb<F>(&mut self, batch_size: u32, mut f: F) -> Result<()>
+    pub fn recv_cb<F>(&mut self, mut f: F) -> Result<()>
     where
         F: FnMut(Frame),
     {
-        let (mut idx_rx, rcvd) = match self.rx.peek(batch_size) {
+        let (mut idx_rx, rcvd) = match self.rx.peek(u32::MAX) {
             Some((idx, rcvd)) => (idx, rcvd),
             None => {
                 self.umem.fq_mut().maybe_wake(self.fd)?;
@@ -115,20 +115,20 @@ impl Socket {
         Ok(())
     }
 
-    pub fn send_cb<F>(&mut self, batch_size: u32, mut f: F) -> Result<()>
+    pub fn send_cb<F>(&mut self, mut f: F) -> Result<()>
     where
         F: FnMut(SendFrame) -> FinalizedFrame,
     {
-        let mut idx_tx = loop {
-            if let Some((idx_tx, _)) = self.tx.reserve(batch_size) {
-                break idx_tx;
+        let (mut idx_tx, ready) = loop {
+            if let Some((idx_tx, ready)) = self.tx.reserve(u32::MAX) {
+                break (idx_tx, ready);
             } else {
                 self.tx.maybe_wake(self.fd)?;
                 self.umem.handle_completions()?;
             }
         };
 
-        for _ in 0..batch_size {
+        for _ in 0..ready {
             let frame = self.umem.get_next_free_frame().ok_or(Error::WouldBlock)?;
             let frame = match f(SendFrame::new(frame)) {
                 FinalizedFrame::Committed(frame) => frame,
@@ -150,7 +150,7 @@ impl Socket {
             idx_tx += 1;
         }
 
-        self.tx.submit(batch_size);
+        self.tx.submit(ready);
 
         Ok(())
     }
