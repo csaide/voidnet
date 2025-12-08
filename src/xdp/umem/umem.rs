@@ -160,10 +160,14 @@ impl Umem {
         self.fq.as_mut() as *mut xsk_ring_prod
     }
 
-    pub fn get_next_free_frame(&mut self) -> Option<Frame<'_>> {
+    pub fn get_next_free_frame(&mut self) -> Option<Frame> {
         self.free_frames
             .pop()
             .map(|addr| self.pool.get_frame(addr, 0))
+    }
+
+    pub fn free_frame(&mut self, addr: u64) {
+        self.free_frames.push(addr);
     }
 
     pub fn handle_completions(&mut self) -> Result<usize> {

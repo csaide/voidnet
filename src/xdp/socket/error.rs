@@ -14,4 +14,6 @@ pub enum Error {
     Umem(#[from] UmemError),
     #[error("failed to reserve fq: {0}")]
     ReserveFq(std::io::Error),
+    #[error("failed to wake ring: {0}")]
+    Wake(std::io::Error),
 }

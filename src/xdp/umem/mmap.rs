@@ -24,7 +24,7 @@ impl Mmap {
         })
     }
 
-    pub fn get_frame(&mut self, addr: u64, len: usize) -> Frame<'_> {
+    pub fn get_frame(&mut self, addr: u64, len: usize) -> Frame {
         unsafe {
             Frame::new_with_len(
                 addr,

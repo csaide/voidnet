@@ -106,6 +106,10 @@ impl<'a> Frame<'a> {
         &mut self.data[..self.len]
     }
 
+    pub fn set_len(&mut self, len: usize) {
+        self.len = len;
+    }
+
     /// Copies a value into the frame.
     ///
     /// # Arguments

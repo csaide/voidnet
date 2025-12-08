@@ -1,26 +1,28 @@
 use std::{ffi::CString, ptr::null_mut};
 
 use errno::errno;
-use libc::{MSG_DONTWAIT, recvfrom};
+use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, recvfrom, sendto};
 use libxdp_sys::{
     XDP_USE_NEED_WAKEUP, xsk_ring_cons, xsk_ring_cons__peek, xsk_ring_cons__release,
     xsk_ring_cons__rx_desc, xsk_ring_prod, xsk_ring_prod__fill_addr, xsk_ring_prod__needs_wakeup,
-    xsk_ring_prod__reserve, xsk_ring_prod__submit, xsk_socket, xsk_socket__create,
-    xsk_socket__delete, xsk_socket__fd, xsk_socket_config, xsk_socket_config__bindgen_ty_1,
-    xsk_umem,
+    xsk_ring_prod__reserve, xsk_ring_prod__submit, xsk_ring_prod__tx_desc, xsk_socket,
+    xsk_socket__create, xsk_socket__delete, xsk_socket__fd, xsk_socket_config,
+    xsk_socket_config__bindgen_ty_1, xsk_umem,
 };
 
-use crate::xdp::umem::{Frame, Umem};
+use crate::xdp::{
+    socket::FinalizedFrame,
+    umem::{Frame, Umem},
+};
 
-use super::{Error, Result};
+use super::{Error, Result, SendFrame};
 
 pub struct Socket {
     umem: Umem,
-    _if_name: CString,
     socket: Box<xsk_socket>,
-    _fd: std::os::raw::c_int,
+    fd: std::os::raw::c_int,
     rx: Box<xsk_ring_cons>,
-    _tx: Box<xsk_ring_prod>,
+    tx: Box<xsk_ring_prod>,
 }
 
 impl Socket {
@@ -86,27 +88,38 @@ impl Socket {
 
         Ok(Self {
             umem,
-            _if_name: if_name_c,
             socket: unsafe { Box::from_raw(*xsk_ptr) },
-            _fd: unsafe { xsk_socket__fd(*xsk_ptr) },
+            fd: unsafe { xsk_socket__fd(*xsk_ptr) },
             rx,
-            _tx: tx,
+            tx,
         })
     }
 
-    fn maybe_wake(&self, ring: *const xsk_ring_prod) {
+    fn maybe_wake_fq(&self, ring: *const xsk_ring_prod) {
         unsafe {
             if xsk_ring_prod__needs_wakeup(ring) == 1 {
-                recvfrom(
-                    self._fd,
-                    null_mut(),
-                    0,
-                    MSG_DONTWAIT,
-                    null_mut(),
-                    null_mut(),
-                );
+                // Intentionally ignoring the return value.
+                recvfrom(self.fd, null_mut(), 0, MSG_DONTWAIT, null_mut(), null_mut());
             }
         }
+    }
+
+    fn maybe_wake_tx(&self) -> Result<()> {
+        unsafe {
+            if xsk_ring_prod__needs_wakeup(self.tx.as_ref()) == 1 {
+                let ret = sendto(self.fd, null_mut(), 0, MSG_DONTWAIT, null_mut(), 0);
+                let errno = errno().0;
+                if ret < 0
+                    && errno != ENOBUFS
+                    && errno != EAGAIN
+                    && errno != EBUSY
+                    && errno != ENETDOWN
+                {
+                    return Err(Error::Wake(std::io::Error::from_raw_os_error(errno)));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn reserve_fq(&mut self, rcvd: u32) -> Result<u32> {
@@ -115,7 +128,7 @@ impl Socket {
             unsafe { xsk_ring_prod__reserve(self.umem.fq_mut(), rcvd, &mut idx_fq) };
         while ready != rcvd {
             ready = unsafe { xsk_ring_prod__reserve(self.umem.fq_mut(), rcvd, &mut idx_fq) };
-            self.maybe_wake(self.umem.fq());
+            self.maybe_wake_fq(self.umem.fq());
         }
 
         Ok(idx_fq)
@@ -123,12 +136,12 @@ impl Socket {
 
     pub fn recv_cb<F>(&mut self, batch_size: u32, mut f: F) -> Result<()>
     where
-        F: FnMut(Frame<'_>),
+        F: FnMut(Frame),
     {
         let mut idx_rx: u32 = 0;
         let rcvd = unsafe { xsk_ring_cons__peek(self.rx.as_mut(), batch_size, &mut idx_rx) };
         if rcvd == 0 {
-            self.maybe_wake(self.umem.fq());
+            self.maybe_wake_fq(self.umem.fq());
             return Err(Error::WouldBlock);
         }
 
@@ -155,7 +168,7 @@ impl Socket {
         Ok(())
     }
 
-    pub fn recv(&mut self) -> Result<Frame<'_>> {
+    pub fn recv(&mut self) -> Result<Frame> {
         self.umem.fill_packets()?;
 
         let mut idx_rx: u32 = 0;
@@ -174,6 +187,45 @@ impl Socket {
         }
 
         Ok(self.umem.get_frame(addr, len))
+    }
+
+    pub fn send_cb<F>(&mut self, batch_size: u32, mut f: F) -> Result<()>
+    where
+        F: FnMut(SendFrame) -> FinalizedFrame,
+    {
+        let mut idx_tx: u32 = 0;
+        while unsafe { xsk_ring_prod__reserve(self.tx.as_mut(), batch_size, &mut idx_tx) } == 0 {
+            self.maybe_wake_tx()?;
+            self.umem.handle_completions()?;
+        }
+
+        for _ in 0..batch_size {
+            let frame = self.umem.get_next_free_frame().ok_or(Error::WouldBlock)?;
+            let frame = match f(SendFrame::new(frame)) {
+                FinalizedFrame::Committed(frame) => frame,
+                FinalizedFrame::Aborted(frame) => {
+                    let addr = frame.addr();
+                    drop(frame);
+
+                    self.umem.free_frame(addr);
+                    return Err(Error::WouldBlock);
+                }
+            };
+
+            unsafe {
+                let desc = xsk_ring_prod__tx_desc(self.tx.as_mut(), idx_tx);
+                (*desc).addr = frame.addr();
+                (*desc).len = frame.len() as u32;
+            }
+
+            idx_tx += 1;
+        }
+
+        unsafe {
+            xsk_ring_prod__submit(self.tx.as_mut(), batch_size);
+        }
+
+        Ok(())
     }
 }
 
