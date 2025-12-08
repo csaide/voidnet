@@ -4,12 +4,11 @@
 //! between kernel and userspace used for zero-copy packet buffers.
 
 mod error;
-// mod frame;
+mod frame;
 mod mmap;
-mod raw_frame;
 mod umem;
 
 pub use error::{Error, Result};
+pub use frame::Frame;
 pub use mmap::Mmap;
-pub use raw_frame::Frame;
 pub use umem::Umem;

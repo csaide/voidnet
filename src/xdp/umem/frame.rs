@@ -1,74 +1,66 @@
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+use std::ops::Deref;
 
-use super::{Error, Result};
+use super::Result;
 
-/// A frame contains a contiguous memory region that is split into two sections:
-/// - The first section is the overhead section, which is used to store the metadata for the frame.
-/// - The second section is the data section, which is used to store the data for the frame.
-///
-/// The overhead section is fixed size and is used to store the metadata for the frame.
-/// The data section is variable size and is used to store the data for the frame.
-///
-/// The overhead section is 256 bytes by default, but can be configured to be any size.
-///
-/// The data section is the remaining space in the frame.
 #[derive(Debug)]
-pub struct Frame<'a> {
+pub struct Frame {
     addr: u64,
     len: usize,
-    data: &'a mut [u8],
+    capacity: usize,
+    data: *mut u8,
 }
 
-impl<'a> Frame<'a> {
-    /// Create a new empty frame contrainer for using the UMEM memory in userspace. This is meant to wrap a
-    /// contiguous memory region of size `capacity` in the UMEM memory in userspace.
+// SAFETY: This is safe because the frame is just a wrapper around a pointer to a MMAP'd memory region.
+// these cannot move and are pinned between userspace and kernelspace.
+//
+// It is on the implementation to ensure that the frame is destroyed hen the MMAP'd memory region is destroyed.
+unsafe impl Send for Frame {}
+unsafe impl Sync for Frame {}
+
+impl Frame {
+    /// Create a new frame with the given address, data pointer, and capacity.
     ///
     /// # Safety
     ///
     /// This function does not check if the address is valid or if it points to a contiguous memory
     /// region of size `capacity`. It is the responsibility of the caller to ensure that the address is valid
-    /// and that the pointer points to a contiguous memory region of size `capacity`.
+    /// and that the pointer points to a contiguous memory region of size `capacity`, which is fully initialized.
     ///
-    /// # Arguments
-    ///
-    /// * `addr` - The address offset of the UMEM memory in userspace.
-    /// * `ptr` - The pointer to the UMEM memory in userspace.
-    /// * `capacity` - The capacity of the UMEM memory in userspace.
-    ///
-    /// # Returns
-    ///
-    /// A new frame contrainer for using the UMEM memory in userspace. Which can be dereferenced as a slice of bytes.
-    pub unsafe fn new(addr: u64, ptr: *mut u8, capacity: usize) -> Self {
-        let data = unsafe { std::slice::from_raw_parts_mut(ptr, capacity) };
-        Self { addr, len: 0, data }
+    /// NOTE: the data may not need to be fully 0'ed, just must assume it will be read entirely and therefore must
+    /// be initialized to valid u8 values for all locations.
+    pub unsafe fn new(addr: u64, data: *mut u8, capacity: usize) -> Self {
+        debug_assert!(capacity > 0, "capacity must be greater than 0");
+
+        Self {
+            addr,
+            len: 0,
+            capacity,
+            data,
+        }
     }
 
-    /// Create a new frame contrainer for using the UMEM memory in userspace. This is meant to wrap a
-    /// contiguous memory region of size `len` in the UMEM memory in userspace.
+    /// Create a new frame with the given address, data pointer, length, and capacity.
     ///
     /// # Safety
     ///
     /// This function does not check if the address is valid or if it points to a contiguous memory
-    /// region of size `len`. It is the responsibility of the caller to ensure that the address is valid
-    /// and that the pointer points to a contiguous memory region of size `len`.
+    /// region of size `capacity`. It is the responsibility of the caller to ensure that the address is valid
+    /// and that the pointer points to a contiguous memory region of size `capacity`, which is fully initialized.
     ///
-    /// # Arguments
-    ///
-    /// * `addr` - The address offset of the UMEM memory in userspace.
-    /// * `ptr` - The pointer to the UMEM memory in userspace.
-    /// * `len` - The length of the frame in bytes.
-    /// * `capacity` - The capacity of the UMEM memory in userspace.
-    ///
-    /// # Returns
-    ///
-    /// A new frame contrainer for using the UMEM memory in userspace. Which can be dereferenced as a slice of bytes.
-    pub unsafe fn new_with_len(addr: u64, ptr: *mut u8, len: usize, capacity: usize) -> Self {
+    /// NOTE: the data may not need to be fully 0'ed, just must assume it will be read entirely and therefore must
+    /// be initialized to valid u8 values for all locations.
+    pub unsafe fn new_with_len(addr: u64, data: *mut u8, len: usize, capacity: usize) -> Self {
         debug_assert!(
-            len <= capacity,
-            "len must be less than or equal to capacity"
+            capacity > 0 && len <= capacity,
+            "len must be less than or equal to capacity, which must be greater than 0"
         );
-        let data = unsafe { std::slice::from_raw_parts_mut(ptr, capacity) };
-        Self { addr, len, data }
+
+        Self {
+            addr,
+            len,
+            capacity,
+            data,
+        }
     }
 
     /// Returns the address offset of the UMEM memory in userspace.
@@ -76,19 +68,28 @@ impl<'a> Frame<'a> {
         self.addr
     }
 
-    /// Returns the overall capacity of the frame in bytes.
-    pub fn capacity(&self) -> usize {
-        self.data.len()
-    }
-
     /// Returns the current length of the frame in bytes.
+    ///
+    /// This is the number of bytes that would have been read by the kernel or written by the user.
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    /// Returns the overall capacity of the frame in bytes.
+    ///
+    /// This is the total available space in the frame for data.
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     /// Returns true if the frame is empty.
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Returns true if the frame is full.
+    pub fn is_full(&self) -> bool {
+        self.len == self.capacity
     }
 
     /// Clears the frame by setting the length to 0.
@@ -98,53 +99,63 @@ impl<'a> Frame<'a> {
         self.len = 0;
     }
 
+    /// Returns a slice of the data in the frame.
     pub fn data(&self) -> &[u8] {
-        &self.data[..self.len]
+        unsafe { std::slice::from_raw_parts(self.data, self.len) }
     }
 
-    pub fn data_mut(&mut self) -> &mut [u8] {
-        &mut self.data[..self.len]
-    }
-
-    pub fn set_len(&mut self, len: usize) {
-        self.len = len;
-    }
-
-    /// Copies a value into the frame.
+    /// Modifies the frame by calling the given function with a mutable slice of the data in the frame.
     ///
     /// # Arguments
     ///
-    /// * `value` - The value to copy into the frame.
+    /// * `f` - The function to call with a mutable slice of the data in the frame.
     ///
     /// # Returns
     ///
-    /// Ok(()) if the value was copied successfully, Err(Error) otherwise.
-    ///
-    /// # Errors
-    ///
-    /// Returns Err(Error::ValueTooLarge) if the value is too large to fit in the frame.
-    pub fn copy_into<T: IntoBytes + Immutable + KnownLayout>(&mut self, value: T) -> Result<()> {
-        let bytes = value.as_bytes();
-        if bytes.len() > self.capacity() {
-            return Err(Error::ValueTooLarge);
-        }
-
-        self.data[..bytes.len()].copy_from_slice(&bytes);
-        self.len = bytes.len();
+    /// Ok(()) if the function was called successfully, Err(Error) otherwise if the supplied function returns an error.
+    pub fn modify<F>(&mut self, f: F) -> Result<()>
+    where
+        F: FnOnce(&mut [u8]) -> Result<usize>,
+    {
+        self.len = f(unsafe { std::slice::from_raw_parts_mut(self.data, self.capacity) })?;
         Ok(())
     }
 
-    /// Retrieve a reference to the value stored in the frame.
-    pub fn get<T: FromBytes + Immutable + KnownLayout>(&self) -> Result<&T> {
-        FromBytes::ref_from_prefix(&self.data[..self.len])
-            .map(|(value, _)| value)
-            .map_err(|e| Error::InvalidByteSequence(e.to_string()))
-    }
+    /// Copies the data from the incoming slice into the frame.
+    ///
+    /// # Arguments
+    ///
+    /// * `incoming` - The slice to copy from.
+    ///
+    /// # Safety
+    ///
+    /// This function does not check if the incoming slice like thing will fit in the frame, it also
+    /// doesn't check if the incoming slice is valid in any way. We blindly copy data into the frame.
+    pub unsafe fn copy_from<D: AsRef<[u8]>>(&mut self, incoming: D) {
+        let incoming = incoming.as_ref();
 
-    /// Retrieve a mutable reference to the value stored in the frame.
-    pub fn get_mut<T: FromBytes + IntoBytes + KnownLayout>(&mut self) -> Result<&mut T> {
-        FromBytes::mut_from_prefix(&mut self.data[..self.len])
-            .map(|(value, _)| value)
-            .map_err(|e| Error::InvalidByteSequence(e.to_string()))
+        debug_assert!(
+            self.capacity >= incoming.len(),
+            "frame must be full to copy from"
+        );
+
+        self.len = incoming.len();
+        unsafe {
+            std::ptr::copy_nonoverlapping(incoming.as_ptr(), self.data, self.len);
+        }
+    }
+}
+
+impl Deref for Frame {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.data()
+    }
+}
+
+impl AsRef<[u8]> for Frame {
+    fn as_ref(&self) -> &[u8] {
+        self.data()
     }
 }

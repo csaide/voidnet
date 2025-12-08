@@ -6,12 +6,14 @@ use std::{
 use errno::errno;
 use libxdp_sys::{
     XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS,
-    XSK_UMEM__DEFAULT_FRAME_HEADROOM, xsk_ring_cons, xsk_ring_cons__comp_addr, xsk_ring_cons__peek,
-    xsk_ring_cons__release, xsk_ring_prod, xsk_ring_prod__fill_addr, xsk_ring_prod__reserve,
-    xsk_ring_prod__submit, xsk_umem, xsk_umem__create, xsk_umem__delete, xsk_umem_config,
+    XSK_UMEM__DEFAULT_FRAME_HEADROOM, xsk_umem, xsk_umem__create, xsk_umem__delete,
+    xsk_umem_config,
 };
 
-use crate::xdp::umem::{Frame, Mmap};
+use crate::xdp::{
+    ring::{Consumer, Fq, Producer},
+    umem::{Frame, Mmap},
+};
 
 use super::{Error, Result};
 
@@ -65,8 +67,8 @@ impl UmemBuilder {
 pub struct Umem {
     pool: Mmap,
     umem: Box<xsk_umem>,
-    cq: Box<xsk_ring_cons>,
-    fq: Box<xsk_ring_prod>,
+    cq: Consumer,
+    fq: Producer<Fq>,
     free_frames: Vec<u64>,
 }
 
@@ -84,27 +86,8 @@ impl Umem {
             flags: 0,
         };
 
-        let mut cq: Box<xsk_ring_cons> = Box::new(xsk_ring_cons {
-            cached_prod: 0,
-            cached_cons: 0,
-            mask: 0,
-            size: 0,
-            producer: std::ptr::null_mut(),
-            consumer: std::ptr::null_mut(),
-            ring: std::ptr::null_mut(),
-            flags: std::ptr::null_mut(),
-        });
-
-        let mut fq: Box<xsk_ring_prod> = Box::new(xsk_ring_prod {
-            cached_prod: 0,
-            cached_cons: 0,
-            mask: 0,
-            size: 0,
-            producer: std::ptr::null_mut(),
-            consumer: std::ptr::null_mut(),
-            ring: std::ptr::null_mut(),
-            flags: std::ptr::null_mut(),
-        });
+        let mut cq = Consumer::new();
+        let mut fq = Producer::new_fq();
 
         // Double indirection in C function
         let mut umem: *mut xsk_umem = std::ptr::null_mut();
@@ -140,24 +123,24 @@ impl Umem {
         })
     }
 
-    pub fn umem(&self) -> *const xsk_umem {
-        self.umem.as_ref() as *const xsk_umem
+    pub fn umem(&mut self) -> *mut xsk_umem {
+        self.umem.as_mut()
     }
 
-    pub fn cq(&self) -> *const xsk_ring_cons {
-        self.cq.as_ref() as *const xsk_ring_cons
+    pub fn cq(&self) -> &Consumer {
+        &self.cq
     }
 
-    pub fn fq(&self) -> *const xsk_ring_prod {
-        self.fq.as_ref() as *const xsk_ring_prod
+    pub fn fq(&self) -> &Producer<Fq> {
+        &self.fq
     }
 
-    pub fn cq_mut(&mut self) -> *mut xsk_ring_cons {
-        self.cq.as_mut() as *mut xsk_ring_cons
+    pub fn cq_mut(&mut self) -> &mut Consumer {
+        &mut self.cq
     }
 
-    pub fn fq_mut(&mut self) -> *mut xsk_ring_prod {
-        self.fq.as_mut() as *mut xsk_ring_prod
+    pub fn fq_mut(&mut self) -> &mut Producer<Fq> {
+        &mut self.fq
     }
 
     pub fn get_next_free_frame(&mut self) -> Option<Frame> {
@@ -171,60 +154,48 @@ impl Umem {
     }
 
     pub fn handle_completions(&mut self) -> Result<usize> {
-        let mut idx: u32 = 0;
-
         let batch_size = min(
-            self.cq.size,
+            self.cq.size(),
             (self.free_frames.capacity() - self.free_frames.len()) as u32,
         );
 
-        let ready: usize =
-            unsafe { xsk_ring_cons__peek(self.cq.as_mut(), batch_size, &mut idx) as usize };
-        if ready == 0 {
-            return Ok(0);
-        }
+        let (mut idx, ready) = match self.cq.peek(batch_size) {
+            Some(res) => res,
+            None => return Ok(0),
+        };
 
         for _ in 0..ready {
-            let addr = unsafe { *xsk_ring_cons__comp_addr(self.cq.as_mut(), idx) };
+            let addr = self.cq.comp_addr(idx);
             self.free_frames.push(addr);
             idx += 1;
         }
 
-        unsafe {
-            xsk_ring_cons__release(self.cq.as_mut(), ready as u32);
-        }
+        self.cq.release(ready);
 
-        Ok(ready)
+        Ok(ready as usize)
     }
 
     pub fn fill_packets(&mut self) -> Result<usize> {
-        if self.free_frames.is_empty() {
+        let batch_size = min(self.fq.size(), self.free_frames.len() as u32);
+
+        if batch_size == 0 {
             return Ok(0);
         }
 
-        let mut idx: u32 = 0;
-        let batch_size = min(self.free_frames.len() as u32, self.fq.size);
-        let ready: usize =
-            unsafe { xsk_ring_prod__reserve(self.fq.as_mut(), batch_size, &mut idx) as usize };
+        let (mut idx, ready) = self.fq.reserve(batch_size).unwrap_or((0, 0));
 
         for _ in 0..ready {
-            let b = self.free_frames.pop();
-            if let Some(addr) = b {
-                unsafe {
-                    let ptr = xsk_ring_prod__fill_addr(self.fq.as_mut(), idx);
-                    idx += 1;
-                    *ptr = addr as u64;
-                }
-            }
+            let addr = self.free_frames.pop().unwrap();
+            let ptr = self.fq.fill_addr(idx);
+            unsafe { *ptr = addr as u64 };
+            idx += 1;
         }
 
         if ready > 0 {
-            unsafe {
-                xsk_ring_prod__submit(self.fq.as_mut(), ready as u32);
-            }
+            self.fq.submit(ready as u32);
         }
 
-        Ok(ready)
+        Ok(ready as usize)
     }
 }
 
