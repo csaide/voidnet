@@ -12,6 +12,7 @@ libc = { version = "0.2" }
 libxdp-sys = { git = "https://github.com/belowm/libxdp-sys.git", branch = "main" }
 pnet = { version = "0.35" }
 zerocopy = { version = "0.8" }
+dashmap = { version = "5.5" }
 
 [lib]
 name = "libvoid"

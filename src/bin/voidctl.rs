@@ -1,8 +1,12 @@
 use core::panic;
 use std::{
+    net::Ipv4Addr,
     os::raw::c_void,
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser;
@@ -21,9 +25,12 @@ use pnet::packet::{
 use pnet::util::MacAddr;
 use std::net::Ipv6Addr;
 
-use libvoid::xdp::{
-    socket::{Error, Socket},
-    umem::{FinalizedFrame, Frame, SendFrame, Umem},
+use libvoid::{
+    net::resolution::{Arp, LookupTable},
+    xdp::{
+        socket::{Error, Socket},
+        umem::{FinalizedFrame, Frame, SendFrame, Umem},
+    },
 };
 
 const FILL_RING_SIZE: u32 = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2;
@@ -361,6 +368,61 @@ fn std_tx() {
         STATS.update(n as usize);
     }
 }
+
+fn arp() {
+    let lookup_table = Arc::new(LookupTable::new());
+    let src_mac = MacAddr::new(0xd2, 0x6d, 0xa5, 0x32, 0x99, 0x7a);
+    let src_ip = Ipv4Addr::new(10, 11, 1, 1);
+    let arp = Arp::new(src_mac, src_ip, lookup_table.clone()).expect("Failed to create ARP");
+
+    let umem = Umem::builder()
+        .completion_ring_size(COMPLETION_RING_SIZE / 2)
+        .fill_ring_size(FILL_RING_SIZE)
+        .frame_size(FRAME_SIZE)
+        .num_frames(NUM_FRAMES)
+        .build()
+        .expect("Failed to create umem");
+    let mut socket =
+        Socket::new("test", 0, umem, RX_RING_SIZE, TX_RING_SIZE).expect("Failed to create socket");
+
+    println!("Socket created");
+    socket
+        .send_cb(|mut frame| {
+            frame
+                .modify(|data| {
+                    let size = arp
+                        .fill_frame(Ipv4Addr::new(10, 11, 1, 2), data)
+                        .expect("Failed to fill frame");
+                    println!("Filled frame with size: {:?}", &data[..size]);
+                    Ok(size)
+                })
+                .expect("Failed to modify frame");
+            frame.commit()
+        })
+        .expect("Failed to send frame");
+    loop {
+        println!("Lookup table: {:?}", lookup_table);
+        match socket.recv_cb(|mut frame| {
+            frame
+                .modify(|mut data| {
+                    arp.decode_frame(&mut data).expect("Failed to decode frame");
+                    Ok(data.len())
+                })
+                .expect("Failed to modify frame");
+        }) {
+            Ok(_) => {}
+            Err(Error::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(1000));
+                continue;
+            }
+            Err(e) => {
+                println!("Error receiving frame: {:?}", e);
+                break;
+            }
+        };
+    }
+}
+
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 enum Args {
@@ -372,6 +434,8 @@ enum Args {
     StdRx,
     #[command(about = "Run standard TX program")]
     StdTx,
+    #[command(about = "Run ARP program")]
+    Arp,
 }
 
 fn main() {
@@ -381,5 +445,6 @@ fn main() {
         Args::XdpTx => xdp_tx(),
         Args::StdRx => std_rx(),
         Args::StdTx => std_tx(),
+        Args::Arp => arp(),
     }
 }
