@@ -1,22 +1,18 @@
-use std::{
-    cmp::min,
-    ops::{Deref, DerefMut},
-};
+use std::{cmp::min, os::raw::c_void, rc::Rc};
 
 use errno::errno;
+use libc::c_int;
 use libxdp_sys::{
     XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS,
     XSK_UMEM__DEFAULT_FRAME_HEADROOM, xsk_umem, xsk_umem__create, xsk_umem__delete,
     xsk_umem_config,
 };
 
-use crate::xdp::{
-    ring::{Consumer, Fq, Producer},
-    umem::{Frame, Mmap},
-};
+use crate::xdp::ring::{Consumer, Fq, Producer};
 
-use super::{Error, Result};
+use super::{Error, Frame, FrameStack, Mmap, Result};
 
+/// A builder for creating a new [Umem] instance.
 pub struct UmemBuilder {
     completion_ring_size: u32,
     fill_ring_size: u32,
@@ -59,143 +55,146 @@ impl UmemBuilder {
     pub fn build(self) -> Result<Umem> {
         let pool = Mmap::new(self.num_frames, self.frame_size)?;
         let mut umem = Umem::new(pool, self.completion_ring_size, self.fill_ring_size)?;
-        umem.fill_packets()?;
+        umem.process_fill_queue();
         Ok(umem)
     }
 }
 
+/// A high level wrapper around a kernel UMEM object.
 pub struct Umem {
-    pool: Mmap,
-    umem: Box<xsk_umem>,
-    cq: Consumer,
-    fq: Producer<Fq>,
-    free_frames: Vec<u64>,
+    map: Mmap,
+    umem: *mut xsk_umem,
+    frame_stack: Rc<FrameStack>,
+    fill_ring: Producer<Fq>,
+    comp_ring: Consumer,
 }
 
 impl Umem {
+    /// Returns a builder for creating a new [Umem] instance.
     pub fn builder() -> UmemBuilder {
         UmemBuilder::new()
     }
 
-    fn new(mut pool: Mmap, completion_ring_size: u32, fill_ring_size: u32) -> Result<Self> {
+    fn new(mut map: Mmap, completion_ring_size: u32, fill_ring_size: u32) -> Result<Self> {
         let cfg = xsk_umem_config {
             fill_size: fill_ring_size,
             comp_size: completion_ring_size,
-            frame_size: pool.frame_size() as u32,
+            frame_size: map.frame_size() as u32,
             frame_headroom: XSK_UMEM__DEFAULT_FRAME_HEADROOM,
             flags: 0,
         };
 
-        let mut cq = Consumer::new();
-        let mut fq = Producer::new_fq();
+        let mut comp_ring = Consumer::new();
+        let mut fill_ring = Producer::new_fq();
 
-        // Double indirection in C function
         let mut umem: *mut xsk_umem = std::ptr::null_mut();
         let umem_ptr: *mut *mut xsk_umem = &mut umem;
-        let size = (pool.num_frames() * pool.frame_size()) as u64;
+        let size = (map.num_frames() * map.frame_size()) as u64;
 
         let ret: std::os::raw::c_int = unsafe {
             xsk_umem__create(
                 umem_ptr,
-                pool.as_ptr(),
+                map.as_mut_ptr() as *mut c_void,
                 size,
-                fq.as_mut(),
-                cq.as_mut(),
+                fill_ring.as_mut(),
+                comp_ring.as_mut(),
                 &cfg,
             )
         };
-
         if ret != 0 {
-            let errno = errno().0;
-            return Err(Error::Create(std::io::Error::from_raw_os_error(errno)));
+            return Err(Error::Create(errno()));
         }
-
-        let free_frames = (0..pool.num_frames())
-            .map(|i| i as u64 * pool.frame_size() as u64)
-            .collect();
-
+        let frame_stack = Rc::new(FrameStack::new(map.num_frames(), map.frame_size()));
         Ok(Self {
-            pool,
-            umem: unsafe { Box::from_raw(*umem_ptr) },
-            cq,
-            fq,
-            free_frames,
+            map,
+            umem,
+            frame_stack,
+            fill_ring,
+            comp_ring,
         })
     }
 
+    /// Returns a pointer to the kernel UMEM object.
+    #[inline]
     pub fn umem(&mut self) -> *mut xsk_umem {
-        self.umem.as_mut()
+        self.umem
     }
 
-    pub fn cq(&self) -> &Consumer {
-        &self.cq
+    /// Possibly wakes the fill queue, so the kernel continues to process incoming packets.
+    #[inline]
+    pub fn maybe_wake(&mut self, fd: c_int) -> Result<()> {
+        self.fill_ring.maybe_wake(fd).map_err(Error::WakeFillQueue)
     }
 
-    pub fn fq(&self) -> &Producer<Fq> {
-        &self.fq
-    }
-
-    pub fn cq_mut(&mut self) -> &mut Consumer {
-        &mut self.cq
-    }
-
-    pub fn fq_mut(&mut self) -> &mut Producer<Fq> {
-        &mut self.fq
-    }
-
-    pub fn get_next_free_frame(&mut self) -> Option<Frame> {
-        self.free_frames
-            .pop()
-            .map(|addr| self.pool.get_frame(addr, 0))
-    }
-
-    pub fn free_frame(&mut self, addr: u64) {
-        self.free_frames.push(addr);
-    }
-
-    pub fn handle_completions(&mut self) -> Result<usize> {
-        let batch_size = min(
-            self.cq.size(),
-            (self.free_frames.capacity() - self.free_frames.len()) as u32,
-        );
-
-        let (mut idx, ready) = match self.cq.peek(batch_size) {
-            Some(res) => res,
-            None => return Ok(0),
-        };
-
-        for _ in 0..ready {
-            let addr = self.cq.comp_addr(idx);
-            self.free_frames.push(addr);
-            idx += 1;
+    /// Returns a new [Frame] for the given address and length, if the frame is not consumed directly by passing it to a call to [Socket::send], it will be returned to the frame stack.
+    ///
+    /// [Socket::send]: crate::xdp::socket::Socket::send
+    #[inline]
+    pub fn get_frame(&self, addr: u64, len: usize) -> Frame {
+        unsafe {
+            Frame::new(
+                addr,
+                self.map.as_ptr().offset(addr as isize) as *mut u8,
+                len,
+                self.map.frame_size(),
+                self.frame_stack.clone(),
+            )
         }
-
-        self.cq.release(ready);
-
-        Ok(ready as usize)
     }
 
-    pub fn fill_packets(&mut self) -> Result<usize> {
-        let batch_size = min(self.fq.size(), self.free_frames.len() as u32);
+    /// Returns a new empty [Frame], if the frame is not consumed directly by passing it to a call to [Socket::send], it will be returned to the frame stack.
+    ///
+    /// [Socket::send]: crate::xdp::socket::Socket::send
+    #[inline]
+    pub fn pop_frame(&self) -> Option<Frame> {
+        self.frame_stack.pop().map(|addr| self.get_frame(addr, 0))
+    }
 
+    /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
+    #[inline]
+    pub fn process_fill_queue(&mut self) {
+        let batch_size = min(self.fill_ring.size(), self.frame_stack.len() as u32);
         if batch_size == 0 {
-            return Ok(0);
+            return;
         }
 
-        let (mut idx, ready) = self.fq.reserve(batch_size).unwrap_or((0, 0));
-
+        let (mut idx, ready) = self.fill_ring.reserve(batch_size).unwrap_or((0, 0));
         for _ in 0..ready {
-            let addr = self.free_frames.pop().unwrap();
-            let ptr = self.fq.fill_addr(idx);
+            let addr = self
+                .frame_stack
+                .pop()
+                .expect("Some how we ran out of frames.");
+            let ptr = self.fill_ring.fill_addr(idx);
             unsafe { *ptr = addr as u64 };
             idx += 1;
         }
-
         if ready > 0 {
-            self.fq.submit(ready as u32);
+            self.fill_ring.submit(ready as u32);
+        }
+    }
+
+    /// Processes the completion queue, returning frames to the frame stack up to the size of the completion ring.
+    #[inline]
+    pub fn process_comp_queue(&mut self) {
+        let batch_size = min(self.comp_ring.size(), self.frame_stack.free_space() as u32);
+        if batch_size == 0 {
+            return;
         }
 
-        Ok(ready as usize)
+        let (mut idx, ready) = match self.comp_ring.peek(batch_size) {
+            Some(res) => res,
+            None => return,
+        };
+        for _ in 0..ready {
+            let addr = self.comp_ring.comp_addr(idx);
+            self.frame_stack
+                .push(addr)
+                .expect("Some how we ran out of frames.");
+            idx += 1;
+        }
+
+        // No conditional here as we know we have this many ready descriptors.
+        self.comp_ring.release(ready as u32);
     }
 }
 
@@ -203,21 +202,7 @@ impl Drop for Umem {
     fn drop(&mut self) {
         // SAFETY: xsk_umem__delete is safe to call even if the umem is not initialized.
         unsafe {
-            xsk_umem__delete(self.umem.as_mut());
+            xsk_umem__delete(self.umem);
         }
-    }
-}
-
-impl Deref for Umem {
-    type Target = Mmap;
-
-    fn deref(&self) -> &Self::Target {
-        &self.pool
-    }
-}
-
-impl DerefMut for Umem {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.pool
     }
 }

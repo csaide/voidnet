@@ -20,6 +20,8 @@ pub struct Producer<T> {
 }
 
 impl<T> Producer<T> {
+    /// Creates a new producer ring.
+    #[inline]
     fn new() -> Producer<T> {
         let ring = Box::new(xsk_ring_prod {
             cached_prod: 0,
@@ -38,15 +40,13 @@ impl<T> Producer<T> {
     }
 
     /// Returns the size of the producer ring.
+    #[inline]
     pub fn size(&self) -> u32 {
         self.ring.as_ref().size
     }
 
     /// Reserves a batch of descriptors from the ring.
-    ///
-    /// # Arguments
-    ///
-    /// * `batch_size` - The maximum batch size to reserve.
+    #[inline]
     pub fn reserve(&mut self, batch_size: u32) -> Option<(u32, u32)> {
         let mut idx: u32 = 0;
         let batch_size = min(batch_size, self.size());
@@ -56,38 +56,31 @@ impl<T> Producer<T> {
     }
 
     /// Returns a mutable reference to the TX descriptor at the given index.
-    ///
-    /// # Arguments
-    ///
-    /// * `index` - The index of the TX descriptor to return.
+    #[inline]
     pub fn tx_desc(&mut self, index: u32) -> *mut xdp_desc {
         unsafe { xsk_ring_prod__tx_desc(self.ring.as_mut(), index) }
     }
 
     /// Returns a mutable reference to the fill address at the given index.
-    ///
-    /// # Arguments
-    ///
-    /// * `index` - The index of the fill address to return.
+    #[inline]
     pub fn fill_addr(&mut self, index: u32) -> *mut u64 {
         unsafe { xsk_ring_prod__fill_addr(self.ring.as_mut(), index) }
     }
 
     /// Submits a batch of descriptors to the ring.
-    ///
-    /// # Arguments
-    ///
-    /// * `count` - The number of descriptors to submit.
+    #[inline]
     pub fn submit(&mut self, count: u32) {
         unsafe { xsk_ring_prod__submit(self.ring.as_mut(), count) };
     }
 
     /// Returns a read-only reference to the producer ring.
+    #[inline]
     pub fn as_ref(&self) -> *const xsk_ring_prod {
         self.ring.as_ref()
     }
 
     /// Returns a mutable reference to the producer ring.
+    #[inline]
     pub fn as_mut(&mut self) -> *mut xsk_ring_prod {
         self.ring.as_mut()
     }
@@ -95,15 +88,13 @@ impl<T> Producer<T> {
 
 impl Producer<Tx> {
     /// Creates a new TX producer ring.
+    #[inline]
     pub fn new_tx() -> Producer<Tx> {
         Producer::<Tx>::new()
     }
 
     /// Maybe wake this producer ring's associated socket.
-    ///
-    /// # Arguments
-    ///
-    /// * `fd` - The file descriptor of the socket to wake.
+    #[inline]
     pub fn maybe_wake(&self, fd: c_int) -> std::io::Result<()> {
         unsafe {
             if xsk_ring_prod__needs_wakeup(self.ring.as_ref()) == 1 {
@@ -125,15 +116,13 @@ impl Producer<Tx> {
 
 impl Producer<Fq> {
     /// Creates a new FQ producer ring.
+    #[inline]
     pub fn new_fq() -> Producer<Fq> {
         Producer::<Fq>::new()
     }
 
     /// Maybe wake this producer ring's associated socket.
-    ///
-    /// # Arguments
-    ///
-    /// * `fd` - The file descriptor of the socket to wake.
+    #[inline]
     pub fn maybe_wake(&self, fd: c_int) -> std::io::Result<()> {
         unsafe {
             if xsk_ring_prod__needs_wakeup(self.ring.as_ref()) == 1 {

@@ -1,14 +1,11 @@
-//! UMEM (User Memory) management for AF_XDP.
-//!
-//! This module provides utilities for managing the shared memory region
-//! between kernel and userspace used for zero-copy packet buffers.
-
 mod error;
 mod frame;
 mod mmap;
+mod stack;
 mod umem;
 
 pub use error::{Error, Result};
-pub use frame::{FinalizedFrame, Frame, SendFrame};
+pub use frame::Frame;
 pub use mmap::Mmap;
-pub use umem::Umem;
+pub use stack::FrameStack;
+pub use umem::{Umem, UmemBuilder};

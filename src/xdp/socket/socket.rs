@@ -1,28 +1,101 @@
 use std::ffi::CString;
+use std::mem::forget;
 
 use errno::errno;
+use libc::c_int;
 use libxdp_sys::{
-    XDP_USE_NEED_WAKEUP, xsk_socket, xsk_socket__create, xsk_socket__delete, xsk_socket__fd,
-    xsk_socket_config, xsk_socket_config__bindgen_ty_1,
+    XDP_USE_NEED_WAKEUP, XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS,
+    XSK_UMEM__DEFAULT_FRAME_SIZE, xsk_socket, xsk_socket__create, xsk_socket__delete,
+    xsk_socket__fd, xsk_socket_config, xsk_socket_config__bindgen_ty_1,
 };
 
-use crate::xdp::{
-    ring::{Consumer, Producer, Tx},
-    umem::{FinalizedFrame, Frame, SendFrame, Umem},
-};
+use crate::xdp::ring::{Consumer, Producer, Tx};
+use crate::xdp::umem::{Frame, Umem};
 
 use super::{Error, Result};
+
+pub struct SocketBuilder {
+    if_name: CString,
+    queue: u32,
+    rx_ring_size: u32,
+    tx_ring_size: u32,
+    completion_ring_size: u32,
+    fill_ring_size: u32,
+    frame_size: usize,
+}
+
+impl SocketBuilder {
+    pub fn new(if_name: &str, queue: u32) -> Self {
+        let if_name =
+            CString::new(if_name).expect("Some how a rust string was null terminated....");
+        Self {
+            if_name,
+            queue,
+            rx_ring_size: XSK_RING_CONS__DEFAULT_NUM_DESCS,
+            tx_ring_size: XSK_RING_PROD__DEFAULT_NUM_DESCS,
+            completion_ring_size: XSK_RING_CONS__DEFAULT_NUM_DESCS,
+            fill_ring_size: XSK_RING_PROD__DEFAULT_NUM_DESCS,
+            frame_size: XSK_UMEM__DEFAULT_FRAME_SIZE as usize,
+        }
+    }
+
+    pub fn rx_ring_size(mut self, rx_ring_size: u32) -> Self {
+        self.rx_ring_size = rx_ring_size;
+        self
+    }
+
+    pub fn tx_ring_size(mut self, tx_ring_size: u32) -> Self {
+        self.tx_ring_size = tx_ring_size;
+        self
+    }
+
+    pub fn completion_ring_size(mut self, completion_ring_size: u32) -> Self {
+        self.completion_ring_size = completion_ring_size;
+        self
+    }
+
+    pub fn fill_ring_size(mut self, fill_ring_size: u32) -> Self {
+        self.fill_ring_size = fill_ring_size;
+        self
+    }
+
+    pub fn frame_size(mut self, frame_size: usize) -> Self {
+        self.frame_size = frame_size;
+        self
+    }
+
+    pub fn build(self) -> Result<Socket> {
+        let umem = Umem::builder()
+            .completion_ring_size(self.completion_ring_size)
+            .fill_ring_size(self.fill_ring_size)
+            .frame_size(self.frame_size)
+            .num_frames((self.completion_ring_size + self.fill_ring_size) as usize)
+            .build()?;
+        let socket = Socket::new(
+            self.if_name.as_c_str().to_str().unwrap(),
+            self.queue,
+            umem,
+            self.rx_ring_size,
+            self.tx_ring_size,
+        )?;
+        Ok(socket)
+    }
+}
 
 pub struct Socket {
     umem: Umem,
     socket: Box<xsk_socket>,
-    fd: std::os::raw::c_int,
+    fd: c_int,
     rx: Consumer,
     tx: Producer<Tx>,
 }
 
 impl Socket {
-    pub fn new(
+    pub fn builder(if_name: &str, queue: u32) -> SocketBuilder {
+        SocketBuilder::new(if_name, queue)
+    }
+
+    fn new(
         if_name: &str,
         queue: u32,
         mut umem: Umem,
@@ -60,8 +133,7 @@ impl Socket {
         }
 
         if ret != 0 {
-            let errno = errno().0;
-            return Err(Error::Create(std::io::Error::from_raw_os_error(errno)));
+            return Err(Error::Create(errno()));
         }
 
         Ok(Self {
@@ -73,85 +145,67 @@ impl Socket {
         })
     }
 
-    fn reserve_fq(&mut self, rcvd: u32) -> Result<u32> {
-        let (mut idx_fq, mut ready) = self.umem.fq_mut().reserve(rcvd).unwrap_or((0, 0));
-        while ready != rcvd {
-            (idx_fq, ready) = self.umem.fq_mut().reserve(rcvd).unwrap_or((0, 0));
-            self.umem.fq_mut().maybe_wake(self.fd)?;
-        }
-
-        Ok(idx_fq)
-    }
-
-    pub fn recv_cb<F>(&mut self, mut f: F) -> Result<()>
-    where
-        F: FnMut(Frame),
-    {
-        let (mut idx_rx, rcvd) = match self.rx.peek(u32::MAX) {
+    pub fn recv(&mut self, batch_size: u32) -> Result<Vec<Frame>> {
+        let (mut idx_rx, rcvd) = match self.rx.peek(batch_size) {
             Some((idx, rcvd)) => (idx, rcvd),
             None => {
-                self.umem.fq_mut().maybe_wake(self.fd)?;
+                self.umem.maybe_wake(self.fd)?;
+                self.umem.process_fill_queue();
                 return Err(Error::WouldBlock);
             }
         };
 
-        let mut idx_fq = self.reserve_fq(rcvd)?;
-
+        let mut batch = Vec::with_capacity(rcvd as usize);
         for _ in 0..rcvd {
             let desc = self.rx.rx_desc(idx_rx);
-
-            f(self.umem.get_frame(desc.addr, desc.len as usize));
-
-            let addr = self.umem.fq_mut().fill_addr(idx_fq);
-            unsafe { *addr = desc.addr as u64 };
-
+            batch.push(self.umem.get_frame(desc.addr, desc.len as usize));
             idx_rx += 1;
-            idx_fq += 1;
         }
 
-        self.umem.fq_mut().submit(rcvd);
         self.rx.release(rcvd);
 
-        Ok(())
+        Ok(batch)
     }
 
-    pub fn send_cb<F>(&mut self, mut f: F) -> Result<()>
-    where
-        F: FnMut(SendFrame) -> FinalizedFrame,
-    {
-        let (mut idx_tx, ready) = loop {
-            if let Some((idx_tx, ready)) = self.tx.reserve(u32::MAX) {
-                break (idx_tx, ready);
+    pub fn prepare_frames(&mut self, num_frames: usize) -> Result<Vec<Frame>> {
+        let mut frames = Vec::with_capacity(num_frames);
+        for _ in 0..num_frames {
+            if let Some(frame) = self.umem.pop_frame() {
+                frames.push(frame);
             } else {
                 self.tx.maybe_wake(self.fd)?;
-                self.umem.handle_completions()?;
+                self.umem.process_comp_queue();
+                return Err(Error::WouldBlock);
+            }
+        }
+        Ok(frames)
+    }
+
+    pub fn send(&mut self, frames: &mut Vec<Frame>) -> Result<()> {
+        let (mut idx_tx, ready) = match self.tx.reserve(frames.len() as u32) {
+            Some((idx_tx, ready)) => (idx_tx, ready),
+            None => {
+                self.tx.maybe_wake(self.fd)?;
+                self.umem.process_comp_queue();
+                return Err(Error::WouldBlock);
             }
         };
 
         for _ in 0..ready {
-            let frame = self.umem.get_next_free_frame().ok_or(Error::WouldBlock)?;
-            let frame = match f(SendFrame::new(frame)) {
-                FinalizedFrame::Committed(frame) => frame,
-                FinalizedFrame::Aborted(frame) => {
-                    let addr = frame.addr();
-                    drop(frame);
-
-                    self.umem.free_frame(addr);
-                    return Err(Error::WouldBlock);
-                }
-            };
-
+            let frame = frames.pop().unwrap();
+            let desc = self.tx.tx_desc(idx_tx);
             unsafe {
-                let desc = self.tx.tx_desc(idx_tx);
                 (*desc).addr = frame.addr();
                 (*desc).len = frame.len() as u32;
+                (*desc).options = 0;
             }
-
             idx_tx += 1;
+
+            // Don't run the normal destructor.
+            forget(frame);
         }
 
         self.tx.submit(ready);
-
         Ok(())
     }
 }

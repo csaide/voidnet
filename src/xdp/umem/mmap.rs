@@ -1,9 +1,8 @@
-use std::os::raw::c_void;
-
 use memmap2::{MmapMut, MmapOptions};
 
-use super::{Error, Frame, Result};
+use super::{Error, Result};
 
+/// A wrapper around a [MmapMut] that is used to store data for a packet.
 pub struct Mmap {
     map: MmapMut,
     frame_size: usize,
@@ -11,11 +10,12 @@ pub struct Mmap {
 }
 
 impl Mmap {
+    /// Creates a new [Mmap] with the given number of frames and frame size.
     pub fn new(num_frames: usize, frame_size: usize) -> Result<Self> {
         let map = MmapOptions::new()
             .len(num_frames * frame_size)
             .map_anon()
-            .map_err(|e| Error::Create(e))?;
+            .map_err(|e| Error::MmapAllocate(e))?;
 
         Ok(Self {
             map,
@@ -24,26 +24,27 @@ impl Mmap {
         })
     }
 
-    pub fn get_frame(&mut self, addr: u64, len: usize) -> Frame {
-        unsafe {
-            Frame::new_with_len(
-                addr,
-                self.map.as_mut_ptr().offset(addr as isize),
-                len,
-                self.frame_size,
-            )
-        }
-    }
-
+    /// Returns the size of each frame in the mmap.
+    #[inline]
     pub fn frame_size(&self) -> usize {
         self.frame_size
     }
 
+    /// Returns the number of frames in the mmap.
+    #[inline]
     pub fn num_frames(&self) -> usize {
         self.num_frames
     }
 
-    pub fn as_ptr(&mut self) -> *mut c_void {
-        self.map.as_mut_ptr() as *mut c_void
+    /// Returns a pointer to the start of the mmap.
+    #[inline]
+    pub fn as_ptr(&self) -> *const u8 {
+        self.map.as_ptr()
+    }
+
+    /// Returns a mutable pointer to the start of the mmap.
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.map.as_mut_ptr()
     }
 }

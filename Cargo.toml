@@ -11,8 +11,7 @@ memmap2 = { version = "0.9" }
 libc = { version = "0.2" }
 libxdp-sys = { git = "https://github.com/belowm/libxdp-sys.git", branch = "main" }
 pnet = { version = "0.35" }
-zerocopy = { version = "0.8" }
-dashmap = { version = "5.5" }
+dashmap = { version = "6.1" }
 
 [lib]
 name = "libvoid"

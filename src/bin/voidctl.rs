@@ -1,19 +1,9 @@
-use core::panic;
 use std::{
-    net::Ipv4Addr,
-    os::raw::c_void,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser;
-use libc::{
-    AF_INET6, IPPROTO_UDP, SOCK_DGRAM, bind, htons, in6_addr, in6addr_any, recvfrom, sendto,
-    sockaddr, sockaddr_in6, socket,
-};
 use libxdp_sys::{XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS};
 use pnet::packet::{
     Packet,
@@ -25,27 +15,26 @@ use pnet::packet::{
 use pnet::util::MacAddr;
 use std::net::Ipv6Addr;
 
-use libvoid::{
-    net::resolution::{Arp, LookupTable},
-    xdp::{
-        socket::{Error, Socket},
-        umem::{FinalizedFrame, Frame, SendFrame, Umem},
-    },
-};
+use libvoid::xdp::socket::{Error as SocketError, Socket};
 
 const FILL_RING_SIZE: u32 = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2;
 const COMPLETION_RING_SIZE: u32 = XSK_RING_CONS__DEFAULT_NUM_DESCS;
 const RX_RING_SIZE: u32 = XSK_RING_CONS__DEFAULT_NUM_DESCS;
 const TX_RING_SIZE: u32 = XSK_RING_PROD__DEFAULT_NUM_DESCS;
 const FRAME_SIZE: usize = 2048;
-const NUM_FRAMES: usize = (COMPLETION_RING_SIZE + FILL_RING_SIZE) as usize;
 
 struct Stats {
     packets_received: AtomicU64,
     bytes_received: AtomicU64,
+    cycles: AtomicU64,
+    would_block_count: AtomicU64,
+    batch_size_cnt: AtomicU64,
+    num_batches: AtomicU64,
     last_packets: AtomicU64,
     last_bytes: AtomicU64,
     last_display_time: AtomicU64,
+    last_cycles: AtomicU64,
+    last_would_block_count: AtomicU64,
 }
 
 impl Stats {
@@ -53,69 +42,95 @@ impl Stats {
         Self {
             packets_received: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
+            cycles: AtomicU64::new(0),
+            would_block_count: AtomicU64::new(0),
+            batch_size_cnt: AtomicU64::new(0),
+            num_batches: AtomicU64::new(0),
             last_packets: AtomicU64::new(0),
             last_bytes: AtomicU64::new(0),
             last_display_time: AtomicU64::new(0),
+            last_cycles: AtomicU64::new(0),
+            last_would_block_count: AtomicU64::new(0),
         }
     }
 
     fn update(&self, size: usize) {
-        let packets = self.packets_received.fetch_add(1, Ordering::Relaxed);
-        let bytes = self
-            .bytes_received
-            .fetch_add(size as u64, Ordering::Relaxed);
+        self.packets_received.fetch_add(1, Ordering::AcqRel);
+        self.bytes_received.fetch_add(size as u64, Ordering::AcqRel);
+    }
 
-        // Get current time as nanoseconds since UNIX epoch
+    fn increment_would_block(&self) {
+        self.would_block_count.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn increment_cycles(&self) {
+        self.cycles.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn observe_batch_size(&self, size: usize) {
+        self.batch_size_cnt.fetch_add(size as u64, Ordering::AcqRel);
+        self.num_batches.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub fn print_stats(&self) {
+        let packets = self.packets_received.load(Ordering::Acquire);
+        let bytes = self.bytes_received.load(Ordering::Acquire);
+        let would_block_count = self.would_block_count.load(Ordering::Acquire);
+        let cycles = self.cycles.load(Ordering::Acquire);
+        let batch_size_cnt = self.batch_size_cnt.load(Ordering::Acquire);
+        let num_batches = self.num_batches.load(Ordering::Acquire);
+
         let now_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        let last_display_time_ns = self.last_display_time.load(Ordering::Relaxed);
+        let last_display_time_ns = self.last_display_time.load(Ordering::Acquire);
 
-        // Calculate time elapsed since last display (or since start if first time)
         let elapsed_ns = if last_display_time_ns == 0 {
             // First time: calculate elapsed since application start
-            1_000_000_000
+            1
         } else {
             // Subsequent times: calculate elapsed since last display
             now_ns - last_display_time_ns
         };
 
-        if elapsed_ns >= 1_000_000_000 {
-            let last_packets = self.last_packets.swap(packets, Ordering::Relaxed);
-            let last_bytes = self.last_bytes.swap(bytes, Ordering::Relaxed);
-            self.last_display_time.store(now_ns, Ordering::Relaxed);
+        let last_packets = self.last_packets.swap(packets, Ordering::AcqRel);
+        let last_bytes = self.last_bytes.swap(bytes, Ordering::AcqRel);
+        let last_would_block_count = self
+            .last_would_block_count
+            .swap(would_block_count, Ordering::AcqRel);
+        let last_cycles = self.last_cycles.swap(cycles, Ordering::AcqRel);
+        self.last_display_time.store(now_ns, Ordering::Release);
 
-            let elapsed_secs = elapsed_ns as f64 / 1_000_000_000.0;
+        let elapsed_secs = elapsed_ns as f64 / 1_000_000_000.0;
 
-            // Calculate rates (packets/sec and bytes/sec)
-            let packet_rate = (packets - last_packets) as f64 / elapsed_secs;
-            let byte_rate = (bytes - last_bytes) as f64 / elapsed_secs;
+        // Calculate rates (packets/sec and bytes/sec)
+        let packet_rate = (packets - last_packets) as f64 / elapsed_secs;
+        let byte_rate = (bytes - last_bytes) as f64 / elapsed_secs;
+        let would_block_rate = (would_block_count - last_would_block_count) as f64 / elapsed_secs;
+        let cycle_rate = (cycles - last_cycles) as f64 / elapsed_secs;
 
-            // Print rates
-            println!(
-                "Elapsed: {:.2}s | Packets: {}M | Bytes: {:.2}GB | Packet rate: {:.2} Mpps | Byte rate: {:.2} Gbps",
-                elapsed_secs,
-                packets / 1_000_000,
-                bytes as f64 / 1024.0 / 1024.0 / 1024.0,
-                packet_rate / 1_000_000.0,
-                byte_rate * 8.0 / 1_000_000_000.0
-            );
-        }
+        // Print rates
+        println!(
+            "Packets: {}M | Bytes: {:.2}GiB | Packet rate: {:.2} Mpps | Byte rate: {:.2} Gbps | WB rate: {:.2} Mps | Cycle rate: {:.2} Mps | Batch size: {:.2} frames",
+            packets / 1_000_000,
+            bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+            packet_rate / 1_000_000.0,
+            byte_rate * 8.0 / 1_000_000_000.0,
+            would_block_rate / 1_000_000.0,
+            cycle_rate / 1_000_000.0,
+            batch_size_cnt as f64 / num_batches as f64
+        );
     }
 }
 
 static STATS: Stats = Stats::new();
 
-pub fn handle_frame(frame: Frame) {
-    STATS.update(frame.len());
-}
-
 pub fn build_frame() -> Vec<u8> {
     // Placeholder values - user will fill these in
     // MAC addresses can be specified as strings like "00:11:22:33:44:55"
     let src_mac = MacAddr::new(0xd2, 0x6d, 0xa5, 0x32, 0x99, 0x7a);
-    let dst_mac = MacAddr::new(0x3a, 0xc4, 0x65, 0xac, 0x1b, 0xe7);
+    let dst_mac = MacAddr::new(0xf6, 0x5a, 0x6c, 0x34, 0xa1, 0x6f);
     let src_ip: Ipv6Addr = "fc00:dead:cafe:1::1".parse().unwrap();
     let dst_ip: Ipv6Addr = "fc00:dead:cafe:1::2".parse().unwrap();
     let src_port: u16 = 8008;
@@ -180,33 +195,28 @@ pub fn build_frame() -> Vec<u8> {
     data
 }
 
-fn send_frame() -> impl FnMut(SendFrame) -> FinalizedFrame {
-    let data = build_frame();
-    move |mut frame: SendFrame| {
-        unsafe { frame.copy_from(&data) };
-        STATS.update(data.len());
-        frame.commit()
-    }
-}
-
-fn xdp_rx() {
-    let umem = Umem::builder()
+fn xdp_rx(if_name: &str, queue: u32) {
+    let mut socket = Socket::builder(if_name, queue)
         .completion_ring_size(COMPLETION_RING_SIZE)
         .fill_ring_size(FILL_RING_SIZE)
         .frame_size(FRAME_SIZE)
-        .num_frames(NUM_FRAMES)
+        .rx_ring_size(RX_RING_SIZE)
+        .tx_ring_size(TX_RING_SIZE)
         .build()
-        .expect("Failed to create umem");
-    let mut socket =
-        Socket::new("test", 0, umem, RX_RING_SIZE, TX_RING_SIZE).expect("Failed to create socket");
+        .expect("Failed to create socket");
 
     println!("Socket created");
     loop {
-        match socket.recv_cb(handle_frame) {
-            Ok(_) => {}
-            Err(Error::WouldBlock) => {
-                // thread::sleep(Duration::from_millis(100));
-                // println!("Would block");
+        STATS.increment_cycles();
+        match socket.recv(1024) {
+            Ok(frames) => {
+                STATS.observe_batch_size(frames.len());
+                for frame in frames {
+                    STATS.update(frame.len());
+                }
+            }
+            Err(SocketError::WouldBlock) => {
+                STATS.increment_would_block();
                 continue;
             }
             Err(e) => {
@@ -217,209 +227,52 @@ fn xdp_rx() {
     }
 }
 
-fn xdp_tx() {
-    let umem = Umem::builder()
-        .completion_ring_size(COMPLETION_RING_SIZE / 2)
+fn xdp_tx(if_name: &str, queue: u32) {
+    let mut socket = Socket::builder(if_name, queue)
+        .completion_ring_size(COMPLETION_RING_SIZE)
         .fill_ring_size(FILL_RING_SIZE)
         .frame_size(FRAME_SIZE)
-        .num_frames(NUM_FRAMES)
+        .rx_ring_size(RX_RING_SIZE)
+        .tx_ring_size(TX_RING_SIZE)
         .build()
-        .expect("Failed to create umem");
-    let mut socket =
-        Socket::new("test", 0, umem, RX_RING_SIZE, TX_RING_SIZE).expect("Failed to create socket");
+        .expect("Failed to create socket");
 
     println!("Socket created");
+    let data = build_frame();
     loop {
-        match socket.send_cb(send_frame()) {
-            Ok(_) => {}
-            Err(Error::WouldBlock) => {
+        STATS.increment_cycles();
+        let mut frames = match socket.prepare_frames(1024) {
+            Ok(frames) => {
+                STATS.observe_batch_size(frames.len());
+                frames
+            }
+            Err(SocketError::WouldBlock) => {
+                STATS.increment_would_block();
                 continue;
             }
             Err(e) => {
-                println!("Error sending frame: {:?}", e);
+                println!("Error preparing frames: {:?}", e);
                 break;
             }
         };
-    }
-}
 
-fn std_rx() {
-    let fd = unsafe { socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP) };
-    if fd == -1 {
-        eprintln!(
-            "Failed to create socket: {}",
-            std::io::Error::last_os_error()
-        );
-        std::process::exit(1);
-    }
-
-    let server_addr = unsafe {
-        sockaddr_in6 {
-            sin6_family: AF_INET6 as u16,
-            sin6_port: htons(8008),
-            sin6_addr: in6addr_any,
-            sin6_scope_id: 0,
-            sin6_flowinfo: 0,
+        for frame in frames.iter_mut() {
+            unsafe { frame.copy_from(&data) };
+            STATS.update(frame.len());
         }
-    };
-    let mut client_addr_len = std::mem::size_of::<sockaddr_in6>() as u32;
-    let mut client_addr = unsafe {
-        sockaddr_in6 {
-            sin6_family: AF_INET6 as u16,
-            sin6_port: 0,
-            sin6_addr: in6addr_any,
-            sin6_scope_id: 0,
-            sin6_flowinfo: 0,
+        while frames.len() > 0 {
+            match socket.send(&mut frames) {
+                Ok(_) => {}
+                Err(SocketError::WouldBlock) => {
+                    STATS.increment_would_block();
+                    continue;
+                }
+                Err(e) => {
+                    println!("Error sending frames: {:?}", e);
+                    break;
+                }
+            };
         }
-    };
-
-    let ret = unsafe {
-        bind(
-            fd,
-            &server_addr as *const sockaddr_in6 as *const sockaddr,
-            std::mem::size_of::<sockaddr_in6>() as u32,
-        )
-    };
-    if ret == -1 {
-        eprintln!("Failed to bind socket: {}", std::io::Error::last_os_error());
-        std::process::exit(1);
-    }
-    println!("Socket created");
-    let mut buf = [0; 2048];
-    loop {
-        let n = unsafe {
-            recvfrom(
-                fd,
-                buf.as_mut_ptr() as *mut c_void,
-                buf.len(),
-                0,
-                &mut client_addr as *mut sockaddr_in6 as *mut sockaddr,
-                &mut client_addr_len,
-            )
-        };
-        if n < 0 {
-            panic!(
-                "Failed to receive data: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-        STATS.update(n as usize);
-    }
-}
-
-fn std_tx() {
-    let fd = unsafe { socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP) };
-    if fd == -1 {
-        eprintln!(
-            "Failed to create socket: {}",
-            std::io::Error::last_os_error()
-        );
-        std::process::exit(1);
-    }
-
-    let server_addr = unsafe {
-        sockaddr_in6 {
-            sin6_family: AF_INET6 as u16,
-            sin6_port: htons(8008),
-            sin6_addr: in6addr_any,
-            sin6_scope_id: 0,
-            sin6_flowinfo: 0,
-        }
-    };
-    let client_addr_len = std::mem::size_of::<sockaddr_in6>() as u32;
-    let ipv6: Ipv6Addr = "fc00:dead:cafe:1::2".parse().unwrap();
-    let client_addr = sockaddr_in6 {
-        sin6_family: AF_INET6 as u16,
-        sin6_port: htons(8008),
-        sin6_addr: in6_addr {
-            s6_addr: ipv6.octets(),
-        },
-        sin6_scope_id: 0,
-        sin6_flowinfo: 0,
-    };
-
-    let ret = unsafe {
-        bind(
-            fd,
-            &server_addr as *const sockaddr_in6 as *const sockaddr,
-            std::mem::size_of::<sockaddr_in6>() as u32,
-        )
-    };
-    if ret == -1 {
-        eprintln!("Failed to bind socket: {}", std::io::Error::last_os_error());
-        std::process::exit(1);
-    }
-    println!("Socket created");
-    let buf: &[u8] = b"Hello, UDP!";
-    loop {
-        let n = unsafe {
-            sendto(
-                fd,
-                buf.as_ptr() as *const c_void,
-                buf.len(),
-                0,
-                &client_addr as *const sockaddr_in6 as *const sockaddr,
-                client_addr_len,
-            )
-        };
-        if n < 0 {
-            panic!("Failed to send data: {}", std::io::Error::last_os_error());
-        }
-        STATS.update(n as usize);
-    }
-}
-
-fn arp() {
-    let lookup_table = Arc::new(LookupTable::new());
-    let src_mac = MacAddr::new(0xd2, 0x6d, 0xa5, 0x32, 0x99, 0x7a);
-    let src_ip = Ipv4Addr::new(10, 11, 1, 1);
-    let arp = Arp::new(src_mac, src_ip, lookup_table.clone()).expect("Failed to create ARP");
-
-    let umem = Umem::builder()
-        .completion_ring_size(COMPLETION_RING_SIZE / 2)
-        .fill_ring_size(FILL_RING_SIZE)
-        .frame_size(FRAME_SIZE)
-        .num_frames(NUM_FRAMES)
-        .build()
-        .expect("Failed to create umem");
-    let mut socket =
-        Socket::new("test", 0, umem, RX_RING_SIZE, TX_RING_SIZE).expect("Failed to create socket");
-
-    println!("Socket created");
-    socket
-        .send_cb(|mut frame| {
-            frame
-                .modify(|data| {
-                    let size = arp
-                        .fill_frame(Ipv4Addr::new(10, 11, 1, 2), data)
-                        .expect("Failed to fill frame");
-                    println!("Filled frame with size: {:?}", &data[..size]);
-                    Ok(size)
-                })
-                .expect("Failed to modify frame");
-            frame.commit()
-        })
-        .expect("Failed to send frame");
-    loop {
-        println!("Lookup table: {:?}", lookup_table);
-        match socket.recv_cb(|mut frame| {
-            frame
-                .modify(|mut data| {
-                    arp.decode_frame(&mut data).expect("Failed to decode frame");
-                    Ok(data.len())
-                })
-                .expect("Failed to modify frame");
-        }) {
-            Ok(_) => {}
-            Err(Error::WouldBlock) => {
-                std::thread::sleep(Duration::from_millis(1000));
-                continue;
-            }
-            Err(e) => {
-                println!("Error receiving frame: {:?}", e);
-                break;
-            }
-        };
     }
 }
 
@@ -427,24 +280,33 @@ fn arp() {
 #[command(author, version, about, long_about = None)]
 enum Args {
     #[command(about = "Run XDP RX program")]
-    XdpRx,
+    XdpRx {
+        #[arg(short, long)]
+        if_name: String,
+        #[arg(short, long)]
+        queue: u32,
+    },
     #[command(about = "Run XDP TX program")]
-    XdpTx,
-    #[command(about = "Run standard program")]
-    StdRx,
-    #[command(about = "Run standard TX program")]
-    StdTx,
-    #[command(about = "Run ARP program")]
-    Arp,
+    XdpTx {
+        #[arg(short, long)]
+        if_name: String,
+        #[arg(short, long)]
+        queue: u32,
+    },
 }
 
 fn main() {
     let args = Args::parse();
+
+    std::thread::spawn(move || {
+        loop {
+            STATS.print_stats();
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+
     match args {
-        Args::XdpRx => xdp_rx(),
-        Args::XdpTx => xdp_tx(),
-        Args::StdRx => std_rx(),
-        Args::StdTx => std_tx(),
-        Args::Arp => arp(),
+        Args::XdpRx { if_name, queue } => xdp_rx(&if_name, queue),
+        Args::XdpTx { if_name, queue } => xdp_tx(&if_name, queue),
     }
 }

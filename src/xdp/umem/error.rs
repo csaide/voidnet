@@ -1,13 +1,18 @@
+use errno::Errno;
 use thiserror::Error;
 
+/// A result type for umem operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Error, Debug)]
+/// An error type for umem operations.
 pub enum Error {
-    #[error("value is too large")]
-    ValueTooLarge,
-    #[error("invalid byte sequence: {0}")]
-    InvalidByteSequence(String),
     #[error("failed to create umem: {0}")]
-    Create(std::io::Error),
+    Create(Errno),
+    #[error("failed to allocate mmap for umem: {0}")]
+    MmapAllocate(std::io::Error),
+    #[error("stack is full")]
+    StackFull,
+    #[error("failed to wake fill queue: {0}")]
+    WakeFillQueue(#[from] std::io::Error),
 }
