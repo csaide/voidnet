@@ -1,5 +1,5 @@
 use std::ffi::CString;
-use std::mem::forget;
+use std::mem::ManuallyDrop;
 
 use errno::errno;
 use libc::c_int;
@@ -14,6 +14,7 @@ use crate::xdp::umem::{Frame, Umem};
 
 use super::{Error, Result};
 
+/// Builder for creating a new socket.
 pub struct SocketBuilder {
     if_name: CString,
     queue: u32,
@@ -25,6 +26,9 @@ pub struct SocketBuilder {
 }
 
 impl SocketBuilder {
+    /// Creates a new socket builder, using the supllied interface name and queue number.
+    ///
+    /// The defaults included are sane values for most use cases.
     pub fn new(if_name: &str, queue: u32) -> Self {
         let if_name =
             CString::new(if_name).expect("Some how a rust string was null terminated....");
@@ -39,38 +43,47 @@ impl SocketBuilder {
         }
     }
 
+    /// Sets the size of the RX ring.
     pub fn rx_ring_size(mut self, rx_ring_size: u32) -> Self {
         self.rx_ring_size = rx_ring_size;
         self
     }
 
+    /// Sets the size of the TX ring.
     pub fn tx_ring_size(mut self, tx_ring_size: u32) -> Self {
         self.tx_ring_size = tx_ring_size;
         self
     }
 
+    /// Sets the size of the completion ring.
     pub fn completion_ring_size(mut self, completion_ring_size: u32) -> Self {
         self.completion_ring_size = completion_ring_size;
         self
     }
 
+    /// Sets the size of the fill ring.
     pub fn fill_ring_size(mut self, fill_ring_size: u32) -> Self {
         self.fill_ring_size = fill_ring_size;
         self
     }
 
+    /// Sets the size of the frame.
     pub fn frame_size(mut self, frame_size: usize) -> Self {
         self.frame_size = frame_size;
         self
     }
 
+    /// Builds the socket.
     pub fn build(self) -> Result<Socket> {
+        // First create the UMEM object, this will allocate the frames and the completion/fill rings.
         let umem = Umem::builder()
             .completion_ring_size(self.completion_ring_size)
             .fill_ring_size(self.fill_ring_size)
             .frame_size(self.frame_size)
             .num_frames((self.completion_ring_size + self.fill_ring_size) as usize)
             .build()?;
+
+        // Then create the socket, this will allocate the RX/TX rings and bind the socket + rings to the UMEM object.
         let socket = Socket::new(
             self.if_name.as_c_str().to_str().unwrap(),
             self.queue,
@@ -82,6 +95,7 @@ impl SocketBuilder {
     }
 }
 
+/// A frame based XDP socket exposing zero copy batched receive and send operations.
 pub struct Socket {
     umem: Umem,
     socket: Box<xsk_socket>,
@@ -91,6 +105,7 @@ pub struct Socket {
 }
 
 impl Socket {
+    /// Returns a builder for creating a new socket.
     pub fn builder(if_name: &str, queue: u32) -> SocketBuilder {
         SocketBuilder::new(if_name, queue)
     }
@@ -145,6 +160,12 @@ impl Socket {
         })
     }
 
+    /// Receives a batch of frames from the socket.
+    ///
+    /// Note that it is not guaranteed that the resulting Vec of frames will match the batch size supplied.
+    /// It is considered a batch maximum and this function will return as soon as at least one frame is received.
+    ///
+    /// If no frames are availabel to read this returns an error of type [Error::WouldBlock].
     pub fn recv(&mut self, batch_size: u32) -> Result<Vec<Frame>> {
         let (mut idx_rx, rcvd) = match self.rx.peek(batch_size) {
             Some((idx, rcvd)) => (idx, rcvd),
@@ -167,6 +188,12 @@ impl Socket {
         Ok(batch)
     }
 
+    /// Prepares a batch of frames for sending.
+    ///
+    /// Note that it is not guaranteed that the resulting Vec of frames will match the batch size supplied.
+    /// It is considered a batch maximum and this function will return as soon as at least one frame is prepared.
+    ///
+    /// If no frames are availabel to prepare this returns an error of type [Error::WouldBlock].
     pub fn prepare_frames(&mut self, num_frames: usize) -> Result<Vec<Frame>> {
         let mut frames = Vec::with_capacity(num_frames);
         for _ in 0..num_frames {
@@ -181,6 +208,14 @@ impl Socket {
         Ok(frames)
     }
 
+    /// Sends a batch of frames to the socket.
+    ///
+    /// Note that it is not guaranteed that the resulting Vec of frames will match the batch size supplied.
+    /// It is considered a batch maximum and this function will return as soon as at least one frame is sent.
+    ///
+    /// The caller should call this function until their batch of frames is empty.
+    ///
+    /// If no frames are availabel to send this returns an error of type [Error::WouldBlock].
     pub fn send(&mut self, frames: &mut Vec<Frame>) -> Result<()> {
         let (mut idx_tx, ready) = match self.tx.reserve(frames.len() as u32) {
             Some((idx_tx, ready)) => (idx_tx, ready),
@@ -192,7 +227,7 @@ impl Socket {
         };
 
         for _ in 0..ready {
-            let frame = frames.pop().unwrap();
+            let frame = frames.pop().map(ManuallyDrop::new).unwrap();
             let desc = self.tx.tx_desc(idx_tx);
             unsafe {
                 (*desc).addr = frame.addr();
@@ -200,9 +235,6 @@ impl Socket {
                 (*desc).options = 0;
             }
             idx_tx += 1;
-
-            // Don't run the normal destructor.
-            forget(frame);
         }
 
         self.tx.submit(ready);
