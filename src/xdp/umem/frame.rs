@@ -1,6 +1,9 @@
-use std::rc::Rc;
+use std::{
+    ops::{Deref, DerefMut},
+    rc::Rc,
+};
 
-use super::FrameStack;
+use super::ThreadLocalFrameStack;
 
 /// A frame is a contiguous memory region that is used to store data for a packet, this is a simple wrapper around a pointer to a MMAP'd memory region.
 #[derive(Debug)]
@@ -9,7 +12,7 @@ pub struct Frame {
     len: usize,
     capacity: usize,
     data: *mut u8,
-    frame_stack: Rc<FrameStack>,
+    frame_stack: Rc<ThreadLocalFrameStack>,
 }
 
 impl Frame {
@@ -21,14 +24,14 @@ impl Frame {
     /// region of size `capacity`. It is the responsibility of the caller to ensure that the address is valid
     /// and that the pointer points to a contiguous memory region of size `capacity`, which is fully initialized.
     ///
-    /// NOTE: the data may not need to be fully 0'ed, just must assume it will be read entirely and therefore must
+    /// NOTE: the data does not need to be fully 0'ed, it just must be assumed it will be read entirely and therefore must
     /// be initialized to valid u8 values for all locations.
     pub unsafe fn new(
         addr: u64,
         data: *mut u8,
         len: usize,
         capacity: usize,
-        frame_stack: Rc<FrameStack>,
+        frame_stack: Rc<ThreadLocalFrameStack>,
     ) -> Self {
         debug_assert!(
             capacity > 0 && len <= capacity,
@@ -79,5 +82,19 @@ impl Frame {
 impl Drop for Frame {
     fn drop(&mut self) {
         let _ = self.frame_stack.push(self.addr);
+    }
+}
+
+impl Deref for Frame {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { std::slice::from_raw_parts(self.data, self.len) }
+    }
+}
+
+impl DerefMut for Frame {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { std::slice::from_raw_parts_mut(self.data, self.len) }
     }
 }

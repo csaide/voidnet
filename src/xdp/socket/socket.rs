@@ -125,8 +125,8 @@ impl Socket {
             __bindgen_anon_1: xsk_socket_config__bindgen_ty_1 { libxdp_flags: 0 },
         };
 
-        let mut rx = Consumer::new();
-        let mut tx = Producer::new_tx();
+        let mut rx = Consumer::new(rx_ring_size);
+        let mut tx = Producer::new_tx(tx_ring_size);
 
         // C function has double indirection
         let mut xsk: *mut xsk_socket = std::ptr::null_mut();

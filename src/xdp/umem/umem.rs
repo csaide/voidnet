@@ -8,9 +8,12 @@ use libxdp_sys::{
     xsk_umem_config,
 };
 
-use crate::xdp::ring::{Consumer, Fq, Producer};
+use crate::xdp::{
+    ring::{Consumer, Fq, Producer},
+    umem::ThreadLocalFrameStack,
+};
 
-use super::{Error, Frame, FrameStack, Mmap, Result};
+use super::{Error, Frame, Mmap, Result};
 
 /// A builder for creating a new [Umem] instance.
 pub struct UmemBuilder {
@@ -64,7 +67,7 @@ impl UmemBuilder {
 pub struct Umem {
     map: Mmap,
     umem: *mut xsk_umem,
-    frame_stack: Rc<FrameStack>,
+    frame_stack: Rc<ThreadLocalFrameStack>,
     fill_ring: Producer<Fq>,
     comp_ring: Consumer,
 }
@@ -84,8 +87,8 @@ impl Umem {
             flags: 0,
         };
 
-        let mut comp_ring = Consumer::new();
-        let mut fill_ring = Producer::new_fq();
+        let mut comp_ring = Consumer::new(completion_ring_size);
+        let mut fill_ring = Producer::new_fq(fill_ring_size);
 
         let mut umem: *mut xsk_umem = std::ptr::null_mut();
         let umem_ptr: *mut *mut xsk_umem = &mut umem;
@@ -104,7 +107,10 @@ impl Umem {
         if ret != 0 {
             return Err(Error::Create(errno()));
         }
-        let frame_stack = Rc::new(FrameStack::new(map.num_frames(), map.frame_size()));
+        let frame_stack = Rc::new(ThreadLocalFrameStack::new(
+            map.num_frames(),
+            map.frame_size(),
+        ));
         Ok(Self {
             map,
             umem,

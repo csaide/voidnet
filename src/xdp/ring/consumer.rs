@@ -6,13 +6,14 @@ use libxdp_sys::{
 /// A consumer ring is a ring of descriptors that are used to transfer packets from the kernel to the user.
 pub struct Consumer {
     ring: Box<xsk_ring_cons>,
+    ring_size: u32,
 }
 
 impl Consumer {
     /// Creates a new consumer ring.
     ///
     /// Note: the ring is not initialized, it must be initialized by the caller using the XDP functionality.
-    pub fn new() -> Self {
+    pub fn new(ring_size: u32) -> Self {
         let ring = Box::new(xsk_ring_cons {
             cached_prod: 0,
             cached_cons: 0,
@@ -23,13 +24,13 @@ impl Consumer {
             ring: std::ptr::null_mut(),
             flags: std::ptr::null_mut(),
         });
-        Self { ring }
+        Self { ring, ring_size }
     }
 
     /// Returns the size of the consumer ring.
     #[inline]
     pub fn size(&self) -> u32 {
-        self.ring.as_ref().size
+        self.ring_size
     }
 
     /// Peeks the ring for the given batch size, and returns the index of the first descriptor and the number of descriptors received.

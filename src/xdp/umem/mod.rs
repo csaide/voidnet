@@ -7,5 +7,5 @@ mod umem;
 pub use error::{Error, Result};
 pub use frame::Frame;
 pub use mmap::Mmap;
-pub use stack::FrameStack;
+pub use stack::{FrameStack, ThreadLocalFrameStack};
 pub use umem::{Umem, UmemBuilder};

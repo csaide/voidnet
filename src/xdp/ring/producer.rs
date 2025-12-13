@@ -16,13 +16,14 @@ pub struct Fq;
 /// A producer ring is a ring of descriptors that are used to transfer packets from the user to the kernel.
 pub struct Producer<T> {
     ring: Box<xsk_ring_prod>,
+    ring_size: u32,
     phantom: PhantomData<T>,
 }
 
 impl<T> Producer<T> {
     /// Creates a new producer ring.
     #[inline]
-    fn new() -> Producer<T> {
+    fn new(ring_size: u32) -> Producer<T> {
         let ring = Box::new(xsk_ring_prod {
             cached_prod: 0,
             cached_cons: 0,
@@ -35,21 +36,22 @@ impl<T> Producer<T> {
         });
         Self {
             ring,
+            ring_size,
             phantom: PhantomData,
         }
     }
 
     /// Returns the size of the producer ring.
-    #[inline]
+    #[inline(always)]
     pub fn size(&self) -> u32 {
-        self.ring.as_ref().size
+        self.ring_size
     }
 
     /// Reserves a batch of descriptors from the ring.
     #[inline]
     pub fn reserve(&mut self, batch_size: u32) -> Option<(u32, u32)> {
         let mut idx: u32 = 0;
-        let batch_size = min(batch_size, self.size());
+        let batch_size = min(batch_size, self.ring_size);
         let ready: u32 =
             unsafe { xsk_ring_prod__reserve(self.ring.as_mut(), batch_size, &mut idx) };
         if ready == 0 { None } else { Some((idx, ready)) }
@@ -89,8 +91,8 @@ impl<T> Producer<T> {
 impl Producer<Tx> {
     /// Creates a new TX producer ring.
     #[inline]
-    pub fn new_tx() -> Producer<Tx> {
-        Producer::<Tx>::new()
+    pub fn new_tx(ring_size: u32) -> Producer<Tx> {
+        Producer::<Tx>::new(ring_size)
     }
 
     /// Maybe wake this producer ring's associated socket.
@@ -117,8 +119,8 @@ impl Producer<Tx> {
 impl Producer<Fq> {
     /// Creates a new FQ producer ring.
     #[inline]
-    pub fn new_fq() -> Producer<Fq> {
-        Producer::<Fq>::new()
+    pub fn new_fq(ring_size: u32) -> Producer<Fq> {
+        Producer::<Fq>::new(ring_size)
     }
 
     /// Maybe wake this producer ring's associated socket.

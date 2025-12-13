@@ -9,6 +9,7 @@ use pnet::packet::{
     Packet,
     ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket},
     ip::IpNextHeaderProtocols,
+    ipv4::MutableIpv4Packet,
     ipv6::{Ipv6Packet, MutableIpv6Packet},
     udp::{MutableUdpPacket, UdpPacket},
 };
@@ -195,6 +196,88 @@ pub fn build_frame() -> Vec<u8> {
     data
 }
 
+fn echo_udp(if_name: &str, queue: u32) {
+    let mut socket = Socket::builder(if_name, queue)
+        .completion_ring_size(COMPLETION_RING_SIZE)
+        .fill_ring_size(FILL_RING_SIZE)
+        .frame_size(FRAME_SIZE)
+        .rx_ring_size(RX_RING_SIZE)
+        .tx_ring_size(TX_RING_SIZE)
+        .build()
+        .expect("Failed to create socket");
+
+    println!("Socket created");
+    let mut to_write = Vec::with_capacity(1024);
+    loop {
+        STATS.increment_cycles();
+        let mut frames = match socket.recv(1024) {
+            Ok(frames) => {
+                STATS.observe_batch_size(frames.len());
+                frames
+            }
+            Err(SocketError::WouldBlock) => {
+                STATS.increment_would_block();
+                continue;
+            }
+            Err(e) => {
+                println!("Error receiving frame: {:?}", e);
+                break;
+            }
+        };
+        for mut frame in frames.drain(..) {
+            STATS.update(frame.len());
+
+            let mut ether = match MutableEthernetPacket::new(&mut frame) {
+                Some(ether) => ether,
+                None => continue,
+            };
+
+            let dst = ether.get_destination();
+            ether.set_destination(ether.get_source());
+            ether.set_source(dst);
+
+            match ether.get_ethertype() {
+                EtherTypes::Ipv6 => {
+                    let mut ip = match MutableIpv6Packet::new(&mut frame) {
+                        Some(ip) => ip,
+                        None => continue,
+                    };
+                    let dst = ip.get_destination();
+                    ip.set_destination(ip.get_source());
+                    ip.set_source(dst);
+                }
+                EtherTypes::Ipv4 => {
+                    let mut ip = match MutableIpv4Packet::new(&mut frame) {
+                        Some(ip) => ip,
+                        None => continue,
+                    };
+                    let dst = ip.get_destination();
+                    ip.set_destination(ip.get_source());
+                    ip.set_source(dst);
+                }
+                _ => continue,
+            }
+
+            to_write.push(frame);
+        }
+        if to_write.len() > 0 {
+            loop {
+                match socket.send(&mut to_write) {
+                    Ok(_) => break,
+                    Err(SocketError::WouldBlock) => {
+                        STATS.increment_would_block();
+                        continue;
+                    }
+                    Err(e) => {
+                        println!("Error sending frame: {:?}", e);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn xdp_rx(if_name: &str, queue: u32) {
     let mut socket = Socket::builder(if_name, queue)
         .completion_ring_size(COMPLETION_RING_SIZE)
@@ -293,6 +376,13 @@ enum Args {
         #[arg(short, long)]
         queue: u32,
     },
+    #[command(about = "Run UDP echo program")]
+    Echo {
+        #[arg(short, long)]
+        if_name: String,
+        #[arg(short, long)]
+        queue: u32,
+    },
 }
 
 fn main() {
@@ -308,5 +398,6 @@ fn main() {
     match args {
         Args::XdpRx { if_name, queue } => xdp_rx(&if_name, queue),
         Args::XdpTx { if_name, queue } => xdp_tx(&if_name, queue),
+        Args::Echo { if_name, queue } => echo_udp(&if_name, queue),
     }
 }
