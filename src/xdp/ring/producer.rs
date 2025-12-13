@@ -7,6 +7,8 @@ use libxdp_sys::{
     xsk_ring_prod__reserve, xsk_ring_prod__submit, xsk_ring_prod__tx_desc,
 };
 
+use super::{Error, Result};
+
 /// A TX producer ring is a ring of descriptors that are used to transfer packets from the user to the kernel for write purposes.
 pub struct Tx;
 
@@ -97,18 +99,18 @@ impl Producer<Tx> {
 
     /// Maybe wake this producer ring's associated socket.
     #[inline]
-    pub fn maybe_wake(&self, fd: c_int) -> std::io::Result<()> {
+    pub fn maybe_wake(&self, fd: c_int) -> Result<()> {
         unsafe {
             if xsk_ring_prod__needs_wakeup(self.ring.as_ref()) == 1 {
                 let ret = sendto(fd, null_mut(), 0, MSG_DONTWAIT, null_mut(), 0);
-                let errno = errno().0;
+                let errno = errno();
                 if ret < 0
-                    && errno != ENOBUFS
-                    && errno != EAGAIN
-                    && errno != EBUSY
-                    && errno != ENETDOWN
+                    && errno.0 != ENOBUFS
+                    && errno.0 != EAGAIN
+                    && errno.0 != EBUSY
+                    && errno.0 != ENETDOWN
                 {
-                    return Err(std::io::Error::from_raw_os_error(errno));
+                    return Err(Error::Wake(errno));
                 }
             }
         }
@@ -125,18 +127,18 @@ impl Producer<Fq> {
 
     /// Maybe wake this producer ring's associated socket.
     #[inline]
-    pub fn maybe_wake(&self, fd: c_int) -> std::io::Result<()> {
+    pub fn maybe_wake(&self, fd: c_int) -> Result<()> {
         unsafe {
             if xsk_ring_prod__needs_wakeup(self.ring.as_ref()) == 1 {
                 let ret = recvfrom(fd, null_mut(), 0, MSG_DONTWAIT, null_mut(), null_mut());
-                let errno = errno().0;
+                let errno = errno();
                 if ret < 0
-                    && errno != ENOBUFS
-                    && errno != EAGAIN
-                    && errno != EBUSY
-                    && errno != ENETDOWN
+                    && errno.0 != ENOBUFS
+                    && errno.0 != EAGAIN
+                    && errno.0 != EBUSY
+                    && errno.0 != ENETDOWN
                 {
-                    return Err(std::io::Error::from_raw_os_error(errno));
+                    return Err(Error::Wake(errno));
                 }
             }
         }

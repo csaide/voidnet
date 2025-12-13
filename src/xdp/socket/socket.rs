@@ -171,8 +171,8 @@ impl Socket {
             match self.rx.peek(batch_size) {
                 Some((idx, rcvd)) if rcvd > 0 => break (idx, rcvd),
                 _ => {
-                self.umem.maybe_wake(self.fd)?;
-                self.umem.process_fill_queue();
+                    self.umem.maybe_wake(self.fd)?;
+                    self.umem.process_fill_queue();
                 }
             }
         };
@@ -198,20 +198,25 @@ impl Socket {
     pub fn prepare_frames(&mut self, num_frames: usize) -> Result<Vec<Frame>> {
         let mut frames = Vec::with_capacity(num_frames);
 
-        if self.umem.available_frames() < num_frames {
-            self.tx.maybe_wake(self.fd)?;
-            self.umem.process_comp_queue();
-            return Err(Error::WouldBlock);
-        }
-
         for _ in 0..num_frames {
             if let Some(frame) = self.umem.pop_frame() {
                 frames.push(frame);
             } else {
-                return Err(Error::WouldBlock);
+                break;
             }
         }
         Ok(frames)
+    }
+
+    fn complete_tx(&mut self, mut frame_count: u32) -> Result<()> {
+        while frame_count > 0 {
+            self.tx.maybe_wake(self.fd)?;
+            let ready = self.umem.process_comp_queue(frame_count as u32);
+            if ready > 0 {
+                frame_count -= ready;
+            }
+        }
+        Ok(())
     }
 
     /// Sends a batch of frames to the socket.
@@ -223,12 +228,12 @@ impl Socket {
     ///
     /// If no frames are availabel to send this returns an error of type [Error::WouldBlock].
     pub fn send(&mut self, frames: &mut Vec<Frame>) -> Result<()> {
-        let (mut idx_tx, ready) = match self.tx.reserve(frames.len() as u32) {
-            Some((idx_tx, ready)) => (idx_tx, ready),
-            None => {
-                self.tx.maybe_wake(self.fd)?;
-                self.umem.process_comp_queue();
-                return Err(Error::WouldBlock);
+        let (mut idx_tx, ready) = loop {
+            match self.tx.reserve(frames.len() as u32) {
+                Some((idx_tx, ready)) if ready > 0 => break (idx_tx, ready),
+                _ => {
+                    self.complete_tx(frames.len() as u32)?;
+                }
             }
         };
 
@@ -244,6 +249,7 @@ impl Socket {
         }
 
         self.tx.submit(ready);
+        self.complete_tx(ready as u32)?;
         Ok(())
     }
 }

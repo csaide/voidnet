@@ -335,7 +335,7 @@ fn xdp_tx(if_name: &str, queue: u32) {
     let data = build_frame();
     loop {
         stats.increment_cycles();
-        let mut frames = match socket.prepare_frames(64) {
+        let mut frames = match socket.prepare_frames(2048) {
             Ok(frames) => {
                 stats.observe_batch_size(frames.len());
                 frames

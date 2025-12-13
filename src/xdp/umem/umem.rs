@@ -194,16 +194,12 @@ impl Umem {
 
     /// Processes the completion queue, returning frames to the frame stack up to the size of the completion ring.
     #[inline]
-    pub fn process_comp_queue(&mut self) {
-        let batch_size = min(self.comp_ring.size(), self.frame_stack.free_space() as u32);
-        if batch_size == 0 {
-            return;
-        }
-
+    pub fn process_comp_queue(&mut self, batch_size: u32) -> u32 {
         let (mut idx, ready) = match self.comp_ring.peek(batch_size) {
-            Some(res) => res,
-            None => return,
+            Some((idx, ready)) if ready > 0 => (idx, ready),
+            _ => return 0,
         };
+
         for _ in 0..ready {
             let addr = self.comp_ring.comp_addr(idx);
             self.frame_stack
@@ -214,6 +210,7 @@ impl Umem {
 
         // No conditional here as we know we have this many ready descriptors.
         self.comp_ring.release(ready as u32);
+        ready
     }
 }
 
