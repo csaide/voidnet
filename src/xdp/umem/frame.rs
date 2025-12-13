@@ -1,6 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
-use super::ThreadLocalFrameStack;
+use super::FrameStack;
 
 /// A frame is a contiguous memory region that is used to store data for a packet, this is a simple wrapper around a pointer to a MMAP'd memory region.
 #[derive(Debug)]
@@ -9,7 +9,7 @@ pub struct Frame {
     len: usize,
     capacity: usize,
     data: *mut u8,
-    frame_stack: *const ThreadLocalFrameStack,
+    frame_stack: *const FrameStack,
 }
 
 impl Frame {
@@ -28,7 +28,7 @@ impl Frame {
         data: *mut u8,
         len: usize,
         capacity: usize,
-        frame_stack: *const ThreadLocalFrameStack,
+        frame_stack: *const FrameStack,
     ) -> Self {
         debug_assert!(
             capacity > 0 && len <= capacity,

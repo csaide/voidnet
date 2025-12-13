@@ -10,7 +10,7 @@ use libxdp_sys::{
 
 use crate::xdp::{
     ring::{Consumer, Fq, Producer},
-    umem::ThreadLocalFrameStack,
+    umem::FrameStack,
 };
 
 use super::{Error, Frame, Mmap, Result};
@@ -67,7 +67,7 @@ impl UmemBuilder {
 pub struct Umem {
     map: Mmap,
     umem: *mut xsk_umem,
-    frame_stack: ThreadLocalFrameStack,
+    frame_stack: FrameStack,
     fill_ring: Producer<Fq>,
     fill_deficit: u64,
     comp_ring: Consumer,
@@ -108,7 +108,7 @@ impl Umem {
         if ret != 0 {
             return Err(Error::Create(errno()));
         }
-        let frame_stack = ThreadLocalFrameStack::new(map.num_frames(), map.frame_size());
+        let frame_stack = FrameStack::new(map.num_frames(), map.frame_size());
         Ok(Self {
             map,
             umem,
@@ -145,7 +145,7 @@ impl Umem {
                 self.map.as_ptr().offset(addr as isize) as *mut u8,
                 len,
                 self.map.frame_size(),
-                &self.frame_stack as *const ThreadLocalFrameStack,
+                &self.frame_stack as *const FrameStack,
             )
         }
     }
