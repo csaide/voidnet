@@ -165,21 +165,22 @@ impl Socket {
     /// Note that it is not guaranteed that the resulting Vec of frames will match the batch size supplied.
     /// It is considered a batch maximum and this function will return as soon as at least one frame is received.
     ///
-    /// If no frames are availabel to read this returns an error of type [Error::WouldBlock].
+    /// If no frames are available to read this returns an error of type [Error::WouldBlock].
     pub fn recv(&mut self, batch_size: u32) -> Result<Vec<Frame>> {
-        let (mut idx_rx, rcvd) = match self.rx.peek(batch_size) {
-            Some((idx, rcvd)) => (idx, rcvd),
-            None => {
+        let (mut idx_rx, rcvd) = loop {
+            match self.rx.peek(batch_size) {
+                Some((idx, rcvd)) if rcvd > 0 => break (idx, rcvd),
+                _ => {
                 self.umem.maybe_wake(self.fd)?;
                 self.umem.process_fill_queue();
-                return Err(Error::WouldBlock);
+                }
             }
         };
 
         let mut batch = Vec::with_capacity(rcvd as usize);
         for _ in 0..rcvd {
             let desc = self.rx.rx_desc(idx_rx);
-            batch.push(self.umem.get_frame(desc.addr, desc.len as usize));
+            batch.push(self.umem.get_read_frame(desc.addr, desc.len as usize));
             idx_rx += 1;
         }
 

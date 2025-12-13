@@ -69,6 +69,7 @@ pub struct Umem {
     umem: *mut xsk_umem,
     frame_stack: ThreadLocalFrameStack,
     fill_ring: Producer<Fq>,
+    fill_deficit: u64,
     comp_ring: Consumer,
 }
 
@@ -113,6 +114,7 @@ impl Umem {
             umem,
             frame_stack,
             fill_ring,
+            fill_deficit: fill_ring_size as u64,
             comp_ring,
         })
     }
@@ -135,11 +137,8 @@ impl Umem {
         self.frame_stack.len()
     }
 
-    /// Returns a new [Frame] for the given address and length, if the frame is not consumed directly by passing it to a call to [Socket::send], it will be returned to the frame stack.
-    ///
-    /// [Socket::send]: crate::xdp::socket::Socket::send
     #[inline]
-    pub fn get_frame(&self, addr: u64, len: usize) -> Frame {
+    fn get_frame(&self, addr: u64, len: usize) -> Frame {
         unsafe {
             Frame::new(
                 addr,
@@ -149,6 +148,14 @@ impl Umem {
                 &self.frame_stack as *const ThreadLocalFrameStack,
             )
         }
+    }
+
+    /// Returns a new [Frame] for the given address and length, if the frame is not consumed directly by passing it to a call to [Socket::send], it will be returned to the frame stack.
+    ///
+    /// [Socket::send]: crate::xdp::socket::Socket::send
+    pub fn get_read_frame(&mut self, addr: u64, len: usize) -> Frame {
+        self.fill_deficit += 1;
+        self.get_frame(addr, len)
     }
 
     /// Returns a new empty [Frame], if the frame is not consumed directly by passing it to a call to [Socket::send], it will be returned to the frame stack.
@@ -162,8 +169,8 @@ impl Umem {
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline]
     pub fn process_fill_queue(&mut self) {
-        let batch_size = min(self.fill_ring.size(), self.frame_stack.len() as u32);
-        if batch_size == 0 {
+        let batch_size = min(self.fill_deficit as u32, self.frame_stack.len() as u32);
+        if batch_size < self.fill_ring.size() / 2 || batch_size == 0 {
             return;
         }
 
@@ -177,9 +184,12 @@ impl Umem {
             unsafe { *ptr = addr as u64 };
             idx += 1;
         }
+
         if ready > 0 {
             self.fill_ring.submit(ready as u32);
         }
+
+        self.fill_deficit -= ready as u64;
     }
 
     /// Processes the completion queue, returning frames to the frame stack up to the size of the completion ring.

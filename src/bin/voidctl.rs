@@ -1,7 +1,4 @@
-use std::{
-    sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use libxdp_sys::{XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS};
@@ -25,85 +22,93 @@ const TX_RING_SIZE: u32 = XSK_RING_PROD__DEFAULT_NUM_DESCS;
 const FRAME_SIZE: usize = 2048;
 
 struct Stats {
-    packets_received: AtomicU64,
-    bytes_received: AtomicU64,
-    cycles: AtomicU64,
-    would_block_count: AtomicU64,
-    batch_size_cnt: AtomicU64,
-    num_batches: AtomicU64,
-    last_packets: AtomicU64,
-    last_bytes: AtomicU64,
-    last_display_time: AtomicU64,
-    last_cycles: AtomicU64,
-    last_would_block_count: AtomicU64,
+    packets_received: u64,
+    bytes_received: u64,
+    cycles: u64,
+    would_block_count: u64,
+    batch_size_cnt: u64,
+    num_batches: u64,
+    last_packets: u64,
+    last_bytes: u64,
+    last_display_time: u64,
+    last_cycles: u64,
+    last_would_block_count: u64,
 }
 
 impl Stats {
     const fn new() -> Self {
         Self {
-            packets_received: AtomicU64::new(0),
-            bytes_received: AtomicU64::new(0),
-            cycles: AtomicU64::new(0),
-            would_block_count: AtomicU64::new(0),
-            batch_size_cnt: AtomicU64::new(0),
-            num_batches: AtomicU64::new(0),
-            last_packets: AtomicU64::new(0),
-            last_bytes: AtomicU64::new(0),
-            last_display_time: AtomicU64::new(0),
-            last_cycles: AtomicU64::new(0),
-            last_would_block_count: AtomicU64::new(0),
+            packets_received: 0,
+            bytes_received: 0,
+            cycles: 0,
+            would_block_count: 0,
+            batch_size_cnt: 0,
+            num_batches: 0,
+            last_packets: 0,
+            last_bytes: 0,
+            last_display_time: 0,
+            last_cycles: 0,
+            last_would_block_count: 0,
         }
     }
 
-    fn update(&self, size: usize) {
-        self.packets_received.fetch_add(1, Ordering::Relaxed);
-        self.bytes_received
-            .fetch_add(size as u64, Ordering::Relaxed);
+    fn update(&mut self, size: usize) {
+        self.packets_received += 1;
+        self.bytes_received += size as u64;
     }
 
-    fn increment_would_block(&self) {
-        self.would_block_count.fetch_add(1, Ordering::Relaxed);
+    fn increment_would_block(&mut self) {
+        self.would_block_count += 1;
     }
 
-    fn increment_cycles(&self) {
-        self.cycles.fetch_add(1, Ordering::Relaxed);
+    fn increment_cycles(&mut self) {
+        self.cycles += 1;
     }
 
-    fn observe_batch_size(&self, size: usize) {
-        self.batch_size_cnt
-            .fetch_add(size as u64, Ordering::Relaxed);
-        self.num_batches.fetch_add(1, Ordering::Relaxed);
+    fn observe_batch_size(&mut self, size: usize) {
+        self.batch_size_cnt += size as u64;
+        self.num_batches += 1;
     }
 
-    pub fn print_stats(&self) {
-        let packets = self.packets_received.load(Ordering::Relaxed);
-        let bytes = self.bytes_received.load(Ordering::Relaxed);
-        let would_block_count = self.would_block_count.load(Ordering::Relaxed);
-        let cycles = self.cycles.load(Ordering::Relaxed);
-        let batch_size_cnt = self.batch_size_cnt.load(Ordering::Relaxed);
-        let num_batches = self.num_batches.load(Ordering::Relaxed);
+    pub fn maybe_print_stats(&mut self) {
+        const PACKETS_PER_PRINT: u64 = 20_000_000;
+        // Only print if 10M packets have been received since last print
+        if self.packets_received < self.last_packets + PACKETS_PER_PRINT {
+            return;
+        }
+
+        let packets = self.packets_received;
+        let last_packets = self.last_packets;
 
         let now_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        let last_display_time_ns = self.last_display_time.load(Ordering::Relaxed);
 
-        let elapsed_ns = if last_display_time_ns == 0 {
+        let elapsed_ns = if self.last_display_time == 0 {
             // First time: calculate elapsed since application start
-            1
+            now_ns
         } else {
             // Subsequent times: calculate elapsed since last display
-            now_ns - last_display_time_ns
+            now_ns - self.last_display_time
         };
 
-        let last_packets = self.last_packets.swap(packets, Ordering::Relaxed);
-        let last_bytes = self.last_bytes.swap(bytes, Ordering::Relaxed);
-        let last_would_block_count = self
-            .last_would_block_count
-            .swap(would_block_count, Ordering::Relaxed);
-        let last_cycles = self.last_cycles.swap(cycles, Ordering::Relaxed);
-        self.last_display_time.store(now_ns, Ordering::Relaxed);
+        let bytes = self.bytes_received;
+        let would_block_count = self.would_block_count;
+        let cycles = self.cycles;
+        let batch_size_cnt = self.batch_size_cnt;
+        let num_batches = self.num_batches;
+
+        let last_bytes = self.last_bytes;
+        let last_would_block_count = self.last_would_block_count;
+        let last_cycles = self.last_cycles;
+
+        // Update last values
+        self.last_packets = packets;
+        self.last_bytes = bytes;
+        self.last_would_block_count = would_block_count;
+        self.last_cycles = cycles;
+        self.last_display_time = now_ns;
 
         let elapsed_secs = elapsed_ns as f64 / 1_000_000_000.0;
 
@@ -126,8 +131,6 @@ impl Stats {
         );
     }
 }
-
-static STATS: Stats = Stats::new();
 
 pub fn build_frame() -> Vec<u8> {
     // Placeholder values - user will fill these in
@@ -209,16 +212,17 @@ fn echo_udp(if_name: &str, queue: u32) {
         .expect("Failed to create socket");
 
     println!("Socket created");
+    let mut stats = Stats::new();
     let mut to_write = Vec::with_capacity(1024);
     loop {
-        STATS.increment_cycles();
+        stats.increment_cycles();
         let mut frames = match socket.recv(1024) {
             Ok(frames) => {
-                STATS.observe_batch_size(frames.len());
+                stats.observe_batch_size(frames.len());
                 frames
             }
             Err(SocketError::WouldBlock) => {
-                STATS.increment_would_block();
+                stats.increment_would_block();
                 continue;
             }
             Err(e) => {
@@ -227,7 +231,7 @@ fn echo_udp(if_name: &str, queue: u32) {
             }
         };
         for mut frame in frames.drain(..) {
-            STATS.update(frame.len());
+            stats.update(frame.len());
 
             let mut ether = match MutableEthernetPacket::new(&mut frame) {
                 Some(ether) => ether,
@@ -267,7 +271,7 @@ fn echo_udp(if_name: &str, queue: u32) {
                 match socket.send(&mut to_write) {
                     Ok(_) => break,
                     Err(SocketError::WouldBlock) => {
-                        STATS.increment_would_block();
+                        stats.increment_would_block();
                         continue;
                     }
                     Err(e) => {
@@ -277,6 +281,8 @@ fn echo_udp(if_name: &str, queue: u32) {
                 }
             }
         }
+
+        stats.maybe_print_stats();
     }
 }
 
@@ -291,17 +297,18 @@ fn xdp_rx(if_name: &str, queue: u32) {
         .expect("Failed to create socket");
 
     println!("Socket created");
+    let mut stats = Stats::new();
     loop {
-        STATS.increment_cycles();
+        stats.increment_cycles();
         match socket.recv(1024) {
             Ok(frames) => {
-                STATS.observe_batch_size(frames.len());
+                stats.observe_batch_size(frames.len());
                 for frame in frames {
-                    STATS.update(frame.len());
+                    stats.update(frame.len());
                 }
             }
             Err(SocketError::WouldBlock) => {
-                STATS.increment_would_block();
+                stats.increment_would_block();
                 continue;
             }
             Err(e) => {
@@ -309,6 +316,7 @@ fn xdp_rx(if_name: &str, queue: u32) {
                 break;
             }
         };
+        stats.maybe_print_stats();
     }
 }
 
@@ -323,16 +331,17 @@ fn xdp_tx(if_name: &str, queue: u32) {
         .expect("Failed to create socket");
 
     println!("Socket created");
+    let mut stats = Stats::new();
     let data = build_frame();
     loop {
-        STATS.increment_cycles();
-        let mut frames = match socket.prepare_frames(1024) {
+        stats.increment_cycles();
+        let mut frames = match socket.prepare_frames(64) {
             Ok(frames) => {
-                STATS.observe_batch_size(frames.len());
+                stats.observe_batch_size(frames.len());
                 frames
             }
             Err(SocketError::WouldBlock) => {
-                STATS.increment_would_block();
+                stats.increment_would_block();
                 continue;
             }
             Err(e) => {
@@ -343,13 +352,13 @@ fn xdp_tx(if_name: &str, queue: u32) {
 
         for frame in frames.iter_mut() {
             unsafe { frame.copy_from(&data) };
-            STATS.update(frame.len());
+            stats.update(frame.len());
         }
         while frames.len() > 0 {
             match socket.send(&mut frames) {
                 Ok(_) => {}
                 Err(SocketError::WouldBlock) => {
-                    STATS.increment_would_block();
+                    stats.increment_would_block();
                     continue;
                 }
                 Err(e) => {
@@ -358,6 +367,7 @@ fn xdp_tx(if_name: &str, queue: u32) {
                 }
             };
         }
+        stats.maybe_print_stats();
     }
 }
 
@@ -389,13 +399,6 @@ enum Args {
 
 fn main() {
     let args = Args::parse();
-
-    std::thread::spawn(move || {
-        loop {
-            STATS.print_stats();
-            std::thread::sleep(Duration::from_secs(1));
-        }
-    });
 
     match args {
         Args::XdpRx { if_name, queue } => xdp_rx(&if_name, queue),
