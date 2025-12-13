@@ -1,4 +1,4 @@
-use std::{cmp::min, os::raw::c_void, rc::Rc};
+use std::{cmp::min, os::raw::c_void};
 
 use errno::errno;
 use libc::c_int;
@@ -67,7 +67,7 @@ impl UmemBuilder {
 pub struct Umem {
     map: Mmap,
     umem: *mut xsk_umem,
-    frame_stack: Rc<ThreadLocalFrameStack>,
+    frame_stack: ThreadLocalFrameStack,
     fill_ring: Producer<Fq>,
     comp_ring: Consumer,
 }
@@ -107,10 +107,7 @@ impl Umem {
         if ret != 0 {
             return Err(Error::Create(errno()));
         }
-        let frame_stack = Rc::new(ThreadLocalFrameStack::new(
-            map.num_frames(),
-            map.frame_size(),
-        ));
+        let frame_stack = ThreadLocalFrameStack::new(map.num_frames(), map.frame_size());
         Ok(Self {
             map,
             umem,
@@ -132,6 +129,12 @@ impl Umem {
         self.fill_ring.maybe_wake(fd).map_err(Error::WakeFillQueue)
     }
 
+    /// Returns the number of frames that are available to be used.
+    #[inline]
+    pub fn available_frames(&self) -> usize {
+        self.frame_stack.len()
+    }
+
     /// Returns a new [Frame] for the given address and length, if the frame is not consumed directly by passing it to a call to [Socket::send], it will be returned to the frame stack.
     ///
     /// [Socket::send]: crate::xdp::socket::Socket::send
@@ -143,7 +146,7 @@ impl Umem {
                 self.map.as_ptr().offset(addr as isize) as *mut u8,
                 len,
                 self.map.frame_size(),
-                self.frame_stack.clone(),
+                &self.frame_stack as *const ThreadLocalFrameStack,
             )
         }
     }

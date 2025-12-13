@@ -1,7 +1,4 @@
-use std::{
-    ops::{Deref, DerefMut},
-    rc::Rc,
-};
+use std::ops::{Deref, DerefMut};
 
 use super::ThreadLocalFrameStack;
 
@@ -12,7 +9,7 @@ pub struct Frame {
     len: usize,
     capacity: usize,
     data: *mut u8,
-    frame_stack: Rc<ThreadLocalFrameStack>,
+    frame_stack: *const ThreadLocalFrameStack,
 }
 
 impl Frame {
@@ -31,7 +28,7 @@ impl Frame {
         data: *mut u8,
         len: usize,
         capacity: usize,
-        frame_stack: Rc<ThreadLocalFrameStack>,
+        frame_stack: *const ThreadLocalFrameStack,
     ) -> Self {
         debug_assert!(
             capacity > 0 && len <= capacity,
@@ -81,7 +78,7 @@ impl Frame {
 
 impl Drop for Frame {
     fn drop(&mut self) {
-        let _ = self.frame_stack.push(self.addr);
+        let _ = unsafe { (*self.frame_stack).push(self.addr) };
     }
 }
 

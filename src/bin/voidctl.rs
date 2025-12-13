@@ -56,36 +56,38 @@ impl Stats {
     }
 
     fn update(&self, size: usize) {
-        self.packets_received.fetch_add(1, Ordering::AcqRel);
-        self.bytes_received.fetch_add(size as u64, Ordering::AcqRel);
+        self.packets_received.fetch_add(1, Ordering::Relaxed);
+        self.bytes_received
+            .fetch_add(size as u64, Ordering::Relaxed);
     }
 
     fn increment_would_block(&self) {
-        self.would_block_count.fetch_add(1, Ordering::AcqRel);
+        self.would_block_count.fetch_add(1, Ordering::Relaxed);
     }
 
     fn increment_cycles(&self) {
-        self.cycles.fetch_add(1, Ordering::AcqRel);
+        self.cycles.fetch_add(1, Ordering::Relaxed);
     }
 
     fn observe_batch_size(&self, size: usize) {
-        self.batch_size_cnt.fetch_add(size as u64, Ordering::AcqRel);
-        self.num_batches.fetch_add(1, Ordering::AcqRel);
+        self.batch_size_cnt
+            .fetch_add(size as u64, Ordering::Relaxed);
+        self.num_batches.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn print_stats(&self) {
-        let packets = self.packets_received.load(Ordering::Acquire);
-        let bytes = self.bytes_received.load(Ordering::Acquire);
-        let would_block_count = self.would_block_count.load(Ordering::Acquire);
-        let cycles = self.cycles.load(Ordering::Acquire);
-        let batch_size_cnt = self.batch_size_cnt.load(Ordering::Acquire);
-        let num_batches = self.num_batches.load(Ordering::Acquire);
+        let packets = self.packets_received.load(Ordering::Relaxed);
+        let bytes = self.bytes_received.load(Ordering::Relaxed);
+        let would_block_count = self.would_block_count.load(Ordering::Relaxed);
+        let cycles = self.cycles.load(Ordering::Relaxed);
+        let batch_size_cnt = self.batch_size_cnt.load(Ordering::Relaxed);
+        let num_batches = self.num_batches.load(Ordering::Relaxed);
 
         let now_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        let last_display_time_ns = self.last_display_time.load(Ordering::Acquire);
+        let last_display_time_ns = self.last_display_time.load(Ordering::Relaxed);
 
         let elapsed_ns = if last_display_time_ns == 0 {
             // First time: calculate elapsed since application start
@@ -95,13 +97,13 @@ impl Stats {
             now_ns - last_display_time_ns
         };
 
-        let last_packets = self.last_packets.swap(packets, Ordering::AcqRel);
-        let last_bytes = self.last_bytes.swap(bytes, Ordering::AcqRel);
+        let last_packets = self.last_packets.swap(packets, Ordering::Relaxed);
+        let last_bytes = self.last_bytes.swap(bytes, Ordering::Relaxed);
         let last_would_block_count = self
             .last_would_block_count
-            .swap(would_block_count, Ordering::AcqRel);
-        let last_cycles = self.last_cycles.swap(cycles, Ordering::AcqRel);
-        self.last_display_time.store(now_ns, Ordering::Release);
+            .swap(would_block_count, Ordering::Relaxed);
+        let last_cycles = self.last_cycles.swap(cycles, Ordering::Relaxed);
+        self.last_display_time.store(now_ns, Ordering::Relaxed);
 
         let elapsed_secs = elapsed_ns as f64 / 1_000_000_000.0;
 

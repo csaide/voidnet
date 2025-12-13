@@ -196,12 +196,17 @@ impl Socket {
     /// If no frames are availabel to prepare this returns an error of type [Error::WouldBlock].
     pub fn prepare_frames(&mut self, num_frames: usize) -> Result<Vec<Frame>> {
         let mut frames = Vec::with_capacity(num_frames);
+
+        if self.umem.available_frames() < num_frames {
+            self.tx.maybe_wake(self.fd)?;
+            self.umem.process_comp_queue();
+            return Err(Error::WouldBlock);
+        }
+
         for _ in 0..num_frames {
             if let Some(frame) = self.umem.pop_frame() {
                 frames.push(frame);
             } else {
-                self.tx.maybe_wake(self.fd)?;
-                self.umem.process_comp_queue();
                 return Err(Error::WouldBlock);
             }
         }
