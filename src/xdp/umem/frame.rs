@@ -1,4 +1,7 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
 use super::FrameStack;
 
@@ -9,7 +12,7 @@ pub struct Frame {
     len: usize,
     capacity: usize,
     data: *mut u8,
-    frame_stack: *const FrameStack,
+    frame_stack: Arc<FrameStack>,
 }
 
 impl Frame {
@@ -28,7 +31,7 @@ impl Frame {
         data: *mut u8,
         len: usize,
         capacity: usize,
-        frame_stack: *const FrameStack,
+        frame_stack: Arc<FrameStack>,
     ) -> Self {
         debug_assert!(
             capacity > 0 && len <= capacity,
@@ -78,7 +81,7 @@ impl Frame {
 
 impl Drop for Frame {
     fn drop(&mut self) {
-        let _ = unsafe { (*self.frame_stack).push(self.addr) };
+        let _ = self.frame_stack.push(self.addr);
     }
 }
 

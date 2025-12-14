@@ -1,4 +1,4 @@
-use std::{cmp::min, os::raw::c_void};
+use std::{cmp::min, os::raw::c_void, sync::Arc};
 
 use errno::errno;
 use libc::c_int;
@@ -67,7 +67,7 @@ impl UmemBuilder {
 pub struct Umem {
     map: Mmap,
     umem: *mut xsk_umem,
-    frame_stack: FrameStack,
+    frame_stack: Arc<FrameStack>,
     fill_ring: Producer<Fq>,
     fill_deficit: u64,
     comp_ring: Consumer,
@@ -108,7 +108,8 @@ impl Umem {
         if ret != 0 {
             return Err(Error::Create(errno()));
         }
-        let frame_stack = FrameStack::new(map.num_frames(), map.frame_size());
+
+        let frame_stack = Arc::new(FrameStack::new(map.num_frames(), map.frame_size()));
         Ok(Self {
             map,
             umem,
@@ -145,7 +146,7 @@ impl Umem {
                 self.map.as_ptr().offset(addr as isize) as *mut u8,
                 len,
                 self.map.frame_size(),
-                &self.frame_stack as *const FrameStack,
+                self.frame_stack.clone(),
             )
         }
     }
