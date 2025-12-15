@@ -13,7 +13,10 @@ use pnet::packet::{
 use pnet::util::MacAddr;
 use std::net::Ipv6Addr;
 
-use libvoid::xdp::socket::{Error as SocketError, Socket};
+use libvoid::xdp::{
+    socket::{Error as SocketError, Socket},
+    umem::Umem,
+};
 
 const FILL_RING_SIZE: u32 = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2;
 const COMPLETION_RING_SIZE: u32 = XSK_RING_CONS__DEFAULT_NUM_DESCS;
@@ -201,83 +204,110 @@ pub fn build_frame() -> Vec<u8> {
     data
 }
 
+fn swap_addresses(frame: &mut [u8]) -> Option<()> {
+    let mut ether = MutableEthernetPacket::new(frame)?;
+
+    let dst = ether.get_destination();
+    ether.set_destination(ether.get_source());
+    ether.set_source(dst);
+
+    let payload_offset = EthernetPacket::minimum_packet_size();
+    let (transport, payload_offset) = match ether.get_ethertype() {
+        EtherTypes::Ipv6 => {
+            let mut ip = MutableIpv6Packet::new(&mut frame[payload_offset..])?;
+            let dst = ip.get_destination();
+            ip.set_destination(ip.get_source());
+            ip.set_source(dst);
+            (ip.get_next_header(), Ipv6Packet::minimum_packet_size()) // IPv6 headers are fixed size.
+        }
+        EtherTypes::Ipv4 => {
+            let mut ip = MutableIpv4Packet::new(&mut frame[payload_offset..])?;
+            let dst = ip.get_destination();
+            ip.set_destination(ip.get_source());
+            ip.set_source(dst);
+            (
+                ip.get_next_level_protocol(),
+                ip.get_header_length() as usize * 4,
+            )
+        }
+        _ => return None,
+    };
+    match transport {
+        IpNextHeaderProtocols::Udp => {
+            let mut udp = MutableUdpPacket::new(&mut frame[payload_offset..])?;
+            let dst = udp.get_destination();
+            udp.set_destination(udp.get_source());
+            udp.set_source(dst);
+        }
+        _ => return None,
+    }
+    Some(())
+}
+
 fn echo_udp(if_name: &str, queue: u32) {
-    let mut socket = Socket::builder(if_name, queue)
+    let (umem, mut fq, mut cq) = Umem::builder()
         .completion_ring_size(COMPLETION_RING_SIZE)
         .fill_ring_size(FILL_RING_SIZE)
         .frame_size(FRAME_SIZE)
+        .build()
+        .expect("Failed to create umem");
+    let mut socket = Socket::builder(if_name, queue)
         .rx_ring_size(RX_RING_SIZE)
         .tx_ring_size(TX_RING_SIZE)
-        .build()
+        .build(umem)
         .expect("Failed to create socket");
 
     println!("Socket created");
+    const BATCH_SIZE: usize = 64;
     let mut stats = Stats::new();
-    let mut to_write = Vec::with_capacity(1024);
+    let mut to_write = Vec::with_capacity(BATCH_SIZE);
     loop {
         stats.increment_cycles();
-        let mut frames = match socket.recv(1024) {
+
+        // First read some frames off the socket.
+        let mut frames = match socket.recv(BATCH_SIZE as u32) {
             Ok(frames) => {
                 stats.observe_batch_size(frames.len());
                 frames
             }
             Err(SocketError::WouldBlock) => {
+                // There were no frames available to read, wake the fill queue and process any outstanding descriptors.
                 stats.increment_would_block();
+                fq.maybe_wake(socket.fd()).unwrap();
+                fq.process_queue();
                 continue;
             }
             Err(e) => {
+                // An unrecoverable error occurred, exit the loop.
                 println!("Error receiving frame: {:?}", e);
                 break;
             }
         };
+
+        // For each received frame, attempt to swap the addresses, and then queue them for writes.
         for mut frame in frames.drain(..) {
             stats.update(frame.len());
 
-            let mut ether = match MutableEthernetPacket::new(&mut frame) {
-                Some(ether) => ether,
-                None => continue,
-            };
-
-            let dst = ether.get_destination();
-            ether.set_destination(ether.get_source());
-            ether.set_source(dst);
-
-            match ether.get_ethertype() {
-                EtherTypes::Ipv6 => {
-                    let mut ip = match MutableIpv6Packet::new(&mut frame) {
-                        Some(ip) => ip,
-                        None => continue,
-                    };
-                    let dst = ip.get_destination();
-                    ip.set_destination(ip.get_source());
-                    ip.set_source(dst);
-                }
-                EtherTypes::Ipv4 => {
-                    let mut ip = match MutableIpv4Packet::new(&mut frame) {
-                        Some(ip) => ip,
-                        None => continue,
-                    };
-                    let dst = ip.get_destination();
-                    ip.set_destination(ip.get_source());
-                    ip.set_source(dst);
-                }
-                _ => continue,
+            if let None = swap_addresses(&mut frame) {
+                continue;
             }
 
             to_write.push(frame);
         }
-        if to_write.len() > 0 {
-            loop {
-                match socket.send(&mut to_write) {
-                    Ok(_) => break,
-                    Err(SocketError::WouldBlock) => {
-                        stats.increment_would_block();
-                        continue;
-                    }
-                    Err(e) => {
-                        println!("Error sending frame: {:?}", e);
-                        break;
-                    }
+
+        // Send the updated frames to the socket.
+        while to_write.len() > 0 {
+            match socket.send(&mut to_write) {
+                Ok(_) => break,
+                Err(SocketError::WouldBlock) => {
+                    // We would have blocked trying to send any of the frames, process any outstanding descriptors on the completion queue.
+                    stats.increment_would_block();
+                    cq.process_queue();
+                    continue;
+                }
+                Err(e) => {
+                    println!("Error sending frame: {:?}", e);
+                    break;
                 }
             }
         }
@@ -287,20 +317,23 @@ fn echo_udp(if_name: &str, queue: u32) {
 }
 
 fn xdp_rx(if_name: &str, queue: u32) {
-    let mut socket = Socket::builder(if_name, queue)
+    let (umem, mut fq, _cq) = Umem::builder()
         .completion_ring_size(COMPLETION_RING_SIZE)
         .fill_ring_size(FILL_RING_SIZE)
         .frame_size(FRAME_SIZE)
+        .build()
+        .expect("Failed to create umem");
+    let mut socket = Socket::builder(if_name, queue)
         .rx_ring_size(RX_RING_SIZE)
         .tx_ring_size(TX_RING_SIZE)
-        .build()
+        .build(umem)
         .expect("Failed to create socket");
 
     println!("Socket created");
     let mut stats = Stats::new();
     loop {
         stats.increment_cycles();
-        match socket.recv(1024) {
+        match socket.recv(64) {
             Ok(frames) => {
                 stats.observe_batch_size(frames.len());
                 for frame in frames {
@@ -309,6 +342,8 @@ fn xdp_rx(if_name: &str, queue: u32) {
             }
             Err(SocketError::WouldBlock) => {
                 stats.increment_would_block();
+                fq.maybe_wake(socket.fd()).unwrap();
+                fq.process_queue();
                 continue;
             }
             Err(e) => {
@@ -321,47 +356,64 @@ fn xdp_rx(if_name: &str, queue: u32) {
 }
 
 fn xdp_tx(if_name: &str, queue: u32) {
-    let mut socket = Socket::builder(if_name, queue)
+    let (umem, _fq, mut cq) = Umem::builder()
         .completion_ring_size(COMPLETION_RING_SIZE)
         .fill_ring_size(FILL_RING_SIZE)
         .frame_size(FRAME_SIZE)
+        .build()
+        .expect("Failed to create umem");
+    let mut socket = Socket::builder(if_name, queue)
         .rx_ring_size(RX_RING_SIZE)
         .tx_ring_size(TX_RING_SIZE)
-        .build()
+        .build(umem)
         .expect("Failed to create socket");
 
     println!("Socket created");
+    const BATCH_SIZE: usize = 64;
+
     let mut stats = Stats::new();
     let data = build_frame();
     loop {
         stats.increment_cycles();
-        let mut frames = match socket.prepare_frames(2048) {
+
+        // Prepare a batch of frames for sending on the socket, these frames are backed
+        // by the internal umem and if dropped before being sent will be returned to the umem.
+        let mut frames = match socket.prepare_frames(BATCH_SIZE) {
             Ok(frames) => {
                 stats.observe_batch_size(frames.len());
                 frames
             }
             Err(SocketError::WouldBlock) => {
+                // We would have blocked trying to prepare any of the frames, process any outstanding descriptors on the completion queue.
                 stats.increment_would_block();
+                cq.process_queue();
                 continue;
             }
             Err(e) => {
+                // An unrecoverable error occurred, exit the loop.
                 println!("Error preparing frames: {:?}", e);
                 break;
             }
         };
 
+        // Copy the data into the frames.
         for frame in frames.iter_mut() {
             unsafe { frame.copy_from(&data) };
             stats.update(frame.len());
         }
+
+        // Send the prepared frames to the socket.
         while frames.len() > 0 {
             match socket.send(&mut frames) {
                 Ok(_) => {}
                 Err(SocketError::WouldBlock) => {
+                    // We would have blocked trying to send any of the frames, process any outstanding descriptors on the completion queue.
                     stats.increment_would_block();
+                    cq.process_queue();
                     continue;
                 }
                 Err(e) => {
+                    // An unrecoverable error occurred, exit the loop.
                     println!("Error sending frames: {:?}", e);
                     break;
                 }

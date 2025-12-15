@@ -9,4 +9,4 @@ mod producer;
 
 pub use consumer::Consumer;
 pub use error::{Error, Result};
-pub use producer::{Fq, Producer, Tx};
+pub use producer::Producer;

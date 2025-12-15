@@ -1,7 +1,6 @@
-use std::{cmp::min, os::raw::c_void, sync::Arc};
+use std::{os::raw::c_void, sync::Arc};
 
 use errno::errno;
-use libc::c_int;
 use libxdp_sys::{
     XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS,
     XSK_UMEM__DEFAULT_FRAME_HEADROOM, xsk_umem, xsk_umem__create, xsk_umem__delete,
@@ -9,8 +8,8 @@ use libxdp_sys::{
 };
 
 use crate::xdp::{
-    ring::{Consumer, Fq, Producer},
-    umem::FrameStack,
+    ring::{Consumer, Producer},
+    umem::{CompletionQueue, FillQueue, FrameStack},
 };
 
 use super::{Error, Frame, Mmap, Result};
@@ -55,11 +54,9 @@ impl UmemBuilder {
         self
     }
 
-    pub fn build(self) -> Result<Umem> {
+    pub fn build(self) -> Result<(Arc<Umem>, FillQueue, CompletionQueue)> {
         let pool = Mmap::new(self.num_frames, self.frame_size)?;
-        let mut umem = Umem::new(pool, self.completion_ring_size, self.fill_ring_size)?;
-        umem.process_fill_queue();
-        Ok(umem)
+        Umem::new(pool, self.completion_ring_size, self.fill_ring_size)
     }
 }
 
@@ -68,10 +65,10 @@ pub struct Umem {
     map: Mmap,
     umem: *mut xsk_umem,
     frame_stack: Arc<FrameStack>,
-    fill_ring: Producer<Fq>,
-    fill_deficit: u64,
-    comp_ring: Consumer,
 }
+
+unsafe impl Send for Umem {}
+unsafe impl Sync for Umem {}
 
 impl Umem {
     /// Returns a builder for creating a new [Umem] instance.
@@ -79,7 +76,11 @@ impl Umem {
         UmemBuilder::new()
     }
 
-    fn new(mut map: Mmap, completion_ring_size: u32, fill_ring_size: u32) -> Result<Self> {
+    fn new(
+        mut map: Mmap,
+        completion_ring_size: u32,
+        fill_ring_size: u32,
+    ) -> Result<(Arc<Self>, FillQueue, CompletionQueue)> {
         let cfg = xsk_umem_config {
             fill_size: fill_ring_size,
             comp_size: completion_ring_size,
@@ -89,7 +90,7 @@ impl Umem {
         };
 
         let mut comp_ring = Consumer::new(completion_ring_size);
-        let mut fill_ring = Producer::new_fq(fill_ring_size);
+        let mut fill_ring = Producer::new(fill_ring_size);
 
         let mut umem: *mut xsk_umem = std::ptr::null_mut();
         let umem_ptr: *mut *mut xsk_umem = &mut umem;
@@ -110,26 +111,20 @@ impl Umem {
         }
 
         let frame_stack = Arc::new(FrameStack::new(map.num_frames(), map.frame_size()));
-        Ok(Self {
+        let umem = Arc::new(Self {
             map,
             umem,
-            frame_stack,
-            fill_ring,
-            fill_deficit: fill_ring_size as u64,
-            comp_ring,
-        })
+            frame_stack: frame_stack.clone(),
+        });
+        let fq = FillQueue::new(umem.clone(), fill_ring, frame_stack.clone());
+        let cq = CompletionQueue::new(umem.clone(), comp_ring, frame_stack);
+        Ok((umem, fq, cq))
     }
 
     /// Returns a pointer to the kernel UMEM object.
     #[inline]
-    pub fn umem(&mut self) -> *mut xsk_umem {
+    pub fn umem(&self) -> *mut xsk_umem {
         self.umem
-    }
-
-    /// Possibly wakes the fill queue, so the kernel continues to process incoming packets.
-    #[inline]
-    pub fn maybe_wake(&mut self, fd: c_int) -> Result<()> {
-        self.fill_ring.maybe_wake(fd).map_err(Error::WakeFillQueue)
     }
 
     /// Returns the number of frames that are available to be used.
@@ -138,8 +133,8 @@ impl Umem {
         self.frame_stack.len()
     }
 
-    #[inline]
-    fn get_frame(&self, addr: u64, len: usize) -> Frame {
+    #[inline(always)]
+    fn to_frame(&self, addr: u64, len: usize) -> Frame {
         unsafe {
             Frame::new(
                 addr,
@@ -154,64 +149,17 @@ impl Umem {
     /// Returns a new [Frame] for the given address and length, if the frame is not consumed directly by passing it to a call to [Socket::send], it will be returned to the frame stack.
     ///
     /// [Socket::send]: crate::xdp::socket::Socket::send
-    pub fn get_read_frame(&mut self, addr: u64, len: usize) -> Frame {
-        self.fill_deficit += 1;
-        self.get_frame(addr, len)
+    #[inline]
+    pub fn get_read_frame(&self, addr: u64, len: usize) -> Frame {
+        self.to_frame(addr, len)
     }
 
     /// Returns a new empty [Frame], if the frame is not consumed directly by passing it to a call to [Socket::send], it will be returned to the frame stack.
     ///
     /// [Socket::send]: crate::xdp::socket::Socket::send
     #[inline]
-    pub fn pop_frame(&self) -> Option<Frame> {
-        self.frame_stack.pop().map(|addr| self.get_frame(addr, 0))
-    }
-
-    /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
-    #[inline]
-    pub fn process_fill_queue(&mut self) {
-        let batch_size = min(self.fill_deficit as u32, self.frame_stack.len() as u32);
-        if batch_size < self.fill_ring.size() / 2 || batch_size == 0 {
-            return;
-        }
-
-        let (mut idx, ready) = self.fill_ring.reserve(batch_size).unwrap_or((0, 0));
-        for _ in 0..ready {
-            let addr = self
-                .frame_stack
-                .pop()
-                .expect("Some how we ran out of frames.");
-            let ptr = self.fill_ring.fill_addr(idx);
-            unsafe { *ptr = addr as u64 };
-            idx += 1;
-        }
-
-        if ready > 0 {
-            self.fill_ring.submit(ready as u32);
-        }
-
-        self.fill_deficit -= ready as u64;
-    }
-
-    /// Processes the completion queue, returning frames to the frame stack up to the size of the completion ring.
-    #[inline]
-    pub fn process_comp_queue(&mut self, batch_size: u32) -> u32 {
-        let (mut idx, ready) = match self.comp_ring.peek(batch_size) {
-            Some((idx, ready)) if ready > 0 => (idx, ready),
-            _ => return 0,
-        };
-
-        for _ in 0..ready {
-            let addr = self.comp_ring.comp_addr(idx);
-            self.frame_stack
-                .push(addr)
-                .expect("Some how we ran out of frames.");
-            idx += 1;
-        }
-
-        // No conditional here as we know we have this many ready descriptors.
-        self.comp_ring.release(ready as u32);
-        ready
+    pub fn get_write_frame(&self) -> Option<Frame> {
+        self.frame_stack.pop().map(|addr| self.to_frame(addr, 0))
     }
 }
 

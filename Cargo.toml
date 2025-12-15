@@ -31,3 +31,11 @@ test = false
 bench = false
 doctest = false
 harness = false
+
+[[bin]]
+name = "echo-mt"
+path = "src/bin/echo-mt.rs"
+test = false
+bench = false
+doctest = false
+harness = false

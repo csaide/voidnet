@@ -1,31 +1,25 @@
-use std::{cmp::min, marker::PhantomData, ptr::null_mut};
+use std::cmp::min;
 
-use errno::errno;
-use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom, sendto};
 use libxdp_sys::{
-    xdp_desc, xsk_ring_prod, xsk_ring_prod__fill_addr, xsk_ring_prod__needs_wakeup,
-    xsk_ring_prod__reserve, xsk_ring_prod__submit, xsk_ring_prod__tx_desc,
+    xdp_desc, xsk_prod_nb_free, xsk_ring_prod, xsk_ring_prod__fill_addr, xsk_ring_prod__reserve,
+    xsk_ring_prod__submit, xsk_ring_prod__tx_desc,
 };
 
-use super::{Error, Result};
-
-/// A TX producer ring is a ring of descriptors that are used to transfer packets from the user to the kernel for write purposes.
-pub struct Tx;
-
-/// A FQ producer ring is a ring of descriptors that are used to transfer packets from the user to the kernelf ror read purposes.
-pub struct Fq;
-
 /// A producer ring is a ring of descriptors that are used to transfer packets from the user to the kernel.
-pub struct Producer<T> {
+pub struct Producer {
     ring: Box<xsk_ring_prod>,
     ring_size: u32,
-    phantom: PhantomData<T>,
+    min_free: u32,
 }
 
-impl<T> Producer<T> {
+// SAFETY: The only reason [Producer] is not send is because of the *mut u32 in xsk_ring_prod, the pointer is tied to this
+// xsk_ring_prod so its lifetime is tied to it and we can safely send this to another thread.
+unsafe impl Send for Producer {}
+
+impl Producer {
     /// Creates a new producer ring.
     #[inline]
-    fn new(ring_size: u32) -> Producer<T> {
+    pub fn new(ring_size: u32) -> Producer {
         let ring = Box::new(xsk_ring_prod {
             cached_prod: 0,
             cached_cons: 0,
@@ -39,7 +33,7 @@ impl<T> Producer<T> {
         Self {
             ring,
             ring_size,
-            phantom: PhantomData,
+            min_free: ring_size / 4,
         }
     }
 
@@ -47,6 +41,17 @@ impl<T> Producer<T> {
     #[inline(always)]
     pub fn size(&self) -> u32 {
         self.ring_size
+    }
+
+    /// Returns the number of free descriptors in the ring.
+    #[inline]
+    pub fn free(&mut self, min_free: u32) -> Option<u32> {
+        let available = unsafe { xsk_prod_nb_free(self.ring.as_mut(), self.min_free) };
+        if available == 0 {
+            None
+        } else {
+            Some(min(available, min_free))
+        }
     }
 
     /// Reserves a batch of descriptors from the ring.
@@ -87,61 +92,5 @@ impl<T> Producer<T> {
     #[inline]
     pub fn as_mut(&mut self) -> *mut xsk_ring_prod {
         self.ring.as_mut()
-    }
-}
-
-impl Producer<Tx> {
-    /// Creates a new TX producer ring.
-    #[inline]
-    pub fn new_tx(ring_size: u32) -> Producer<Tx> {
-        Producer::<Tx>::new(ring_size)
-    }
-
-    /// Maybe wake this producer ring's associated socket.
-    #[inline]
-    pub fn maybe_wake(&self, fd: c_int) -> Result<()> {
-        unsafe {
-            if xsk_ring_prod__needs_wakeup(self.ring.as_ref()) == 1 {
-                let ret = sendto(fd, null_mut(), 0, MSG_DONTWAIT, null_mut(), 0);
-                let errno = errno();
-                if ret < 0
-                    && errno.0 != ENOBUFS
-                    && errno.0 != EAGAIN
-                    && errno.0 != EBUSY
-                    && errno.0 != ENETDOWN
-                {
-                    return Err(Error::Wake(errno));
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-impl Producer<Fq> {
-    /// Creates a new FQ producer ring.
-    #[inline]
-    pub fn new_fq(ring_size: u32) -> Producer<Fq> {
-        Producer::<Fq>::new(ring_size)
-    }
-
-    /// Maybe wake this producer ring's associated socket.
-    #[inline]
-    pub fn maybe_wake(&self, fd: c_int) -> Result<()> {
-        unsafe {
-            if xsk_ring_prod__needs_wakeup(self.ring.as_ref()) == 1 {
-                let ret = recvfrom(fd, null_mut(), 0, MSG_DONTWAIT, null_mut(), null_mut());
-                let errno = errno();
-                if ret < 0
-                    && errno.0 != ENOBUFS
-                    && errno.0 != EAGAIN
-                    && errno.0 != EBUSY
-                    && errno.0 != ENETDOWN
-                {
-                    return Err(Error::Wake(errno));
-                }
-            }
-        }
-        Ok(())
     }
 }

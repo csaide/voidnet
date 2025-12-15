@@ -1,7 +1,6 @@
 use errno::Errno;
 use thiserror::Error;
 
-use crate::xdp::ring::Error as RingError;
 use crate::xdp::umem::Error as UmemError;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -14,6 +13,6 @@ pub enum Error {
     WouldBlock,
     #[error("umem failure: {0}")]
     Umem(#[from] UmemError),
-    #[error("ring failure: {0}")]
-    Ring(#[from] RingError),
+    #[error("tx queue wake failed: {0}")]
+    TxQueueWake(Errno),
 }

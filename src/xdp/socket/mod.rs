@@ -4,7 +4,11 @@
 //! enabling async/await support for packet I/O operations.
 
 mod error;
+mod rx;
 mod socket;
+mod tx;
 
 pub use error::{Error, Result};
-pub use socket::{Socket, SocketBuilder};
+pub use rx::SocketRx;
+pub use socket::{Socket, SocketBuilder, SocketOwner};
+pub use tx::SocketTx;

@@ -1,8 +1,6 @@
 use errno::Errno;
 use thiserror::Error;
 
-use crate::xdp::ring::Error as RingError;
-
 /// A result type for umem operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -16,5 +14,5 @@ pub enum Error {
     #[error("stack is full")]
     StackFull,
     #[error("failed to wake fill queue: {0}")]
-    WakeFillQueue(#[from] RingError),
+    WakeFillQueue(Errno),
 }
