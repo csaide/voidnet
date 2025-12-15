@@ -3,16 +3,17 @@ use std::{os::raw::c_void, sync::Arc};
 use errno::errno;
 use libxdp_sys::{
     XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS,
-    XSK_UMEM__DEFAULT_FRAME_HEADROOM, xsk_umem, xsk_umem__create, xsk_umem__delete,
-    xsk_umem_config,
+    XSK_UMEM__DEFAULT_FRAME_HEADROOM, XSK_UMEM__DEFAULT_FRAME_SIZE, xsk_umem, xsk_umem__create,
+    xsk_umem__delete, xsk_umem_config,
 };
 
 use crate::xdp::{
+    error::{Error, Result},
     ring::{Consumer, Producer},
     umem::{CompletionQueue, FillQueue, FrameStack},
 };
 
-use super::{Error, Frame, Mmap, Result};
+use super::{Frame, Mmap};
 
 /// A builder for creating a new [Umem] instance.
 pub struct UmemBuilder {
@@ -26,10 +27,11 @@ impl UmemBuilder {
     pub fn new() -> Self {
         let completion_ring_size = XSK_RING_CONS__DEFAULT_NUM_DESCS;
         let fill_ring_size = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2;
+        let frame_size = XSK_UMEM__DEFAULT_FRAME_SIZE as usize;
         Self {
             completion_ring_size,
             fill_ring_size,
-            frame_size: 2048,
+            frame_size,
             num_frames: (completion_ring_size + fill_ring_size) as usize,
         }
     }
@@ -107,7 +109,7 @@ impl Umem {
             )
         };
         if ret != 0 {
-            return Err(Error::Create(errno()));
+            return Err(Error::CreateUmem(errno()));
         }
 
         let frame_stack = Arc::new(FrameStack::new(map.num_frames(), map.frame_size()));

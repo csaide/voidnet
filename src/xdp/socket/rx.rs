@@ -1,9 +1,12 @@
 use std::{cmp::min, sync::Arc};
 
-use crate::xdp::umem::Umem;
-use crate::xdp::{ring::Consumer, umem::Frame};
+use crate::xdp::{
+    error::{Error, Result},
+    ring::Consumer,
+    umem::{Frame, Umem},
+};
 
-use super::{Error, Result, SocketOwner};
+use super::SocketOwner;
 
 pub struct SocketRx {
     _socket: Arc<SocketOwner>,

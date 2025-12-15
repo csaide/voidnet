@@ -1,6 +1,6 @@
 use memmap2::{MmapMut, MmapOptions};
 
-use super::{Error, Result};
+use crate::xdp::error::{Error, Result};
 
 /// A wrapper around a [MmapMut] that is used to store data for a packet.
 pub struct Mmap {

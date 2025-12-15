@@ -3,12 +3,10 @@
 //! This module provides high-level wrappers around Linux AF_XDP sockets,
 //! enabling async/await support for packet I/O operations.
 
-mod error;
 mod rx;
 mod socket;
 mod tx;
 
-pub use error::{Error, Result};
 pub use rx::SocketRx;
 pub use socket::{Socket, SocketBuilder, SocketOwner};
 pub use tx::SocketTx;

@@ -5,11 +5,12 @@ use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, sendto};
 use libxdp_sys::xsk_ring_prod__needs_wakeup;
 
 use crate::xdp::{
+    error::{Error, Result},
     ring::Producer,
     umem::{Frame, Umem},
 };
 
-use super::{Error, Result, SocketOwner};
+use super::SocketOwner;
 
 pub struct SocketTx {
     socket: Arc<SocketOwner>,

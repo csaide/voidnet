@@ -4,9 +4,13 @@ use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
 use libxdp_sys::{xsk_ring_prod, xsk_ring_prod__needs_wakeup};
 
-use super::{Error, Result, Umem};
+use crate::xdp::{
+    error::{Error, Result},
+    ring::Producer,
+    umem::FrameStack,
+};
 
-use crate::xdp::{ring::Producer, umem::FrameStack};
+use super::Umem;
 
 pub struct FillQueue {
     _umem: Arc<Umem>,

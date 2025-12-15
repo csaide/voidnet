@@ -1,7 +1,7 @@
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use super::{Error, Result};
+use crate::xdp::error::{Error, Result};
 
 /// A stack of frames that are used to store data for a packet, this is a simple wrapper around a vector of atomic u64s.
 #[derive(Debug)]

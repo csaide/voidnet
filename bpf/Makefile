@@ -12,22 +12,11 @@ BPF_SRC := xdp_kern.c
 BPF_OBJ := $(BPF_SRC:.c=.o)
 
 # Default max sockets (can be overridden)
-MAX_SOCKS ?= 64
+MAX_SOCKS ?= 256
 
 # Clang flags for BPF compilation
 CLANG_FLAGS := \
 	-target bpf \
-	-D__BPF_TRACING__ \
-	-Wall \
-	-Wextra \
-	-Wno-unused-parameter \
-	-Wno-unused-value \
-	-Wno-pointer-sign \
-	-Wno-compare-distinct-pointer-types \
-	-Wno-gnu-variable-sized-type-not-at-end \
-	-Wno-address-of-packed-member \
-	-Wno-tautological-compare \
-	-Wno-unknown-warning-option \
 	-O2 -g \
 	-march=native \
 	-DMAX_SOCKS=$(MAX_SOCKS) \

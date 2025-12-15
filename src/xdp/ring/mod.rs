@@ -4,9 +4,7 @@
 //! the fill and completion queues used in AF_XDP packet processing.
 
 mod consumer;
-mod error;
 mod producer;
 
 pub use consumer::Consumer;
-pub use error::{Error, Result};
 pub use producer::Producer;

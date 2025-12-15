@@ -3,15 +3,19 @@ use std::{ffi::CString, sync::Arc};
 use errno::errno;
 use libc::c_int;
 use libxdp_sys::{
-    XDP_USE_NEED_WAKEUP, XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS,
-    xsk_socket, xsk_socket__create, xsk_socket__create_shared, xsk_socket__delete, xsk_socket__fd,
-    xsk_socket_config, xsk_socket_config__bindgen_ty_1,
+    XDP_USE_NEED_WAKEUP, XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD, XSK_RING_CONS__DEFAULT_NUM_DESCS,
+    XSK_RING_PROD__DEFAULT_NUM_DESCS, xsk_socket, xsk_socket__create, xsk_socket__create_shared,
+    xsk_socket__delete, xsk_socket__fd, xsk_socket_config, xsk_socket_config__bindgen_ty_1,
 };
 
-use crate::xdp::ring::{Consumer, Producer};
-use crate::xdp::umem::{CompletionQueue, FillQueue, Frame, Umem};
+use crate::xdp::{
+    context::XdpContext,
+    error::{Error, Result},
+    ring::{Consumer, Producer},
+    umem::{CompletionQueue, FillQueue, Frame, Umem},
+};
 
-use super::{Error, Result, SocketRx, SocketTx};
+use super::{SocketRx, SocketTx};
 
 /// A frame based XDP socket exposing zero copy batched receive and send operations.
 pub struct SocketOwner {
@@ -32,19 +36,21 @@ impl Drop for SocketOwner {
 }
 
 /// Builder for creating a new socket.
-pub struct SocketBuilder<'a> {
+pub struct SocketBuilder<'a, 'b> {
+    ctx: &'b mut XdpContext,
     if_name: &'a str,
     queue: u32,
     rx_ring_size: u32,
     tx_ring_size: u32,
 }
 
-impl<'a> SocketBuilder<'a> {
+impl<'a, 'b> SocketBuilder<'a, 'b> {
     /// Creates a new socket builder, using the supllied interface name and queue number.
     ///
     /// The defaults included are sane values for most use cases.
-    pub fn new(if_name: &'a str, queue: u32) -> Self {
+    pub fn new(ctx: &'b mut XdpContext, if_name: &'a str, queue: u32) -> Self {
         Self {
+            ctx,
             if_name,
             queue,
             rx_ring_size: XSK_RING_CONS__DEFAULT_NUM_DESCS,
@@ -67,13 +73,14 @@ impl<'a> SocketBuilder<'a> {
     /// Builds the socket.
     pub fn build(self, umem: Arc<Umem>) -> Result<Socket> {
         // Then create the socket, this will allocate the RX/TX rings and bind the socket + rings to the UMEM object.
-        Socket::new(
+        let socket = Socket::new(
             self.if_name,
             self.queue,
             umem,
             self.rx_ring_size,
             self.tx_ring_size,
-        )
+        )?;
+        self.ctx.register_socket(&socket).map(|_| socket)
     }
 
     pub fn build_shared(
@@ -82,7 +89,7 @@ impl<'a> SocketBuilder<'a> {
         fq: &mut FillQueue,
         cq: &mut CompletionQueue,
     ) -> Result<Socket> {
-        Socket::new_shared(
+        let socket = Socket::new_shared(
             self.if_name,
             self.queue,
             umem,
@@ -90,7 +97,8 @@ impl<'a> SocketBuilder<'a> {
             cq,
             self.rx_ring_size,
             self.tx_ring_size,
-        )
+        )?;
+        self.ctx.register_socket(&socket).map(|_| socket)
     }
 }
 
@@ -102,8 +110,12 @@ pub struct Socket {
 
 impl Socket {
     /// Returns a builder for creating a new socket.
-    pub fn builder(if_name: &str, queue: u32) -> SocketBuilder<'_> {
-        SocketBuilder::new(if_name, queue)
+    pub fn builder<'a, 'b>(
+        xdp_ctx: &'b mut XdpContext,
+        if_name: &'a str,
+        queue: u32,
+    ) -> SocketBuilder<'a, 'b> {
+        SocketBuilder::new(xdp_ctx, if_name, queue)
     }
 
     pub fn new(
@@ -118,7 +130,9 @@ impl Socket {
             tx_size: tx_ring_size,
             xdp_flags: 0,
             bind_flags: XDP_USE_NEED_WAKEUP as u16,
-            __bindgen_anon_1: xsk_socket_config__bindgen_ty_1 { libxdp_flags: 0 },
+            __bindgen_anon_1: xsk_socket_config__bindgen_ty_1 {
+                libxdp_flags: XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD,
+            },
         };
 
         let mut rx = Consumer::new(rx_ring_size);
@@ -144,7 +158,7 @@ impl Socket {
         }
 
         if ret != 0 {
-            return Err(Error::Create(errno()));
+            return Err(Error::CreateSocket(errno()));
         }
 
         let owner = Arc::new(SocketOwner {
@@ -171,7 +185,9 @@ impl Socket {
             tx_size: tx_ring_size,
             xdp_flags: 0,
             bind_flags: XDP_USE_NEED_WAKEUP as u16,
-            __bindgen_anon_1: xsk_socket_config__bindgen_ty_1 { libxdp_flags: 0 },
+            __bindgen_anon_1: xsk_socket_config__bindgen_ty_1 {
+                libxdp_flags: XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD,
+            },
         };
 
         let mut rx = Consumer::new(rx_ring_size);
@@ -199,7 +215,7 @@ impl Socket {
         }
 
         if ret != 0 {
-            return Err(Error::Create(errno()));
+            return Err(Error::CreateSocket(errno()));
         }
 
         let owner = Arc::new(SocketOwner {
