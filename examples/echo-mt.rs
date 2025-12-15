@@ -21,7 +21,7 @@ use libvoid::xdp::{
 };
 
 mod common;
-use common::{Stats, stats_multi_main, swap_addresses};
+use common::{MultiThreadedStats, stats_multi_main, swap_addresses};
 
 const FILL_RING_SIZE: u32 = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2;
 const COMPLETION_RING_SIZE: u32 = XSK_RING_CONS__DEFAULT_NUM_DESCS;
@@ -32,7 +32,7 @@ const FRAME_SIZE: usize = XSK_UMEM__DEFAULT_FRAME_SIZE as usize;
 fn worker_main(
     id: usize,
     exit: Arc<AtomicBool>,
-    stats: Arc<Stats>,
+    stats: Arc<MultiThreadedStats>,
     mut socket: Socket,
     batch_size: u32,
 ) {
@@ -130,7 +130,7 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let stats = Arc::new(Stats::new(args.num_workers));
+    let stats = Arc::new(MultiThreadedStats::new(args.num_workers));
     for i in 0..args.num_workers {
         let socket = if args.num_workers == 1 {
             Socket::builder(&mut xdp_program, &args.if_name, args.queue)

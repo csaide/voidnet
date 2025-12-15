@@ -12,7 +12,7 @@ use libxdp_sys::{
 use libvoid::xdp::{context::XdpContext, error::Error as XdpError, socket::Socket, umem::Umem};
 
 mod common;
-use common::{WorkerStats, stats_single_main};
+use common::Stats;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -59,22 +59,15 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // Setup some stats to track the number of packets and bytes received.
-    let stats = Arc::new(WorkerStats::new());
-
-    // Spawn a thread to print out the stats.
-    let t = std::thread::spawn({
-        let exit = exit.clone();
-        let stats = stats.clone();
-        move || stats_single_main(exit, stats)
-    });
-
-    println!("Socket created, listening for packets...");
-
     // The XDP subsystem is designed for low latency and high throughput, so we always batch receive packets
     // to avoid context switching overhead. The batch size is a maximum value and not necessarily the number
     // of frames operated on at a time.
     let batch_size = 64;
+
+    println!("Socket created, listening for packets...");
+
+    // Setup some stats to track the number of packets and bytes received.
+    let mut stats = Stats::new();
     while !exit.load(Ordering::Relaxed) {
         // This is different than what you might expect, since we are using a Umem we don't specify buffers to fill
         // during recv() instead we request a batch up to a maximum size to read at a time.
@@ -97,9 +90,8 @@ fn main() {
                 break;
             }
         }
+        stats.maybe_print();
     }
-
-    t.join().expect("Stats thread panicked");
 
     println!("Exiting...");
 }

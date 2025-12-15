@@ -12,7 +12,7 @@ use libxdp_sys::{
 use libvoid::xdp::{context::XdpContext, error::Error as XdpError, socket::Socket, umem::Umem};
 
 mod common;
-use common::{WorkerStats, stats_single_main, swap_addresses};
+use common::{Stats, swap_addresses};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -61,18 +61,12 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // Setup some stats to track the number of packets and bytes received.
-    let stats = Arc::new(WorkerStats::new());
-
-    // Spawn a thread to print out the stats.
-    let t = std::thread::spawn({
-        let exit = exit.clone();
-        let stats = stats.clone();
-        move || stats_single_main(exit, stats)
-    });
+    let mut to_write = Vec::with_capacity(args.batch_size);
 
     println!("Socket created, listening for packets...");
-    let mut to_write = Vec::with_capacity(args.batch_size);
+
+    // Setup some stats to track the number of packets and bytes received.
+    let mut stats = Stats::new();
     while !exit.load(Ordering::Relaxed) {
         // First read some frames off the socket.
         let mut frames = match socket.recv(args.batch_size as u32) {
@@ -115,9 +109,9 @@ fn main() {
                 }
             }
         }
-    }
 
-    t.join().expect("Stats thread panicked");
+        stats.maybe_print();
+    }
 
     println!("Exiting...");
 }

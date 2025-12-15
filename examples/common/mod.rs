@@ -37,11 +37,11 @@ impl WorkerStats {
     }
 }
 
-pub struct Stats {
+pub struct MultiThreadedStats {
     pub workers: Vec<WorkerStats>,
 }
 
-impl Stats {
+impl MultiThreadedStats {
     pub fn new(num_workers: usize) -> Self {
         Self {
             workers: (0..num_workers).map(|_| WorkerStats::new()).collect(),
@@ -53,7 +53,7 @@ impl Stats {
     }
 }
 
-pub fn stats_multi_main(exit: Arc<AtomicBool>, stats: Arc<Stats>) {
+pub fn stats_multi_main(exit: Arc<AtomicBool>, stats: Arc<MultiThreadedStats>) {
     struct Tracker {
         packets_received: u64,
         bytes_received: u64,
@@ -103,33 +103,55 @@ pub fn stats_multi_main(exit: Arc<AtomicBool>, stats: Arc<Stats>) {
     }
 }
 
-pub fn stats_single_main(exit: Arc<AtomicBool>, stats: Arc<WorkerStats>) {
-    let mut last_packets_received = 0;
-    let mut last_bytes_received = 0;
-    let mut last_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
-    let interval = Duration::from_secs(1);
+pub struct Stats {
+    pub packets_received: u64,
+    pub bytes_received: u64,
+    pub last_packets_received: u64,
+    pub last_bytes_received: u64,
+    pub last_time: u64,
+}
 
-    while !exit.load(Ordering::Relaxed) {
-        thread::sleep(interval);
+impl Stats {
+    pub fn new() -> Self {
+        Self {
+            packets_received: 0,
+            bytes_received: 0,
+            last_packets_received: 0,
+            last_bytes_received: 0,
+            last_time: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64,
+        }
+    }
 
-        let packets_received = stats.packets_received.load(Ordering::Relaxed);
-        let bytes_received = stats.bytes_received.load(Ordering::Relaxed);
+    pub fn update(&mut self, bytes: usize) {
+        self.packets_received += 1;
+        self.bytes_received += bytes as u64;
+    }
+
+    pub fn maybe_print(&mut self) {
+        const PACKETS_PER_PRINT: u64 = 10_000_000;
+        if self.packets_received - self.last_packets_received < PACKETS_PER_PRINT {
+            return;
+        }
+
+        let packets_received = self.packets_received;
+        let bytes_received = self.bytes_received;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        let elapsed_time = (now - last_time) as f64 / 1_000_000_000.0;
+        let elapsed_time = (now - self.last_time) as f64 / 1_000_000_000.0;
 
-        let packets_per_second = (packets_received - last_packets_received) as f64 / elapsed_time;
-        let bytes_per_second = (bytes_received - last_bytes_received) as f64 / elapsed_time;
+        let packets_per_second =
+            (packets_received - self.last_packets_received) as f64 / elapsed_time;
+        let bytes_per_second = (bytes_received - self.last_bytes_received) as f64 / elapsed_time;
 
-        last_packets_received = packets_received;
-        last_bytes_received = bytes_received;
-        last_time = now;
+        self.last_packets_received = packets_received;
+        self.last_bytes_received = bytes_received;
+        self.last_time = now;
 
         println!(
             "Packets: {}M | Bytes: {:.2}GiB | Packet rate: {:.2} Mpps | Byte rate: {:.2} Gbps",

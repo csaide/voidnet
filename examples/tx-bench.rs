@@ -25,7 +25,7 @@ use pnet::{
 };
 
 mod common;
-use common::{WorkerStats, stats_single_main};
+use common::Stats;
 
 // Build a frame for the given arguments. This is a simple example and can be customized as needed.
 fn build_frame(args: &Args) -> Vec<u8> {
@@ -141,19 +141,12 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // Setup some stats to track the number of packets and bytes received.
-    let stats = Arc::new(WorkerStats::new());
-
-    // Spawn a thread to print out the stats.
-    let t = std::thread::spawn({
-        let exit = exit.clone();
-        let stats = stats.clone();
-        move || stats_single_main(exit, stats)
-    });
+    let data = build_frame(&args);
 
     println!("Socket created, sending packets...");
 
-    let data = build_frame(&args);
+    // Setup some stats to track the number of packets and bytes received.
+    let mut stats = Stats::new();
     while !exit.load(Ordering::Relaxed) {
         // Prepare a batch of frames for sending on the socket, these frames are backed
         // by the internal umem and if dropped before being sent will be returned to the umem.
@@ -193,9 +186,9 @@ fn main() {
                 }
             };
         }
-    }
 
-    t.join().expect("Stats thread panicked");
+        stats.maybe_print();
+    }
 
     println!("Exiting...");
 }

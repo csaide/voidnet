@@ -1,2 +1,3 @@
 /target
 /bpf/xdp_kern.o
+*.gz
