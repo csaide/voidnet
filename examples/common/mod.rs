@@ -131,7 +131,7 @@ impl Stats {
     }
 
     pub fn maybe_print(&mut self) {
-        const PACKETS_PER_PRINT: u64 = 10_000_000;
+        const PACKETS_PER_PRINT: u64 = 20_000_000;
         if self.packets_received - self.last_packets_received < PACKETS_PER_PRINT {
             return;
         }

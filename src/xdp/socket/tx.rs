@@ -60,17 +60,9 @@ impl SocketTx {
     }
 
     pub fn send(&mut self, frames: &mut Vec<Frame>) -> Result<()> {
-        let batch_size = match self.ring.free(frames.len() as u32) {
-            Some(batch_size) => batch_size,
+        let (mut idx_tx, ready) = match self.ring.reserve(frames.len() as u32) {
+            Some((idx_tx, ready)) => (idx_tx, ready),
             None => {
-                self.maybe_wake()?;
-                return Err(Error::WouldBlock);
-            }
-        };
-
-        let (mut idx_tx, ready) = match self.ring.reserve(batch_size) {
-            Some((idx_tx, ready)) if ready > 0 => (idx_tx, ready),
-            _ => {
                 self.maybe_wake()?;
                 return Err(Error::WouldBlock);
             }

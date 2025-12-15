@@ -1,7 +1,7 @@
 use std::cmp::min;
 
 use libxdp_sys::{
-    xdp_desc, xsk_prod_nb_free, xsk_ring_prod, xsk_ring_prod__fill_addr, xsk_ring_prod__reserve,
+    xdp_desc, xsk_ring_prod, xsk_ring_prod__fill_addr, xsk_ring_prod__reserve,
     xsk_ring_prod__submit, xsk_ring_prod__tx_desc,
 };
 
@@ -9,7 +9,6 @@ use libxdp_sys::{
 pub struct Producer {
     ring: Box<xsk_ring_prod>,
     ring_size: u32,
-    min_free: u32,
 }
 
 // SAFETY: The only reason [Producer] is not send is because of the *mut u32 in xsk_ring_prod, the pointer is tied to this
@@ -30,28 +29,13 @@ impl Producer {
             ring: std::ptr::null_mut(),
             flags: std::ptr::null_mut(),
         });
-        Self {
-            ring,
-            ring_size,
-            min_free: ring_size / 4,
-        }
+        Self { ring, ring_size }
     }
 
     /// Returns the size of the producer ring.
     #[inline(always)]
     pub fn size(&self) -> u32 {
         self.ring_size
-    }
-
-    /// Returns the number of free descriptors in the ring.
-    #[inline]
-    pub fn free(&mut self, min_free: u32) -> Option<u32> {
-        let available = unsafe { xsk_prod_nb_free(self.ring.as_mut(), self.min_free) };
-        if available == 0 {
-            None
-        } else {
-            Some(min(available, min_free))
-        }
     }
 
     /// Reserves a batch of descriptors from the ring.

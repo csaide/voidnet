@@ -1,4 +1,4 @@
-use std::{cmp::min, sync::Arc};
+use std::sync::Arc;
 
 use crate::xdp::{
     error::{Error, Result},
@@ -24,11 +24,6 @@ impl SocketRx {
     }
 
     pub fn recv(&mut self, batch_size: u32) -> Result<Vec<Frame>> {
-        let batch_size = match self.ring.available() {
-            Some(available) => min(batch_size, available),
-            None => return Err(Error::WouldBlock),
-        };
-
         let (mut idx_rx, rcvd) = match self.ring.peek(batch_size) {
             Some((idx, rcvd)) if rcvd > 0 => (idx, rcvd),
             _ => return Err(Error::WouldBlock),

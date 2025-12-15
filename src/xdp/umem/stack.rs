@@ -1,4 +1,5 @@
 use std::cell::UnsafeCell;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::xdp::error::{Error, Result};
@@ -20,18 +21,6 @@ impl FrameStack {
             backing,
             loc: AtomicUsize::new(0),
         }
-    }
-
-    /// Returns the number of frames in the stack that are ready to be used.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.backing.len() - self.loc.load(Ordering::Acquire)
-    }
-
-    /// Returns the number of frames that the stack can take in before it is full.
-    #[inline]
-    pub fn free_space(&self) -> usize {
-        self.loc.load(Ordering::Acquire)
     }
 
     /// Returns the next frame from the stack, if the stack is empty, it will return None.
@@ -74,6 +63,39 @@ impl FrameStack {
     }
 }
 
+#[derive(Debug)]
+pub struct LockingFrameStack {
+    backing: Mutex<Vec<u64>>,
+}
+
+impl LockingFrameStack {
+    pub fn new(num_frames: usize, frame_size: usize) -> LockingFrameStack {
+        let backing = Mutex::new(
+            (0..num_frames)
+                .map(|i| i as u64 * frame_size as u64)
+                .collect(),
+        );
+        Self { backing }
+    }
+
+    #[inline]
+    pub fn pop(&self) -> Option<u64> {
+        let mut backing = self.backing.lock().unwrap();
+        backing.pop()
+    }
+
+    #[inline]
+    pub fn push(&self, addr: u64) -> Result<()> {
+        let mut backing = self.backing.lock().unwrap();
+        if backing.len() == backing.capacity() {
+            return Err(Error::StackFull);
+        }
+
+        backing.push(addr);
+        Ok(())
+    }
+}
+
 /// A non-thread-safe stack of frames that are used to store data for a packet.
 /// This is a simple wrapper around a vector of u64s.
 ///
@@ -95,18 +117,6 @@ impl ThreadLocalFrameStack {
             backing,
             loc: UnsafeCell::new(0),
         }
-    }
-
-    /// Returns the number of frames in the stack that are ready to be used.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.backing.len() - unsafe { *self.loc.get() }
-    }
-
-    /// Returns the number of frames that the stack can take in before it is full.
-    #[inline]
-    pub fn free_space(&self) -> usize {
-        unsafe { *self.loc.get() }
     }
 
     /// Returns the next frame from the stack, if the stack is empty, it will return None.

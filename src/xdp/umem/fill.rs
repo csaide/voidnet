@@ -7,23 +7,29 @@ use libxdp_sys::{xsk_ring_prod, xsk_ring_prod__needs_wakeup};
 use crate::xdp::{
     error::{Error, Result},
     ring::Producer,
-    umem::FrameStack,
 };
 
-use super::Umem;
+use super::{FrameStack, Umem};
 
 pub struct FillQueue {
     _umem: Arc<Umem>,
     ring: Producer,
     stack: Arc<FrameStack>,
+    process_threshold: u32,
 }
 
 impl FillQueue {
-    pub fn new(umem: Arc<Umem>, ring: Producer, stack: Arc<FrameStack>) -> Self {
+    pub fn new(
+        umem: Arc<Umem>,
+        ring: Producer,
+        stack: Arc<FrameStack>,
+        process_threshold: u32,
+    ) -> Self {
         Self {
             _umem: umem,
             ring,
             stack,
+            process_threshold,
         }
     }
 
@@ -52,12 +58,11 @@ impl FillQueue {
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline]
     pub fn process_queue(&mut self) {
-        let free = match self.ring.free(self.stack.len() as u32) {
-            Some(free) => free,
+        let (mut idx, ready) = match self.ring.reserve(self.process_threshold) {
+            Some((idx, ready)) => (idx, ready),
             None => return,
         };
 
-        let (mut idx, ready) = self.ring.reserve(free).unwrap_or((0, 0));
         for _ in 0..ready {
             let addr = self.stack.pop().unwrap();
             let ptr = self.ring.fill_addr(idx);

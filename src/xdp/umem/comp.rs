@@ -22,14 +22,9 @@ impl CompletionQueue {
     }
 
     pub fn process_queue(&mut self) {
-        let available = match self.ring.available() {
-            Some(available) => available,
+        let (mut idx, ready) = match self.ring.peek(u32::MAX) {
+            Some((idx, ready)) => (idx, ready),
             None => return,
-        };
-
-        let (mut idx, ready) = match self.ring.peek(available) {
-            Some((idx, ready)) if ready > 0 => (idx, ready),
-            _ => return,
         };
 
         for _ in 0..ready {

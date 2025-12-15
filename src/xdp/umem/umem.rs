@@ -10,10 +10,9 @@ use libxdp_sys::{
 use crate::xdp::{
     error::{Error, Result},
     ring::{Consumer, Producer},
-    umem::{CompletionQueue, FillQueue, FrameStack},
 };
 
-use super::{Frame, Mmap};
+use super::{CompletionQueue, FillQueue, Frame, FrameStack, Mmap};
 
 /// A builder for creating a new [Umem] instance.
 pub struct UmemBuilder {
@@ -21,6 +20,7 @@ pub struct UmemBuilder {
     fill_ring_size: u32,
     frame_size: usize,
     num_frames: usize,
+    fill_process_threshold: u32,
 }
 
 impl UmemBuilder {
@@ -28,11 +28,13 @@ impl UmemBuilder {
         let completion_ring_size = XSK_RING_CONS__DEFAULT_NUM_DESCS;
         let fill_ring_size = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2;
         let frame_size = XSK_UMEM__DEFAULT_FRAME_SIZE as usize;
+        let fill_process_threshold = 64;
         Self {
             completion_ring_size,
             fill_ring_size,
             frame_size,
             num_frames: (completion_ring_size + fill_ring_size) as usize,
+            fill_process_threshold,
         }
     }
 
@@ -56,9 +58,19 @@ impl UmemBuilder {
         self
     }
 
+    pub fn fill_process_threshold(mut self, fill_process_threshold: u32) -> Self {
+        self.fill_process_threshold = fill_process_threshold;
+        self
+    }
+
     pub fn build(self) -> Result<(Arc<Umem>, FillQueue, CompletionQueue)> {
         let pool = Mmap::new(self.num_frames, self.frame_size)?;
-        Umem::new(pool, self.completion_ring_size, self.fill_ring_size)
+        Umem::new(
+            pool,
+            self.completion_ring_size,
+            self.fill_ring_size,
+            self.fill_process_threshold,
+        )
     }
 }
 
@@ -82,6 +94,7 @@ impl Umem {
         mut map: Mmap,
         completion_ring_size: u32,
         fill_ring_size: u32,
+        fill_process_threshold: u32,
     ) -> Result<(Arc<Self>, FillQueue, CompletionQueue)> {
         let cfg = xsk_umem_config {
             fill_size: fill_ring_size,
@@ -118,7 +131,12 @@ impl Umem {
             umem,
             frame_stack: frame_stack.clone(),
         });
-        let fq = FillQueue::new(umem.clone(), fill_ring, frame_stack.clone());
+        let fq = FillQueue::new(
+            umem.clone(),
+            fill_ring,
+            frame_stack.clone(),
+            fill_process_threshold,
+        );
         let cq = CompletionQueue::new(umem.clone(), comp_ring, frame_stack);
         Ok((umem, fq, cq))
     }
@@ -127,12 +145,6 @@ impl Umem {
     #[inline]
     pub fn umem(&self) -> *mut xsk_umem {
         self.umem
-    }
-
-    /// Returns the number of frames that are available to be used.
-    #[inline]
-    pub fn available_frames(&self) -> usize {
-        self.frame_stack.len()
     }
 
     #[inline(always)]

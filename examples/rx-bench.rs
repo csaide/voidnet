@@ -21,6 +21,8 @@ struct Args {
     if_name: String,
     #[arg(short, long)]
     queue: u32,
+    #[arg(short, long, default_value = "64")]
+    batch_size: usize,
 }
 
 fn main() {
@@ -36,6 +38,7 @@ fn main() {
         .completion_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
         .fill_ring_size(XSK_RING_PROD__DEFAULT_NUM_DESCS * 2)
         .frame_size(XSK_UMEM__DEFAULT_FRAME_SIZE as usize)
+        .fill_process_threshold(128)
         .build()
         .expect("Failed to create umem");
 
@@ -62,7 +65,7 @@ fn main() {
     // The XDP subsystem is designed for low latency and high throughput, so we always batch receive packets
     // to avoid context switching overhead. The batch size is a maximum value and not necessarily the number
     // of frames operated on at a time.
-    let batch_size = 64;
+    let batch_size = args.batch_size as u32;
 
     println!("Socket created, listening for packets...");
 

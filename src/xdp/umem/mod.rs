@@ -9,5 +9,5 @@ pub use comp::CompletionQueue;
 pub use fill::FillQueue;
 pub use frame::Frame;
 pub use mmap::Mmap;
-pub use stack::{FrameStack, ThreadLocalFrameStack};
+pub use stack::{FrameStack, LockingFrameStack, ThreadLocalFrameStack};
 pub use umem::{Umem, UmemBuilder};

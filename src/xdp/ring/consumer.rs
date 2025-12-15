@@ -1,13 +1,12 @@
 use libxdp_sys::{
-    xdp_desc, xsk_cons_nb_avail, xsk_ring_cons, xsk_ring_cons__cancel, xsk_ring_cons__comp_addr,
-    xsk_ring_cons__peek, xsk_ring_cons__release, xsk_ring_cons__rx_desc,
+    xdp_desc, xsk_ring_cons, xsk_ring_cons__cancel, xsk_ring_cons__comp_addr, xsk_ring_cons__peek,
+    xsk_ring_cons__release, xsk_ring_cons__rx_desc,
 };
 
 /// A consumer ring is a ring of descriptors that are used to transfer packets from the kernel to the user.
 pub struct Consumer {
     ring: Box<xsk_ring_cons>,
     ring_size: u32,
-    min_available: u32,
 }
 
 // SAFETY: The only reason [Consumer] is not send is because of the *mut u32 in xsk_ring_cons, the pointer is tied to this
@@ -29,27 +28,13 @@ impl Consumer {
             ring: std::ptr::null_mut(),
             flags: std::ptr::null_mut(),
         });
-        Self {
-            ring,
-            ring_size,
-            min_available: ring_size / 4,
-        }
+        Self { ring, ring_size }
     }
 
     /// Returns the size of the consumer ring.
     #[inline]
     pub fn size(&self) -> u32 {
         self.ring_size
-    }
-
-    #[inline]
-    pub fn available(&mut self) -> Option<u32> {
-        let available = unsafe { xsk_cons_nb_avail(self.ring.as_mut(), self.min_available) };
-        if available == 0 {
-            None
-        } else {
-            Some(available)
-        }
     }
 
     /// Peeks the ring for the given batch size, and returns the index of the first descriptor and the number of descriptors received.
