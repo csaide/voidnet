@@ -61,6 +61,14 @@ impl Frame {
         self.len
     }
 
+    /// Returns the capacity of the frame in bytes.
+    ///
+    /// This is the total number of bytes that the frame can hold.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     /// Copies the data from the incoming slice into the frame.
     ///
     /// # Safety
@@ -68,7 +76,9 @@ impl Frame {
     /// This function does not check if the incoming slice like thing will fit in the frame, it also
     /// doesn't check if the incoming slice is valid in any way. We blindly copy data into the frame.
     #[inline]
-    pub unsafe fn copy_from(&mut self, incoming: &[u8]) {
+    pub unsafe fn copy_from<I: AsRef<[u8]>>(&mut self, incoming: I) {
+        let incoming = incoming.as_ref();
+
         debug_assert!(
             self.capacity >= incoming.len(),
             "frame must be full to copy from"
