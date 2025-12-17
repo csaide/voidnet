@@ -12,7 +12,7 @@ use crate::xdp::{
     ring::{Consumer, Producer},
 };
 
-use super::{CompletionQueue, FillQueue, Frame, FrameStack, Mmap};
+use super::{CompletionQueue, FRAME_STACK, FillQueue, Frame, FrameStack, Mmap};
 
 /// A builder for creating a new [Umem] instance.
 pub struct UmemBuilder {
@@ -131,14 +131,26 @@ impl Umem {
             umem,
             frame_stack: frame_stack.clone(),
         });
-        let fq = FillQueue::new(
+        let mut fq = FillQueue::new(
             umem.clone(),
             fill_ring,
             frame_stack.clone(),
             fill_process_threshold,
         );
+        // For all intents and purposes, we want to have a full fill queue, technically its not required but it helps
+        // to ensure there is not ring starvation.
+        fq.process_queue(u32::MAX);
+
         let cq = CompletionQueue::new(umem.clone(), comp_ring, frame_stack);
         Ok((umem, fq, cq))
+    }
+
+    pub fn init_thread_local(&self) {
+        FRAME_STACK.with(|stack| {
+            stack
+                .set(self.frame_stack.clone())
+                .expect("Somehow we already initialized the frame stack....");
+        });
     }
 
     /// Returns a pointer to the kernel UMEM object.
@@ -155,7 +167,6 @@ impl Umem {
                 self.map.as_ptr().offset(addr as isize) as *mut u8,
                 len,
                 self.map.frame_size(),
-                self.frame_stack.clone(),
             )
         }
     }

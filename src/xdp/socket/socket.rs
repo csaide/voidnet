@@ -245,9 +245,9 @@ impl Socket {
     /// Note that it is not guaranteed that the resulting Vec of frames will match the batch size supplied.
     /// It is considered a batch maximum and this function will return as soon as at least one frame is received.
     ///
-    /// If no frames are available to read this returns an error of type [Error::WouldBlock].
+    /// If no frames are available to read this returns None.
     #[inline]
-    pub fn recv(&mut self, batch_size: u32) -> Result<Vec<Frame>> {
+    pub fn recv(&mut self, batch_size: u32) -> Option<Vec<Frame>> {
         self.rx.recv(batch_size)
     }
 

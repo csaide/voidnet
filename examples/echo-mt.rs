@@ -33,22 +33,21 @@ fn worker_main(
     id: usize,
     exit: Arc<AtomicBool>,
     stats: Arc<MultiThreadedStats>,
+    umem: Arc<Umem>,
     mut socket: Socket,
     batch_size: u32,
 ) {
+    umem.init_thread_local();
+
     println!("Worker {} started", id);
 
     // Prepare a backing store for frames to write back to the socket, normally you could
     let mut to_write = Vec::with_capacity(batch_size as usize);
     while !exit.load(Ordering::Relaxed) {
         let mut frames = match socket.recv(batch_size) {
-            Ok(frames) => frames,
-            Err(Error::WouldBlock) => {
+            Some(frames) => frames,
+            None => {
                 continue;
-            }
-            Err(e) => {
-                eprintln!("Worker {} failed to receive frames: {:?}", id, e);
-                break;
             }
         };
 
@@ -79,7 +78,15 @@ fn worker_main(
     println!("Worker {} exiting", id);
 }
 
-fn umem_main(exit: Arc<AtomicBool>, mut fq: FillQueue, mut cq: CompletionQueue, fds: Vec<c_int>) {
+fn umem_main(
+    exit: Arc<AtomicBool>,
+    umem: Arc<Umem>,
+    mut fq: FillQueue,
+    mut cq: CompletionQueue,
+    fds: Vec<c_int>,
+) {
+    umem.init_thread_local();
+
     while !exit.load(Ordering::Relaxed) {
         for fd in fds.iter() {
             if let Err(e) = fq.maybe_wake(*fd) {
@@ -89,7 +96,7 @@ fn umem_main(exit: Arc<AtomicBool>, mut fq: FillQueue, mut cq: CompletionQueue, 
             }
         }
 
-        fq.process_queue();
+        fq.process_queue(u32::MAX);
         cq.process_queue();
     }
 }
@@ -150,14 +157,16 @@ fn main() {
         let t = thread::spawn({
             let exit = exit.clone();
             let stats = stats.clone();
-            move || worker_main(i, exit, stats, socket, args.batch_size as u32)
+            let umem = umem.clone();
+            move || worker_main(i, exit, stats, umem, socket, args.batch_size as u32)
         });
         threads.push(t);
     }
 
     let t = thread::spawn({
         let exit = exit.clone();
-        move || umem_main(exit, fq, cq, fds)
+        let umem = umem.clone();
+        move || umem_main(exit, umem, fq, cq, fds)
     });
     threads.push(t);
 

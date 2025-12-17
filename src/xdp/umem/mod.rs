@@ -7,6 +7,7 @@ mod umem;
 
 pub use comp::CompletionQueue;
 pub use fill::FillQueue;
+use frame::FRAME_STACK;
 pub use frame::Frame;
 pub use mmap::Mmap;
 pub use stack::{FrameStack, LockingFrameStack, ThreadLocalFrameStack};

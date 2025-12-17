@@ -1,9 +1,14 @@
 use std::{
+    cell::OnceCell,
     ops::{Deref, DerefMut},
     sync::Arc,
 };
 
 use super::FrameStack;
+
+thread_local! {
+    pub(crate) static FRAME_STACK: OnceCell<Arc<FrameStack>> = const { OnceCell::new() };
+}
 
 /// A frame is a contiguous memory region that is used to store data for a packet, this is a simple wrapper around a pointer to a MMAP'd memory region.
 #[derive(Debug)]
@@ -12,7 +17,6 @@ pub struct Frame {
     len: usize,
     capacity: usize,
     data: *mut u8,
-    frame_stack: Arc<FrameStack>,
 }
 
 impl Frame {
@@ -26,13 +30,7 @@ impl Frame {
     ///
     /// NOTE: the data does not need to be fully 0'ed, it just must be assumed it will be read entirely and therefore must
     /// be initialized to valid u8 values for all locations.
-    pub unsafe fn new(
-        addr: u64,
-        data: *mut u8,
-        len: usize,
-        capacity: usize,
-        frame_stack: Arc<FrameStack>,
-    ) -> Self {
+    pub unsafe fn new(addr: u64, data: *mut u8, len: usize, capacity: usize) -> Self {
         debug_assert!(
             capacity > 0 && len <= capacity,
             "len must be less than or equal to capacity, which must be greater than 0"
@@ -43,7 +41,6 @@ impl Frame {
             len,
             capacity,
             data,
-            frame_stack,
         }
     }
 
@@ -91,7 +88,11 @@ impl Frame {
 
 impl Drop for Frame {
     fn drop(&mut self) {
-        let _ = self.frame_stack.push(self.addr);
+        FRAME_STACK.with(|stack| {
+            if let Some(frame_stack) = stack.get() {
+                let _ = frame_stack.push(self.addr);
+            }
+        });
     }
 }
 

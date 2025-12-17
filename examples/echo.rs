@@ -41,6 +41,8 @@ fn main() {
         .build()
         .expect("Failed to create umem");
 
+    umem.init_thread_local();
+
     // A socket represents a standard means of reading/writing packets from/to a network interface.
     let mut socket = Socket::builder(&mut xdp_ctx, &args.if_name, args.queue)
         .rx_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
@@ -70,16 +72,12 @@ fn main() {
     while !exit.load(Ordering::Relaxed) {
         // First read some frames off the socket.
         let mut frames = match socket.recv(args.batch_size as u32) {
-            Ok(frames) => frames,
-            Err(XdpError::WouldBlock) => {
+            Some(frames) => frames,
+            None => {
                 // There were no frames available to read, wake the fill queue and process any outstanding descriptors.
                 fq.maybe_wake(socket.fd()).unwrap();
-                fq.process_queue();
+                fq.process_queue(args.batch_size as u32);
                 continue;
-            }
-            Err(e) => {
-                println!("Error receiving frame: {:?}", e);
-                break;
             }
         };
 

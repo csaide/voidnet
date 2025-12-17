@@ -9,7 +9,7 @@ use libxdp_sys::{
     XSK_UMEM__DEFAULT_FRAME_SIZE,
 };
 
-use libvoid::xdp::{context::XdpContext, error::Error as XdpError, socket::Socket, umem::Umem};
+use libvoid::xdp::{context::XdpContext, socket::Socket, umem::Umem};
 
 mod common;
 use common::Stats;
@@ -38,9 +38,11 @@ fn main() {
         .completion_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
         .fill_ring_size(XSK_RING_PROD__DEFAULT_NUM_DESCS * 2)
         .frame_size(XSK_UMEM__DEFAULT_FRAME_SIZE as usize)
-        .fill_process_threshold(128)
+        .fill_process_threshold(2048)
         .build()
         .expect("Failed to create umem");
+
+    umem.init_thread_local();
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
     let mut socket = Socket::builder(&mut xdp_ctx, &args.if_name, args.queue)
@@ -71,26 +73,24 @@ fn main() {
 
     // Setup some stats to track the number of packets and bytes received.
     let mut stats = Stats::new();
+    let mut read = 0u32;
     while !exit.load(Ordering::Relaxed) {
         // This is different than what you might expect, since we are using a Umem we don't specify buffers to fill
         // during recv() instead we request a batch up to a maximum size to read at a time.
         //
         // If no frames are available to read this returns an error of type [Error::WouldBlock]. All other errors are considered fatal.
         match socket.recv(batch_size) {
-            Ok(frames) => {
+            Some(frames) => {
+                read += frames.len() as u32;
                 for frame in frames {
                     // Do something with the frame!
                     stats.update(frame.len());
                 }
             }
-            Err(XdpError::WouldBlock) => {
+            None => {
                 fq.maybe_wake(socket.fd()).unwrap();
-                fq.process_queue();
+                read -= fq.process_queue(read);
                 continue;
-            }
-            Err(e) => {
-                println!("Fatal error receiving frame: {:?}", e);
-                break;
             }
         }
         stats.maybe_print();

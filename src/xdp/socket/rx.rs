@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use crate::xdp::{
-    error::{Error, Result},
     ring::Consumer,
     umem::{Frame, Umem},
 };
@@ -23,11 +22,8 @@ impl SocketRx {
         }
     }
 
-    pub fn recv(&mut self, batch_size: u32) -> Result<Vec<Frame>> {
-        let (mut idx_rx, rcvd) = match self.ring.peek(batch_size) {
-            Some((idx, rcvd)) if rcvd > 0 => (idx, rcvd),
-            _ => return Err(Error::WouldBlock),
-        };
+    pub fn recv(&mut self, batch_size: u32) -> Option<Vec<Frame>> {
+        let (mut idx_rx, rcvd) = self.ring.peek(batch_size)?;
 
         let mut batch = Vec::with_capacity(rcvd as usize);
         for _ in 0..rcvd {
@@ -37,6 +33,6 @@ impl SocketRx {
         }
 
         self.ring.release(rcvd);
-        Ok(batch)
+        Some(batch)
     }
 }

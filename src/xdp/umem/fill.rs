@@ -1,4 +1,4 @@
-use std::{ptr::null_mut, sync::Arc};
+use std::{cmp::min, ptr::null_mut, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
@@ -57,10 +57,15 @@ impl FillQueue {
 
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline]
-    pub fn process_queue(&mut self) {
-        let (mut idx, ready) = match self.ring.reserve(self.process_threshold) {
+    pub fn process_queue(&mut self, batch_size: u32) -> u32 {
+        if batch_size < self.process_threshold {
+            return 0;
+        }
+
+        let batch_size = min(batch_size, self.ring.size());
+        let (mut idx, ready) = match self.ring.reserve(batch_size) {
             Some((idx, ready)) => (idx, ready),
-            None => return,
+            None => return 0,
         };
 
         for _ in 0..ready {
@@ -71,6 +76,7 @@ impl FillQueue {
         }
 
         self.ring.submit(ready);
+        ready
     }
 
     pub fn as_mut(&mut self) -> *mut xsk_ring_prod {

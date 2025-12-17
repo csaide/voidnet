@@ -122,6 +122,9 @@ fn main() {
         .frame_size(XSK_UMEM__DEFAULT_FRAME_SIZE as usize)
         .build()
         .expect("Failed to create umem");
+
+    umem.init_thread_local();
+
     let mut socket = Socket::builder(&mut xdp_context, &args.if_name, args.queue)
         .rx_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
         .tx_ring_size(XSK_RING_PROD__DEFAULT_NUM_DESCS)
