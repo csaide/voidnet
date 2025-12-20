@@ -44,12 +44,10 @@ fn worker_main(
     // Prepare a backing store for frames to write back to the socket, normally you could
     let mut to_write = Vec::with_capacity(batch_size as usize);
     while !exit.load(Ordering::Relaxed) {
-        let mut frames = match socket.recv(batch_size) {
-            Some(frames) => frames,
-            None => {
-                continue;
-            }
-        };
+        let mut frames = socket.recv(batch_size);
+        if frames.is_empty() {
+            continue;
+        }
 
         for mut frame in frames.drain(..) {
             stats.update(id, frame.len());

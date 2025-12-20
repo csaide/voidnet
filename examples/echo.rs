@@ -71,15 +71,13 @@ fn main() {
     let mut stats = Stats::new();
     while !exit.load(Ordering::Relaxed) {
         // First read some frames off the socket.
-        let mut frames = match socket.recv(args.batch_size as u32) {
-            Some(frames) => frames,
-            None => {
-                // There were no frames available to read, wake the fill queue and process any outstanding descriptors.
-                fq.maybe_wake(socket.fd()).unwrap();
-                fq.process_queue(args.batch_size as u32);
-                continue;
-            }
-        };
+        let mut frames = socket.recv(args.batch_size as u32);
+        if frames.is_empty() {
+            // There were no frames available to read, wake the fill queue and process any outstanding descriptors.
+            fq.maybe_wake(socket.fd()).unwrap();
+            fq.process_queue(args.batch_size as u32);
+            continue;
+        }
 
         // For each received frame, attempt to swap the addresses, and then queue them for writes.
         for mut frame in frames.drain(..) {

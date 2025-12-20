@@ -23,6 +23,12 @@ impl FrameStack {
         }
     }
 
+    /// Returns the length of the stack.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.backing.len() - self.loc.load(Ordering::Acquire)
+    }
+
     /// Returns the next frame from the stack, if the stack is empty, it will return None.
     #[inline]
     pub fn pop(&self) -> Option<u64> {

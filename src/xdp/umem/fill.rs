@@ -62,11 +62,11 @@ impl FillQueue {
             return 0;
         }
 
-        let batch_size = min(batch_size, self.ring.size());
-        let (mut idx, ready) = match self.ring.reserve(batch_size) {
-            Some((idx, ready)) => (idx, ready),
-            None => return 0,
-        };
+        let batch_size = min(batch_size, self.stack.len() as u32);
+        let (mut idx, ready) = self.ring.reserve(batch_size);
+        if ready == 0 {
+            return 0;
+        }
 
         for _ in 0..ready {
             let addr = self.stack.pop().unwrap();

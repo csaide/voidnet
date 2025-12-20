@@ -28,6 +28,19 @@ const RX_RING_SIZE: u32 = XSK_RING_CONS__DEFAULT_NUM_DESCS;
 const TX_RING_SIZE: u32 = XSK_RING_PROD__DEFAULT_NUM_DESCS;
 const FRAME_SIZE: usize = XSK_UMEM__DEFAULT_FRAME_SIZE as usize;
 
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(short, long)]
+    if_name: String,
+    #[arg(short, long)]
+    queue: u32,
+    #[arg(short, long, default_value = "2")]
+    num_workers: usize,
+    #[arg(short, long, default_value = "64")]
+    batch_size: usize,
+}
+
 fn worker_main(
     id: usize,
     exit: Arc<AtomicBool>,
@@ -41,16 +54,10 @@ fn worker_main(
     println!("Worker {} started", id);
 
     while !exit.load(Ordering::Relaxed) {
-        match socket.recv(batch_size) {
-            Some(frames) => {
-                for frame in frames {
-                    // Do something with the frame!
-                    stats.update(id, frame.len());
-                }
-            }
-            None => {
-                continue;
-            }
+        let frames = socket.recv(batch_size);
+        for frame in frames {
+            // Do something with the frame!
+            stats.update(id, frame.len());
         }
     }
     println!("Worker {} exiting", id);
@@ -72,18 +79,6 @@ fn umem_main(exit: Arc<AtomicBool>, umem: Arc<Umem>, mut fq: FillQueue, fds: Vec
     }
 }
 
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    #[arg(short, long)]
-    if_name: String,
-    #[arg(short, long)]
-    queue: u32,
-    #[arg(short, long, default_value = "2")]
-    num_workers: usize,
-    #[arg(short, long, default_value = "64")]
-    batch_size: usize,
-}
 fn main() {
     let args = Args::parse();
 

@@ -79,20 +79,20 @@ fn main() {
         // during recv() instead we request a batch up to a maximum size to read at a time.
         //
         // If no frames are available to read this returns an error of type [Error::WouldBlock]. All other errors are considered fatal.
-        match socket.recv(batch_size) {
-            Some(frames) => {
-                read += frames.len() as u32;
-                for frame in frames {
-                    // Do something with the frame!
-                    stats.update(frame.len());
-                }
-            }
-            None => {
-                fq.maybe_wake(socket.fd()).unwrap();
-                read -= fq.process_queue(read);
-                continue;
-            }
+        let frames = socket.recv(batch_size);
+
+        if frames.is_empty() {
+            fq.maybe_wake(socket.fd()).unwrap();
+            read -= fq.process_queue(read);
+            continue;
         }
+
+        read += frames.len() as u32;
+        for frame in frames {
+            // Do something with the frame!
+            stats.update(frame.len());
+        }
+
         stats.maybe_print();
     }
 

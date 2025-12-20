@@ -40,12 +40,12 @@ impl Producer {
 
     /// Reserves a batch of descriptors from the ring.
     #[inline]
-    pub fn reserve(&mut self, batch_size: u32) -> Option<(u32, u32)> {
+    pub fn reserve(&mut self, batch_size: u32) -> (u32, u32) {
         let mut idx: u32 = 0;
         let batch_size = min(batch_size, self.ring_size);
         let ready: u32 =
             unsafe { xsk_ring_prod__reserve(self.ring.as_mut(), batch_size, &mut idx) };
-        if ready == 0 { None } else { Some((idx, ready)) }
+        (idx, ready)
     }
 
     /// Returns a mutable reference to the TX descriptor at the given index.

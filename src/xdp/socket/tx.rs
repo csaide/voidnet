@@ -61,7 +61,8 @@ impl SocketTx {
 
     pub fn send(&mut self, frames: &mut Vec<Frame>) -> Result<()> {
         let (mut idx_tx, ready) = loop {
-            if let Some((idx_tx, ready)) = self.ring.reserve(frames.len() as u32) {
+            let (idx_tx, ready) = self.ring.reserve(frames.len() as u32);
+            if ready > 0 {
                 break (idx_tx, ready);
             }
 

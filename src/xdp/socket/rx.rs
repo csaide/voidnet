@@ -22,8 +22,11 @@ impl SocketRx {
         }
     }
 
-    pub fn recv(&mut self, batch_size: u32) -> Option<Vec<Frame>> {
-        let (mut idx_rx, rcvd) = self.ring.peek(batch_size)?;
+    pub fn recv(&mut self, batch_size: u32) -> Vec<Frame> {
+        let (mut idx_rx, rcvd) = self.ring.peek(batch_size);
+        if rcvd == 0 {
+            return Vec::new();
+        }
 
         let mut batch = Vec::with_capacity(rcvd as usize);
         for _ in 0..rcvd {
@@ -33,6 +36,6 @@ impl SocketRx {
         }
 
         self.ring.release(rcvd);
-        Some(batch)
+        batch
     }
 }

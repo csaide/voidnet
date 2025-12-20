@@ -247,7 +247,7 @@ impl Socket {
     ///
     /// If no frames are available to read this returns None.
     #[inline]
-    pub fn recv(&mut self, batch_size: u32) -> Option<Vec<Frame>> {
+    pub fn recv(&mut self, batch_size: u32) -> Vec<Frame> {
         self.rx.recv(batch_size)
     }
 

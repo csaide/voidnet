@@ -39,10 +39,10 @@ impl Consumer {
 
     /// Peeks the ring for the given batch size, and returns the index of the first descriptor and the number of descriptors received.
     #[inline]
-    pub fn peek(&mut self, batch_size: u32) -> Option<(u32, u32)> {
+    pub fn peek(&mut self, batch_size: u32) -> (u32, u32) {
         let mut idx: u32 = 0;
         let rcvd = unsafe { xsk_ring_cons__peek(self.ring.as_mut(), batch_size, &mut idx) };
-        if rcvd == 0 { None } else { Some((idx, rcvd)) }
+        (idx, rcvd)
     }
 
     /// Cancels the given batch size of descriptors.
