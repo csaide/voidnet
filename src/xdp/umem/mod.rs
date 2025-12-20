@@ -10,5 +10,8 @@ pub use fill::FillQueue;
 use frame::FRAME_STACK;
 pub use frame::Frame;
 pub use mmap::Mmap;
-pub use stack::{FrameStack, LockingFrameStack, ThreadLocalFrameStack};
+pub use stack::{
+    CrossbeamFrameStack, FrameStack, LockingFrameStack, Stack, ThreadLocalFrameStack,
+    UnsafeFrameStack,
+};
 pub use umem::{Umem, UmemBuilder};

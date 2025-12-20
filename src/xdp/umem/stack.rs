@@ -2,7 +2,70 @@ use std::cell::UnsafeCell;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+use crossbeam::queue::ArrayQueue;
+
 use crate::xdp::error::{Error, Result};
+
+pub trait Stack {
+    fn pop(&self) -> Option<u64>;
+    fn push(&self, addr: u64) -> Result<()>;
+}
+
+impl Stack for FrameStack {
+    #[inline(always)]
+    fn pop(&self) -> Option<u64> {
+        self.pop()
+    }
+
+    #[inline(always)]
+    fn push(&self, addr: u64) -> Result<()> {
+        self.push(addr)
+    }
+}
+
+impl Stack for LockingFrameStack {
+    #[inline(always)]
+    fn pop(&self) -> Option<u64> {
+        self.pop()
+    }
+    #[inline(always)]
+    fn push(&self, addr: u64) -> Result<()> {
+        self.push(addr)
+    }
+}
+
+impl Stack for ThreadLocalFrameStack {
+    #[inline(always)]
+    fn pop(&self) -> Option<u64> {
+        self.pop()
+    }
+    #[inline(always)]
+    fn push(&self, addr: u64) -> Result<()> {
+        self.push(addr)
+    }
+}
+
+impl Stack for UnsafeFrameStack {
+    #[inline(always)]
+    fn pop(&self) -> Option<u64> {
+        self.pop()
+    }
+    #[inline(always)]
+    fn push(&self, addr: u64) -> Result<()> {
+        self.push(addr)
+    }
+}
+
+impl Stack for CrossbeamFrameStack {
+    #[inline(always)]
+    fn pop(&self) -> Option<u64> {
+        self.pop()
+    }
+    #[inline(always)]
+    fn push(&self, addr: u64) -> Result<()> {
+        self.push(addr)
+    }
+}
 
 /// A stack of frames that are used to store data for a packet, this is a simple wrapper around a vector of atomic u64s.
 #[derive(Debug)]
@@ -33,7 +96,7 @@ impl FrameStack {
     #[inline]
     pub fn pop(&self) -> Option<u64> {
         loop {
-            let loc = self.loc.load(Ordering::Acquire);
+            let loc = self.loc.load(Ordering::Relaxed);
             if loc >= self.backing.len() {
                 return None;
             }
@@ -52,7 +115,7 @@ impl FrameStack {
     #[inline]
     pub fn push(&self, addr: u64) -> Result<()> {
         loop {
-            let loc = self.loc.load(Ordering::Acquire);
+            let loc = self.loc.load(Ordering::Relaxed);
             if loc == 0 {
                 return Err(Error::StackFull);
             }
@@ -151,5 +214,87 @@ impl ThreadLocalFrameStack {
             *self.loc.get() = loc - 1;
             Ok(())
         }
+    }
+}
+
+pub struct UnsafeFrameStack {
+    backing: Vec<UnsafeCell<u64>>,
+    loc: AtomicUsize,
+}
+
+unsafe impl Send for UnsafeFrameStack {}
+unsafe impl Sync for UnsafeFrameStack {}
+
+impl UnsafeFrameStack {
+    pub fn new(num_frames: usize, frame_size: usize) -> UnsafeFrameStack {
+        let backing = (0..num_frames)
+            .map(|i| UnsafeCell::new(i as u64 * frame_size as u64))
+            .collect();
+        Self {
+            backing,
+            loc: AtomicUsize::new(0),
+        }
+    }
+
+    /// Returns the next frame from the stack, if the stack is empty, it will return None.
+    #[inline]
+    pub fn pop(&self) -> Option<u64> {
+        loop {
+            let loc = self.loc.load(Ordering::Relaxed);
+            if loc >= self.backing.len() {
+                return None;
+            }
+
+            if self
+                .loc
+                .compare_exchange(loc, loc + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Some(unsafe { *self.backing[loc].get() });
+            }
+        }
+    }
+
+    /// Pushes a new frame onto the stack, if the stack is full, it will return an error.
+    #[inline]
+    pub fn push(&self, addr: u64) -> Result<()> {
+        loop {
+            let loc = self.loc.load(Ordering::Relaxed);
+            if loc == 0 {
+                return Err(Error::StackFull);
+            }
+
+            if self
+                .loc
+                .compare_exchange(loc, loc - 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                unsafe { *self.backing[loc - 1].get() = addr };
+                return Ok(());
+            }
+        }
+    }
+}
+
+pub struct CrossbeamFrameStack {
+    stack: ArrayQueue<u64>,
+}
+
+impl CrossbeamFrameStack {
+    pub fn new(num_frames: usize, frame_size: usize) -> Self {
+        let stack = ArrayQueue::new(num_frames);
+        for i in 0..num_frames {
+            let addr = i as u64 * frame_size as u64;
+            stack.push(addr).unwrap();
+        }
+        Self { stack }
+    }
+
+    pub fn pop(&self) -> Option<u64> {
+        self.stack.pop()
+    }
+
+    pub fn push(&self, value: u64) -> Result<()> {
+        self.stack.push(value).map_err(|_| Error::StackFull)
     }
 }
