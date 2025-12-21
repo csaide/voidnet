@@ -2,7 +2,7 @@ use std::{cmp::min, ptr::null_mut, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
-use libxdp_sys::{xsk_ring_prod, xsk_ring_prod__needs_wakeup};
+use libxdp_sys::xsk_ring_prod;
 
 use crate::xdp_v2::{
     error::{Error, Result},
@@ -31,7 +31,7 @@ impl FillQueue {
     #[inline]
     pub fn maybe_wake(&self, fd: c_int) -> Result<()> {
         unsafe {
-            if xsk_ring_prod__needs_wakeup(self.ring.as_ref()) == 1 {
+            if self.ring.needs_wakeup() {
                 let ret = recvfrom(fd, null_mut(), 0, MSG_DONTWAIT, null_mut(), null_mut());
                 let errno = errno();
                 if ret < 0

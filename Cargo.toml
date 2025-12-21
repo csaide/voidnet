@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arraydeque = { version = "0.5" }
 crossbeam = { version = "0.8" }
 errno = { version = "0.3" }
 thiserror = { version = "2" }

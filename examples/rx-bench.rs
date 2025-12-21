@@ -41,7 +41,6 @@ fn main() {
         .fill_process_threshold(2048)
         .build()
         .expect("Failed to create umem");
-    let stack = umem.frame_stack();
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
     let mut socket = Socket::builder(&mut xdp_ctx, &args.if_name, args.queue)
@@ -63,11 +62,6 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // The XDP subsystem is designed for low latency and high throughput, so we always batch receive packets
-    // to avoid context switching overhead. The batch size is a maximum value and not necessarily the number
-    // of frames operated on at a time.
-    let batch_size = args.batch_size as u32;
-
     println!("Socket created, listening for packets...");
 
     // Setup some stats to track the number of packets and bytes received.
@@ -79,10 +73,7 @@ fn main() {
         //
         // If no frames are available to read this returns an error of type [Error::WouldBlock]. All other errors are considered fatal.
         let len = batch.len();
-        let rcvd = socket.recv(&mut batch);
-        if rcvd == 0 {
-            continue;
-        }
+        socket.recv(&mut batch);
 
         for frame in batch[len..].iter() {
             // Do something with the frame!

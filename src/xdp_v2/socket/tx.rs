@@ -2,7 +2,6 @@ use std::{mem::ManuallyDrop, ptr::null, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, sendto};
-use libxdp_sys::xsk_ring_prod__needs_wakeup;
 
 use crate::xdp_v2::{
     error::{Error, Result},
@@ -30,7 +29,7 @@ impl SocketTx {
     #[inline]
     pub fn maybe_wake(&self) -> Result<()> {
         unsafe {
-            if xsk_ring_prod__needs_wakeup(self.ring.as_ref()) == 1 {
+            if self.ring.needs_wakeup() {
                 let ret = sendto(self.socket.fd, null(), 0, MSG_DONTWAIT, null(), 0);
                 let errno = errno();
                 if ret < 0
