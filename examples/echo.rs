@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use clap::Parser;
@@ -9,7 +12,7 @@ use libxdp_sys::{
     XSK_UMEM__DEFAULT_FRAME_SIZE,
 };
 
-use libvoid::xdp::{context::XdpContext, error::Error as XdpError, socket::Socket, umem::Umem};
+use libvoid::xdp_v2::{context::XdpContext, socket::Socket, umem::Umem};
 
 mod common;
 use common::{Stats, swap_addresses};
@@ -34,14 +37,13 @@ fn main() {
     // A Umem is created to manage sharing memory buffers between the kernel and user space.
     // You will need one of these for each unique device you want to use, you can however have multiple
     // sockets attached to the same Umem.
-    let (umem, mut fq, mut cq) = Umem::builder()
+    let (umem, mut fq, mut cq, mut _write_frames) = Umem::builder()
         .completion_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
         .fill_ring_size(XSK_RING_PROD__DEFAULT_NUM_DESCS * 2)
         .frame_size(XSK_UMEM__DEFAULT_FRAME_SIZE as usize)
+        .fill_process_threshold(1)
         .build()
         .expect("Failed to create umem");
-
-    umem.init_thread_local();
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
     let mut socket = Socket::builder(&mut xdp_ctx, &args.if_name, args.queue)
@@ -63,47 +65,36 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let mut to_write = Vec::with_capacity(args.batch_size);
-
     println!("Socket created, listening for packets...");
 
     // Setup some stats to track the number of packets and bytes received.
     let mut stats = Stats::new();
+    let mut frames = VecDeque::with_capacity(args.batch_size);
     while !exit.load(Ordering::Relaxed) {
+        fq.maybe_wake(socket.fd()).unwrap();
+        fq.process_queue(&mut frames);
+        assert_eq!(frames.len(), 0);
+
         // First read some frames off the socket.
-        let mut frames = socket.recv(args.batch_size as u32);
-        if frames.is_empty() {
+        let received = socket.recv(&mut frames);
+        if received == 0 {
             // There were no frames available to read, wake the fill queue and process any outstanding descriptors.
-            fq.maybe_wake(socket.fd()).unwrap();
-            fq.process_queue(args.batch_size as u32);
             continue;
         }
 
         // For each received frame, attempt to swap the addresses, and then queue them for writes.
-        for mut frame in frames.drain(..) {
+        for mut frame in frames.iter_mut() {
             stats.update(frame.len());
 
-            if let None = swap_addresses(&mut frame) {
-                continue;
-            }
-
-            to_write.push(frame);
+            swap_addresses(&mut frame).unwrap();
         }
 
         // Send the updated frames to the socket.
-        while to_write.len() > 0 {
-            match socket.send(&mut to_write) {
-                Ok(_) => break,
-                Err(XdpError::WouldBlock) => {
-                    // We would have blocked trying to send any of the frames, process any outstanding descriptors on the completion queue.
-                    cq.process_queue();
-                    continue;
-                }
-                Err(e) => {
-                    println!("Error sending frame: {:?}", e);
-                    break;
-                }
-            }
+        let _ = socket.send(&mut frames);
+
+        while frames.len() < received {
+            socket.maybe_wake().expect("Failed to wake tx queue");
+            cq.process_queue(&mut frames);
         }
 
         stats.maybe_print();

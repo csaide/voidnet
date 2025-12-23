@@ -1,4 +1,4 @@
-use std::{mem::ManuallyDrop, ptr::null, sync::Arc};
+use std::{collections::VecDeque, ptr::null, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, sendto};
@@ -14,7 +14,7 @@ use super::SocketOwner;
 pub struct SocketTx {
     socket: Arc<SocketOwner>,
     ring: Producer,
-    stack: Arc<FrameStack>,
+    _stack: Arc<FrameStack>,
 }
 
 impl SocketTx {
@@ -22,7 +22,7 @@ impl SocketTx {
         Self {
             socket,
             ring,
-            stack,
+            _stack: stack,
         }
     }
 
@@ -45,22 +45,13 @@ impl SocketTx {
         Ok(())
     }
 
-    pub fn prepare_frames(&mut self, num_frames: usize) -> Result<Vec<Frame>> {
-        self.stack.pop_batch(num_frames)
-    }
+    pub fn send(&mut self, frames: &mut VecDeque<Frame>) -> std::result::Result<u32, ()> {
+        let (mut idx_tx, ready) = self.ring.reserve(frames.len() as u32);
+        if ready == 0 {
+            return Err(()); // WouldBlock
+        }
 
-    pub fn send(&mut self, frames: &mut Vec<Frame>) -> Result<()> {
-        let (mut idx_tx, ready) = loop {
-            let (idx_tx, ready) = self.ring.reserve(frames.len() as u32);
-            if ready > 0 {
-                break (idx_tx, ready);
-            }
-
-            self.maybe_wake()?;
-        };
-
-        for _ in 0..ready {
-            let frame = frames.pop().map(ManuallyDrop::new).unwrap();
+        for frame in frames.drain(..ready as usize) {
             let desc = self.ring.tx_desc(idx_tx);
             unsafe {
                 (*desc).addr = frame.addr();
@@ -71,7 +62,6 @@ impl SocketTx {
         }
 
         self.ring.submit(ready);
-        self.maybe_wake()?;
-        Ok(())
+        Ok(ready)
     }
 }

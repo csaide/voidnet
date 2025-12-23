@@ -125,11 +125,13 @@ impl Stats {
         }
     }
 
+    #[inline(always)]
     pub fn update(&mut self, bytes: usize) {
         self.packets_received += 1;
         self.bytes_received += bytes as u64;
     }
 
+    #[inline(always)]
     pub fn maybe_print(&mut self) {
         const PACKETS_PER_PRINT: u64 = 20_000_000;
         if self.packets_received - self.last_packets_received < PACKETS_PER_PRINT {

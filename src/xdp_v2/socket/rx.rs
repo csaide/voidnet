@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use crate::xdp_v2::{
     frame::{Frame, FrameStack},
@@ -22,7 +22,7 @@ impl SocketRx {
         }
     }
 
-    pub fn recv(&mut self, batch: &mut Vec<Frame>) -> usize {
+    pub fn recv(&mut self, batch: &mut VecDeque<Frame>) -> usize {
         let (mut idx_rx, rcvd) = self.ring.peek((batch.capacity() - batch.len()) as u32);
         if rcvd == 0 {
             return 0;
@@ -30,7 +30,7 @@ impl SocketRx {
 
         for _ in 0..rcvd as usize {
             let desc = self.ring.rx_desc(idx_rx);
-            batch.push(self.stack.to_frame(desc.addr, desc.len as usize));
+            batch.push_back(self.stack.to_frame(desc.addr, desc.len as usize));
             idx_rx += 1;
         }
 

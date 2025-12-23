@@ -1,4 +1,4 @@
-use std::{cmp::min, ptr::null_mut, sync::Arc};
+use std::{collections::VecDeque, ptr::null_mut, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
@@ -11,7 +11,7 @@ use crate::xdp_v2::{
 };
 
 pub struct FillQueue {
-    stack: Arc<FrameStack>,
+    _stack: Arc<FrameStack>,
     ring: Producer,
     process_threshold: usize,
 }
@@ -20,7 +20,7 @@ impl FillQueue {
     pub fn new(ring: Producer, stack: Arc<FrameStack>, process_threshold: usize) -> Self {
         Self {
             ring,
-            stack,
+            _stack: stack,
             process_threshold,
         }
     }
@@ -49,18 +49,17 @@ impl FillQueue {
 
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline]
-    pub fn process_queue(&mut self, batch: &mut Vec<Frame>) {
+    pub fn process_queue(&mut self, batch: &mut VecDeque<Frame>) {
         if batch.len() < self.process_threshold {
             return;
         }
 
-        let batch_size = min(batch.len(), self.stack.len());
-        let (mut idx, ready) = self.ring.reserve(batch_size as u32);
+        let (mut idx, ready) = self.ring.reserve(batch.len() as u32);
         if ready == 0 {
             return;
         }
 
-        for frame in batch.drain(..batch_size) {
+        for frame in batch.drain(..ready as usize) {
             let ptr = self.ring.fill_addr(idx);
             unsafe { *ptr = frame.addr() as u64 };
             idx += 1;

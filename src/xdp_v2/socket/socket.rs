@@ -1,4 +1,4 @@
-use std::{ffi::CString, sync::Arc};
+use std::{collections::VecDeque, ffi::CString, sync::Arc};
 
 use errno::errno;
 use libc::c_int;
@@ -223,6 +223,12 @@ impl Socket {
         self.owner.fd
     }
 
+    /// Possibly wakes the tx queue, so the kernel continues to process outgoing packets.
+    #[inline]
+    pub fn maybe_wake(&self) -> Result<()> {
+        self.tx.maybe_wake()
+    }
+
     /// Receives a batch of frames from the socket.
     ///
     /// Note that it is not guaranteed that the resulting Vec of frames will match the batch size supplied.
@@ -230,19 +236,8 @@ impl Socket {
     ///
     /// If no frames are available to read this returns None.
     #[inline]
-    pub fn recv(&mut self, batch: &mut Vec<Frame>) -> usize {
+    pub fn recv(&mut self, batch: &mut VecDeque<Frame>) -> usize {
         self.rx.recv(batch)
-    }
-
-    /// Prepares a batch of frames for sending.
-    ///
-    /// Note that it is not guaranteed that the resulting Vec of frames will match the batch size supplied.
-    /// It is considered a batch maximum and this function will return as soon as at least one frame is prepared.
-    ///
-    /// If no frames are availabel to prepare this returns an error of type [Error::WouldBlock].
-    #[inline]
-    pub fn prepare_frames(&mut self, num_frames: usize) -> Result<Vec<Frame>> {
-        self.tx.prepare_frames(num_frames)
     }
 
     /// Sends a batch of frames to the socket.
@@ -252,9 +247,9 @@ impl Socket {
     ///
     /// The caller should call this function until their batch of frames is empty.
     ///
-    /// If no frames are availabel to send this returns an error of type [Error::WouldBlock].
+    /// If no frames are availabel to send this returns an error of type [std::result::Result<(), ()>].
     #[inline]
-    pub fn send(&mut self, frames: &mut Vec<Frame>) -> Result<()> {
+    pub fn send(&mut self, frames: &mut VecDeque<Frame>) -> std::result::Result<u32, ()> {
         self.tx.send(frames)
     }
 }

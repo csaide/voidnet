@@ -1,4 +1,4 @@
-use std::{os::raw::c_void, sync::Arc};
+use std::{collections::VecDeque, os::raw::c_void, sync::Arc};
 
 use errno::errno;
 use libxdp_sys::{
@@ -9,7 +9,7 @@ use libxdp_sys::{
 
 use crate::xdp_v2::{
     error::{Error, Result},
-    frame::FrameStack,
+    frame::{Frame, FrameStack},
     ring::{Consumer, Producer},
 };
 
@@ -64,7 +64,7 @@ impl UmemBuilder {
         self
     }
 
-    pub fn build(self) -> Result<(Arc<Umem>, FillQueue, CompletionQueue)> {
+    pub fn build(self) -> Result<(Arc<Umem>, FillQueue, CompletionQueue, VecDeque<Frame>)> {
         Umem::new(
             self.completion_ring_size,
             self.fill_ring_size,
@@ -96,7 +96,7 @@ impl Umem {
         fill_process_threshold: usize,
         num_frames: usize,
         frame_size: usize,
-    ) -> Result<(Arc<Self>, FillQueue, CompletionQueue)> {
+    ) -> Result<(Arc<Self>, FillQueue, CompletionQueue, VecDeque<Frame>)> {
         let cfg = xsk_umem_config {
             fill_size: fill_ring_size,
             comp_size: completion_ring_size,
@@ -107,7 +107,7 @@ impl Umem {
 
         let mut comp_ring = Consumer::new(completion_ring_size);
         let mut fill_ring = Producer::new(fill_ring_size);
-        let mut frame_stack = FrameStack::new(num_frames, frame_size)?;
+        let (mut frame_stack, mut frames) = FrameStack::new(num_frames, frame_size)?;
 
         let mut umem: *mut xsk_umem = std::ptr::null_mut();
         let umem_ptr: *mut *mut xsk_umem = &mut umem;
@@ -135,11 +135,10 @@ impl Umem {
         let mut fq = FillQueue::new(fill_ring, frame_stack.clone(), fill_process_threshold);
         // For all intents and purposes, we want to have a full fill queue, technically its not required but it helps
         // to ensure there is not ring starvation.
-        let mut batch = frame_stack.pop_batch(fill_ring_size as usize)?;
-        fq.process_queue(&mut batch);
+        fq.process_queue(&mut frames);
 
         let cq = CompletionQueue::new(comp_ring, frame_stack);
-        Ok((umem, fq, cq))
+        Ok((umem, fq, cq, frames))
     }
 
     /// Returns a pointer to the kernel UMEM object.

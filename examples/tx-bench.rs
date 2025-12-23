@@ -12,7 +12,7 @@ use libxdp_sys::{
     XSK_UMEM__DEFAULT_FRAME_SIZE,
 };
 
-use libvoid::xdp::{context::XdpContext, error::Error as XdpError, socket::Socket, umem::Umem};
+use libvoid::xdp_v2::{context::XdpContext, socket::Socket, umem::Umem};
 use pnet::{
     packet::{
         Packet,
@@ -116,14 +116,12 @@ fn main() {
 
     let mut xdp_context = XdpContext::new(&args.if_name).expect("Failed to create xdp context");
 
-    let (umem, _fq, mut cq) = Umem::builder()
+    let (umem, _fq, mut cq, mut write_frames) = Umem::builder()
         .completion_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
         .fill_ring_size(XSK_RING_PROD__DEFAULT_NUM_DESCS * 2)
         .frame_size(XSK_UMEM__DEFAULT_FRAME_SIZE as usize)
         .build()
         .expect("Failed to create umem");
-
-    umem.init_thread_local();
 
     let mut socket = Socket::builder(&mut xdp_context, &args.if_name, args.queue)
         .rx_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
@@ -150,44 +148,31 @@ fn main() {
 
     // Setup some stats to track the number of packets and bytes received.
     let mut stats = Stats::new();
+    let frames = write_frames.len();
     while !exit.load(Ordering::Relaxed) {
-        // Prepare a batch of frames for sending on the socket, these frames are backed
-        // by the internal umem and if dropped before being sent will be returned to the umem.
-        let mut frames = match socket.prepare_frames(args.batch_size) {
-            Ok(frames) => frames,
-            Err(XdpError::WouldBlock) => {
-                // We would have blocked trying to prepare any of the frames, process any outstanding descriptors on the completion queue.
-                cq.process_queue();
-                continue;
-            }
-            Err(e) => {
-                // An unrecoverable error occurred, exit the loop.
-                println!("Error preparing frames: {:?}", e);
-                break;
-            }
-        };
-
         // Copy the data into the frames.
-        for frame in frames.iter_mut() {
+        for frame in write_frames.iter_mut() {
             unsafe { frame.copy_from(&data) };
-            stats.update(frame.len());
         }
 
         // Send the prepared frames to the socket.
-        while frames.len() > 0 {
-            match socket.send(&mut frames) {
-                Ok(_) => {}
-                Err(XdpError::WouldBlock) => {
-                    // We would have blocked trying to send any of the frames, process any outstanding descriptors on the completion queue.
-                    cq.process_queue();
-                    continue;
+        match socket.send(&mut write_frames) {
+            Ok(sent) => {
+                for _ in 0..sent {
+                    stats.update(data.len());
                 }
-                Err(e) => {
-                    // An unrecoverable error occurred, exit the loop.
-                    println!("Error sending frames: {:?}", e);
-                    break;
-                }
-            };
+            }
+            Err(_) => {
+                // We would have blocked.
+            }
+        };
+
+        // Process any outstanding descriptors on the completion queue.
+        //
+        // Note for copy mode this is required to actually send the frames.
+        while write_frames.len() < frames {
+            socket.maybe_wake().expect("Failed to wake tx queue");
+            cq.process_queue(&mut write_frames);
         }
 
         stats.maybe_print();

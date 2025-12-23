@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use clap::Parser;
@@ -34,11 +37,11 @@ fn main() {
     // A Umem is created to manage sharing memory buffers between the kernel and user space.
     // You will need one of these for each unique device you want to use, you can however have multiple
     // sockets attached to the same Umem.
-    let (umem, mut fq, _cq) = Umem::builder()
+    let (umem, mut fq, _cq, _write_frames) = Umem::builder()
         .completion_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
         .fill_ring_size(XSK_RING_PROD__DEFAULT_NUM_DESCS * 2)
         .frame_size(XSK_UMEM__DEFAULT_FRAME_SIZE as usize)
-        .fill_process_threshold(2048)
+        .fill_process_threshold(1)
         .build()
         .expect("Failed to create umem");
 
@@ -66,22 +69,21 @@ fn main() {
 
     // Setup some stats to track the number of packets and bytes received.
     let mut stats = Stats::new();
-    let mut batch = Vec::with_capacity(XSK_RING_PROD__DEFAULT_NUM_DESCS as usize * 2);
+    let mut frame_buffer = VecDeque::with_capacity(XSK_RING_PROD__DEFAULT_NUM_DESCS as usize * 2);
     while !exit.load(Ordering::Relaxed) {
         // This is different than what you might expect, since we are using a Umem we don't specify buffers to fill
         // during recv() instead we request a batch up to a maximum size to read at a time.
         //
         // If no frames are available to read this returns an error of type [Error::WouldBlock]. All other errors are considered fatal.
-        let len = batch.len();
-        socket.recv(&mut batch);
+        socket.recv(&mut frame_buffer);
 
-        for frame in batch[len..].iter() {
+        for frame in frame_buffer.iter() {
             // Do something with the frame!
             stats.update(frame.len());
         }
 
         fq.maybe_wake(socket.fd()).unwrap();
-        fq.process_queue(&mut batch);
+        fq.process_queue(&mut frame_buffer);
 
         stats.maybe_print();
     }
