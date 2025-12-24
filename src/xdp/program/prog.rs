@@ -5,10 +5,10 @@ use libc::if_nametoindex;
 use libxdp_sys::{
     bpf_object__find_map_by_name, bpf_object__open_mem, libxdp_get_error, xdp_program,
     xdp_program__attach, xdp_program__bpf_obj, xdp_program__close, xdp_program__detach,
-    xdp_program__from_bpf_obj,
+    xdp_program__from_bpf_obj, xdp_program__set_xdp_frags_support,
 };
 
-use crate::xdp_v2::error::{Error, Result};
+use crate::xdp::error::{Error, Result};
 
 use super::{AttachMode, Map};
 
@@ -21,7 +21,12 @@ pub struct XdpProgram {
 
 impl XdpProgram {
     /// Creates a new [XdpProgram] object from the given data, and then attaches that program to the given network interface with the given attach mode.
-    pub fn new(data: &[u8], if_name: &str, attach_mode: AttachMode) -> Result<Self> {
+    pub fn new(
+        data: &[u8],
+        if_name: &str,
+        attach_mode: AttachMode,
+        enable_fragmentation: bool,
+    ) -> Result<Self> {
         let if_name_c = CString::new(if_name).unwrap();
         let if_index = unsafe { if_nametoindex(if_name_c.as_ptr()) } as i32;
         if if_index == 0 {
@@ -39,6 +44,11 @@ impl XdpProgram {
         let err = unsafe { libxdp_get_error(program as *const _) };
         if err < 0 {
             return Err(Error::OpenProgram(errno()));
+        }
+
+        let err = unsafe { xdp_program__set_xdp_frags_support(program, enable_fragmentation) };
+        if err < 0 {
+            return Err(Error::SetXdpFragsSupport(errno()));
         }
 
         let err = unsafe { xdp_program__attach(program, if_index, attach_mode as u32, 0) };
@@ -61,6 +71,11 @@ impl XdpProgram {
     /// Returns a constant pointer to the raw [xdp_program] object.
     pub fn as_ptr(&self) -> *const xdp_program {
         self.program
+    }
+
+    /// Returns the attach mode of the program.
+    pub fn attach_mode(&self) -> AttachMode {
+        self.attach_mode
     }
 
     /// Finds a map by name in the program.

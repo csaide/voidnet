@@ -1,5 +1,7 @@
 mod map;
-mod program;
+mod mode;
+mod prog;
 
 pub use map::Map;
-pub use program::{AttachMode, XdpProgram};
+pub use mode::AttachMode;
+pub use prog::XdpProgram;

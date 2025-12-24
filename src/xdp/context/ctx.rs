@@ -1,9 +1,8 @@
 use crate::xdp::{
+    error::Result,
     program::{AttachMode, Map, XdpProgram},
     socket::Socket,
 };
-
-use crate::xdp::error::Result;
 
 // We ship our little XDP router directly embedded in this library as raw ELF data.
 static XDP_PROG_DATA: &'static [u8] = include_bytes!("../../../bpf/xdp_kern.o");
@@ -12,12 +11,12 @@ pub struct XdpContext {
     data_map: Map,
     xsks_map: Map,
     num_sockets: u32,
-    _program: XdpProgram,
+    program: XdpProgram,
 }
 
 impl XdpContext {
-    pub fn new(if_name: &str) -> Result<Self> {
-        let program = XdpProgram::new(XDP_PROG_DATA, if_name, AttachMode::default())?;
+    pub fn new(if_name: &str, attach_mode: AttachMode, enable_fragmentation: bool) -> Result<Self> {
+        let program = XdpProgram::new(XDP_PROG_DATA, if_name, attach_mode, enable_fragmentation)?;
 
         let data_map = program.find_map(".bss")?;
         let xsks_map = program.find_map("xsks_map")?;
@@ -26,8 +25,12 @@ impl XdpContext {
             data_map,
             xsks_map,
             num_sockets: 0,
-            _program: program,
+            program,
         })
+    }
+
+    pub fn attach_mode(&self) -> AttachMode {
+        self.program.attach_mode()
     }
 
     pub fn register_socket(&mut self, socket: &Socket) -> Result<()> {

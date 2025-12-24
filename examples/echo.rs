@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    ops::{Deref, DerefMut},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -7,48 +8,64 @@ use std::{
 };
 
 use clap::Parser;
-use libxdp_sys::{
-    XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS,
-    XSK_UMEM__DEFAULT_FRAME_SIZE,
-};
 
-use libvoid::xdp_v2::{context::XdpContext, socket::Socket, umem::Umem};
+use libvoid::xdp::{context::XdpContext, socket::Socket, umem::Umem};
 
 mod common;
-use common::{Stats, swap_addresses};
+use common::{BaseArgs, Stats, swap_addresses};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
-    if_name: String,
-    #[arg(short, long)]
-    queue: u32,
-    #[arg(short, long, default_value = "64")]
-    batch_size: usize,
+    #[command(flatten)]
+    base: BaseArgs,
+}
+
+impl Deref for Args {
+    type Target = BaseArgs;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl DerefMut for Args {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.base
+    }
 }
 
 fn main() {
     let args = Args::parse();
 
-    // Every XDP program starts with setting up an XdpContext, this loads the XDP kernel program and attaches it to the named interface.
-    let mut xdp_ctx = XdpContext::new(&args.if_name).expect("Failed to create xdp context");
+    // Every application starts with setting up an XdpContext, this loads the XDP kernel program and attaches it to the named interface.
+    let mut xdp_ctx = XdpContext::new(&args.if_name, args.attach_mode, args.enable_fragmentation)
+        .expect("Failed to create xdp context");
 
     // A Umem is created to manage sharing memory buffers between the kernel and user space.
     // You will need one of these for each unique device you want to use, you can however have multiple
     // sockets attached to the same Umem.
+    //
+    // - umem > The actual umem object sharing memory between the kernel and user space.
+    // - fq > The fill queue is used to pass frames to the kernel for reading packet data into.
+    // - cq > The completion queue is used to retrieve frames the kernel is done sending.
+    // - write_frames > A set of frames that are backed by the umem which can be used for immediate writes.
     let (umem, mut fq, mut cq, mut _write_frames) = Umem::builder()
-        .completion_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
-        .fill_ring_size(XSK_RING_PROD__DEFAULT_NUM_DESCS * 2)
-        .frame_size(XSK_UMEM__DEFAULT_FRAME_SIZE as usize)
-        .fill_process_threshold(1)
+        .completion_ring_size(args.completion_ring_size)
+        .fill_ring_size(args.fill_ring_size)
+        .frame_size(args.frame_size)
+        .busy_poll(args.busy_poll)
         .build()
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
     let mut socket = Socket::builder(&mut xdp_ctx, &args.if_name, args.queue)
-        .rx_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
-        .tx_ring_size(XSK_RING_PROD__DEFAULT_NUM_DESCS)
+        .rx_ring_size(args.rx_ring_size)
+        .tx_ring_size(args.tx_ring_size)
+        .busy_poll(args.busy_poll)
+        .busy_poll_batch_size(args.busy_poll_batch_size)
+        .busy_poll_timout_us(args.busy_poll_timout_us)
+        .copy_mode(args.copy_mode)
         .build(umem)
         .expect("Failed to create socket");
 
@@ -69,20 +86,21 @@ fn main() {
 
     // Setup some stats to track the number of packets and bytes received.
     let mut stats = Stats::new();
-    let mut frames = VecDeque::with_capacity(args.batch_size);
+    let mut frames = VecDeque::with_capacity(args.busy_poll_batch_size);
     while !exit.load(Ordering::Relaxed) {
-        fq.maybe_wake(socket.fd()).unwrap();
-        fq.process_queue(&mut frames);
-        assert_eq!(frames.len(), 0);
-
         // First read some frames off the socket.
-        let received = socket.recv(&mut frames);
-        if received == 0 {
-            // There were no frames available to read, wake the fill queue and process any outstanding descriptors.
-            continue;
-        }
+        let received = match socket.recv(&mut frames) {
+            Ok(received) => received,
+            Err(()) => {
+                // There were no frames available to read, wake the fill queue and process any outstanding descriptors.
+                continue;
+            }
+        };
 
-        // For each received frame, attempt to swap the addresses, and then queue them for writes.
+        // Guaranteed by the socket.recv() function, given an empty input buffer.
+        debug_assert_eq!(frames.len(), received as usize);
+
+        // For each received frame, attempt to swap the addresses.
         for mut frame in frames.iter_mut() {
             stats.update(frame.len());
 
@@ -92,10 +110,18 @@ fn main() {
         // Send the updated frames to the socket.
         let _ = socket.send(&mut frames);
 
-        while frames.len() < received {
+        // Send will always fully consume the input buffer, so we should have no frames left.
+        debug_assert_eq!(frames.len(), 0);
+
+        // So we "sent" the packets but now we need to actually drive the completion of those sends.
+        while frames.len() < received as usize {
             socket.maybe_wake().expect("Failed to wake tx queue");
-            cq.process_queue(&mut frames);
+            cq.process_queue(&mut frames, None);
         }
+
+        // Now give back all our frames to the kernel by means of the fill queue.
+        fq.maybe_wake(socket.fd()).unwrap();
+        fq.process_queue(&mut frames);
 
         stats.maybe_print();
     }

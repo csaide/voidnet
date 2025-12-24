@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    ops::{Deref, DerefMut},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -7,48 +8,59 @@ use std::{
 };
 
 use clap::Parser;
-use libxdp_sys::{
-    XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS,
-    XSK_UMEM__DEFAULT_FRAME_SIZE,
-};
 
-use libvoid::xdp_v2::{context::XdpContext, socket::Socket, umem::Umem};
+use libvoid::xdp::{context::XdpContext, socket::Socket, umem::Umem};
 
 mod common;
-use common::Stats;
+use common::{BaseArgs, Stats};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
-    if_name: String,
-    #[arg(short, long)]
-    queue: u32,
-    #[arg(short, long, default_value = "64")]
-    batch_size: usize,
+    #[command(flatten)]
+    base: BaseArgs,
+}
+
+impl Deref for Args {
+    type Target = BaseArgs;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl DerefMut for Args {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.base
+    }
 }
 
 fn main() {
     let args = Args::parse();
 
     // Every XDP program starts with setting up an XdpContext, this loads the XDP kernel program and attaches it to the named interface.
-    let mut xdp_ctx = XdpContext::new(&args.if_name).expect("Failed to create xdp context");
+    let mut xdp_ctx = XdpContext::new(&args.if_name, args.attach_mode, args.enable_fragmentation)
+        .expect("Failed to create xdp context");
 
     // A Umem is created to manage sharing memory buffers between the kernel and user space.
     // You will need one of these for each unique device you want to use, you can however have multiple
     // sockets attached to the same Umem.
     let (umem, mut fq, _cq, _write_frames) = Umem::builder()
-        .completion_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
-        .fill_ring_size(XSK_RING_PROD__DEFAULT_NUM_DESCS * 2)
-        .frame_size(XSK_UMEM__DEFAULT_FRAME_SIZE as usize)
-        .fill_process_threshold(1)
+        .completion_ring_size(args.completion_ring_size)
+        .fill_ring_size(args.fill_ring_size)
+        .frame_size(args.frame_size)
+        .busy_poll(args.busy_poll)
         .build()
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
     let mut socket = Socket::builder(&mut xdp_ctx, &args.if_name, args.queue)
-        .rx_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
-        .tx_ring_size(XSK_RING_PROD__DEFAULT_NUM_DESCS)
+        .rx_ring_size(args.rx_ring_size)
+        .tx_ring_size(args.tx_ring_size)
+        .busy_poll(args.busy_poll)
+        .busy_poll_batch_size(args.busy_poll_batch_size)
+        .busy_poll_timout_us(args.busy_poll_timout_us)
+        .copy_mode(args.copy_mode)
         .build(umem)
         .expect("Failed to create socket");
 
@@ -69,13 +81,16 @@ fn main() {
 
     // Setup some stats to track the number of packets and bytes received.
     let mut stats = Stats::new();
-    let mut frame_buffer = VecDeque::with_capacity(XSK_RING_PROD__DEFAULT_NUM_DESCS as usize * 2);
+    let mut frame_buffer = VecDeque::with_capacity(args.busy_poll_batch_size);
     while !exit.load(Ordering::Relaxed) {
         // This is different than what you might expect, since we are using a Umem we don't specify buffers to fill
         // during recv() instead we request a batch up to a maximum size to read at a time.
         //
         // If no frames are available to read this returns an error of type [Error::WouldBlock]. All other errors are considered fatal.
-        socket.recv(&mut frame_buffer);
+        match socket.recv(&mut frame_buffer) {
+            Ok(_) => {}
+            Err(()) => {}
+        };
 
         for frame in frame_buffer.iter() {
             // Do something with the frame!

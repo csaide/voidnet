@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::xdp_v2::error::Result;
+use crate::xdp::error::Result;
 
 use super::{Frame, Mmap};
 

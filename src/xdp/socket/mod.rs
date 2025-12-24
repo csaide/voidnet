@@ -1,12 +1,11 @@
-//! AF_XDP socket abstraction for zero-copy networking.
-//!
-//! This module provides high-level wrappers around Linux AF_XDP sockets,
-//! enabling async/await support for packet I/O operations.
-
+mod mode;
+mod owner;
 mod rx;
 mod socket;
 mod tx;
 
+pub use mode::{BindMode, CopyMode};
+pub use owner::SocketOwner;
 pub use rx::SocketRx;
-pub use socket::{Socket, SocketBuilder, SocketOwner};
+pub use socket::Socket;
 pub use tx::SocketTx;

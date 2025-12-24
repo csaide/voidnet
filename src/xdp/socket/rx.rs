@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use crate::xdp::{
+    frame::{Frame, FrameStack},
     ring::Consumer,
-    umem::{Frame, Umem},
 };
 
 use super::SocketOwner;
@@ -10,32 +10,32 @@ use super::SocketOwner;
 pub struct SocketRx {
     _socket: Arc<SocketOwner>,
     ring: Consumer,
-    umem: Arc<Umem>,
+    stack: Arc<FrameStack>,
 }
 
 impl SocketRx {
-    pub fn new(socket: Arc<SocketOwner>, ring: Consumer, umem: Arc<Umem>) -> Self {
+    pub fn new(socket: Arc<SocketOwner>, ring: Consumer, stack: Arc<FrameStack>) -> Self {
         Self {
             _socket: socket,
             ring,
-            umem,
+            stack,
         }
     }
 
-    pub fn recv(&mut self, batch_size: u32) -> Vec<Frame> {
-        let (mut idx_rx, rcvd) = self.ring.peek(batch_size);
+    #[inline(always)]
+    pub fn recv(&mut self, batch: &mut VecDeque<Frame>) -> std::result::Result<u32, ()> {
+        let (mut idx_rx, rcvd) = self.ring.peek((batch.capacity() - batch.len()) as u32);
         if rcvd == 0 {
-            return Vec::new();
+            return Err(());
         }
 
-        let mut batch = Vec::with_capacity(rcvd as usize);
-        for _ in 0..rcvd {
+        for _ in 0..rcvd as usize {
             let desc = self.ring.rx_desc(idx_rx);
-            batch.push(self.umem.get_read_frame(desc.addr, desc.len as usize));
+            batch.push_back(self.stack.to_frame(desc.addr, desc.len as usize));
             idx_rx += 1;
         }
 
         self.ring.release(rcvd);
-        batch
+        Ok(rcvd)
     }
 }

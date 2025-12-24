@@ -1,47 +1,44 @@
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use libxdp_sys::xsk_ring_cons;
 
-use crate::xdp::ring::Consumer;
-
-use super::{FrameStack, Umem};
+use crate::xdp::{
+    frame::{Frame, FrameStack},
+    ring::Consumer,
+};
 
 pub struct CompletionQueue {
-    _umem: Arc<Umem>,
     ring: Consumer,
     stack: Arc<FrameStack>,
 }
 
 impl CompletionQueue {
-    pub fn new(umem: Arc<Umem>, ring: Consumer, stack: Arc<FrameStack>) -> Self {
-        Self {
-            _umem: umem,
-            ring,
-            stack,
-        }
+    pub fn new(ring: Consumer, stack: Arc<FrameStack>) -> Self {
+        Self { ring, stack }
     }
 
-    pub fn process_queue(&mut self) {
-        let (mut idx, ready) = self.ring.peek(u32::MAX);
+    #[inline(always)]
+    pub fn process_queue(&mut self, batch: &mut VecDeque<Frame>, frame_size: Option<usize>) {
+        let (mut idx, ready) = self.ring.peek((batch.capacity() - batch.len()) as u32);
         if ready == 0 {
             return;
         }
 
         for _ in 0..ready {
             let addr = self.ring.comp_addr(idx);
-            self.stack
-                .push(addr)
-                .expect("Some how we ran out of frames.");
+            batch.push_back(self.stack.to_frame(addr, frame_size.unwrap_or(0)));
             idx += 1;
         }
 
         self.ring.release(ready as u32);
     }
 
+    #[inline(always)]
     pub fn as_mut(&mut self) -> *mut xsk_ring_cons {
         self.ring.as_mut()
     }
 
+    #[inline(always)]
     pub fn as_ref(&self) -> *const xsk_ring_cons {
         self.ring.as_ref()
     }

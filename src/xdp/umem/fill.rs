@@ -1,88 +1,73 @@
-use std::{cmp::min, ptr::null_mut, sync::Arc};
+use std::{collections::VecDeque, ptr::null_mut, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
-use libxdp_sys::{xsk_ring_prod, xsk_ring_prod__needs_wakeup};
+use libxdp_sys::xsk_ring_prod;
 
 use crate::xdp::{
     error::{Error, Result},
+    frame::{Frame, FrameStack},
     ring::Producer,
 };
 
-use super::{FrameStack, Umem};
-
 pub struct FillQueue {
-    _umem: Arc<Umem>,
+    _stack: Arc<FrameStack>,
     ring: Producer,
-    stack: Arc<FrameStack>,
-    process_threshold: u32,
+    busy_poll: bool,
 }
 
 impl FillQueue {
-    pub fn new(
-        umem: Arc<Umem>,
-        ring: Producer,
-        stack: Arc<FrameStack>,
-        process_threshold: u32,
-    ) -> Self {
+    pub fn new(ring: Producer, stack: Arc<FrameStack>, busy_poll: bool) -> Self {
         Self {
-            _umem: umem,
             ring,
-            stack,
-            process_threshold,
+            _stack: stack,
+            busy_poll,
         }
     }
 
     /// Possibly wakes the fill queue, so the kernel continues to process incoming packets.
     ///
     /// This is done by first checking the needs wakeup flag, given its set we fire a empty recvfrom on the supplied fd.
-    #[inline]
+    #[inline(always)]
     pub fn maybe_wake(&self, fd: c_int) -> Result<()> {
-        unsafe {
-            if xsk_ring_prod__needs_wakeup(self.ring.as_ref()) == 1 {
-                let ret = recvfrom(fd, null_mut(), 0, MSG_DONTWAIT, null_mut(), null_mut());
-                let errno = errno();
-                if ret < 0
-                    && errno.0 != ENOBUFS
-                    && errno.0 != EAGAIN
-                    && errno.0 != EBUSY
-                    && errno.0 != ENETDOWN
-                {
-                    return Err(Error::WakeFillQueue(errno));
-                }
+        if self.busy_poll || self.ring.needs_wakeup() {
+            let ret = unsafe { recvfrom(fd, null_mut(), 0, MSG_DONTWAIT, null_mut(), null_mut()) };
+            let errno = errno();
+            if ret < 0
+                && errno.0 != ENOBUFS
+                && errno.0 != EAGAIN
+                && errno.0 != EBUSY
+                && errno.0 != ENETDOWN
+            {
+                return Err(Error::WakeFillQueue(errno));
             }
         }
         Ok(())
     }
 
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
-    #[inline]
-    pub fn process_queue(&mut self, batch_size: u32) -> u32 {
-        if batch_size < self.process_threshold {
-            return 0;
-        }
-
-        let batch_size = min(batch_size, self.stack.len() as u32);
-        let (mut idx, ready) = self.ring.reserve(batch_size);
+    #[inline(always)]
+    pub fn process_queue(&mut self, batch: &mut VecDeque<Frame>) {
+        let (mut idx, ready) = self.ring.reserve(batch.len() as u32);
         if ready == 0 {
-            return 0;
+            return;
         }
 
-        for _ in 0..ready {
-            let addr = self.stack.pop().unwrap();
+        for frame in batch.drain(..ready as usize) {
             let ptr = self.ring.fill_addr(idx);
-            unsafe { *ptr = addr as u64 };
+            unsafe { *ptr = frame.addr() as u64 };
             idx += 1;
         }
 
         self.ring.submit(ready);
-        ready
     }
 
+    #[inline(always)]
     pub fn as_mut(&mut self) -> *mut xsk_ring_prod {
         self.ring.as_mut()
     }
 
+    #[inline(always)]
     pub fn as_ref(&self) -> *const xsk_ring_prod {
         self.ring.as_ref()
     }

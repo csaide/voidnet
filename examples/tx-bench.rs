@@ -1,5 +1,6 @@
 use std::{
     net::Ipv6Addr,
+    ops::{Deref, DerefMut},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -7,12 +8,6 @@ use std::{
 };
 
 use clap::Parser;
-use libxdp_sys::{
-    XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS,
-    XSK_UMEM__DEFAULT_FRAME_SIZE,
-};
-
-use libvoid::xdp_v2::{context::XdpContext, socket::Socket, umem::Umem};
 use pnet::{
     packet::{
         Packet,
@@ -24,8 +19,10 @@ use pnet::{
     util::MacAddr,
 };
 
+use libvoid::xdp::{context::XdpContext, socket::Socket, umem::Umem};
+
 mod common;
-use common::Stats;
+use common::{BaseArgs, Stats};
 
 // Build a frame for the given arguments. This is a simple example and can be customized as needed.
 fn build_frame(args: &Args) -> Vec<u8> {
@@ -91,41 +88,83 @@ fn build_frame(args: &Args) -> Vec<u8> {
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
-    if_name: String,
-    #[arg(short, long)]
-    queue: u32,
-    #[arg(short, long, default_value = "64")]
-    batch_size: usize,
-    #[arg(short, long, default_value = "8008")]
+    #[command(flatten)]
+    base: BaseArgs,
+    #[arg(
+        short,
+        long,
+        default_value = "8008",
+        help = "The source port for the UDP packet."
+    )]
     src_port: u16,
-    #[arg(short, long, default_value = "8008")]
+    #[arg(
+        short,
+        long,
+        default_value = "8008",
+        help = "The destination port for the UDP packet."
+    )]
     dst_port: u16,
-    #[arg(short, long, default_value = "fc00:dead:cafe:1::1")]
+    #[arg(
+        short,
+        long,
+        default_value = "fc00:dead:cafe:1::1",
+        help = "The source IP address for the UDP packet."
+    )]
     src_ip: Ipv6Addr,
-    #[arg(short, long, default_value = "fc00:dead:cafe:1::2")]
+    #[arg(
+        short,
+        long,
+        default_value = "fc00:dead:cafe:1::2",
+        help = "The destination IP address for the UDP packet."
+    )]
     dst_ip: Ipv6Addr,
-    #[arg(short, long)]
+    #[arg(short, long, help = "The source MAC address for the Ethernet packet.")]
     src_mac: MacAddr,
-    #[arg(short, long)]
+    #[arg(
+        short,
+        long,
+        help = "The destination MAC address for the Ethernet packet."
+    )]
     dst_mac: MacAddr,
+}
+
+impl Deref for Args {
+    type Target = BaseArgs;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl DerefMut for Args {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.base
+    }
 }
 
 fn main() {
     let args = Args::parse();
 
-    let mut xdp_context = XdpContext::new(&args.if_name).expect("Failed to create xdp context");
+    let mut xdp_context =
+        XdpContext::new(&args.if_name, args.attach_mode, args.enable_fragmentation)
+            .expect("Failed to create xdp context");
 
     let (umem, _fq, mut cq, mut write_frames) = Umem::builder()
-        .completion_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
-        .fill_ring_size(XSK_RING_PROD__DEFAULT_NUM_DESCS * 2)
-        .frame_size(XSK_UMEM__DEFAULT_FRAME_SIZE as usize)
+        .completion_ring_size(args.completion_ring_size)
+        .fill_ring_size(args.fill_ring_size)
+        .frame_size(args.frame_size)
+        .busy_poll(args.busy_poll)
         .build()
         .expect("Failed to create umem");
 
     let mut socket = Socket::builder(&mut xdp_context, &args.if_name, args.queue)
-        .rx_ring_size(XSK_RING_CONS__DEFAULT_NUM_DESCS)
-        .tx_ring_size(XSK_RING_PROD__DEFAULT_NUM_DESCS)
+        .rx_ring_size(args.rx_ring_size)
+        .tx_ring_size(args.tx_ring_size)
+        .busy_poll_batch_size(args.busy_poll_batch_size)
+        .busy_poll_timout_us(args.busy_poll_timout_us)
+        .busy_poll(args.busy_poll)
+        .copy_mode(args.copy_mode)
+        .enable_fragmentation(args.enable_fragmentation)
         .build(umem)
         .expect("Failed to create socket");
 
@@ -142,7 +181,11 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
+    // Initial copy of the data into the frames.
     let data = build_frame(&args);
+    for frame in write_frames.iter_mut() {
+        unsafe { frame.copy_from(&data) };
+    }
 
     println!("Socket created, sending packets...");
 
@@ -150,29 +193,26 @@ fn main() {
     let mut stats = Stats::new();
     let frames = write_frames.len();
     while !exit.load(Ordering::Relaxed) {
-        // Copy the data into the frames.
-        for frame in write_frames.iter_mut() {
-            unsafe { frame.copy_from(&data) };
-        }
-
         // Send the prepared frames to the socket.
         match socket.send(&mut write_frames) {
-            Ok(sent) => {
-                for _ in 0..sent {
-                    stats.update(data.len());
-                }
+            Ok(_) => {
+                stats.update_batch(frames, data.len());
             }
             Err(_) => {
                 // We would have blocked.
+                continue;
             }
         };
+
+        // We should have sent all the frames.
+        debug_assert_eq!(write_frames.len(), 0);
 
         // Process any outstanding descriptors on the completion queue.
         //
         // Note for copy mode this is required to actually send the frames.
         while write_frames.len() < frames {
             socket.maybe_wake().expect("Failed to wake tx queue");
-            cq.process_queue(&mut write_frames);
+            cq.process_queue(&mut write_frames, Some(data.len()));
         }
 
         stats.maybe_print();

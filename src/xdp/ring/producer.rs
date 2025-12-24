@@ -1,9 +1,9 @@
-use std::cmp::min;
-
-use libxdp_sys::{
-    xdp_desc, xsk_ring_prod, xsk_ring_prod__fill_addr, xsk_ring_prod__reserve,
-    xsk_ring_prod__submit, xsk_ring_prod__tx_desc,
+use std::{
+    cmp::min,
+    sync::atomic::{AtomicU32, Ordering},
 };
+
+use libxdp_sys::{XDP_RING_NEED_WAKEUP, xdp_desc, xsk_ring_prod};
 
 /// A producer ring is a ring of descriptors that are used to transfer packets from the user to the kernel.
 pub struct Producer {
@@ -41,29 +41,30 @@ impl Producer {
     /// Reserves a batch of descriptors from the ring.
     #[inline]
     pub fn reserve(&mut self, batch_size: u32) -> (u32, u32) {
-        let mut idx: u32 = 0;
         let batch_size = min(batch_size, self.ring_size);
-        let ready: u32 =
-            unsafe { xsk_ring_prod__reserve(self.ring.as_mut(), batch_size, &mut idx) };
-        (idx, ready)
+        xsk_ring_prod_reserve(self.ring.as_mut(), batch_size)
     }
 
     /// Returns a mutable reference to the TX descriptor at the given index.
     #[inline]
     pub fn tx_desc(&mut self, index: u32) -> *mut xdp_desc {
-        unsafe { xsk_ring_prod__tx_desc(self.ring.as_mut(), index) }
+        xsk_ring_prod_tx_desc(self.ring.as_mut(), index)
     }
 
     /// Returns a mutable reference to the fill address at the given index.
     #[inline]
     pub fn fill_addr(&mut self, index: u32) -> *mut u64 {
-        unsafe { xsk_ring_prod__fill_addr(self.ring.as_mut(), index) }
+        xsk_ring_prod_fill_addr(self.ring.as_ref(), index)
     }
 
     /// Submits a batch of descriptors to the ring.
     #[inline]
     pub fn submit(&mut self, count: u32) {
-        unsafe { xsk_ring_prod__submit(self.ring.as_mut(), count) };
+        xsk_ring_prod_submit(self.ring.as_mut(), count);
+    }
+
+    pub fn needs_wakeup(&self) -> bool {
+        xsk_ring_prod_needs_wakeup(self.ring.as_ref())
     }
 
     /// Returns a read-only reference to the producer ring.
@@ -77,4 +78,60 @@ impl Producer {
     pub fn as_mut(&mut self) -> *mut xsk_ring_prod {
         self.ring.as_mut()
     }
+}
+
+#[inline(always)]
+fn xsk_ring_prod_fill_addr(ring: &xsk_ring_prod, index: u32) -> *mut u64 {
+    let addrs =
+        unsafe { core::slice::from_raw_parts_mut(ring.ring as *mut u64, ring.size as usize) };
+    &mut addrs[(index & ring.mask) as usize]
+}
+
+#[inline(always)]
+fn xsk_prod_nb_free(ring: &mut xsk_ring_prod, batch_size: u32) -> u32 {
+    let free_entries = ring.cached_cons - ring.cached_prod;
+
+    if free_entries >= batch_size {
+        return free_entries;
+    }
+
+    /* Refresh the local tail pointer.
+     * cached_cons is r->size bigger than the real consumer pointer so
+     * that this addition can be avoided in the more frequently
+     * executed code that computs free_entries in the beginning of
+     * this function. Without this optimization it whould have been
+     * free_entries = r->cached_cons - r->cached_prod + r->size
+     */
+    ring.cached_cons = unsafe { AtomicU32::from_ptr(ring.consumer) }.load(Ordering::Acquire);
+    ring.cached_cons += ring.size;
+
+    return ring.cached_cons - ring.cached_prod;
+}
+
+#[inline(always)]
+fn xsk_ring_prod_reserve(ring: &mut xsk_ring_prod, batch_size: u32) -> (u32, u32) {
+    if xsk_prod_nb_free(ring, batch_size) < batch_size {
+        return (0, 0);
+    }
+
+    let idx = ring.cached_prod;
+    ring.cached_prod += batch_size;
+    (idx, batch_size)
+}
+
+#[inline(always)]
+fn xsk_ring_prod_submit(ring: &mut xsk_ring_prod, count: u32) {
+    unsafe { AtomicU32::from_ptr(ring.producer).store(*ring.producer + count, Ordering::Release) };
+}
+
+#[inline(always)]
+fn xsk_ring_prod_tx_desc(ring: &mut xsk_ring_prod, index: u32) -> *mut xdp_desc {
+    let descs =
+        unsafe { core::slice::from_raw_parts_mut(ring.ring as *mut xdp_desc, ring.size as usize) };
+    &mut descs[(index & ring.mask) as usize]
+}
+
+#[inline(always)]
+fn xsk_ring_prod_needs_wakeup(ring: &xsk_ring_prod) -> bool {
+    unsafe { *ring.flags & XDP_RING_NEED_WAKEUP != 0 }
 }

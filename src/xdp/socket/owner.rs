@@ -3,7 +3,7 @@ use std::sync::Arc;
 use libc::c_int;
 use libxdp_sys::{xsk_socket, xsk_socket__delete};
 
-use crate::xdp_v2::umem::Umem;
+use crate::xdp::umem::Umem;
 
 /// A frame based XDP socket exposing zero copy batched receive and send operations.
 pub struct SocketOwner {

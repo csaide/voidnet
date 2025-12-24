@@ -1,39 +1,24 @@
-use std::{ffi::CString, sync::Arc};
+use std::{collections::VecDeque, ffi::CString, os::raw::c_void, sync::Arc};
 
 use errno::errno;
-use libc::c_int;
+use libc::{SO_BUSY_POLL, SO_BUSY_POLL_BUDGET, SO_PREFER_BUSY_POLL, SOL_SOCKET, c_int, setsockopt};
 use libxdp_sys::{
-    XDP_USE_NEED_WAKEUP, XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD, XSK_RING_CONS__DEFAULT_NUM_DESCS,
+    XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD, XSK_RING_CONS__DEFAULT_NUM_DESCS,
     XSK_RING_PROD__DEFAULT_NUM_DESCS, xsk_socket, xsk_socket__create, xsk_socket__create_shared,
-    xsk_socket__delete, xsk_socket__fd, xsk_socket_config, xsk_socket_config__bindgen_ty_1,
+    xsk_socket__fd, xsk_socket_config, xsk_socket_config__bindgen_ty_1,
 };
 
 use crate::xdp::{
     context::XdpContext,
     error::{Error, Result},
+    flags::{XDP_SHARED_UMEM, XDP_USE_NEED_WAKEUP, XDP_USE_SG},
+    frame::Frame,
     ring::{Consumer, Producer},
-    umem::{CompletionQueue, FillQueue, Frame, Umem},
+    socket::{BindMode, mode::CopyMode},
+    umem::{CompletionQueue, FillQueue, Umem},
 };
 
-use super::{SocketRx, SocketTx};
-
-/// A frame based XDP socket exposing zero copy batched receive and send operations.
-pub struct SocketOwner {
-    // We need the Umem to live longer than us, as all of our memory is directly owned by the Umem.
-    _umem: Arc<Umem>,
-    socket: Box<xsk_socket>,
-    pub(super) fd: c_int,
-}
-
-impl Drop for SocketOwner {
-    fn drop(&mut self) {
-        unsafe {
-            // No null pointer check here because it is initialized to null and if the create fails,
-            // it should still be null and xsk_socket__delete handles null.
-            xsk_socket__delete(self.socket.as_mut());
-        }
-    }
-}
+use super::{SocketOwner, SocketRx, SocketTx};
 
 /// Builder for creating a new socket.
 pub struct SocketBuilder<'a, 'b> {
@@ -42,6 +27,11 @@ pub struct SocketBuilder<'a, 'b> {
     queue: u32,
     rx_ring_size: u32,
     tx_ring_size: u32,
+    busy_poll: bool,
+    busy_poll_batch_size: usize,
+    busy_poll_timout_us: i32,
+    copy_mode: CopyMode,
+    enable_fragmentation: bool,
 }
 
 impl<'a, 'b> SocketBuilder<'a, 'b> {
@@ -55,22 +45,63 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
             queue,
             rx_ring_size: XSK_RING_CONS__DEFAULT_NUM_DESCS,
             tx_ring_size: XSK_RING_PROD__DEFAULT_NUM_DESCS,
+            busy_poll: false,
+            busy_poll_batch_size: 32,
+            busy_poll_timout_us: 20,
+            copy_mode: CopyMode::default(),
+            enable_fragmentation: false,
         }
     }
 
-    /// Sets the size of the RX ring.
+    /// Sets the size of the RX ring, the maximum number of frames that can be outstanding RX at a time in the kernel.
+    ///
+    /// Note: This value can be any power of two that fits in a u32, however note that the device driver has a limited number of RX descriptors available. That descriptor limit is effectively
+    /// the upper bound of this value, any value greater will work as intended but you will not get any more throughput.
     pub fn rx_ring_size(mut self, rx_ring_size: u32) -> Self {
         self.rx_ring_size = rx_ring_size;
         self
     }
 
-    /// Sets the size of the TX ring.
+    /// Sets the size of the TX ring, the maximum number of frames that can be outstanding TX at a time in the kernel.
+    ///
+    /// Note: This value can be any power of two that fits in a u32, however note that the device driver has a limited number of TX descriptors available. That limit is effectively
+    /// the upper bound of this value, any value greater will work as intended but you will not get any more throughput.
     pub fn tx_ring_size(mut self, tx_ring_size: u32) -> Self {
         self.tx_ring_size = tx_ring_size;
         self
     }
 
-    /// Builds the socket.
+    /// Sets whether to use busy polling, this is a more efficient way to poll for frames than using a blocking read, but will eat more CPU cycles.
+    pub fn busy_poll(mut self, busy_poll: bool) -> Self {
+        self.busy_poll = busy_poll;
+        self
+    }
+
+    /// Sets the busy poll batch size, this is the maximum number of frames to wait for while busy polling.
+    pub fn busy_poll_batch_size(mut self, busy_poll_batch_size: usize) -> Self {
+        self.busy_poll_batch_size = busy_poll_batch_size;
+        self
+    }
+
+    /// Sets the busy poll timeout in microseconds, this is the maximum time to wait for a frame while busy polling.
+    pub fn busy_poll_timout_us(mut self, busy_poll_timout_us: i32) -> Self {
+        self.busy_poll_timout_us = busy_poll_timout_us;
+        self
+    }
+
+    /// Sets the copy mode, this is the mode to use for copying packets to/from the socket.
+    pub fn copy_mode(mut self, copy_mode: CopyMode) -> Self {
+        self.copy_mode = copy_mode;
+        self
+    }
+
+    /// Sets whether to enable fragmentation, this is the mode to use for copying packets to/from the socket.
+    pub fn enable_fragmentation(mut self, enable_fragmentation: bool) -> Self {
+        self.enable_fragmentation = enable_fragmentation;
+        self
+    }
+
+    /// Builds the socket taking exclusive ownership of the Umem.
     pub fn build(self, umem: Arc<Umem>) -> Result<Socket> {
         // Then create the socket, this will allocate the RX/TX rings and bind the socket + rings to the UMEM object.
         let socket = Socket::new(
@@ -79,10 +110,19 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
             umem,
             self.rx_ring_size,
             self.tx_ring_size,
+            self.busy_poll,
+            self.busy_poll_batch_size,
+            self.busy_poll_timout_us,
+            self.ctx.attach_mode().into(),
+            self.copy_mode,
+            self.enable_fragmentation,
         )?;
         self.ctx.register_socket(&socket).map(|_| socket)
     }
 
+    /// Builds the socket taking shared ownership of the Umem, allowing for multiple sockets on a single Device/Queue pair.
+    ///
+    /// Note: This will likely not get you more throughput or lower latency than a single socket, but it is useful for certain heavy loads where you need to offload packet processing onto different threads. Almost always prefer a single socket to a single Umem.
     pub fn build_shared(
         self,
         umem: Arc<Umem>,
@@ -97,6 +137,12 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
             cq,
             self.rx_ring_size,
             self.tx_ring_size,
+            self.busy_poll,
+            self.busy_poll_batch_size,
+            self.busy_poll_timout_us,
+            self.ctx.attach_mode().into(),
+            self.copy_mode,
+            self.enable_fragmentation,
         )?;
         self.ctx.register_socket(&socket).map(|_| socket)
     }
@@ -109,6 +155,52 @@ pub struct Socket {
 }
 
 impl Socket {
+    fn set_sock_opts(&self, busy_poll_timout_us: i32, batch_size: usize) -> Result<()> {
+        let opt = 1i32;
+        let ret = unsafe {
+            setsockopt(
+                self.owner.fd,
+                SOL_SOCKET,
+                SO_PREFER_BUSY_POLL,
+                &opt as *const _ as *const c_void,
+                std::mem::size_of::<i32>() as u32,
+            )
+        };
+        if ret < 0 {
+            return Err(Error::SetSocketOption(errno()));
+        }
+
+        let opt = busy_poll_timout_us;
+        let ret = unsafe {
+            setsockopt(
+                self.owner.fd,
+                SOL_SOCKET,
+                SO_BUSY_POLL,
+                &opt as *const _ as *const c_void,
+                std::mem::size_of::<i32>() as u32,
+            )
+        };
+        if ret < 0 {
+            return Err(Error::SetSocketOption(errno()));
+        }
+
+        let opt = batch_size as i32;
+        let ret = unsafe {
+            setsockopt(
+                self.owner.fd,
+                SOL_SOCKET,
+                SO_BUSY_POLL_BUDGET,
+                &opt as *const _ as *const c_void,
+                std::mem::size_of::<i32>() as u32,
+            )
+        };
+        if ret < 0 {
+            return Err(Error::SetSocketOption(errno()));
+        }
+
+        Ok(())
+    }
+
     /// Returns a builder for creating a new socket.
     pub fn builder<'a, 'b>(
         xdp_ctx: &'b mut XdpContext,
@@ -124,12 +216,23 @@ impl Socket {
         umem: Arc<Umem>,
         rx_ring_size: u32,
         tx_ring_size: u32,
+        busy_poll: bool,
+        busy_poll_batch_size: usize,
+        busy_poll_timout_us: i32,
+        socket_mode: BindMode,
+        copy_mode: CopyMode,
+        enable_fragmentation: bool,
     ) -> Result<Self> {
+        let mut bind_flags = XDP_USE_NEED_WAKEUP | copy_mode as u32;
+        if enable_fragmentation {
+            bind_flags |= XDP_USE_SG;
+        }
+
         let cfg = xsk_socket_config {
             rx_size: rx_ring_size,
             tx_size: tx_ring_size,
-            xdp_flags: 0,
-            bind_flags: XDP_USE_NEED_WAKEUP as u16,
+            xdp_flags: socket_mode as u32,
+            bind_flags: bind_flags as u16,
             __bindgen_anon_1: xsk_socket_config__bindgen_ty_1 {
                 libxdp_flags: XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD,
             },
@@ -166,9 +269,13 @@ impl Socket {
             socket: unsafe { Box::from_raw(*xsk_ptr) },
             fd: unsafe { xsk_socket__fd(*xsk_ptr) },
         });
-        let rx = SocketRx::new(owner.clone(), rx, umem.clone());
-        let tx = SocketTx::new(owner.clone(), tx, umem);
-        Ok(Self { owner, rx, tx })
+        let rx = SocketRx::new(owner.clone(), rx, umem.frame_stack());
+        let tx = SocketTx::new(owner.clone(), tx, busy_poll);
+        let socket = Self { owner, rx, tx };
+        if busy_poll {
+            socket.set_sock_opts(busy_poll_timout_us, busy_poll_batch_size)?;
+        }
+        Ok(socket)
     }
 
     pub fn new_shared(
@@ -179,12 +286,23 @@ impl Socket {
         cq: &mut CompletionQueue,
         rx_ring_size: u32,
         tx_ring_size: u32,
+        busy_poll: bool,
+        busy_poll_batch_size: usize,
+        busy_poll_timout_us: i32,
+        socket_mode: BindMode,
+        copy_mode: CopyMode,
+        enable_fragmentation: bool,
     ) -> Result<Self> {
+        let mut bind_flags = XDP_USE_NEED_WAKEUP | XDP_SHARED_UMEM | copy_mode as u32;
+        if enable_fragmentation {
+            bind_flags |= XDP_USE_SG;
+        }
+
         let cfg = xsk_socket_config {
             rx_size: rx_ring_size,
             tx_size: tx_ring_size,
-            xdp_flags: 0,
-            bind_flags: XDP_USE_NEED_WAKEUP as u16,
+            xdp_flags: socket_mode as u32,
+            bind_flags: bind_flags as u16,
             __bindgen_anon_1: xsk_socket_config__bindgen_ty_1 {
                 libxdp_flags: XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD,
             },
@@ -223,21 +341,31 @@ impl Socket {
             socket: unsafe { Box::from_raw(*xsk_ptr) },
             fd: unsafe { xsk_socket__fd(*xsk_ptr) },
         });
-        let rx = SocketRx::new(owner.clone(), rx, umem.clone());
-        let tx = SocketTx::new(owner.clone(), tx, umem);
-        Ok(Self { owner, rx, tx })
+        let rx = SocketRx::new(owner.clone(), rx, umem.frame_stack());
+        let tx = SocketTx::new(owner.clone(), tx, busy_poll);
+        let socket = Self { owner, rx, tx };
+        if busy_poll {
+            socket.set_sock_opts(busy_poll_timout_us, busy_poll_batch_size)?;
+        }
+        Ok(socket)
     }
 
     /// Splits the socket into its owner, rx, and tx components.
-    #[inline]
+    #[inline(always)]
     pub fn split(self) -> (Arc<SocketOwner>, SocketRx, SocketTx) {
         (self.owner, self.rx, self.tx)
     }
 
     /// Returns the file descriptor of the socket.
-    #[inline]
+    #[inline(always)]
     pub fn fd(&self) -> c_int {
         self.owner.fd
+    }
+
+    /// Possibly wakes the tx queue, so the kernel continues to process outgoing packets.
+    #[inline(always)]
+    pub fn maybe_wake(&self) -> Result<()> {
+        self.tx.maybe_wake()
     }
 
     /// Receives a batch of frames from the socket.
@@ -246,20 +374,9 @@ impl Socket {
     /// It is considered a batch maximum and this function will return as soon as at least one frame is received.
     ///
     /// If no frames are available to read this returns None.
-    #[inline]
-    pub fn recv(&mut self, batch_size: u32) -> Vec<Frame> {
-        self.rx.recv(batch_size)
-    }
-
-    /// Prepares a batch of frames for sending.
-    ///
-    /// Note that it is not guaranteed that the resulting Vec of frames will match the batch size supplied.
-    /// It is considered a batch maximum and this function will return as soon as at least one frame is prepared.
-    ///
-    /// If no frames are availabel to prepare this returns an error of type [Error::WouldBlock].
-    #[inline]
-    pub fn prepare_frames(&mut self, num_frames: usize) -> Result<Vec<Frame>> {
-        self.tx.prepare_frames(num_frames)
+    #[inline(always)]
+    pub fn recv(&mut self, batch: &mut VecDeque<Frame>) -> std::result::Result<u32, ()> {
+        self.rx.recv(batch)
     }
 
     /// Sends a batch of frames to the socket.
@@ -269,9 +386,9 @@ impl Socket {
     ///
     /// The caller should call this function until their batch of frames is empty.
     ///
-    /// If no frames are availabel to send this returns an error of type [Error::WouldBlock].
-    #[inline]
-    pub fn send(&mut self, frames: &mut Vec<Frame>) -> Result<()> {
+    /// If no frames are availabel to send this returns an error of type [std::result::Result<(), ()>].
+    #[inline(always)]
+    pub fn send(&mut self, frames: &mut VecDeque<Frame>) -> std::result::Result<(), ()> {
         self.tx.send(frames)
     }
 }
