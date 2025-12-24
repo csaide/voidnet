@@ -13,6 +13,12 @@ pub struct SocketOwner {
     pub(super) fd: c_int,
 }
 
+impl SocketOwner {
+    pub fn fd(&self) -> c_int {
+        self.fd
+    }
+}
+
 unsafe impl Send for SocketOwner {}
 
 impl Drop for SocketOwner {

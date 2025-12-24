@@ -299,7 +299,7 @@ impl Socket {
     /// Returns the file descriptor of the socket.
     #[inline(always)]
     pub fn fd(&self) -> c_int {
-        self.owner.fd
+        self.owner.fd()
     }
 
     /// Possibly wakes the tx queue, so the kernel continues to process outgoing packets.
