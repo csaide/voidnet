@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     net::Ipv6Addr,
     ops::{Deref, DerefMut},
     sync::{
@@ -19,7 +20,7 @@ use pnet::{
     util::MacAddr,
 };
 
-use libvoid::xdp::{context::XdpContext, socket::Socket, umem::Umem};
+use libvoid::xdp::{context::XdpContext, frame::Frame, socket::Socket, umem::Umem};
 
 mod common;
 use common::{BaseArgs, Stats};
@@ -159,13 +160,13 @@ fn main() {
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
     // - Write Frames (write_frames) > A set of frames that are backed by the umem which can be used for immediate writes.
-    let (umem, _fq, mut cq, mut write_frames) = Umem::builder()
+    let (umem, mut fq, mut cq, mut write_frames) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
         .busy_poll(args.busy_poll)
         .num_frames(args.busy_poll_batch_size)
-        .build()
+        .build::<VecDeque<Frame>>()
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
@@ -176,11 +177,12 @@ fn main() {
         .rx_ring_size(args.rx_ring_size)
         .tx_ring_size(args.tx_ring_size)
         .busy_poll_batch_size(args.busy_poll_batch_size)
-        .busy_poll_timout_us(args.busy_poll_timout_us)
+        .busy_poll_timeout_us(args.busy_poll_timeout_us)
         .busy_poll(args.busy_poll)
         .copy_mode(args.copy_mode)
         .enable_fragmentation(args.enable_fragmentation)
-        .build(umem)
+        .shared_umem(false)
+        .build(umem, &mut fq, &mut cq)
         .expect("Failed to create socket");
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.

@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, os::raw::c_void, sync::Arc};
+use std::{os::raw::c_void, sync::Arc};
 
 use errno::errno;
 use libxdp_sys::{
@@ -9,7 +9,7 @@ use libxdp_sys::{
 
 use crate::xdp::{
     error::{Error, Result},
-    frame::{Frame, FrameStack},
+    frame::{Frame, FrameBuffer, FrameStack},
     ring::{Consumer, Producer},
 };
 
@@ -64,7 +64,9 @@ impl UmemBuilder {
         self
     }
 
-    pub fn build(self) -> Result<(Arc<Umem>, FillQueue, CompletionQueue, VecDeque<Frame>)> {
+    pub fn build<B: FrameBuffer + FromIterator<Frame>>(
+        self,
+    ) -> Result<(Arc<Umem>, FillQueue, CompletionQueue, B)> {
         Umem::new(
             self.completion_ring_size,
             self.fill_ring_size,
@@ -89,13 +91,13 @@ impl Umem {
         UmemBuilder::new()
     }
 
-    fn new(
+    fn new<B: FrameBuffer + FromIterator<Frame>>(
         completion_ring_size: u32,
         fill_ring_size: u32,
         busy_poll: bool,
         num_frames: usize,
         frame_size: usize,
-    ) -> Result<(Arc<Self>, FillQueue, CompletionQueue, VecDeque<Frame>)> {
+    ) -> Result<(Arc<Self>, FillQueue, CompletionQueue, B)> {
         let cfg = xsk_umem_config {
             fill_size: fill_ring_size,
             comp_size: completion_ring_size,

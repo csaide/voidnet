@@ -34,3 +34,9 @@ pub enum Error {
     #[error("failed while setting XDP frags support: {0}")]
     SetXdpFragsSupport(Errno),
 }
+
+#[derive(Debug, Error)]
+#[error("network I/O error: would block")]
+pub struct WouldBlock;
+
+pub type NonBlocking<T> = std::result::Result<T, WouldBlock>;

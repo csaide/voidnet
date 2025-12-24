@@ -1,11 +1,11 @@
-use std::{collections::VecDeque, ptr::null, sync::Arc};
+use std::{ptr::null, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, sendto};
 
 use crate::xdp::{
-    error::{Error, Result},
-    frame::Frame,
+    error::{Error, NonBlocking, Result, WouldBlock},
+    frame::FrameBuffer,
     ring::Producer,
 };
 
@@ -44,10 +44,10 @@ impl SocketTx {
     }
 
     #[inline(always)]
-    pub fn send(&mut self, frames: &mut VecDeque<Frame>) -> std::result::Result<u32, ()> {
+    pub fn send<B: FrameBuffer>(&mut self, mut frames: B) -> NonBlocking<u32> {
         let (mut idx_tx, ready) = self.ring.reserve(frames.len() as u32);
         if ready == 0 {
-            return Err(());
+            return Err(WouldBlock);
         }
 
         for frame in frames.drain(..ready as usize) {

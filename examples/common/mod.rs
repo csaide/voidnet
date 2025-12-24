@@ -175,7 +175,7 @@ pub struct BaseArgs {
         default_value = "20",
         help = "The timeout in microseconds for busy polling."
     )]
-    pub busy_poll_timout_us: i32,
+    pub busy_poll_timeout_us: i32,
     #[arg(
         long,
         default_value = "4096",

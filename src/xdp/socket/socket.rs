@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, ffi::CString, os::raw::c_void, sync::Arc};
+use std::{ffi::CString, os::raw::c_void, sync::Arc};
 
 use errno::errno;
 use libc::{SO_BUSY_POLL, SO_BUSY_POLL_BUDGET, SO_PREFER_BUSY_POLL, SOL_SOCKET, c_int, setsockopt};
@@ -10,9 +10,9 @@ use libxdp_sys::{
 
 use crate::xdp::{
     context::XdpContext,
-    error::{Error, Result},
+    error::{Error, NonBlocking, Result},
     flags::{XDP_SHARED_UMEM, XDP_USE_NEED_WAKEUP, XDP_USE_SG},
-    frame::Frame,
+    frame::FrameBuffer,
     ring::{Consumer, Producer},
     socket::{BindMode, mode::CopyMode},
     umem::{CompletionQueue, FillQueue, Umem},
@@ -29,9 +29,10 @@ pub struct SocketBuilder<'a, 'b> {
     tx_ring_size: u32,
     busy_poll: bool,
     busy_poll_batch_size: usize,
-    busy_poll_timout_us: i32,
+    busy_poll_timeout_us: i32,
     copy_mode: CopyMode,
     enable_fragmentation: bool,
+    shared_umem: bool,
 }
 
 impl<'a, 'b> SocketBuilder<'a, 'b> {
@@ -47,9 +48,10 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
             tx_ring_size: XSK_RING_PROD__DEFAULT_NUM_DESCS,
             busy_poll: false,
             busy_poll_batch_size: 32,
-            busy_poll_timout_us: 20,
+            busy_poll_timeout_us: 20,
             copy_mode: CopyMode::default(),
             enable_fragmentation: false,
+            shared_umem: false,
         }
     }
 
@@ -84,8 +86,8 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
     }
 
     /// Sets the busy poll timeout in microseconds, this is the maximum time to wait for a frame while busy polling.
-    pub fn busy_poll_timout_us(mut self, busy_poll_timout_us: i32) -> Self {
-        self.busy_poll_timout_us = busy_poll_timout_us;
+    pub fn busy_poll_timeout_us(mut self, busy_poll_timeout_us: i32) -> Self {
+        self.busy_poll_timeout_us = busy_poll_timeout_us;
         self
     }
 
@@ -101,35 +103,22 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
         self
     }
 
-    /// Builds the socket taking exclusive ownership of the Umem.
-    pub fn build(self, umem: Arc<Umem>) -> Result<Socket> {
-        // Then create the socket, this will allocate the RX/TX rings and bind the socket + rings to the UMEM object.
-        let socket = Socket::new(
-            self.if_name,
-            self.queue,
-            umem,
-            self.rx_ring_size,
-            self.tx_ring_size,
-            self.busy_poll,
-            self.busy_poll_batch_size,
-            self.busy_poll_timout_us,
-            self.ctx.attach_mode().into(),
-            self.copy_mode,
-            self.enable_fragmentation,
-        )?;
-        self.ctx.register_socket(&socket).map(|_| socket)
+    /// Sets whether to use a shared Umem, this is the mode to use for copying packets to/from the socket.
+    pub fn shared_umem(mut self, shared_umem: bool) -> Self {
+        self.shared_umem = shared_umem;
+        self
     }
 
     /// Builds the socket taking shared ownership of the Umem, allowing for multiple sockets on a single Device/Queue pair.
     ///
     /// Note: This will likely not get you more throughput or lower latency than a single socket, but it is useful for certain heavy loads where you need to offload packet processing onto different threads. Almost always prefer a single socket to a single Umem.
-    pub fn build_shared(
+    pub fn build(
         self,
         umem: Arc<Umem>,
         fq: &mut FillQueue,
         cq: &mut CompletionQueue,
     ) -> Result<Socket> {
-        let socket = Socket::new_shared(
+        let socket = Socket::new(
             self.if_name,
             self.queue,
             umem,
@@ -139,10 +128,11 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
             self.tx_ring_size,
             self.busy_poll,
             self.busy_poll_batch_size,
-            self.busy_poll_timout_us,
+            self.busy_poll_timeout_us,
             self.ctx.attach_mode().into(),
             self.copy_mode,
             self.enable_fragmentation,
+            self.shared_umem,
         )?;
         self.ctx.register_socket(&socket).map(|_| socket)
     }
@@ -155,7 +145,7 @@ pub struct Socket {
 }
 
 impl Socket {
-    fn setup_busy_poll(&self, busy_poll_timout_us: i32, batch_size: usize) -> Result<()> {
+    fn setup_busy_poll(&self, busy_poll_timeout_us: i32, batch_size: usize) -> Result<()> {
         let opt = 1i32;
         let ret = unsafe {
             setsockopt(
@@ -170,7 +160,7 @@ impl Socket {
             return Err(Error::SetSocketOption(errno()));
         }
 
-        let opt = busy_poll_timout_us;
+        let opt = busy_poll_timeout_us;
         let ret = unsafe {
             setsockopt(
                 self.owner.fd,
@@ -214,86 +204,22 @@ impl Socket {
         if_name: &str,
         queue: u32,
         umem: Arc<Umem>,
-        rx_ring_size: u32,
-        tx_ring_size: u32,
-        busy_poll: bool,
-        busy_poll_batch_size: usize,
-        busy_poll_timout_us: i32,
-        socket_mode: BindMode,
-        copy_mode: CopyMode,
-        enable_fragmentation: bool,
-    ) -> Result<Self> {
-        let mut bind_flags = XDP_USE_NEED_WAKEUP | copy_mode as u32;
-        if enable_fragmentation {
-            bind_flags |= XDP_USE_SG;
-        }
-
-        let cfg = xsk_socket_config {
-            rx_size: rx_ring_size,
-            tx_size: tx_ring_size,
-            xdp_flags: socket_mode as u32,
-            bind_flags: bind_flags as u16,
-            __bindgen_anon_1: xsk_socket_config__bindgen_ty_1 {
-                libxdp_flags: XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD,
-            },
-        };
-
-        let mut rx = Consumer::new(rx_ring_size);
-        let mut tx = Producer::new(tx_ring_size);
-
-        // C function has double indirection
-        let mut xsk: *mut xsk_socket = std::ptr::null_mut();
-        let xsk_ptr: *mut *mut xsk_socket = &mut xsk;
-
-        let if_name_c = CString::new(if_name).unwrap();
-
-        let ret: std::os::raw::c_int;
-        unsafe {
-            ret = xsk_socket__create(
-                xsk_ptr,
-                if_name_c.as_ptr(),
-                queue as u32,
-                umem.umem(),
-                rx.as_mut(),
-                tx.as_mut(),
-                &cfg,
-            );
-        }
-
-        if ret != 0 {
-            return Err(Error::CreateSocket(errno()));
-        }
-
-        let owner = Arc::new(SocketOwner {
-            _umem: umem.clone(),
-            socket: xsk,
-            fd: unsafe { xsk_socket__fd(xsk) },
-        });
-        let rx = SocketRx::new(owner.clone(), rx, umem.frame_stack());
-        let tx = SocketTx::new(owner.clone(), tx, busy_poll);
-        let socket = Self { owner, rx, tx };
-        if busy_poll {
-            socket.setup_busy_poll(busy_poll_timout_us, busy_poll_batch_size)?;
-        }
-        Ok(socket)
-    }
-
-    pub fn new_shared(
-        if_name: &str,
-        queue: u32,
-        umem: Arc<Umem>,
         fq: &mut FillQueue,
         cq: &mut CompletionQueue,
         rx_ring_size: u32,
         tx_ring_size: u32,
         busy_poll: bool,
         busy_poll_batch_size: usize,
-        busy_poll_timout_us: i32,
+        busy_poll_timeout_us: i32,
         socket_mode: BindMode,
         copy_mode: CopyMode,
         enable_fragmentation: bool,
+        shared_umem: bool,
     ) -> Result<Self> {
-        let mut bind_flags = XDP_USE_NEED_WAKEUP | XDP_SHARED_UMEM | copy_mode as u32;
+        let mut bind_flags = XDP_USE_NEED_WAKEUP | copy_mode as u32;
+        if shared_umem {
+            bind_flags |= XDP_SHARED_UMEM;
+        }
         if enable_fragmentation {
             bind_flags |= XDP_USE_SG;
         }
@@ -318,18 +244,32 @@ impl Socket {
         let if_name_c = CString::new(if_name).unwrap();
 
         let ret: std::os::raw::c_int;
-        unsafe {
-            ret = xsk_socket__create_shared(
-                xsk_ptr,
-                if_name_c.as_ptr(),
-                queue as u32,
-                umem.umem(),
-                rx.as_mut(),
-                tx.as_mut(),
-                fq.as_mut(),
-                cq.as_mut(),
-                &cfg,
-            );
+        if shared_umem {
+            unsafe {
+                ret = xsk_socket__create_shared(
+                    xsk_ptr,
+                    if_name_c.as_ptr(),
+                    queue as u32,
+                    umem.umem(),
+                    rx.as_mut(),
+                    tx.as_mut(),
+                    fq.as_mut(),
+                    cq.as_mut(),
+                    &cfg,
+                );
+            }
+        } else {
+            unsafe {
+                ret = xsk_socket__create(
+                    xsk_ptr,
+                    if_name_c.as_ptr(),
+                    queue as u32,
+                    umem.umem(),
+                    rx.as_mut(),
+                    tx.as_mut(),
+                    &cfg,
+                );
+            }
         }
 
         if ret != 0 {
@@ -345,7 +285,7 @@ impl Socket {
         let tx = SocketTx::new(owner.clone(), tx, busy_poll);
         let socket = Self { owner, rx, tx };
         if busy_poll {
-            socket.setup_busy_poll(busy_poll_timout_us, busy_poll_batch_size)?;
+            socket.setup_busy_poll(busy_poll_timeout_us, busy_poll_batch_size)?;
         }
         Ok(socket)
     }
@@ -375,7 +315,7 @@ impl Socket {
     ///
     /// If no frames are available to read this returns None.
     #[inline(always)]
-    pub fn recv(&mut self, batch: &mut VecDeque<Frame>) -> std::result::Result<u32, ()> {
+    pub fn recv<B: FrameBuffer>(&mut self, batch: B) -> NonBlocking<u32> {
         self.rx.recv(batch)
     }
 
@@ -388,7 +328,7 @@ impl Socket {
     ///
     /// If no frames are availabel to send this returns an error of type [std::result::Result<(), ()>].
     #[inline(always)]
-    pub fn send(&mut self, frames: &mut VecDeque<Frame>) -> std::result::Result<u32, ()> {
+    pub fn send<B: FrameBuffer>(&mut self, frames: B) -> NonBlocking<u32> {
         self.tx.send(frames)
     }
 }

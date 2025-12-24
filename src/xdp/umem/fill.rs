@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, ptr::null_mut, sync::Arc};
+use std::{ptr::null_mut, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
@@ -6,7 +6,7 @@ use libxdp_sys::xsk_ring_prod;
 
 use crate::xdp::{
     error::{Error, Result},
-    frame::{Frame, FrameStack},
+    frame::{FrameBuffer, FrameStack},
     ring::Producer,
 };
 
@@ -47,7 +47,7 @@ impl FillQueue {
 
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
-    pub fn process_queue(&mut self, batch: &mut VecDeque<Frame>) {
+    pub fn process_queue<B: FrameBuffer>(&mut self, mut batch: B) {
         let (mut idx, ready) = self.ring.reserve(batch.len() as u32);
         if ready == 0 {
             return;

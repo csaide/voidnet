@@ -1,9 +1,10 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 
 use libc::XDP_PKT_CONTD;
 
 use crate::xdp::{
-    frame::{Frame, FrameStack},
+    error::{NonBlocking, WouldBlock},
+    frame::{FrameBuffer, FrameStack},
     ring::Consumer,
 };
 
@@ -25,15 +26,15 @@ impl SocketRx {
     }
 
     #[inline(always)]
-    pub fn recv(&mut self, batch: &mut VecDeque<Frame>) -> std::result::Result<u32, ()> {
+    pub fn recv<B: FrameBuffer>(&mut self, mut batch: B) -> NonBlocking<u32> {
         let (mut idx_rx, rcvd) = self.ring.peek((batch.capacity() - batch.len()) as u32);
         if rcvd == 0 {
-            return Err(());
+            return Err(WouldBlock);
         }
 
         for _ in 0..rcvd as usize {
             let desc = self.ring.rx_desc(idx_rx);
-            batch.push_back(self.stack.to_frame(
+            batch.push(self.stack.to_frame(
                 desc.addr,
                 desc.len as usize,
                 desc.options & XDP_PKT_CONTD == XDP_PKT_CONTD,

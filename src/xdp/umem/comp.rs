@@ -1,9 +1,9 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 
 use libxdp_sys::xsk_ring_cons;
 
 use crate::xdp::{
-    frame::{Frame, FrameStack},
+    frame::{FrameBuffer, FrameStack},
     ring::Consumer,
 };
 
@@ -18,7 +18,7 @@ impl CompletionQueue {
     }
 
     #[inline(always)]
-    pub fn process_queue(&mut self, batch: &mut VecDeque<Frame>, frame_size: Option<usize>) {
+    pub fn process_queue<B: FrameBuffer>(&mut self, mut batch: B, frame_size: Option<usize>) {
         let (mut idx, ready) = self.ring.peek((batch.capacity() - batch.len()) as u32);
         if ready == 0 {
             return;
@@ -26,7 +26,7 @@ impl CompletionQueue {
 
         for _ in 0..ready {
             let addr = self.ring.comp_addr(idx);
-            batch.push_back(self.stack.to_frame(addr, frame_size.unwrap_or(0), false));
+            batch.push(self.stack.to_frame(addr, frame_size.unwrap_or(0), false));
             idx += 1;
         }
 

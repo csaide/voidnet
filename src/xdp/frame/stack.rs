@@ -1,6 +1,4 @@
-use std::collections::VecDeque;
-
-use crate::xdp::error::Result;
+use crate::xdp::{error::Result, frame::FrameBuffer};
 
 use super::{Frame, Mmap};
 
@@ -10,7 +8,10 @@ pub struct FrameStack {
 }
 
 impl FrameStack {
-    pub fn new(num_frames: usize, frame_size: usize) -> Result<(Self, VecDeque<Frame>)> {
+    pub fn new<B: FrameBuffer + FromIterator<Frame>>(
+        num_frames: usize,
+        frame_size: usize,
+    ) -> Result<(Self, B)> {
         let mmap = Mmap::new(num_frames, frame_size)?;
         let stack = Self { frame_size, mmap };
         let frames = (0..num_frames)

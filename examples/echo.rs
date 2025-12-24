@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     ops::{Deref, DerefMut},
     sync::{
         Arc,
@@ -8,7 +9,9 @@ use std::{
 
 use clap::Parser;
 
-use libvoid::xdp::{context::XdpContext, socket::Socket, umem::Umem};
+use libvoid::xdp::{
+    context::XdpContext, error::WouldBlock, frame::Frame, socket::Socket, umem::Umem,
+};
 
 mod common;
 use common::{BaseArgs, Stats, swap_addresses};
@@ -56,7 +59,7 @@ fn main() {
         .frame_size(args.frame_size)
         .busy_poll(args.busy_poll)
         .num_frames(args.busy_poll_batch_size)
-        .build()
+        .build::<VecDeque<Frame>>()
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
@@ -68,10 +71,11 @@ fn main() {
         .tx_ring_size(args.tx_ring_size)
         .busy_poll(args.busy_poll)
         .busy_poll_batch_size(args.busy_poll_batch_size)
-        .busy_poll_timout_us(args.busy_poll_timout_us)
+        .busy_poll_timeout_us(args.busy_poll_timeout_us)
         .copy_mode(args.copy_mode)
         .enable_fragmentation(args.enable_fragmentation)
-        .build(umem)
+        .shared_umem(false)
+        .build(umem, &mut fq, &mut cq)
         .expect("Failed to create socket");
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.
@@ -102,7 +106,7 @@ fn main() {
         // First read some frames off the socket.
         let received = match socket.recv(&mut frames) {
             Ok(received) => received,
-            Err(()) => {
+            Err(WouldBlock) => {
                 // There were no frames available to read, wake the fill queue and process any outstanding descriptors.
                 continue;
             }
