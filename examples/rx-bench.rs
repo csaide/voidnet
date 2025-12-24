@@ -36,15 +36,21 @@ impl DerefMut for Args {
 }
 
 fn main() {
+    let mut stats = Stats::new();
     let args = Args::parse();
 
-    // Every XDP program starts with setting up an XdpContext, this loads the XDP kernel program and attaches it to the named interface.
+    // Every application starts with setting up an XdpContext, this loads the XDP kernel program and attaches it to the named
+    // interface.
     let mut xdp_ctx = XdpContext::new(&args.if_name, args.attach_mode, args.enable_fragmentation)
         .expect("Failed to create xdp context");
 
     // A Umem is created to manage sharing memory buffers between the kernel and user space.
-    // You will need one of these for each unique device you want to use, you can however have multiple
-    // sockets attached to the same Umem.
+    // You will need one of these for each unique device you want to use.
+    //
+    // Each Umem comes associated with three key components:
+    // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
+    // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
+    // - Write Frames (write_frames) > A set of frames that are backed by the umem which can be used for immediate writes.
     let (umem, mut fq, _cq, _write_frames) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
@@ -54,6 +60,9 @@ fn main() {
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
+    //
+    // This is the main handle for interacting with the network data, if needed this can be split into its owner, rx, and tx
+    // components using the split() function.
     let mut socket = Socket::builder(&mut xdp_ctx, &args.if_name, args.queue)
         .rx_ring_size(args.rx_ring_size)
         .tx_ring_size(args.tx_ring_size)
@@ -64,10 +73,10 @@ fn main() {
         .build(umem)
         .expect("Failed to create socket");
 
-    // Setup some maintenance logic so we are good stewards and ensure we clean up.
+    // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.
     //
-    // Note: if the XdpContext isn't safely dropped (destructor run) then the interface will retain
-    // the XDP program attached to it, breaking things in weird ways.... cleanup is important :).
+    // Note: In other words its very important to ensure that the Drop impl for XdpContext is run to detach the XDP program from
+    // the interface, OR manually call detach().
     let exit = Arc::new(AtomicBool::new(false));
     ctrlc::set_handler({
         let exit = exit.clone();
@@ -79,29 +88,49 @@ fn main() {
 
     println!("Socket created, listening for packets...");
 
-    // Setup some stats to track the number of packets and bytes received.
-    let mut stats = Stats::new();
+    // We need a buffer to handle incoming frames, the construction of our socket handles filling the kernel with buffers for us,
+    // so we can start with an empty buffer and wait for new packets to arrive.
     let mut frame_buffer = VecDeque::with_capacity(args.busy_poll_batch_size);
+
+    // Loop forever reading packets from the socket.
     while !exit.load(Ordering::Relaxed) {
-        // This is different than what you might expect, since we are using a Umem we don't specify buffers to fill
-        // during recv() instead we request a batch up to a maximum size to read at a time.
+        // Read some frames from the socket.
         //
-        // If no frames are available to read this returns an error of type [Error::WouldBlock]. All other errors are considered fatal.
+        // This will return with 1 > N frames in the success case, as soon as possible. If there are no frames it will return an error,
+        // at this point we would have blocked so a retry is necessary this is left for the caller to handle.
         match socket.recv(&mut frame_buffer) {
-            Ok(_) => {}
-            Err(()) => {}
+            Ok(received) => {
+                // We received some number of frames (more than 0), up to the size of our supplied buffer, from the kernel.
+                debug_assert!(
+                    received == 0 || received <= args.busy_poll_batch_size as u32,
+                    "Received more frames than the batch size or 0 frames, this should never happen!"
+                );
+            }
+            Err(_) => {
+                // We would have blocked, loop back and try again.
+                continue;
+            }
         };
 
+        // You know have a batch of raw frames, at this level this is a full L2 frame, almost assuredly a Ethernet frame.
         for frame in frame_buffer.iter() {
             // Do something with the frame!
             stats.update(frame.len());
         }
 
+        // Now we need to give back the frames to the kernel by means of the fill queue.
+
+        // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
         fq.maybe_wake(socket.fd()).unwrap();
+
+        // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
         fq.process_queue(&mut frame_buffer);
+        debug_assert_eq!(
+            frame_buffer.len(),
+            0,
+            "Frame buffer is not empty after processing, this should never happen!"
+        );
 
         stats.maybe_print();
     }
-
-    println!("Exiting...");
 }

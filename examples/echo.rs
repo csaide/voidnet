@@ -43,8 +43,7 @@ fn main() {
         .expect("Failed to create xdp context");
 
     // A Umem is created to manage sharing memory buffers between the kernel and user space.
-    // You will need one of these for each unique device you want to use, you can however have multiple
-    // sockets attached to the same Umem.
+    // You will need one of these for each unique device you want to use.
     //
     // - umem > The actual umem object sharing memory between the kernel and user space.
     // - fq > The fill queue is used to pass frames to the kernel for reading packet data into.
@@ -66,6 +65,7 @@ fn main() {
         .busy_poll_batch_size(args.busy_poll_batch_size)
         .busy_poll_timout_us(args.busy_poll_timout_us)
         .copy_mode(args.copy_mode)
+        .enable_fragmentation(args.enable_fragmentation)
         .build(umem)
         .expect("Failed to create socket");
 
