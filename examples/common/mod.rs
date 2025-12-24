@@ -13,8 +13,10 @@ use pnet::packet::{
 
 pub struct Stats {
     pub packets_received: u64,
+    pub fragments_received: u64,
     pub bytes_received: u64,
     pub last_packets_received: u64,
+    pub last_fragments_received: u64,
     pub last_bytes_received: u64,
     pub last_time: u64,
 }
@@ -23,8 +25,10 @@ impl Stats {
     pub fn new() -> Self {
         Self {
             packets_received: 0,
+            fragments_received: 0,
             bytes_received: 0,
             last_packets_received: 0,
+            last_fragments_received: 0,
             last_bytes_received: 0,
             last_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -34,9 +38,13 @@ impl Stats {
     }
 
     #[inline(always)]
-    pub fn update(&mut self, bytes: usize) {
-        self.packets_received += 1;
+    pub fn update(&mut self, bytes: usize, is_fragment: bool) {
         self.bytes_received += bytes as u64;
+        if is_fragment {
+            self.fragments_received += 1;
+        } else {
+            self.packets_received += 1;
+        }
     }
 
     pub fn update_batch(&mut self, frames: usize, frame_size: usize) {
@@ -52,6 +60,7 @@ impl Stats {
         }
 
         let packets_received = self.packets_received;
+        let fragments_received = self.fragments_received;
         let bytes_received = self.bytes_received;
 
         let now = SystemTime::now()
@@ -62,17 +71,22 @@ impl Stats {
 
         let packets_per_second =
             (packets_received - self.last_packets_received) as f64 / elapsed_time;
+        let fragments_per_second =
+            (fragments_received - self.last_fragments_received) as f64 / elapsed_time;
         let bytes_per_second = (bytes_received - self.last_bytes_received) as f64 / elapsed_time;
 
         self.last_packets_received = packets_received;
+        self.last_fragments_received = fragments_received;
         self.last_bytes_received = bytes_received;
         self.last_time = now;
 
         println!(
-            "Packets: {}M | Bytes: {:.2}GiB | Packet rate: {:.2} Mpps | Byte rate: {:.2} Gbps",
+            "Packets: {}M | Fragments: {}M | Bytes: {:.2}GiB | Packet rate: {:.2} Mpps | Fragment rate: {:.2} Mfps | Byte rate: {:.2} Gbps",
             packets_received / 1_000_000,
+            fragments_received / 1_000_000,
             bytes_received as f64 / 1024.0 / 1024.0 / 1024.0,
             packets_per_second / 1_000_000.0,
+            fragments_per_second / 1_000_000.0,
             bytes_per_second * 8.0 / 1_000_000_000.0
         );
     }

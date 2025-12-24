@@ -119,7 +119,7 @@ fn main() {
         // You know have a batch of raw frames, at this level this is a full L2 frame, almost assuredly a Ethernet frame.
         for frame in frames.iter() {
             // Do something with the frame!
-            stats.update(frame.len());
+            stats.update(frame.len(), frame.is_fragment());
         }
 
         // Now we need to give back the frames to the kernel by means of the fill queue.

@@ -14,7 +14,7 @@ impl FrameStack {
         let mmap = Mmap::new(num_frames, frame_size)?;
         let stack = Self { frame_size, mmap };
         let frames = (0..num_frames)
-            .map(|i| stack.to_frame(i as u64 * frame_size as u64, 0))
+            .map(|i| stack.to_frame(i as u64 * frame_size as u64, 0, false))
             .collect();
         Ok((stack, frames))
     }
@@ -27,13 +27,14 @@ impl FrameStack {
         self.mmap.as_mut_ptr()
     }
 
-    pub fn to_frame(&self, addr: u64, len: usize) -> Frame {
+    pub fn to_frame(&self, addr: u64, len: usize, is_fragment: bool) -> Frame {
         unsafe {
             Frame::new(
                 addr,
                 self.mmap.as_ptr().offset(addr as isize) as *mut u8,
                 len,
                 self.frame_size,
+                is_fragment,
             )
         }
     }

@@ -7,6 +7,7 @@ pub struct Frame {
     len: usize,
     capacity: usize,
     data: *mut u8,
+    is_fragment: bool,
 }
 
 impl Frame {
@@ -20,7 +21,13 @@ impl Frame {
     ///
     /// NOTE: the data does not need to be fully 0'ed, it just must be assumed it will be read entirely and therefore must
     /// be initialized to valid u8 values for all locations.
-    pub unsafe fn new(addr: u64, data: *mut u8, len: usize, capacity: usize) -> Self {
+    pub unsafe fn new(
+        addr: u64,
+        data: *mut u8,
+        len: usize,
+        capacity: usize,
+        is_fragment: bool,
+    ) -> Self {
         debug_assert!(
             capacity > 0 && len <= capacity,
             "len must be less than or equal to capacity, which must be greater than 0"
@@ -31,6 +38,7 @@ impl Frame {
             len,
             capacity,
             data,
+            is_fragment,
         }
     }
 
@@ -54,6 +62,18 @@ impl Frame {
     #[inline]
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    /// Returns whether the frame is a fragment.
+    #[inline]
+    pub fn is_fragment(&self) -> bool {
+        self.is_fragment
+    }
+
+    /// Set the fragment flag for the frame.
+    #[inline]
+    pub unsafe fn set_fragment(&mut self, is_fragment: bool) {
+        self.is_fragment = is_fragment;
     }
 
     /// Copies the data from the incoming slice into the frame.

@@ -155,7 +155,7 @@ pub struct Socket {
 }
 
 impl Socket {
-    fn set_sock_opts(&self, busy_poll_timout_us: i32, batch_size: usize) -> Result<()> {
+    fn setup_busy_poll(&self, busy_poll_timout_us: i32, batch_size: usize) -> Result<()> {
         let opt = 1i32;
         let ret = unsafe {
             setsockopt(
@@ -266,14 +266,14 @@ impl Socket {
 
         let owner = Arc::new(SocketOwner {
             _umem: umem.clone(),
-            socket: unsafe { Box::from_raw(*xsk_ptr) },
-            fd: unsafe { xsk_socket__fd(*xsk_ptr) },
+            socket: xsk,
+            fd: unsafe { xsk_socket__fd(xsk) },
         });
         let rx = SocketRx::new(owner.clone(), rx, umem.frame_stack());
         let tx = SocketTx::new(owner.clone(), tx, busy_poll);
         let socket = Self { owner, rx, tx };
         if busy_poll {
-            socket.set_sock_opts(busy_poll_timout_us, busy_poll_batch_size)?;
+            socket.setup_busy_poll(busy_poll_timout_us, busy_poll_batch_size)?;
         }
         Ok(socket)
     }
@@ -338,14 +338,14 @@ impl Socket {
 
         let owner = Arc::new(SocketOwner {
             _umem: umem.clone(),
-            socket: unsafe { Box::from_raw(*xsk_ptr) },
-            fd: unsafe { xsk_socket__fd(*xsk_ptr) },
+            socket: xsk,
+            fd: unsafe { xsk_socket__fd(xsk) },
         });
         let rx = SocketRx::new(owner.clone(), rx, umem.frame_stack());
         let tx = SocketTx::new(owner.clone(), tx, busy_poll);
         let socket = Self { owner, rx, tx };
         if busy_poll {
-            socket.set_sock_opts(busy_poll_timout_us, busy_poll_batch_size)?;
+            socket.setup_busy_poll(busy_poll_timout_us, busy_poll_batch_size)?;
         }
         Ok(socket)
     }

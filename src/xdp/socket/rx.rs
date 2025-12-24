@@ -1,5 +1,7 @@
 use std::{collections::VecDeque, sync::Arc};
 
+use libc::XDP_PKT_CONTD;
+
 use crate::xdp::{
     frame::{Frame, FrameStack},
     ring::Consumer,
@@ -31,7 +33,11 @@ impl SocketRx {
 
         for _ in 0..rcvd as usize {
             let desc = self.ring.rx_desc(idx_rx);
-            batch.push_back(self.stack.to_frame(desc.addr, desc.len as usize));
+            batch.push_back(self.stack.to_frame(
+                desc.addr,
+                desc.len as usize,
+                desc.options & XDP_PKT_CONTD == XDP_PKT_CONTD,
+            ));
             idx_rx += 1;
         }
 

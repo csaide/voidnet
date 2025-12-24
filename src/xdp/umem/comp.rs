@@ -26,7 +26,7 @@ impl CompletionQueue {
 
         for _ in 0..ready {
             let addr = self.ring.comp_addr(idx);
-            batch.push_back(self.stack.to_frame(addr, frame_size.unwrap_or(0)));
+            batch.push_back(self.stack.to_frame(addr, frame_size.unwrap_or(0), false));
             idx += 1;
         }
 

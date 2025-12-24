@@ -113,7 +113,7 @@ fn main() {
 
         // For each received frame, attempt to swap the addresses.
         for mut frame in frames.iter_mut() {
-            stats.update(frame.len());
+            stats.update(frame.len(), frame.is_fragment());
 
             swap_addresses(&mut frame).unwrap();
         }

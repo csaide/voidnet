@@ -9,16 +9,18 @@ use crate::xdp::umem::Umem;
 pub struct SocketOwner {
     // We need the Umem to live longer than us, as all of our memory is directly owned by the Umem.
     pub(super) _umem: Arc<Umem>,
-    pub(super) socket: Box<xsk_socket>,
+    pub(super) socket: *mut xsk_socket,
     pub(super) fd: c_int,
 }
+
+unsafe impl Send for SocketOwner {}
 
 impl Drop for SocketOwner {
     fn drop(&mut self) {
         unsafe {
             // No null pointer check here because it is initialized to null and if the create fails,
             // it should still be null and xsk_socket__delete handles null.
-            xsk_socket__delete(self.socket.as_mut());
+            xsk_socket__delete(self.socket);
         }
     }
 }

@@ -82,7 +82,6 @@ pub struct Umem {
 }
 
 unsafe impl Send for Umem {}
-unsafe impl Sync for Umem {}
 
 impl Umem {
     /// Returns a builder for creating a new [Umem] instance.
