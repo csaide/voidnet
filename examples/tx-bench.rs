@@ -164,6 +164,7 @@ fn main() {
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
         .busy_poll(args.busy_poll)
+        .num_frames(args.busy_poll_batch_size)
         .build()
         .expect("Failed to create umem");
 
@@ -208,9 +209,15 @@ fn main() {
         // Send the prepared frames to the socket.
         //
         // Note this will completely consume the input buffer.
-        match socket.send(&mut write_frames) {
-            Ok(_) => {
-                stats.update_batch(frames, data.len());
+        let sent = match socket.send(&mut write_frames) {
+            Ok(sent) => {
+                debug_assert!(
+                    sent == frames as u32,
+                    "Sent a different number of frames than the input buffer, this should never happen!"
+                );
+
+                stats.update_batch(sent as usize, data.len());
+                sent
             }
             Err(_) => {
                 // We would have blocked.
@@ -228,7 +235,7 @@ fn main() {
         // Process any outstanding descriptors on the completion queue retrieving the sent frames.
         //
         // This should be a loop because the kernel can only transmit a limited number of frames at a time.
-        while write_frames.len() < frames {
+        while write_frames.len() < sent as usize {
             // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
             socket.maybe_wake().unwrap();
 

@@ -388,7 +388,7 @@ impl Socket {
     ///
     /// If no frames are availabel to send this returns an error of type [std::result::Result<(), ()>].
     #[inline(always)]
-    pub fn send(&mut self, frames: &mut VecDeque<Frame>) -> std::result::Result<(), ()> {
+    pub fn send(&mut self, frames: &mut VecDeque<Frame>) -> std::result::Result<u32, ()> {
         self.tx.send(frames)
     }
 }

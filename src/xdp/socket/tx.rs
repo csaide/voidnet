@@ -44,10 +44,10 @@ impl SocketTx {
     }
 
     #[inline(always)]
-    pub fn send(&mut self, frames: &mut VecDeque<Frame>) -> std::result::Result<(), ()> {
+    pub fn send(&mut self, frames: &mut VecDeque<Frame>) -> std::result::Result<u32, ()> {
         let (mut idx_tx, ready) = self.ring.reserve(frames.len() as u32);
         if ready == 0 {
-            return Err(()); // WouldBlock
+            return Err(());
         }
 
         for frame in frames.drain(..ready as usize) {
@@ -61,6 +61,6 @@ impl SocketTx {
         }
 
         self.ring.submit(ready);
-        Ok(())
+        Ok(ready)
     }
 }

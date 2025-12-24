@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     ops::{Deref, DerefMut},
     sync::{
         Arc,
@@ -36,28 +35,34 @@ impl DerefMut for Args {
 }
 
 fn main() {
+    let mut stats = Stats::new();
     let args = Args::parse();
 
-    // Every application starts with setting up an XdpContext, this loads the XDP kernel program and attaches it to the named interface.
+    // Every application starts with setting up an XdpContext, this loads the XDP kernel program and attaches it to the named
+    // interface.
     let mut xdp_ctx = XdpContext::new(&args.if_name, args.attach_mode, args.enable_fragmentation)
         .expect("Failed to create xdp context");
 
     // A Umem is created to manage sharing memory buffers between the kernel and user space.
     // You will need one of these for each unique device you want to use.
     //
-    // - umem > The actual umem object sharing memory between the kernel and user space.
-    // - fq > The fill queue is used to pass frames to the kernel for reading packet data into.
-    // - cq > The completion queue is used to retrieve frames the kernel is done sending.
-    // - write_frames > A set of frames that are backed by the umem which can be used for immediate writes.
-    let (umem, mut fq, mut cq, mut _write_frames) = Umem::builder()
+    // Each Umem comes associated with three key components:
+    // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
+    // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
+    // - Frames (frames) > A set of frames that are backed by the umem which are shared between the kernel and user space.
+    let (umem, mut fq, mut cq, mut frames) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
         .busy_poll(args.busy_poll)
+        .num_frames(args.busy_poll_batch_size)
         .build()
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
+    //
+    // This is the main handle for interacting with the network data, if needed this can be split into its owner, rx, and tx
+    // components using the split() function.
     let mut socket = Socket::builder(&mut xdp_ctx, &args.if_name, args.queue)
         .rx_ring_size(args.rx_ring_size)
         .tx_ring_size(args.tx_ring_size)
@@ -69,10 +74,10 @@ fn main() {
         .build(umem)
         .expect("Failed to create socket");
 
-    // Setup some maintenance logic so we are good stewards and ensure we clean up.
+    // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.
     //
-    // Note: if the XdpContext isn't safely dropped (destructor run) then the interface will retain
-    // the XDP program attached to it, breaking things in weird ways.... cleanup is important :).
+    // Note: In other words its very important to ensure that the Drop impl for XdpContext is run to detach the XDP program from
+    // the interface, OR manually call detach().
     let exit = Arc::new(AtomicBool::new(false));
     ctrlc::set_handler({
         let exit = exit.clone();
@@ -84,9 +89,15 @@ fn main() {
 
     println!("Socket created, listening for packets...");
 
-    // Setup some stats to track the number of packets and bytes received.
-    let mut stats = Stats::new();
-    let mut frames = VecDeque::with_capacity(args.busy_poll_batch_size);
+    // For reads to work we need to hand some buffers to the kernel, so it can start reading data into them.
+
+    // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
+    fq.maybe_wake(socket.fd()).unwrap();
+
+    // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
+    fq.process_queue(&mut frames);
+
+    // Loop forever reading packets from the socket.
     while !exit.load(Ordering::Relaxed) {
         // First read some frames off the socket.
         let received = match socket.recv(&mut frames) {

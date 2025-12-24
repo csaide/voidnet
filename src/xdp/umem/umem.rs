@@ -107,7 +107,7 @@ impl Umem {
 
         let mut comp_ring = Consumer::new(completion_ring_size);
         let mut fill_ring = Producer::new(fill_ring_size);
-        let (mut frame_stack, mut frames) = FrameStack::new(num_frames, frame_size)?;
+        let (mut frame_stack, frames) = FrameStack::new(num_frames, frame_size)?;
 
         let mut umem: *mut xsk_umem = std::ptr::null_mut();
         let umem_ptr: *mut *mut xsk_umem = &mut umem;
@@ -132,12 +132,9 @@ impl Umem {
             umem,
             frame_stack: frame_stack.clone(),
         });
-        let mut fq = FillQueue::new(fill_ring, frame_stack.clone(), busy_poll);
-        // For all intents and purposes, we want to have a full fill queue, technically its not required but it helps
-        // to ensure there is not ring starvation.
-        fq.process_queue(&mut frames);
-
+        let fq = FillQueue::new(fill_ring, frame_stack.clone(), busy_poll);
         let cq = CompletionQueue::new(comp_ring, frame_stack);
+
         Ok((umem, fq, cq, frames))
     }
 
