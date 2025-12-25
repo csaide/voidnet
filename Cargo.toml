@@ -4,14 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+crossbeam-utils = { version = "0.8" }
 errno = { version = "0.3" }
 libc = { version = "0.2" }
-libxdp-sys = { version = "=0.2.2" } # Latest version of this library has a broken build....
+libxdp-sys = { version = "=0.2.2" }                   # Latest version of this library has a broken build....
 memmap2 = { version = "0.9" }
 thiserror = { version = "2" }
+zerocopy = { version = "0.8", features = ["derive"] }
 
 [dev-dependencies]
 clap = { version = "4.5", features = ["derive", "cargo"] }
+criterion = { version = "0.8" }
 ctrlc = { version = "3.2", features = ["termination"] }
 pnet = { version = "0.35" }
 
@@ -25,3 +28,7 @@ path = "src/lib.rs"
 test = true
 bench = true
 doctest = true
+
+[[bench]]
+name = "packet"
+harness = false

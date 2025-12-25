@@ -1,6 +1,6 @@
 use crate::xdp::{
     error::Result,
-    program::{AttachMode, Map, XdpProgram},
+    program::{AttachMode, Map, XdpInfo, XdpProgram},
     socket::Socket,
 };
 
@@ -31,6 +31,10 @@ impl XdpContext {
 
     pub fn attach_mode(&self) -> AttachMode {
         self.program.attach_mode()
+    }
+
+    pub fn info(&self) -> &XdpInfo {
+        self.program.info()
     }
 
     pub fn register_socket(&mut self, socket: &Socket) -> Result<()> {

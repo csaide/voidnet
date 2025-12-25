@@ -26,7 +26,7 @@ fn main() {
         "x86_64-unknown-linux-gnu" => ("x86", "x86_64-linux-gnu"),
         "aarch64-unknown-linux-gnu" => ("aarch64", "aarch64-linux-gnu"),
         _ => panic!(
-            "Unsupported target: {}, only x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu are supported",
+            "Unsupported target: {}, only x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu are currently supported",
             target
         ),
     };

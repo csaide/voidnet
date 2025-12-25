@@ -11,8 +11,8 @@ pub enum Error {
     UpdateMapElement(Errno),
     #[error("failed to find specified interface")]
     InterfaceNotFound,
-    #[error("failed while opening XDP program: {0}")]
-    OpenProgram(Errno),
+    #[error("failed while opening XDP program: {0}: {1}")]
+    OpenProgram(Errno, String),
     #[error("failed while attaching XDP program: {0}")]
     AttachProgram(Errno),
     #[error("failed while waking fill queue: {0}")]
@@ -33,6 +33,8 @@ pub enum Error {
     InvalidCopyMode(String),
     #[error("failed while setting XDP frags support: {0}")]
     SetXdpFragsSupport(Errno),
+    #[error("failed while querying for XDP features: {0}")]
+    QueryXdpFeatures(Errno),
 }
 
 #[derive(Debug, Error)]
