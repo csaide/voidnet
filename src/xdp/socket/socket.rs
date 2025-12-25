@@ -11,7 +11,7 @@ use libxdp_sys::{
 use crate::xdp::{
     context::XdpContext,
     error::{Error, NonBlocking, Result},
-    flags::{XDP_SHARED_UMEM, XDP_USE_NEED_WAKEUP, XDP_USE_SG},
+    flags::{XDP_USE_NEED_WAKEUP, XDP_USE_SG},
     frame::FrameBuffer,
     ring::{Consumer, Producer},
     socket::{BindMode, mode::CopyMode},
@@ -144,6 +144,8 @@ pub struct Socket {
     tx: SocketTx,
 }
 
+unsafe impl Send for Socket {}
+
 impl Socket {
     fn setup_busy_poll(&self, busy_poll_timeout_us: i32, batch_size: usize) -> Result<()> {
         let opt = 1i32;
@@ -217,9 +219,6 @@ impl Socket {
         shared_umem: bool,
     ) -> Result<Self> {
         let mut bind_flags = XDP_USE_NEED_WAKEUP | copy_mode as u32;
-        if shared_umem {
-            bind_flags |= XDP_SHARED_UMEM;
-        }
         if enable_fragmentation {
             bind_flags |= XDP_USE_SG;
         }

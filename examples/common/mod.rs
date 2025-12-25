@@ -12,6 +12,7 @@ use pnet::packet::{
 };
 
 pub struct Stats {
+    pub id: Option<usize>,
     pub packets_received: u64,
     pub fragments_received: u64,
     pub bytes_received: u64,
@@ -24,6 +25,7 @@ pub struct Stats {
 impl Stats {
     pub fn new() -> Self {
         Self {
+            id: None,
             packets_received: 0,
             fragments_received: 0,
             bytes_received: 0,
@@ -34,6 +36,12 @@ impl Stats {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
+        }
+    }
+    pub fn new_with_id(id: usize) -> Self {
+        Self {
+            id: Some(id),
+            ..Self::new()
         }
     }
 
@@ -81,7 +89,10 @@ impl Stats {
         self.last_time = now;
 
         println!(
-            "Packets: {}M | Fragments: {}M | Bytes: {:.2}GiB | Packet rate: {:.2} Mpps | Fragment rate: {:.2} Mfps | Byte rate: {:.2} Gbps",
+            "{}Packets: {}M | Fragments: {}M | Bytes: {:.2}GiB | Packet rate: {:.2} Mpps | Fragment rate: {:.2} Mfps | Byte rate: {:.2} Gbps",
+            self.id
+                .map(|id| format!("Worker {} |", id))
+                .unwrap_or_default(),
             packets_received / 1_000_000,
             fragments_received / 1_000_000,
             bytes_received as f64 / 1024.0 / 1024.0 / 1024.0,

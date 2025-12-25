@@ -10,6 +10,8 @@ pub struct Frame {
     is_fragment: bool,
 }
 
+unsafe impl Send for Frame {}
+
 impl Frame {
     /// Create a new frame with the given address, data pointer, length, and capacity.
     ///
