@@ -9,6 +9,7 @@ errno = { version = "0.3" }
 libc = { version = "0.2" }
 libxdp-sys = { version = "=0.2.2" }                   # Latest version of this library has a broken build....
 memmap2 = { version = "0.9" }
+neli = { version = "0.7" }
 thiserror = { version = "2" }
 zerocopy = { version = "0.8", features = ["derive"] }
 

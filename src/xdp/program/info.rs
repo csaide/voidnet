@@ -16,6 +16,7 @@ pub struct XdpInfo {
     pub attach_mode: u8,
     pub feature_flags: u64,
     pub xdp_zc_max_segs: u32,
+    pub mtu: u32,
 }
 
 impl XdpInfo {
@@ -64,7 +65,7 @@ impl std::fmt::Debug for XdpInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "XdpInfo(prog_id: {}, drv_prog_id: {}, hw_prog_id: {}, skb_prog_id: {}, attach_mode: {}, features: {{ basic: {}, redirect: {}, ndo_xmit: {}, xsk_zero_copy: {}, hw_offload: {}, fragmentation: {}, ndo_xmit_fragmentation: {}, max_fragments: {} }})",
+            "XdpInfo(prog_id: {}, drv_prog_id: {}, hw_prog_id: {}, skb_prog_id: {}, attach_mode: {}, features: {{ basic: {}, redirect: {}, ndo_xmit: {}, xsk_zero_copy: {}, hw_offload: {}, fragmentation: {}, ndo_xmit_fragmentation: {}, max_fragments: {}, mtu: {} }})",
             self.prog_id,
             self.drv_prog_id,
             self.hw_prog_id,
@@ -77,7 +78,8 @@ impl std::fmt::Debug for XdpInfo {
             self.hw_offload_support(),
             self.fragmentation_support(),
             self.ndo_xmit_fragmentation_support(),
-            self.max_fragments()
+            self.max_fragments(),
+            self.mtu
         )
     }
 }

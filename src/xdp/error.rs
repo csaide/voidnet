@@ -35,6 +35,8 @@ pub enum Error {
     SetXdpFragsSupport(Errno),
     #[error("failed while querying for XDP features: {0}")]
     QueryXdpFeatures(Errno),
+    #[error("failed while getting MTU: {0}")]
+    GetMtu(String),
 }
 
 #[derive(Debug, Error)]
