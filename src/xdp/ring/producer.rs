@@ -1,7 +1,4 @@
-use std::{
-    cmp::min,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use libxdp_sys::{XDP_RING_NEED_WAKEUP, xdp_desc, xsk_ring_prod};
 
@@ -41,7 +38,11 @@ impl Producer {
     /// Reserves a batch of descriptors from the ring.
     #[inline]
     pub fn reserve(&mut self, batch_size: u32) -> (u32, u32) {
-        let batch_size = min(batch_size, self.ring_size);
+        debug_assert!(
+            batch_size <= self.ring_size,
+            "batch size is greater than the ring size"
+        );
+
         xsk_ring_prod_reserve(self.ring.as_mut(), batch_size)
     }
 

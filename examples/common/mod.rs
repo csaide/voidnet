@@ -1,15 +1,23 @@
 #![allow(dead_code)]
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    net::Ipv6Addr,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use libvoid::xdp::{program::AttachMode, socket::CopyMode};
-use pnet::packet::{
-    ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket},
-    ip::IpNextHeaderProtocols,
-    ipv4::MutableIpv4Packet,
-    ipv6::{Ipv6Packet, MutableIpv6Packet},
-    udp::MutableUdpPacket,
+use pnet::{
+    packet::{
+        Packet,
+        ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket},
+        ip::IpNextHeaderProtocols,
+        ipv4::MutableIpv4Packet,
+        ipv6::{Ipv6Packet, MutableIpv6Packet},
+        udp::{MutableUdpPacket, UdpPacket},
+    },
+    util::MacAddr,
 };
+use rand::RngCore;
 
 pub struct Stats {
     pub id: Option<usize>,
@@ -145,6 +153,68 @@ pub fn swap_addresses(frame: &mut [u8]) -> Option<()> {
     Some(())
 }
 
+// Build a frame for the given arguments. This is a simple example and can be customized as needed.
+pub fn build_frame(args: &GeneratorArgs) -> Vec<u8> {
+    // UDP payload of random data for now.
+    let mut udp_payload = Vec::with_capacity(args.payload_size);
+    rand::rng().fill_bytes(&mut udp_payload);
+
+    // Calculate packet sizes
+    let ethernet_header_size = EthernetPacket::minimum_packet_size();
+    let ipv6_header_size = Ipv6Packet::minimum_packet_size();
+    let udp_header_size = UdpPacket::minimum_packet_size();
+    let total_packet_size =
+        ethernet_header_size + ipv6_header_size + udp_header_size + udp_payload.len();
+
+    // Get access to the data buffer
+    let mut data = vec![0; total_packet_size];
+
+    // Build Ethernet header
+    let mut ethernet_packet = MutableEthernetPacket::new(&mut data).unwrap();
+    ethernet_packet.set_destination(args.dst_mac);
+    ethernet_packet.set_source(args.src_mac);
+    ethernet_packet.set_ethertype(EtherTypes::Ipv6);
+
+    // Build IPv6 header
+    let ipv6_data = &mut data[ethernet_header_size..];
+    let mut ipv6_packet = MutableIpv6Packet::new(ipv6_data).unwrap();
+    ipv6_packet.set_version(6);
+    ipv6_packet.set_traffic_class(0);
+    ipv6_packet.set_flow_label(0);
+    ipv6_packet.set_payload_length((udp_header_size + udp_payload.len()) as u16);
+    ipv6_packet.set_next_header(IpNextHeaderProtocols::Udp);
+    ipv6_packet.set_hop_limit(64);
+    ipv6_packet.set_source(args.src_ip);
+    ipv6_packet.set_destination(args.dst_ip);
+
+    // Build UDP header
+    let udp_data = &mut data[ethernet_header_size + ipv6_header_size..];
+    let mut udp_packet = MutableUdpPacket::new(udp_data).unwrap();
+    udp_packet.set_source(args.src_port);
+    udp_packet.set_destination(args.dst_port);
+    udp_packet.set_length((udp_header_size + udp_payload.len()) as u16);
+
+    // Calculate UDP checksum (IPv6 pseudo-header + UDP header + payload)
+    let udp_len = udp_header_size + udp_payload.len();
+    let mut checksum_data = Vec::with_capacity(40 + udp_len);
+    checksum_data.extend_from_slice(&args.src_ip.octets());
+    checksum_data.extend_from_slice(&args.dst_ip.octets());
+    checksum_data.extend_from_slice(&(udp_len as u32).to_be_bytes());
+    checksum_data.push(0);
+    checksum_data.push(IpNextHeaderProtocols::Udp.0);
+    checksum_data.extend_from_slice(&udp_packet.packet()[..udp_header_size]);
+    checksum_data.extend_from_slice(&udp_payload);
+
+    let checksum = pnet::util::checksum(&checksum_data, 1);
+    udp_packet.set_checksum(checksum);
+
+    // Copy UDP payload
+    let payload_start = ethernet_header_size + ipv6_header_size + udp_header_size;
+    data[payload_start..payload_start + udp_payload.len()].copy_from_slice(&udp_payload);
+
+    data
+}
+
 #[derive(clap::Args)]
 pub struct BaseArgs {
     #[arg(short, long, help = "The name of the network interface to use.")]
@@ -223,4 +293,55 @@ pub struct BaseArgs {
         help = "Enable fragmentation support on the socket, this is only useful for devices with MTU's greater than ~3000 bytes."
     )]
     pub enable_fragmentation: bool,
+}
+
+#[derive(clap::Args)]
+pub struct GeneratorArgs {
+    #[arg(
+        short = 'p',
+        long,
+        default_value = "8008",
+        help = "The source port for the UDP packet."
+    )]
+    src_port: u16,
+    #[arg(
+        short = 'P',
+        long,
+        default_value = "8008",
+        help = "The destination port for the UDP packet."
+    )]
+    dst_port: u16,
+    #[arg(
+        short = 'i',
+        long,
+        default_value = "fc00:dead:cafe:1::1",
+        help = "The source IP address for the UDP packet."
+    )]
+    src_ip: Ipv6Addr,
+    #[arg(
+        short = 'I',
+        long,
+        default_value = "fc00:dead:cafe:1::2",
+        help = "The destination IP address for the UDP packet."
+    )]
+    dst_ip: Ipv6Addr,
+    #[arg(
+        short = 'm',
+        long,
+        help = "The source MAC address for the Ethernet packet."
+    )]
+    src_mac: MacAddr,
+    #[arg(
+        short = 'M',
+        long,
+        help = "The destination MAC address for the Ethernet packet."
+    )]
+    dst_mac: MacAddr,
+    #[arg(
+        short,
+        long,
+        default_value = "64",
+        help = "The size of the UDP payload in bytes."
+    )]
+    payload_size: usize,
 }

@@ -1,8 +1,4 @@
-use std::{
-    collections::VecDeque,
-    ops::RangeBounds,
-    sync::{MutexGuard, RwLockWriteGuard},
-};
+use std::{collections::VecDeque, ops::RangeBounds, sync::MutexGuard};
 
 use super::Frame;
 
@@ -71,33 +67,6 @@ impl<B: FrameBuffer> FrameBuffer for MutexGuard<'_, B> {
     }
 }
 
-impl<B: FrameBuffer> FrameBuffer for RwLockWriteGuard<'_, B> {
-    type Drain<'a>
-        = B::Drain<'a>
-    where
-        Self: 'a;
-
-    #[inline(always)]
-    fn capacity(&self) -> usize {
-        B::capacity(&*self)
-    }
-
-    #[inline(always)]
-    fn len(&self) -> usize {
-        B::len(&*self)
-    }
-
-    #[inline(always)]
-    fn push(&mut self, frame: Frame) {
-        B::push(&mut *self, frame)
-    }
-
-    #[inline(always)]
-    fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> Self::Drain<'_> {
-        B::drain(&mut *self, range)
-    }
-}
-
 impl FrameBuffer for VecDeque<Frame> {
     type Drain<'a>
         = std::collections::vec_deque::Drain<'a, Frame>
@@ -125,33 +94,6 @@ impl FrameBuffer for VecDeque<Frame> {
     }
 }
 
-impl FrameBuffer for Vec<Frame> {
-    type Drain<'a>
-        = std::vec::Drain<'a, Frame>
-    where
-        Self: 'a;
-
-    #[inline(always)]
-    fn capacity(&self) -> usize {
-        Vec::capacity(self)
-    }
-
-    #[inline(always)]
-    fn len(&self) -> usize {
-        Vec::len(self)
-    }
-
-    #[inline(always)]
-    fn push(&mut self, frame: Frame) {
-        Vec::push(self, frame)
-    }
-
-    #[inline(always)]
-    fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> Self::Drain<'_> {
-        Vec::drain(self, range)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -160,14 +102,14 @@ mod tests {
 
     #[test]
     fn test_mutex_vec() {
-        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let buffer = Arc::new(Mutex::new(VecDeque::new()));
         let mut guard = buffer.lock().unwrap();
 
         FrameBuffer::push(&mut guard, unsafe {
             Frame::new(0, std::ptr::null_mut(), 0, 0, false)
         });
         let drain = FrameBuffer::drain(&mut guard, ..1);
-        let frames = drain.collect::<Vec<_>>();
+        let frames = drain.collect::<VecDeque<_>>();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].addr(), 0);
         assert_eq!(frames[0].len(), 0);
