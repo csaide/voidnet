@@ -7,17 +7,17 @@ use libxdp_sys::xsk_ring_prod;
 use crate::xdp::{
     error::{Error, Result},
     frame::{FrameBuffer, FrameStack},
-    ring::Producer,
+    ring::{Init, Producer},
 };
 
 pub struct FillQueue {
     _stack: Arc<FrameStack>,
-    ring: Producer,
+    ring: Producer<Init>,
     busy_poll: bool,
 }
 
 impl FillQueue {
-    pub fn new(ring: Producer, stack: Arc<FrameStack>, busy_poll: bool) -> Self {
+    pub fn new(ring: Producer<Init>, stack: Arc<FrameStack>, busy_poll: bool) -> Self {
         Self {
             ring,
             _stack: stack,
@@ -64,11 +64,11 @@ impl FillQueue {
 
     #[inline(always)]
     pub fn as_mut(&mut self) -> *mut xsk_ring_prod {
-        self.ring.as_mut()
+        self.ring.as_mut_ptr()
     }
 
     #[inline(always)]
     pub fn as_ref(&self) -> *const xsk_ring_prod {
-        self.ring.as_ref()
+        self.ring.as_ptr()
     }
 }

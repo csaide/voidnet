@@ -5,19 +5,19 @@ use libc::XDP_PKT_CONTD;
 use crate::xdp::{
     error::{NonBlocking, WouldBlock},
     frame::{FrameBuffer, FrameStack},
-    ring::Consumer,
+    ring::{Consumer, Init},
 };
 
 use super::SocketOwner;
 
 pub struct SocketRx {
     _socket: Arc<SocketOwner>,
-    ring: Consumer,
+    ring: Consumer<Init>,
     stack: Arc<FrameStack>,
 }
 
 impl SocketRx {
-    pub fn new(socket: Arc<SocketOwner>, ring: Consumer, stack: Arc<FrameStack>) -> Self {
+    pub fn new(socket: Arc<SocketOwner>, ring: Consumer<Init>, stack: Arc<FrameStack>) -> Self {
         Self {
             _socket: socket,
             ring,

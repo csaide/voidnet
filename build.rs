@@ -5,14 +5,12 @@ fn main() {
     println!("cargo::rerun-if-changed=bpf/xdp_kern.c");
     println!("cargo::rerun-if-env-changed=TARGET");
 
-    let max_socks = std::env::var("MAX_SOCKS").unwrap_or_else(|_| 256.to_string());
     let mut args = vec![
         "-target".to_string(),
         "bpf".to_string(),
         "-O2".to_string(),
         "-g".to_string(),
         "-march=native".to_string(),
-        format!("-DMAX_SOCKS={}", max_socks),
     ];
 
     let kernel_version = Command::new("uname")

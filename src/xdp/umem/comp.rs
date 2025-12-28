@@ -4,16 +4,16 @@ use libxdp_sys::xsk_ring_cons;
 
 use crate::xdp::{
     frame::{FrameBuffer, FrameStack},
-    ring::Consumer,
+    ring::{Consumer, Init},
 };
 
 pub struct CompletionQueue {
-    ring: Consumer,
+    ring: Consumer<Init>,
     stack: Arc<FrameStack>,
 }
 
 impl CompletionQueue {
-    pub fn new(ring: Consumer, stack: Arc<FrameStack>) -> Self {
+    pub fn new(ring: Consumer<Init>, stack: Arc<FrameStack>) -> Self {
         Self { ring, stack }
     }
 
@@ -35,11 +35,11 @@ impl CompletionQueue {
 
     #[inline(always)]
     pub fn as_mut(&mut self) -> *mut xsk_ring_cons {
-        self.ring.as_mut()
+        self.ring.as_mut_ptr()
     }
 
     #[inline(always)]
     pub fn as_ref(&self) -> *const xsk_ring_cons {
-        self.ring.as_ref()
+        self.ring.as_ptr()
     }
 }

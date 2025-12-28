@@ -1,10 +1,6 @@
-use std::ops::{Deref, DerefMut};
-
-use zerocopy::{ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, TryFromBytes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, TryFromBytes};
 
 use crate::xdp::frame::Frame;
-
-use super::error::{Error, Result};
 
 #[derive(
     Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, KnownLayout, Immutable, IntoBytes, FromBytes,
@@ -110,12 +106,5 @@ pub struct EthernetPacket {
 }
 
 pub struct EthernetFrame {
-    frame: Ref<Frame, EthernetPacket>,
-}
-
-impl EthernetFrame {
-    pub fn new(frame: Frame) -> Self {
-        let frame = Ref::from_bytes(frame).unwrap();
-        Self { frame }
-    }
+    _frame: Ref<Frame, EthernetPacket>,
 }

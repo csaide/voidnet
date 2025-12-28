@@ -6,19 +6,19 @@ use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, sendto};
 use crate::xdp::{
     error::{Error, NonBlocking, Result, WouldBlock},
     frame::FrameBuffer,
-    ring::Producer,
+    ring::{Init, Producer},
 };
 
 use super::SocketOwner;
 
 pub struct SocketTx {
     socket: Arc<SocketOwner>,
-    ring: Producer,
+    ring: Producer<Init>,
     busy_poll: bool,
 }
 
 impl SocketTx {
-    pub fn new(socket: Arc<SocketOwner>, ring: Producer, busy_poll: bool) -> Self {
+    pub fn new(socket: Arc<SocketOwner>, ring: Producer<Init>, busy_poll: bool) -> Self {
         Self {
             socket,
             ring,

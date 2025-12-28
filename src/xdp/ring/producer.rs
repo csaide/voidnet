@@ -1,22 +1,41 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{
+    marker::PhantomData,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use libxdp_sys::{XDP_RING_NEED_WAKEUP, xdp_desc, xsk_ring_prod};
 
+use super::{Init, Uninit};
+
 /// A producer ring is a ring of descriptors that are used to transfer packets from the user to the kernel.
-pub struct Producer {
-    ring: Box<xsk_ring_prod>,
-    ring_size: u32,
+pub struct Producer<I> {
+    ring: xsk_ring_prod,
+    _init: PhantomData<I>,
 }
 
 // SAFETY: The only reason [Producer] is not send is because of the *mut u32 in xsk_ring_prod, the pointer is tied to this
 // xsk_ring_prod so its lifetime is tied to it and we can safely send this to another thread.
-unsafe impl Send for Producer {}
+unsafe impl<I> Send for Producer<I> {}
 
-impl Producer {
+impl<I> Producer<I> {
+    /// Returns a read-only reference to the producer ring.
+    #[inline]
+    pub fn as_ptr(&self) -> *const xsk_ring_prod {
+        &self.ring as *const xsk_ring_prod
+    }
+
+    /// Returns a mutable reference to the producer ring.
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> *mut xsk_ring_prod {
+        &mut self.ring as *mut xsk_ring_prod
+    }
+}
+
+impl Producer<Uninit> {
     /// Creates a new producer ring.
     #[inline]
-    pub fn new(ring_size: u32) -> Producer {
-        let ring = Box::new(xsk_ring_prod {
+    pub fn new() -> Producer<Uninit> {
+        let ring = xsk_ring_prod {
             cached_prod: 0,
             cached_cons: 0,
             mask: 0,
@@ -25,67 +44,70 @@ impl Producer {
             consumer: std::ptr::null_mut(),
             ring: std::ptr::null_mut(),
             flags: std::ptr::null_mut(),
-        });
-        Self { ring, ring_size }
+        };
+        Self {
+            ring,
+            _init: PhantomData,
+        }
     }
 
+    /// Assume the producer has been initialized by the kernel, returning a wrapped Producer<Init> which can be used to access the ring safely.
+    ///
+    /// # Safety
+    ///
+    /// It is on the caller to ensure that the producer has been properly initialized by the kernel, by a call to `xsk_umem__create`/`xsk_socket__create`/`xsk_socket__create_shared`.
+    pub unsafe fn init(self) -> Producer<Init> {
+        Producer::<Init> {
+            ring: self.ring,
+            _init: PhantomData,
+        }
+    }
+}
+
+impl Producer<Init> {
     /// Returns the size of the producer ring.
-    #[inline(always)]
+    #[inline]
     pub fn size(&self) -> u32 {
-        self.ring_size
+        self.ring.size
     }
 
     /// Reserves a batch of descriptors from the ring.
     #[inline]
     pub fn reserve(&mut self, batch_size: u32) -> (u32, u32) {
         debug_assert!(
-            batch_size <= self.ring_size,
+            batch_size <= self.ring.size,
             "batch size is greater than the ring size"
         );
 
-        xsk_ring_prod_reserve(self.ring.as_mut(), batch_size)
+        xsk_ring_prod_reserve(&mut self.ring, batch_size)
     }
 
     /// Returns a mutable reference to the TX descriptor at the given index.
     #[inline]
     pub fn tx_desc(&mut self, index: u32) -> *mut xdp_desc {
-        xsk_ring_prod_tx_desc(self.ring.as_mut(), index)
+        xsk_ring_prod_tx_desc(&mut self.ring, index)
     }
 
     /// Returns a mutable reference to the fill address at the given index.
     #[inline]
     pub fn fill_addr(&mut self, index: u32) -> *mut u64 {
-        xsk_ring_prod_fill_addr(self.ring.as_ref(), index)
+        xsk_ring_prod_fill_addr(&self.ring, index)
     }
 
     /// Submits a batch of descriptors to the ring.
     #[inline]
     pub fn submit(&mut self, count: u32) {
-        xsk_ring_prod_submit(self.ring.as_mut(), count);
+        xsk_ring_prod_submit(&mut self.ring, count);
     }
 
     pub fn needs_wakeup(&self) -> bool {
-        xsk_ring_prod_needs_wakeup(self.ring.as_ref())
-    }
-
-    /// Returns a read-only reference to the producer ring.
-    #[inline]
-    pub fn as_ref(&self) -> *const xsk_ring_prod {
-        self.ring.as_ref()
-    }
-
-    /// Returns a mutable reference to the producer ring.
-    #[inline]
-    pub fn as_mut(&mut self) -> *mut xsk_ring_prod {
-        self.ring.as_mut()
+        xsk_ring_prod_needs_wakeup(&self.ring)
     }
 }
 
 #[inline(always)]
 fn xsk_ring_prod_fill_addr(ring: &xsk_ring_prod, index: u32) -> *mut u64 {
-    let addrs =
-        unsafe { core::slice::from_raw_parts_mut(ring.ring as *mut u64, ring.size as usize) };
-    &mut addrs[(index & ring.mask) as usize]
+    unsafe { (ring.ring as *mut u64).add((index & ring.mask) as usize) }
 }
 
 #[inline(always)]
@@ -127,9 +149,7 @@ fn xsk_ring_prod_submit(ring: &mut xsk_ring_prod, count: u32) {
 
 #[inline(always)]
 fn xsk_ring_prod_tx_desc(ring: &mut xsk_ring_prod, index: u32) -> *mut xdp_desc {
-    let descs =
-        unsafe { core::slice::from_raw_parts_mut(ring.ring as *mut xdp_desc, ring.size as usize) };
-    &mut descs[(index & ring.mask) as usize]
+    unsafe { (ring.ring as *mut xdp_desc).add((index & ring.mask) as usize) }
 }
 
 #[inline(always)]

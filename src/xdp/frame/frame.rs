@@ -1,7 +1,5 @@
 use std::ops::{Deref, DerefMut};
 
-use zerocopy::{ByteSlice, SplitByteSlice};
-
 /// A frame is a contiguous memory region that is used to store data for a packet, this is a simple wrapper around a pointer to a MMAP'd memory region.
 #[derive(Debug)]
 pub struct Frame {
@@ -111,31 +109,5 @@ impl Deref for Frame {
 impl DerefMut for Frame {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { std::slice::from_raw_parts_mut(self.data, self.len) }
-    }
-}
-
-unsafe impl ByteSlice for Frame {}
-
-unsafe impl SplitByteSlice for Frame {
-    unsafe fn split_at_unchecked(self, mid: usize) -> (Self, Self) {
-        let Frame {
-            addr,
-            len,
-            capacity,
-            is_fragment,
-            data,
-        } = self;
-        (
-            unsafe { Self::new(addr, data, mid, capacity, is_fragment) },
-            unsafe {
-                Self::new(
-                    addr,
-                    data.offset(mid as isize),
-                    len - mid,
-                    capacity,
-                    is_fragment,
-                )
-            },
-        )
     }
 }

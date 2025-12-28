@@ -11,15 +11,11 @@ KERNEL_SRC := /lib/modules/$(KERNEL_VERSION)/build
 BPF_SRC := xdp_kern.c
 BPF_OBJ := $(BPF_SRC:.c=.o)
 
-# Default max sockets (can be overridden)
-MAX_SOCKS ?= 256
-
 # Clang flags for BPF compilation
 CLANG_FLAGS := \
 	-target bpf \
 	-O2 -g \
 	-march=native \
-	-DMAX_SOCKS=$(MAX_SOCKS) \
 	-I$(KERNEL_SRC)/arch/$(ARCH)/include \
 	-I$(KERNEL_SRC)/arch/$(ARCH)/include/uapi \
 	-I/usr/include/$(ARCH_TRIPLET)

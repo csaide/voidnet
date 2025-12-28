@@ -27,7 +27,11 @@ impl Map {
     }
 
     /// Updates the value of an element in the map with the given key and value.
-    pub fn update_elem<K, V>(&self, key: &K, value: &V) -> Result<()> {
+    pub fn update_elem<K, V>(&self, key: &K, value: &V) -> Result<()>
+    where
+        K: Sized,
+        V: Sized,
+    {
         let ret = unsafe {
             bpf_map_update_elem(
                 bpf_map__fd(self.map),

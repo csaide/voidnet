@@ -233,8 +233,8 @@ impl Socket {
             },
         };
 
-        let mut rx = Consumer::new(rx_ring_size);
-        let mut tx = Producer::new(tx_ring_size);
+        let mut rx = Consumer::new();
+        let mut tx = Producer::new();
 
         // C function has double indirection
         let mut xsk: *mut xsk_socket = std::ptr::null_mut();
@@ -250,8 +250,8 @@ impl Socket {
                     if_name_c.as_ptr(),
                     queue as u32,
                     umem.umem(),
-                    rx.as_mut(),
-                    tx.as_mut(),
+                    rx.as_mut_ptr(),
+                    tx.as_mut_ptr(),
                     fq.as_mut(),
                     cq.as_mut(),
                     &cfg,
@@ -264,8 +264,8 @@ impl Socket {
                     if_name_c.as_ptr(),
                     queue as u32,
                     umem.umem(),
-                    rx.as_mut(),
-                    tx.as_mut(),
+                    rx.as_mut_ptr(),
+                    tx.as_mut_ptr(),
                     &cfg,
                 );
             }
@@ -274,6 +274,8 @@ impl Socket {
         if ret != 0 {
             return Err(Error::CreateSocket(errno()));
         }
+        let rx = unsafe { rx.assume_init() };
+        let tx = unsafe { tx.init() };
 
         let owner = Arc::new(SocketOwner {
             _umem: umem.clone(),

@@ -106,8 +106,8 @@ impl Umem {
             flags: 0,
         };
 
-        let mut comp_ring = Consumer::new(completion_ring_size);
-        let mut fill_ring = Producer::new(fill_ring_size);
+        let mut comp_ring = Consumer::new();
+        let mut fill_ring = Producer::new();
         let (mut frame_stack, frames) = FrameStack::new(num_frames, frame_size)?;
 
         let mut umem: *mut xsk_umem = std::ptr::null_mut();
@@ -119,14 +119,17 @@ impl Umem {
                 umem_ptr,
                 frame_stack.as_mut_ptr() as *mut c_void,
                 size,
-                fill_ring.as_mut(),
-                comp_ring.as_mut(),
+                fill_ring.as_mut_ptr(),
+                comp_ring.as_mut_ptr(),
                 &cfg,
             )
         };
         if ret != 0 {
             return Err(Error::CreateUmem(errno()));
         }
+
+        let fill_ring = unsafe { fill_ring.init() };
+        let comp_ring = unsafe { comp_ring.assume_init() };
 
         let frame_stack = Arc::new(frame_stack);
         let umem = Arc::new(Self {
