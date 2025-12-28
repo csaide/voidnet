@@ -11,11 +11,13 @@ pub struct Mmap {
 
 impl Mmap {
     /// Creates a new [Mmap] with the given number of frames and frame size.
-    pub fn new(num_frames: usize, frame_size: usize) -> Result<Self> {
-        let map = MmapOptions::new()
-            .len(num_frames * frame_size)
-            .map_anon()
-            .map_err(|e| Error::MmapAllocate(e))?;
+    pub fn new(num_frames: usize, frame_size: usize, huge_tables: bool) -> Result<Self> {
+        let mut opts = MmapOptions::new();
+        opts.len(num_frames * frame_size);
+        if huge_tables {
+            opts.huge(None);
+        }
+        let map = opts.map_anon().map_err(|e| Error::MmapAllocate(e))?;
 
         Ok(Self {
             map,

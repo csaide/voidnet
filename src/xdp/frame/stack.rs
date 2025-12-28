@@ -11,8 +11,9 @@ impl FrameStack {
     pub fn new<B: FrameBuffer + FromIterator<Frame>>(
         num_frames: usize,
         frame_size: usize,
+        huge_tables: bool,
     ) -> Result<(Self, B)> {
-        let mmap = Mmap::new(num_frames, frame_size)?;
+        let mmap = Mmap::new(num_frames, frame_size, huge_tables)?;
         let stack = Self { frame_size, mmap };
         let frames = (0..num_frames)
             .map(|i| stack.to_frame(i as u64 * frame_size as u64, 0, false))

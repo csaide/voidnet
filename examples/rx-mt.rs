@@ -127,6 +127,7 @@ fn main() {
         .frame_size(args.frame_size)
         .busy_poll(args.busy_poll)
         .num_frames(args.busy_poll_batch_size * args.num_threads.get())
+        .huge_tables(args.huge_tables)
         .build::<VecDeque<Frame>>()
         .expect("Failed to create umem");
 

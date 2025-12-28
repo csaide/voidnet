@@ -22,6 +22,7 @@ pub struct UmemBuilder {
     frame_size: usize,
     num_frames: usize,
     busy_poll: bool,
+    huge_tables: bool,
 }
 
 impl UmemBuilder {
@@ -36,6 +37,7 @@ impl UmemBuilder {
             frame_size,
             num_frames: (completion_ring_size + fill_ring_size) as usize,
             busy_poll,
+            huge_tables: false,
         }
     }
 
@@ -64,6 +66,11 @@ impl UmemBuilder {
         self
     }
 
+    pub fn huge_tables(mut self, huge_tables: bool) -> Self {
+        self.huge_tables = huge_tables;
+        self
+    }
+
     pub fn build<B: FrameBuffer + FromIterator<Frame>>(
         self,
     ) -> Result<(Arc<Umem>, FillQueue, CompletionQueue, B)> {
@@ -73,6 +80,7 @@ impl UmemBuilder {
             self.busy_poll,
             self.num_frames,
             self.frame_size,
+            self.huge_tables,
         )
     }
 }
@@ -97,6 +105,7 @@ impl Umem {
         busy_poll: bool,
         num_frames: usize,
         frame_size: usize,
+        huge_tables: bool,
     ) -> Result<(Arc<Self>, FillQueue, CompletionQueue, B)> {
         let cfg = xsk_umem_config {
             fill_size: fill_ring_size,
@@ -108,7 +117,7 @@ impl Umem {
 
         let mut comp_ring = Consumer::new();
         let mut fill_ring = Producer::new();
-        let (mut frame_stack, frames) = FrameStack::new(num_frames, frame_size)?;
+        let (mut frame_stack, frames) = FrameStack::new(num_frames, frame_size, huge_tables)?;
 
         let mut umem: *mut xsk_umem = std::ptr::null_mut();
         let umem_ptr: *mut *mut xsk_umem = &mut umem;

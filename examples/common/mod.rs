@@ -277,6 +277,12 @@ pub struct BaseArgs {
     pub fill_ring_size: u32,
     #[arg(
         long,
+        default_value = "false",
+        help = "Enable huge tables for the umem."
+    )]
+    pub huge_tables: bool,
+    #[arg(
+        long,
         default_value = "2048",
         help = "The number of slots in the RX ring in the socket."
     )]
