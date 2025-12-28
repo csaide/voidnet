@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, ops::RangeBounds, sync::MutexGuard};
+use std::{collections::VecDeque, sync::MutexGuard};
 
 use super::Frame;
 
@@ -10,7 +10,7 @@ pub trait FrameBuffer {
     fn capacity(&self) -> usize;
     fn len(&self) -> usize;
     fn push(&mut self, frame: Frame);
-    fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> Self::Drain<'_>;
+    fn drain(&mut self) -> Self::Drain<'_>;
 }
 
 impl<B: FrameBuffer> FrameBuffer for &mut B {
@@ -35,8 +35,8 @@ impl<B: FrameBuffer> FrameBuffer for &mut B {
     }
 
     #[inline(always)]
-    fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> Self::Drain<'_> {
-        B::drain(self, range)
+    fn drain(&mut self) -> Self::Drain<'_> {
+        B::drain(self)
     }
 }
 
@@ -62,8 +62,8 @@ impl<B: FrameBuffer> FrameBuffer for MutexGuard<'_, B> {
     }
 
     #[inline(always)]
-    fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> Self::Drain<'_> {
-        B::drain(&mut *self, range)
+    fn drain(&mut self) -> Self::Drain<'_> {
+        B::drain(&mut *self)
     }
 }
 
@@ -89,8 +89,8 @@ impl FrameBuffer for VecDeque<Frame> {
     }
 
     #[inline(always)]
-    fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> Self::Drain<'_> {
-        VecDeque::drain(self, range)
+    fn drain(&mut self) -> Self::Drain<'_> {
+        VecDeque::drain(self, ..)
     }
 }
 
@@ -108,7 +108,7 @@ mod tests {
         FrameBuffer::push(&mut guard, unsafe {
             Frame::new(0, std::ptr::null_mut(), 0, 0, false)
         });
-        let drain = FrameBuffer::drain(&mut guard, ..1);
+        let drain = FrameBuffer::drain(&mut guard);
         let frames = drain.collect::<VecDeque<_>>();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].addr(), 0);

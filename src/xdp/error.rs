@@ -1,8 +1,10 @@
 use errno::Errno;
 use thiserror::Error;
 
+/// A simple type alias for the result type of the XDP subsystem, this is used to simplify the error handling code.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Overall XDP subsystem error type, these errors are generally returned on creation or initialization of the various components in the XDP subsystem.
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("failed while finding map: {0}")]
@@ -39,8 +41,10 @@ pub enum Error {
     GetMtu(String),
 }
 
+/// A simple ZST error variant for would block scenarios, this is explicitly a ZST to avoid the allocations and eventual drop calls of the error case.
 #[derive(Debug, Error)]
 #[error("network I/O error: would block")]
 pub struct WouldBlock;
 
+/// A simple type alias for non-blocking operations to use, that doesn't require any cost in the error case.
 pub type NonBlocking<T> = std::result::Result<T, WouldBlock>;

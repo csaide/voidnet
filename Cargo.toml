@@ -30,7 +30,3 @@ path = "src/lib.rs"
 test = true
 bench = true
 doctest = true
-
-[[bench]]
-name = "packet"
-harness = false
