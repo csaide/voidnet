@@ -2,10 +2,6 @@ use std::sync::MutexGuard;
 
 use super::Frame;
 
-pub trait FrameBufferBuilder: FrameBuffer {
-    fn new_buffer<I: IntoIterator<Item = Frame>>(frames: I) -> Self;
-}
-
 pub trait FrameBuffer {
     type Drain<'a>: Iterator<Item = Frame>
     where
@@ -113,7 +109,7 @@ mod tests {
             Frame::new(0, std::ptr::null_mut(), 0, 0, false)
         });
         let drain = FrameBuffer::drain(&mut guard);
-        let frames = LocalFrameBuffer::new_buffer(drain);
+        let frames: LocalFrameBuffer = drain.collect();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].addr(), 0);
         assert_eq!(frames[0].len(), 0);

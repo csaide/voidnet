@@ -10,7 +10,7 @@ use libxdp_sys::{
 
 use crate::xdp::{
     error::{Error, Result},
-    frame::{FrameBufferBuilder, FrameStack},
+    frame::{Frame, FrameBuffer, FrameStack},
     ring::{Consumer, Producer},
 };
 
@@ -79,7 +79,7 @@ impl UmemBuilder {
         self
     }
 
-    pub fn build<B: FrameBufferBuilder>(
+    pub fn build<B: FrameBuffer + FromIterator<Frame>>(
         self,
     ) -> Result<(Arc<Umem>, FillQueue, CompletionQueue, B)> {
         if self.frame_size & (self.frame_size - 1) != 0 && !self.unaligned {
@@ -112,7 +112,7 @@ impl Umem {
         UmemBuilder::new()
     }
 
-    fn new<B: FrameBufferBuilder>(
+    fn new<B: FrameBuffer + FromIterator<Frame>>(
         completion_ring_size: u32,
         fill_ring_size: u32,
         busy_poll: bool,

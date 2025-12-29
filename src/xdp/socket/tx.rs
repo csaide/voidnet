@@ -45,6 +45,7 @@ impl SocketTx {
 
     #[inline(always)]
     pub fn send<B: FrameBuffer>(&mut self, mut frames: B) -> NonBlocking<u32> {
+        // Take exactly the number of frames we need to send.
         let (mut idx_tx, ready) = self.ring.reserve(frames.num_frames() as u32);
         if ready == 0 {
             return Err(WouldBlock);

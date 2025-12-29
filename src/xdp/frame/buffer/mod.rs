@@ -8,5 +8,5 @@ use super::Frame;
 mod buffer;
 mod local;
 
-pub use buffer::{FrameBuffer, FrameBufferBuilder};
+pub use buffer::FrameBuffer;
 pub use local::LocalFrameBuffer;

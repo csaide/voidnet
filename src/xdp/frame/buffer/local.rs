@@ -6,7 +6,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use super::{Frame, FrameBuffer, FrameBufferBuilder};
+use super::{Frame, FrameBuffer};
 
 pub struct LocalFrameBuffer {
     frames: VecDeque<Frame>,
@@ -58,10 +58,10 @@ impl FrameBuffer for LocalFrameBuffer {
     }
 }
 
-impl FrameBufferBuilder for LocalFrameBuffer {
-    fn new_buffer<I: IntoIterator<Item = Frame>>(frames: I) -> Self {
+impl FromIterator<Frame> for LocalFrameBuffer {
+    fn from_iter<T: IntoIterator<Item = Frame>>(iter: T) -> Self {
         Self {
-            frames: frames.into_iter().collect(),
+            frames: iter.into_iter().collect(),
             free_space: 0,
         }
     }

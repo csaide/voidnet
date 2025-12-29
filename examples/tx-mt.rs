@@ -12,7 +12,7 @@ use clap::Parser;
 
 use libvoid::xdp::{
     context::XdpContext,
-    frame::{FrameBufferBuilder, LocalFrameBuffer},
+    frame::LocalFrameBuffer,
     socket::Socket,
     umem::{CompletionQueue, Umem},
 };
@@ -61,7 +61,7 @@ fn worker_thread(
             continue;
         }
 
-        let mut frames = LocalFrameBuffer::new_buffer(frame_stack.drain(..batch_size));
+        let mut frames: LocalFrameBuffer = frame_stack.drain(..batch_size).collect();
         match socket.send(&mut frames) {
             Ok(sent) => {
                 stats.update_batch(sent as usize, data_len);

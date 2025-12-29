@@ -28,6 +28,7 @@ impl SocketRx {
 
     #[inline(always)]
     pub fn recv<B: FrameBuffer>(&mut self, mut batch: B) -> NonBlocking<u32> {
+        // Take at least 1 frame up to the number of free slots in the batch.
         let (mut idx_rx, rcvd) = self.ring.peek(batch.free_space() as u32);
         if rcvd == 0 {
             return Err(WouldBlock);
