@@ -1,3 +1,6 @@
 /target
 /bpf/xdp_kern.o
 *.gz
+.terraform/
+.terraform.lock.hcl
+*.tfstate*
