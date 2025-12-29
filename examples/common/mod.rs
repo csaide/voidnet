@@ -283,6 +283,12 @@ pub struct BaseArgs {
     pub huge_tables: bool,
     #[arg(
         long,
+        default_value = "false",
+        help = "Enable unaligned chunks for the umem."
+    )]
+    pub unaligned: bool,
+    #[arg(
+        long,
         default_value = "2048",
         help = "The number of slots in the RX ring in the socket."
     )]

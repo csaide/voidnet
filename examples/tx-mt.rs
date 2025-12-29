@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     num::NonZero,
     ops::{Deref, DerefMut},
     sync::{
@@ -13,7 +12,7 @@ use clap::Parser;
 
 use libvoid::xdp::{
     context::XdpContext,
-    frame::Frame,
+    frame::{FrameBufferBuilder, LocalFrameBuffer},
     socket::Socket,
     umem::{CompletionQueue, Umem},
 };
@@ -49,7 +48,7 @@ impl DerefMut for Args {
 fn worker_thread(
     exit: Arc<AtomicBool>,
     mut stats: Stats,
-    frame_stack: Arc<Mutex<VecDeque<Frame>>>,
+    frame_stack: Arc<Mutex<LocalFrameBuffer>>,
     mut socket: Socket,
     batch_size: usize,
     data_len: usize,
@@ -62,7 +61,7 @@ fn worker_thread(
             continue;
         }
 
-        let mut frames = frame_stack.drain(..batch_size).collect::<VecDeque<Frame>>();
+        let mut frames = LocalFrameBuffer::new_buffer(frame_stack.drain(..batch_size));
         match socket.send(&mut frames) {
             Ok(sent) => {
                 stats.update_batch(sent as usize, data_len);
@@ -81,12 +80,11 @@ fn worker_thread(
 fn umem_thread(
     exit: Arc<AtomicBool>,
     mut completion_queue: CompletionQueue,
-    frame_stack: Arc<Mutex<VecDeque<Frame>>>,
-    data_len: usize,
+    frame_stack: Arc<Mutex<LocalFrameBuffer>>,
 ) {
     while !exit.load(Ordering::Relaxed) {
         let mut guard = frame_stack.lock().unwrap();
-        completion_queue.process_queue(&mut guard, Some(data_len));
+        completion_queue.process_queue(&mut guard);
     }
 }
 
@@ -114,7 +112,8 @@ fn main() {
         .busy_poll(args.busy_poll)
         .num_frames(args.busy_poll_batch_size * args.num_threads.get())
         .huge_tables(args.huge_tables)
-        .build::<VecDeque<Frame>>()
+        .unaligned(args.unaligned)
+        .build::<LocalFrameBuffer>()
         .expect("Failed to create umem");
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.
@@ -174,9 +173,7 @@ fn main() {
 
     // Spawn our Umem thread, this will handle actually retrieving handled frames from the completion queue, and repopulating
     // the frame stack with new frames to send.
-    threads.push(thread::spawn(move || {
-        umem_thread(exit, cq, frame_stack, data_len)
-    }));
+    threads.push(thread::spawn(move || umem_thread(exit, cq, frame_stack)));
 
     println!("All threads created, sending packets...");
 

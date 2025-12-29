@@ -18,15 +18,15 @@ impl CompletionQueue {
     }
 
     #[inline(always)]
-    pub fn process_queue<B: FrameBuffer>(&mut self, mut batch: B, frame_size: Option<usize>) {
-        let (mut idx, ready) = self.ring.peek((batch.capacity() - batch.len()) as u32);
+    pub fn process_queue<B: FrameBuffer>(&mut self, mut batch: B) {
+        let (mut idx, ready) = self.ring.peek(batch.free_space() as u32);
         if ready == 0 {
             return;
         }
 
         for _ in 0..ready {
             let addr = self.ring.comp_addr(idx);
-            batch.push(self.stack.to_frame(addr, frame_size.unwrap_or(0), false));
+            batch.push(self.stack.to_frame(addr, 0, false));
             idx += 1;
         }
 

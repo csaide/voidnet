@@ -1,16 +1,25 @@
-use std::{collections::VecDeque, sync::MutexGuard};
+use std::sync::MutexGuard;
 
 use super::Frame;
+
+pub trait FrameBufferBuilder: FrameBuffer {
+    fn new_buffer<I: IntoIterator<Item = Frame>>(frames: I) -> Self;
+}
 
 pub trait FrameBuffer {
     type Drain<'a>: Iterator<Item = Frame>
     where
         Self: 'a;
 
-    fn capacity(&self) -> usize;
-    fn len(&self) -> usize;
+    type IterMut<'a>: Iterator<Item = &'a mut Frame>
+    where
+        Self: 'a;
+
+    fn free_space(&self) -> usize;
+    fn num_frames(&self) -> usize;
     fn push(&mut self, frame: Frame);
     fn drain(&mut self) -> Self::Drain<'_>;
+    fn iter_mut(&mut self) -> Self::IterMut<'_>;
 }
 
 impl<B: FrameBuffer> FrameBuffer for &mut B {
@@ -19,14 +28,19 @@ impl<B: FrameBuffer> FrameBuffer for &mut B {
     where
         Self: 'a;
 
+    type IterMut<'a>
+        = B::IterMut<'a>
+    where
+        Self: 'a;
+
     #[inline(always)]
-    fn capacity(&self) -> usize {
-        B::capacity(self)
+    fn free_space(&self) -> usize {
+        B::free_space(self)
     }
 
     #[inline(always)]
-    fn len(&self) -> usize {
-        B::len(self)
+    fn num_frames(&self) -> usize {
+        B::num_frames(self)
     }
 
     #[inline(always)]
@@ -38,6 +52,11 @@ impl<B: FrameBuffer> FrameBuffer for &mut B {
     fn drain(&mut self) -> Self::Drain<'_> {
         B::drain(self)
     }
+
+    #[inline(always)]
+    fn iter_mut(&mut self) -> Self::IterMut<'_> {
+        B::iter_mut(self)
+    }
 }
 
 impl<B: FrameBuffer> FrameBuffer for MutexGuard<'_, B> {
@@ -46,14 +65,19 @@ impl<B: FrameBuffer> FrameBuffer for MutexGuard<'_, B> {
     where
         Self: 'a;
 
+    type IterMut<'a>
+        = B::IterMut<'a>
+    where
+        Self: 'a;
+
     #[inline(always)]
-    fn capacity(&self) -> usize {
-        B::capacity(&*self)
+    fn free_space(&self) -> usize {
+        B::free_space(&*self)
     }
 
     #[inline(always)]
-    fn len(&self) -> usize {
-        B::len(&*self)
+    fn num_frames(&self) -> usize {
+        B::num_frames(&*self)
     }
 
     #[inline(always)]
@@ -65,32 +89,10 @@ impl<B: FrameBuffer> FrameBuffer for MutexGuard<'_, B> {
     fn drain(&mut self) -> Self::Drain<'_> {
         B::drain(&mut *self)
     }
-}
-
-impl FrameBuffer for VecDeque<Frame> {
-    type Drain<'a>
-        = std::collections::vec_deque::Drain<'a, Frame>
-    where
-        Self: 'a;
 
     #[inline(always)]
-    fn capacity(&self) -> usize {
-        VecDeque::capacity(self)
-    }
-
-    #[inline(always)]
-    fn len(&self) -> usize {
-        VecDeque::len(self)
-    }
-
-    #[inline(always)]
-    fn push(&mut self, frame: Frame) {
-        VecDeque::push_back(self, frame)
-    }
-
-    #[inline(always)]
-    fn drain(&mut self) -> Self::Drain<'_> {
-        VecDeque::drain(self, ..)
+    fn iter_mut(&mut self) -> Self::IterMut<'_> {
+        B::iter_mut(&mut *self)
     }
 }
 
@@ -98,18 +100,20 @@ impl FrameBuffer for VecDeque<Frame> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use crate::xdp::frame::buffer::local::LocalFrameBuffer;
+
     use super::*;
 
     #[test]
     fn test_mutex_vec() {
-        let buffer = Arc::new(Mutex::new(VecDeque::new()));
+        let buffer = Arc::new(Mutex::new(LocalFrameBuffer::new(1)));
         let mut guard = buffer.lock().unwrap();
 
         FrameBuffer::push(&mut guard, unsafe {
             Frame::new(0, std::ptr::null_mut(), 0, 0, false)
         });
         let drain = FrameBuffer::drain(&mut guard);
-        let frames = drain.collect::<VecDeque<_>>();
+        let frames = LocalFrameBuffer::new_buffer(drain);
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].addr(), 0);
         assert_eq!(frames[0].len(), 0);

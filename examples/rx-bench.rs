@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     ops::{Deref, DerefMut},
     sync::{
         Arc,
@@ -9,7 +8,7 @@ use std::{
 
 use clap::Parser;
 
-use libvoid::xdp::{context::XdpContext, frame::Frame, socket::Socket, umem::Umem};
+use libvoid::xdp::{context::XdpContext, frame::LocalFrameBuffer, socket::Socket, umem::Umem};
 
 mod common;
 use common::{BaseArgs, Stats};
@@ -58,7 +57,8 @@ fn main() {
         .busy_poll(args.busy_poll)
         .num_frames(args.busy_poll_batch_size)
         .huge_tables(args.huge_tables)
-        .build::<VecDeque<Frame>>()
+        .unaligned(args.unaligned)
+        .build::<LocalFrameBuffer>()
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
@@ -132,11 +132,6 @@ fn main() {
 
         // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
         fq.process_queue(&mut frames);
-        debug_assert_eq!(
-            frames.len(),
-            0,
-            "Frame buffer is not empty after processing, this should never happen!"
-        );
 
         stats.maybe_print();
     }

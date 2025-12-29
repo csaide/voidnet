@@ -1,6 +1,6 @@
-use crate::xdp::{error::Result, frame::FrameBuffer};
+use crate::xdp::error::Result;
 
-use super::{Frame, Mmap};
+use super::{Frame, FrameBufferBuilder, Mmap};
 
 pub struct FrameStack {
     frame_size: usize,
@@ -8,16 +8,16 @@ pub struct FrameStack {
 }
 
 impl FrameStack {
-    pub fn new<B: FrameBuffer + FromIterator<Frame>>(
+    pub fn new<B: FrameBufferBuilder>(
         num_frames: usize,
         frame_size: usize,
         huge_tables: bool,
     ) -> Result<(Self, B)> {
         let mmap = Mmap::new(num_frames, frame_size, huge_tables)?;
         let stack = Self { frame_size, mmap };
-        let frames = (0..num_frames)
-            .map(|i| stack.to_frame(i as u64 * frame_size as u64, 0, false))
-            .collect();
+        let frames = B::new_buffer(
+            (0..num_frames).map(|i| stack.to_frame(i as u64 * frame_size as u64, 0, false)),
+        );
         Ok((stack, frames))
     }
 

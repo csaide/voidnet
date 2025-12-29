@@ -1,7 +1,7 @@
 use std::{ptr::null, sync::Arc};
 
 use errno::errno;
-use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, sendto};
+use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, XDP_PKT_CONTD, sendto};
 
 use crate::xdp::{
     error::{Error, NonBlocking, Result, WouldBlock},
@@ -45,7 +45,7 @@ impl SocketTx {
 
     #[inline(always)]
     pub fn send<B: FrameBuffer>(&mut self, mut frames: B) -> NonBlocking<u32> {
-        let (mut idx_tx, ready) = self.ring.reserve(frames.len() as u32);
+        let (mut idx_tx, ready) = self.ring.reserve(frames.num_frames() as u32);
         if ready == 0 {
             return Err(WouldBlock);
         }
@@ -55,7 +55,11 @@ impl SocketTx {
             unsafe {
                 (*desc).addr = frame.addr();
                 (*desc).len = frame.len() as u32;
-                (*desc).options = 0;
+                (*desc).options = if frame.is_fragment() {
+                    XDP_PKT_CONTD
+                } else {
+                    0
+                };
             }
             idx_tx += 1;
         }

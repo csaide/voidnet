@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use libc::XDP_PKT_CONTD;
+use libxdp_sys::XSK_UNALIGNED_BUF_ADDR_MASK;
 
 use crate::xdp::{
     error::{NonBlocking, WouldBlock},
@@ -27,7 +28,7 @@ impl SocketRx {
 
     #[inline(always)]
     pub fn recv<B: FrameBuffer>(&mut self, mut batch: B) -> NonBlocking<u32> {
-        let (mut idx_rx, rcvd) = self.ring.peek((batch.capacity() - batch.len()) as u32);
+        let (mut idx_rx, rcvd) = self.ring.peek(batch.free_space() as u32);
         if rcvd == 0 {
             return Err(WouldBlock);
         }
@@ -35,7 +36,7 @@ impl SocketRx {
         for _ in 0..rcvd as usize {
             let desc = self.ring.rx_desc(idx_rx);
             batch.push(self.stack.to_frame(
-                desc.addr,
+                xsk_umem_extract_addr(desc.addr),
                 desc.len as usize,
                 desc.options & XDP_PKT_CONTD == XDP_PKT_CONTD,
             ));
@@ -45,4 +46,9 @@ impl SocketRx {
         self.ring.release(rcvd);
         Ok(rcvd)
     }
+}
+
+#[inline(always)]
+pub fn xsk_umem_extract_addr(addr: u64) -> u64 {
+    addr & XSK_UNALIGNED_BUF_ADDR_MASK
 }

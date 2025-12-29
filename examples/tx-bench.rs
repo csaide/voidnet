@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     ops::{Deref, DerefMut},
     sync::{
         Arc,
@@ -9,7 +8,12 @@ use std::{
 
 use clap::Parser;
 
-use libvoid::xdp::{context::XdpContext, frame::Frame, socket::Socket, umem::Umem};
+use libvoid::xdp::{
+    context::XdpContext,
+    frame::{LocalFrameBuffer, PacketWriter},
+    socket::Socket,
+    umem::Umem,
+};
 
 mod common;
 use common::{BaseArgs, GeneratorArgs, Stats, build_frame};
@@ -61,7 +65,8 @@ fn main() {
         .busy_poll(args.busy_poll)
         .num_frames(args.busy_poll_batch_size)
         .huge_tables(args.huge_tables)
-        .build::<VecDeque<Frame>>()
+        .unaligned(args.unaligned)
+        .build::<LocalFrameBuffer>()
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
@@ -93,16 +98,24 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // Initial copy of the data into the frames.
-    let data = build_frame(&args.generator);
-    for frame in write_frames.iter_mut() {
-        unsafe { frame.copy_from(&data) };
-    }
+    // Generate our mock UDP packet to send.
+    let packet_data = build_frame(&args.generator);
 
     println!("Socket created, sending packets...");
 
     let frames = write_frames.len();
     while !exit.load(Ordering::Relaxed) {
+        // Copy the data into the frames, this is intentionally in the loop to show performance of a real world application.
+        // Since generally at some point a copy into the frame is needed from userspace, how this copy is done is up to the caller.
+        //
+        // Note: Technically the frames SHOULD be untouched after each iteration, so in theory if the frame size/fragmentation is known
+        // here you can just set the frame metadata and avoid the copy if done outside the loop and you are simply re-sending the same
+        // data.... But be ware this is where dragons live...
+        let mut writer = PacketWriter::new(&mut write_frames, args.frame_size);
+        while let Some(()) = unsafe { writer.copy_from(&packet_data) } {
+            // We copied the data into the frames, so we can continue.
+        }
+
         // Send the prepared frames to the socket.
         //
         // Note this will completely consume the input buffer.
@@ -113,7 +126,7 @@ fn main() {
                     "Sent a different number of frames than the input buffer, this should never happen!"
                 );
 
-                stats.update_batch(sent as usize, data.len());
+                stats.update_batch(sent as usize, packet_data.len());
                 sent
             }
             Err(_) => {
@@ -122,23 +135,18 @@ fn main() {
             }
         };
 
-        // We should have sent all the frames.
-        debug_assert_eq!(
-            write_frames.len(),
-            0,
-            "Write frames is not empty after sending, this should never happen!"
-        );
-
         // Process any outstanding descriptors on the completion queue retrieving the sent frames.
         //
         // This should be a loop because the kernel can only transmit a limited number of frames at a time.
         while write_frames.len() < sent as usize {
             // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
+            //
+            // Note: Errors here are fatal and should cause the program to exit, or reset the XDP state from scratch.
             socket.maybe_wake().unwrap();
 
             // Process the writen frames, this will consume as many frames as possible from the kernel, but it
             // will be limited to the devices descriptor count.
-            cq.process_queue(&mut write_frames, Some(data.len()));
+            cq.process_queue(&mut write_frames);
         }
 
         stats.maybe_print();

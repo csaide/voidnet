@@ -48,14 +48,14 @@ impl FillQueue {
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
     pub fn process_queue<B: FrameBuffer>(&mut self, mut batch: B) {
-        let (mut idx, ready) = self.ring.reserve(batch.len() as u32);
+        let (mut idx, ready) = self.ring.reserve(batch.num_frames() as u32);
         if ready == 0 {
             return;
         }
 
         for frame in batch.drain() {
             let ptr = self.ring.fill_addr(idx);
-            unsafe { *ptr = frame.addr() as u64 };
+            unsafe { *ptr = frame.addr() };
             idx += 1;
         }
 

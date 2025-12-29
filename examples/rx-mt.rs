@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     num::NonZero,
     ops::{Deref, DerefMut},
     sync::{
@@ -14,7 +13,7 @@ use clap::Parser;
 use libc::c_int;
 use libvoid::xdp::{
     context::XdpContext,
-    frame::Frame,
+    frame::LocalFrameBuffer,
     socket::Socket,
     umem::{FillQueue, Umem},
 };
@@ -48,11 +47,11 @@ impl DerefMut for Args {
 fn worker_thread(
     exit: Arc<AtomicBool>,
     mut stats: Stats,
-    frame_stack: Arc<Mutex<VecDeque<Frame>>>,
+    frame_stack: Arc<Mutex<LocalFrameBuffer>>,
     mut socket: Socket,
     batch_size: usize,
 ) {
-    let mut frames = VecDeque::with_capacity(batch_size);
+    let mut frames = LocalFrameBuffer::new(batch_size);
     while !exit.load(Ordering::Relaxed) {
         // Read some frames from the socket.
         //
@@ -91,7 +90,7 @@ fn worker_thread(
 fn umem_thread(
     exit: Arc<AtomicBool>,
     mut fill_queue: FillQueue,
-    frame_stack: Arc<Mutex<VecDeque<Frame>>>,
+    frame_stack: Arc<Mutex<LocalFrameBuffer>>,
     fds: Vec<c_int>,
 ) {
     while !exit.load(Ordering::Relaxed) {
@@ -128,7 +127,8 @@ fn main() {
         .busy_poll(args.busy_poll)
         .num_frames(args.busy_poll_batch_size * args.num_threads.get())
         .huge_tables(args.huge_tables)
-        .build::<VecDeque<Frame>>()
+        .unaligned(args.unaligned)
+        .build::<LocalFrameBuffer>()
         .expect("Failed to create umem");
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.

@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     ops::{Deref, DerefMut},
     sync::{
         Arc,
@@ -10,7 +9,7 @@ use std::{
 use clap::Parser;
 
 use libvoid::xdp::{
-    context::XdpContext, error::WouldBlock, frame::Frame, socket::Socket, umem::Umem,
+    context::XdpContext, error::WouldBlock, frame::LocalFrameBuffer, socket::Socket, umem::Umem,
 };
 
 mod common;
@@ -60,7 +59,8 @@ fn main() {
         .busy_poll(args.busy_poll)
         .num_frames(args.busy_poll_batch_size)
         .huge_tables(args.huge_tables)
-        .build::<VecDeque<Frame>>()
+        .unaligned(args.unaligned)
+        .build::<LocalFrameBuffer>()
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
@@ -132,7 +132,7 @@ fn main() {
         // So we "sent" the packets but now we need to actually drive the completion of those sends.
         while frames.len() < received as usize {
             socket.maybe_wake().expect("Failed to wake tx queue");
-            cq.process_queue(&mut frames, None);
+            cq.process_queue(&mut frames);
         }
 
         // Now give back all our frames to the kernel by means of the fill queue.

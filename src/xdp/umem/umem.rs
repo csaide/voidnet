@@ -2,14 +2,14 @@ use std::{os::raw::c_void, sync::Arc};
 
 use errno::errno;
 use libxdp_sys::{
-    XSK_RING_CONS__DEFAULT_NUM_DESCS, XSK_RING_PROD__DEFAULT_NUM_DESCS,
-    XSK_UMEM__DEFAULT_FRAME_HEADROOM, XSK_UMEM__DEFAULT_FRAME_SIZE, xsk_umem, xsk_umem__create,
-    xsk_umem__delete, xsk_umem_config,
+    XDP_UMEM_UNALIGNED_CHUNK_FLAG, XSK_RING_CONS__DEFAULT_NUM_DESCS,
+    XSK_RING_PROD__DEFAULT_NUM_DESCS, XSK_UMEM__DEFAULT_FRAME_HEADROOM,
+    XSK_UMEM__DEFAULT_FRAME_SIZE, xsk_umem, xsk_umem__create, xsk_umem__delete, xsk_umem_config,
 };
 
 use crate::xdp::{
     error::{Error, Result},
-    frame::{Frame, FrameBuffer, FrameStack},
+    frame::{FrameBufferBuilder, FrameStack},
     ring::{Consumer, Producer},
 };
 
@@ -23,6 +23,7 @@ pub struct UmemBuilder {
     num_frames: usize,
     busy_poll: bool,
     huge_tables: bool,
+    unaligned: bool,
 }
 
 impl UmemBuilder {
@@ -38,6 +39,7 @@ impl UmemBuilder {
             num_frames: (completion_ring_size + fill_ring_size) as usize,
             busy_poll,
             huge_tables: false,
+            unaligned: false,
         }
     }
 
@@ -71,9 +73,18 @@ impl UmemBuilder {
         self
     }
 
-    pub fn build<B: FrameBuffer + FromIterator<Frame>>(
+    pub fn unaligned(mut self, unaligned: bool) -> Self {
+        self.unaligned = unaligned;
+        self
+    }
+
+    pub fn build<B: FrameBufferBuilder>(
         self,
     ) -> Result<(Arc<Umem>, FillQueue, CompletionQueue, B)> {
+        if self.frame_size & (self.frame_size - 1) != 0 && !self.unaligned {
+            return Err(Error::InvalidFrameSize(self.frame_size));
+        }
+
         Umem::new(
             self.completion_ring_size,
             self.fill_ring_size,
@@ -81,6 +92,7 @@ impl UmemBuilder {
             self.num_frames,
             self.frame_size,
             self.huge_tables,
+            self.unaligned,
         )
     }
 }
@@ -99,20 +111,25 @@ impl Umem {
         UmemBuilder::new()
     }
 
-    fn new<B: FrameBuffer + FromIterator<Frame>>(
+    fn new<B: FrameBufferBuilder>(
         completion_ring_size: u32,
         fill_ring_size: u32,
         busy_poll: bool,
         num_frames: usize,
         frame_size: usize,
         huge_tables: bool,
+        unaligned: bool,
     ) -> Result<(Arc<Self>, FillQueue, CompletionQueue, B)> {
         let cfg = xsk_umem_config {
             fill_size: fill_ring_size,
             comp_size: completion_ring_size,
             frame_size: frame_size as u32,
             frame_headroom: XSK_UMEM__DEFAULT_FRAME_HEADROOM,
-            flags: 0,
+            flags: if unaligned {
+                XDP_UMEM_UNALIGNED_CHUNK_FLAG
+            } else {
+                0
+            },
         };
 
         let mut comp_ring = Consumer::new();

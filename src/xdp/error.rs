@@ -23,6 +23,10 @@ pub enum Error {
     WakeTxQueue(Errno),
     #[error("failed while allocating mmap for umem: {0}")]
     MmapAllocate(std::io::Error),
+    #[error(
+        "failed to create umem: invalid frame size: {0}: must be a power of 2 or unaligned must be enabled"
+    )]
+    InvalidFrameSize(usize),
     #[error("failed while creating umem: {0}")]
     CreateUmem(Errno),
     #[error("failed while creating socket: {0}")]
