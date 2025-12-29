@@ -4,9 +4,8 @@ use errno::errno;
 use libc::if_nametoindex;
 use libxdp_sys::{
     bpf_object__find_map_by_name, bpf_object__open_mem, bpf_xdp_query, bpf_xdp_query_opts,
-    libxdp_get_error, libxdp_strerror, xdp_program, xdp_program__attach, xdp_program__bpf_obj,
-    xdp_program__close, xdp_program__detach, xdp_program__from_bpf_obj,
-    xdp_program__set_xdp_frags_support,
+    libxdp_get_error, xdp_program, xdp_program__attach, xdp_program__bpf_obj, xdp_program__close,
+    xdp_program__detach, xdp_program__from_bpf_obj, xdp_program__set_xdp_frags_support,
 };
 use neli::{
     consts::{
@@ -20,7 +19,7 @@ use neli::{
     utils::Groups,
 };
 
-use crate::xdp::error::{Error, Result};
+use crate::xdp::error::{Error, Result, get_xdp_error_message};
 
 use super::{AttachMode, Map, XdpInfo};
 
@@ -50,13 +49,19 @@ impl XdpProgram {
         let object = unsafe { bpf_object__open_mem(data_ptr, data.len(), null()) };
         let err = unsafe { libxdp_get_error(object as *const _) };
         if err < 0 {
-            return Err(Error::OpenProgram(errno(), get_error_message(err as i32)));
+            return Err(Error::OpenProgram(
+                errno(),
+                get_xdp_error_message(err as i32),
+            ));
         }
 
         let program = unsafe { xdp_program__from_bpf_obj(object, null()) };
         let err = unsafe { libxdp_get_error(program as *const _) };
         if err < 0 {
-            return Err(Error::OpenProgram(errno(), get_error_message(err as i32)));
+            return Err(Error::OpenProgram(
+                errno(),
+                get_xdp_error_message(err as i32),
+            ));
         }
 
         // Note this has no effect for hardware that doesn't support fragmentation.
@@ -133,12 +138,6 @@ impl Drop for XdpProgram {
             xdp_program__close(self.program);
         }
     }
-}
-
-fn get_error_message(err: i32) -> String {
-    let mut buf = [0; 1024];
-    unsafe { libxdp_strerror(err, buf.as_mut_ptr(), buf.len()) };
-    String::from_utf8_lossy(&buf).to_string()
 }
 
 fn get_mtu(if_index: i32) -> Result<u32> {

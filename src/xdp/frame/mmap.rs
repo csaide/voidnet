@@ -18,7 +18,6 @@ impl Mmap {
             opts.huge(None);
         }
         let map = opts.map_anon().map_err(|e| Error::MmapAllocate(e))?;
-
         Ok(Self {
             map,
             frame_size,

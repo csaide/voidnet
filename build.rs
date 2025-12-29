@@ -10,7 +10,6 @@ fn main() {
         "bpf".to_string(),
         "-O2".to_string(),
         "-g".to_string(),
-        "-march=native".to_string(),
     ];
 
     let kernel_version = Command::new("uname")

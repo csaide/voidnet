@@ -15,7 +15,6 @@ BPF_OBJ := $(BPF_SRC:.c=.o)
 CLANG_FLAGS := \
 	-target bpf \
 	-O2 -g \
-	-march=native \
 	-I$(KERNEL_SRC)/arch/$(ARCH)/include \
 	-I$(KERNEL_SRC)/arch/$(ARCH)/include/uapi \
 	-I/usr/include/$(ARCH_TRIPLET)

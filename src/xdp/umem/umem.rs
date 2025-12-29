@@ -4,7 +4,8 @@ use errno::errno;
 use libxdp_sys::{
     XDP_UMEM_UNALIGNED_CHUNK_FLAG, XSK_RING_CONS__DEFAULT_NUM_DESCS,
     XSK_RING_PROD__DEFAULT_NUM_DESCS, XSK_UMEM__DEFAULT_FRAME_HEADROOM,
-    XSK_UMEM__DEFAULT_FRAME_SIZE, xsk_umem, xsk_umem__create, xsk_umem__delete, xsk_umem_config,
+    XSK_UMEM__DEFAULT_FRAME_SIZE, libxdp_get_error, xsk_umem, xsk_umem__create_opts,
+    xsk_umem__delete, xsk_umem_opts,
 };
 
 use crate::xdp::{
@@ -120,7 +121,12 @@ impl Umem {
         huge_tables: bool,
         unaligned: bool,
     ) -> Result<(Arc<Self>, FillQueue, CompletionQueue, B)> {
-        let cfg = xsk_umem_config {
+        let size = (num_frames * frame_size) as u64;
+
+        let mut opts = xsk_umem_opts {
+            sz: size_of::<xsk_umem_opts>(),
+            fd: 0,
+            size: size,
             fill_size: fill_ring_size,
             comp_size: completion_ring_size,
             frame_size: frame_size as u32,
@@ -130,27 +136,23 @@ impl Umem {
             } else {
                 0
             },
+            tx_metadata_len: 0,
         };
 
         let mut comp_ring = Consumer::new();
         let mut fill_ring = Producer::new();
         let (mut frame_stack, frames) = FrameStack::new(num_frames, frame_size, huge_tables)?;
 
-        let mut umem: *mut xsk_umem = std::ptr::null_mut();
-        let umem_ptr: *mut *mut xsk_umem = &mut umem;
-        let size = (num_frames * frame_size) as u64;
-
-        let ret: std::os::raw::c_int = unsafe {
-            xsk_umem__create(
-                umem_ptr,
+        let umem = unsafe {
+            xsk_umem__create_opts(
                 frame_stack.as_mut_ptr() as *mut c_void,
-                size,
                 fill_ring.as_mut_ptr(),
                 comp_ring.as_mut_ptr(),
-                &cfg,
+                &mut opts,
             )
         };
-        if ret != 0 {
+        let err = unsafe { libxdp_get_error(umem as *const _) };
+        if err < 0 {
             return Err(Error::CreateUmem(errno()));
         }
 

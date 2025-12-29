@@ -1,4 +1,5 @@
 use errno::Errno;
+use libxdp_sys::libxdp_strerror;
 use thiserror::Error;
 
 /// A simple type alias for the result type of the XDP subsystem, this is used to simplify the error handling code.
@@ -52,3 +53,9 @@ pub struct WouldBlock;
 
 /// A simple type alias for non-blocking operations to use, that doesn't require any cost in the error case.
 pub type NonBlocking<T> = std::result::Result<T, WouldBlock>;
+
+pub fn get_xdp_error_message(err: i32) -> String {
+    let mut buf = [0; 1024];
+    unsafe { libxdp_strerror(err, buf.as_mut_ptr(), buf.len()) };
+    String::from_utf8_lossy(&buf).to_string()
+}
