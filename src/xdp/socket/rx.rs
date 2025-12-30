@@ -3,10 +3,13 @@ use std::sync::Arc;
 use libc::XDP_PKT_CONTD;
 use libxdp_sys::XSK_UNALIGNED_BUF_ADDR_MASK;
 
-use crate::xdp::{
-    error::{NonBlocking, WouldBlock},
-    frame::{FrameBuffer, FrameStack},
-    ring::{Consumer, Init},
+use crate::{
+    futures::RecvFuture,
+    xdp::{
+        error::{NonBlocking, WouldBlock},
+        frame::{FrameBuffer, FrameStack},
+        ring::{Consumer, Init},
+    },
 };
 
 use super::SocketOwner;
@@ -46,6 +49,14 @@ impl SocketRx {
 
         self.ring.release(rcvd);
         Ok(rcvd)
+    }
+
+    #[inline(always)]
+    pub fn recv_async<B: FrameBuffer>(&mut self, batch: B) -> RecvFuture<'_, B> {
+        RecvFuture {
+            socket: self,
+            batch,
+        }
     }
 }
 

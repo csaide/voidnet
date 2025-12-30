@@ -297,6 +297,16 @@ impl Socket {
         (self.owner, self.rx, self.tx)
     }
 
+    #[inline(always)]
+    pub fn tx(&mut self) -> &mut SocketTx {
+        &mut self.tx
+    }
+
+    #[inline(always)]
+    pub fn rx(&mut self) -> &mut SocketRx {
+        &mut self.rx
+    }
+
     /// Returns the file descriptor of the socket.
     #[inline(always)]
     pub fn fd(&self) -> c_int {

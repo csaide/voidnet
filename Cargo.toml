@@ -5,7 +5,9 @@ edition = "2024"
 
 [dependencies]
 crossbeam-utils = { version = "0.8" }
+dashmap = { version = "6.1" }
 errno = { version = "0.3" }
+futures = { version = "0.3" }
 libc = { version = "0.2" }
 libxdp-sys = { version = "=0.2.2" }                   # Latest version of this library has a broken build....
 memmap2 = { version = "0.9" }
@@ -19,6 +21,7 @@ criterion = { version = "0.8" }
 ctrlc = { version = "3.2", features = ["termination"] }
 pnet = { version = "0.35" }
 rand = { version = "0.9" }
+tokio = { version = "1.40", features = ["full"] }
 
 [profile.profiling]
 inherits = "release"

@@ -2,9 +2,13 @@ use std::sync::Arc;
 
 use libxdp_sys::xsk_ring_cons;
 
-use crate::xdp::{
-    frame::{FrameBuffer, FrameStack},
-    ring::{Consumer, Init},
+use crate::{
+    futures::CompFuture,
+    xdp::{
+        frame::{FrameBuffer, FrameStack},
+        ring::{Consumer, Init},
+        socket::SocketTx,
+    },
 };
 
 pub struct CompletionQueue {
@@ -34,6 +38,20 @@ impl CompletionQueue {
     }
 
     #[inline(always)]
+    pub fn process_queue_async<'a, 'b, B: FrameBuffer>(
+        &'a mut self,
+        batch: B,
+        expected: usize,
+        socket: &'b mut SocketTx,
+    ) -> CompFuture<'a, 'b, B> {
+        CompFuture {
+            completion_queue: self,
+            socket,
+            batch,
+            expected,
+        }
+    }
+
     pub fn as_mut(&mut self) -> *mut xsk_ring_cons {
         self.ring.as_mut_ptr()
     }

@@ -4,10 +4,13 @@ use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
 use libxdp_sys::xsk_ring_prod;
 
-use crate::xdp::{
-    error::{Error, Result},
-    frame::{FrameBuffer, FrameStack},
-    ring::{Init, Producer},
+use crate::{
+    futures::FillFuture,
+    xdp::{
+        error::{Error, Result},
+        frame::{FrameBuffer, FrameStack},
+        ring::{Init, Producer},
+    },
 };
 
 pub struct FillQueue {
@@ -60,6 +63,19 @@ impl FillQueue {
         }
 
         self.ring.submit(ready);
+    }
+
+    #[inline(always)]
+    pub fn process_queue_async<B: FrameBuffer>(
+        &mut self,
+        batch: B,
+        fd: c_int,
+    ) -> FillFuture<'_, B> {
+        FillFuture {
+            fill_queue: self,
+            batch,
+            fd,
+        }
     }
 
     #[inline(always)]

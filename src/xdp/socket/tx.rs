@@ -3,10 +3,13 @@ use std::{ptr::null, sync::Arc};
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, XDP_PKT_CONTD, sendto};
 
-use crate::xdp::{
-    error::{Error, NonBlocking, Result, WouldBlock},
-    frame::FrameBuffer,
-    ring::{Init, Producer},
+use crate::{
+    futures::SendFuture,
+    xdp::{
+        error::{Error, NonBlocking, Result, WouldBlock},
+        frame::FrameBuffer,
+        ring::{Init, Producer},
+    },
 };
 
 use super::SocketOwner;
@@ -67,5 +70,13 @@ impl SocketTx {
 
         self.ring.submit(ready);
         Ok(ready)
+    }
+
+    #[inline(always)]
+    pub fn send_async<B: FrameBuffer>(&mut self, batch: B) -> SendFuture<'_, B> {
+        SendFuture {
+            socket: self,
+            batch,
+        }
     }
 }
