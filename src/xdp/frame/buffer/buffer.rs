@@ -92,6 +92,43 @@ impl<B: FrameBuffer> FrameBuffer for MutexGuard<'_, B> {
     }
 }
 
+impl<B: FrameBuffer> FrameBuffer for futures::lock::MutexGuard<'_, B> {
+    type Drain<'a>
+        = B::Drain<'a>
+    where
+        Self: 'a;
+
+    type IterMut<'a>
+        = B::IterMut<'a>
+    where
+        Self: 'a;
+
+    #[inline(always)]
+    fn free_space(&self) -> usize {
+        B::free_space(&*self)
+    }
+
+    #[inline(always)]
+    fn num_frames(&self) -> usize {
+        B::num_frames(&*self)
+    }
+
+    #[inline(always)]
+    fn push(&mut self, frame: Frame) {
+        B::push(&mut *self, frame)
+    }
+
+    #[inline(always)]
+    fn drain(&mut self) -> Self::Drain<'_> {
+        B::drain(&mut *self)
+    }
+
+    #[inline(always)]
+    fn iter_mut(&mut self) -> Self::IterMut<'_> {
+        B::iter_mut(&mut *self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};

@@ -19,6 +19,7 @@ impl SocketOwner {
     }
 }
 
+unsafe impl Sync for SocketOwner {}
 unsafe impl Send for SocketOwner {}
 
 impl Drop for SocketOwner {

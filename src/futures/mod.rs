@@ -7,7 +7,7 @@ mod send;
 
 pub use comp::CompFuture;
 pub use error::{Error, Result};
-pub use fill::FillFuture;
+pub use fill::{ProcessFillQueueFuture, WakeFillQueueFuture};
 pub use poller::Poller;
 pub use recv::RecvFuture;
 pub use send::SendFuture;

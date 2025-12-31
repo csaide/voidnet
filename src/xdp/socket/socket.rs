@@ -4,8 +4,8 @@ use errno::errno;
 use libc::{SO_BUSY_POLL, SO_BUSY_POLL_BUDGET, SO_PREFER_BUSY_POLL, SOL_SOCKET, c_int, setsockopt};
 use libxdp_sys::{
     XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD, XSK_RING_CONS__DEFAULT_NUM_DESCS,
-    XSK_RING_PROD__DEFAULT_NUM_DESCS, xsk_socket, xsk_socket__create, xsk_socket__create_shared,
-    xsk_socket__fd, xsk_socket_config, xsk_socket_config__bindgen_ty_1,
+    XSK_RING_PROD__DEFAULT_NUM_DESCS, xsk_socket, xsk_socket__create, xsk_socket__fd,
+    xsk_socket_config, xsk_socket_config__bindgen_ty_1,
 };
 
 use crate::xdp::{
@@ -15,7 +15,7 @@ use crate::xdp::{
     frame::FrameBuffer,
     ring::{Consumer, Producer},
     socket::{BindMode, mode::CopyMode},
-    umem::{CompletionQueue, FillQueue, Umem},
+    umem::Umem,
 };
 
 use super::{SocketOwner, SocketRx, SocketTx};
@@ -32,7 +32,6 @@ pub struct SocketBuilder<'a, 'b> {
     busy_poll_timeout_us: i32,
     copy_mode: CopyMode,
     enable_fragmentation: bool,
-    shared_umem: bool,
 }
 
 impl<'a, 'b> SocketBuilder<'a, 'b> {
@@ -51,7 +50,6 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
             busy_poll_timeout_us: 20,
             copy_mode: CopyMode::default(),
             enable_fragmentation: false,
-            shared_umem: false,
         }
     }
 
@@ -103,27 +101,14 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
         self
     }
 
-    /// Sets whether to use a shared Umem, this is the mode to use for copying packets to/from the socket.
-    pub fn shared_umem(mut self, shared_umem: bool) -> Self {
-        self.shared_umem = shared_umem;
-        self
-    }
-
     /// Builds the socket taking shared ownership of the Umem, allowing for multiple sockets on a single Device/Queue pair.
     ///
     /// Note: This will likely not get you more throughput or lower latency than a single socket, but it is useful for certain heavy loads where you need to offload packet processing onto different threads. Almost always prefer a single socket to a single Umem.
-    pub fn build(
-        self,
-        umem: Arc<Umem>,
-        fq: &mut FillQueue,
-        cq: &mut CompletionQueue,
-    ) -> Result<Socket> {
+    pub fn build(self, umem: Arc<Umem>) -> Result<Socket> {
         let socket = Socket::new(
             self.if_name,
             self.queue,
             umem,
-            fq,
-            cq,
             self.rx_ring_size,
             self.tx_ring_size,
             self.busy_poll,
@@ -132,7 +117,6 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
             self.ctx.attach_mode().into(),
             self.copy_mode,
             self.enable_fragmentation,
-            self.shared_umem,
         )?;
         self.ctx.register_socket(&socket).map(|_| socket)
     }
@@ -206,8 +190,6 @@ impl Socket {
         if_name: &str,
         queue: u32,
         umem: Arc<Umem>,
-        fq: &mut FillQueue,
-        cq: &mut CompletionQueue,
         rx_ring_size: u32,
         tx_ring_size: u32,
         busy_poll: bool,
@@ -216,7 +198,6 @@ impl Socket {
         socket_mode: BindMode,
         copy_mode: CopyMode,
         enable_fragmentation: bool,
-        shared_umem: bool,
     ) -> Result<Self> {
         let mut bind_flags = XDP_USE_NEED_WAKEUP | copy_mode as u32;
         if enable_fragmentation {
@@ -242,34 +223,17 @@ impl Socket {
 
         let if_name_c = CString::new(if_name).unwrap();
 
-        let ret: std::os::raw::c_int;
-        if shared_umem {
-            unsafe {
-                ret = xsk_socket__create_shared(
-                    xsk_ptr,
-                    if_name_c.as_ptr(),
-                    queue as u32,
-                    umem.umem(),
-                    rx.as_mut_ptr(),
-                    tx.as_mut_ptr(),
-                    fq.as_mut(),
-                    cq.as_mut(),
-                    &cfg,
-                );
-            }
-        } else {
-            unsafe {
-                ret = xsk_socket__create(
-                    xsk_ptr,
-                    if_name_c.as_ptr(),
-                    queue as u32,
-                    umem.umem(),
-                    rx.as_mut_ptr(),
-                    tx.as_mut_ptr(),
-                    &cfg,
-                );
-            }
-        }
+        let ret: std::os::raw::c_int = unsafe {
+            xsk_socket__create(
+                xsk_ptr,
+                if_name_c.as_ptr(),
+                queue as u32,
+                umem.umem(),
+                rx.as_mut_ptr(),
+                tx.as_mut_ptr(),
+                &cfg,
+            )
+        };
 
         if ret != 0 {
             return Err(Error::CreateSocket(errno()));

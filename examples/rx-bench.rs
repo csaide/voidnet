@@ -50,7 +50,7 @@ fn main() {
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
     // - Frames (frames) > A set of frames that are backed by the umem which are shared between the kernel and user space.
-    let (umem, mut fq, mut cq, mut frames) = Umem::builder()
+    let (umem, mut fq, _cq, mut frames) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -72,8 +72,7 @@ fn main() {
         .busy_poll_batch_size(args.busy_poll_batch_size)
         .busy_poll_timeout_us(args.busy_poll_timeout_us)
         .copy_mode(args.copy_mode)
-        .shared_umem(false)
-        .build(umem, &mut fq, &mut cq)
+        .build(umem)
         .expect("Failed to create socket");
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.

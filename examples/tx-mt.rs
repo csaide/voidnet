@@ -47,24 +47,32 @@ impl DerefMut for Args {
 
 fn worker_thread(
     exit: Arc<AtomicBool>,
+    generator: GeneratorArgs,
     mut stats: Stats,
     frame_stack: Arc<Mutex<LocalFrameBuffer>>,
     mut socket: Socket,
     batch_size: usize,
-    data_len: usize,
 ) {
+    let data = build_frame(&generator);
     while !exit.load(Ordering::Relaxed) {
-        let mut frame_stack = frame_stack.lock().unwrap();
-        let batch_size = frame_stack.len().min(batch_size);
-        if batch_size == 0 {
-            socket.maybe_wake().unwrap();
-            continue;
+        let mut frames: LocalFrameBuffer = {
+            let mut frame_stack = frame_stack.lock().unwrap();
+            let batch_size = frame_stack.len().min(batch_size);
+            if batch_size == 0 {
+                socket.maybe_wake().unwrap();
+                continue;
+            }
+
+            frame_stack.drain(..batch_size).collect()
+        };
+
+        for frame in frames.iter_mut() {
+            unsafe { frame.copy_from(&data) };
         }
 
-        let mut frames: LocalFrameBuffer = frame_stack.drain(..batch_size).collect();
         match socket.send(&mut frames) {
             Ok(sent) => {
-                stats.update_batch(sent as usize, data_len);
+                stats.update_batch(sent as usize, data.len());
             }
             Err(_) => {
                 // We would have blocked, loop back and try again.
@@ -105,7 +113,7 @@ fn main() {
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
     // - Frames (frames) > A set of frames that are backed by the umem which are shared between the kernel and user space.
-    let (umem, mut fq, mut cq, mut frames) = Umem::builder()
+    let (umem, _fq, cq, frames) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -129,28 +137,18 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // For writes we need to write some data :), so fill up our frames with our mock UDP packet.
-    let data = build_frame(&args.generator);
-    for frame in frames.iter_mut() {
-        unsafe { frame.copy_from(&data) };
-    }
-
     // Since we are going to be using multiple threads, we need to wrap up our frame stack in a arc/mutex to
     // share it between the workers and umem threads
     let frame_stack = Arc::new(Mutex::new(frames));
 
     // Create some backing collections so we can join our threads.
     let mut threads = Vec::with_capacity(args.num_threads.get() + 1);
-    let data_len = data.len();
     for i in 0..args.num_threads.get() {
         let exit = exit.clone();
         let stats = Stats::new_with_id(i);
         let frame_stack = frame_stack.clone();
         let batch_size = args.busy_poll_batch_size;
-
-        // If we are using multiple threads, we need to share the umem instance, otherwise it's technically an error
-        // to use a shared umem with a single socket, though it should "work" in most cases.
-        let shared_umem = args.num_threads.get() > 1;
+        let generator = args.generator.clone();
 
         // Create a new socket for each thread, in this case passing in the already created umem instance.
         let socket = Socket::builder(&mut xdp_ctx, &args.if_name, args.queue)
@@ -160,13 +158,12 @@ fn main() {
             .busy_poll_batch_size(args.busy_poll_batch_size)
             .busy_poll_timeout_us(args.busy_poll_timeout_us)
             .copy_mode(args.copy_mode)
-            .shared_umem(shared_umem)
-            .build(umem.clone(), &mut fq, &mut cq)
+            .build(umem.clone())
             .expect("Failed to create socket");
 
         // Spawn our worker thread, this will handle sending frames to the socket.
         let thread = thread::spawn(move || {
-            worker_thread(exit, stats, frame_stack, socket, batch_size, data_len)
+            worker_thread(exit, generator, stats, frame_stack, socket, batch_size)
         });
         threads.push(thread);
     }

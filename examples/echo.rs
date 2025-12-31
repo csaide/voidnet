@@ -75,8 +75,7 @@ fn main() {
         .busy_poll_timeout_us(args.busy_poll_timeout_us)
         .copy_mode(args.copy_mode)
         .enable_fragmentation(args.enable_fragmentation)
-        .shared_umem(false)
-        .build(umem, &mut fq, &mut cq)
+        .build(umem)
         .expect("Failed to create socket");
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.

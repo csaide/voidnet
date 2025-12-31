@@ -307,7 +307,7 @@ pub struct BaseArgs {
     pub enable_fragmentation: bool,
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 pub struct GeneratorArgs {
     #[arg(
         short = 'p',

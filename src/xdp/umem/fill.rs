@@ -5,7 +5,7 @@ use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
 use libxdp_sys::xsk_ring_prod;
 
 use crate::{
-    futures::FillFuture,
+    futures::{ProcessFillQueueFuture, WakeFillQueueFuture},
     xdp::{
         error::{Error, Result},
         frame::{FrameBuffer, FrameStack},
@@ -28,6 +28,11 @@ impl FillQueue {
         }
     }
 
+    #[inline(always)]
+    pub fn size(&self) -> u32 {
+        self.ring.size()
+    }
+
     /// Possibly wakes the fill queue, so the kernel continues to process incoming packets.
     ///
     /// This is done by first checking the needs wakeup flag, given its set we fire a empty recvfrom on the supplied fd.
@@ -46,6 +51,14 @@ impl FillQueue {
             }
         }
         Ok(())
+    }
+
+    #[inline(always)]
+    pub fn maybe_wake_async(&self, fd: c_int) -> WakeFillQueueFuture<'_> {
+        WakeFillQueueFuture {
+            fill_queue: &self,
+            fd,
+        }
     }
 
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
@@ -69,12 +82,10 @@ impl FillQueue {
     pub fn process_queue_async<B: FrameBuffer>(
         &mut self,
         batch: B,
-        fd: c_int,
-    ) -> FillFuture<'_, B> {
-        FillFuture {
+    ) -> ProcessFillQueueFuture<'_, B> {
+        ProcessFillQueueFuture {
             fill_queue: self,
             batch,
-            fd,
         }
     }
 
