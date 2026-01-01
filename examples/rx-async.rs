@@ -67,7 +67,7 @@ async fn main() {
     // Note: The initial frames can be used for anything you need. Namely there are a few key use cases:
     // - Listeners/Traffic Analyzers: Dump all, or some number, of frames into the fill ring to prewarm the ring for reads.
     // - Clients/Traffic Generators: Using them as a pool of buffers for writing packet data to, and sending it out the socket.
-    let (umem, mut fq, _cq, mut initial_frames) = Umem::builder()
+    let (mut umem, mut initial_frames) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -89,7 +89,7 @@ async fn main() {
         .busy_poll_batch_size(args.busy_poll_batch_size)
         .busy_poll_timeout_us(args.busy_poll_timeout_us)
         .copy_mode(args.copy_mode)
-        .build(umem)
+        .build(&mut umem)
         .expect("Failed to create socket");
 
     let exit = Arc::new(AtomicBool::new(false));
@@ -105,7 +105,7 @@ async fn main() {
     //
     // This is where the first part of the invariant above comes into play because our num_frames is the same as the fill ring size,
     // the initial_frames buffer will be empty at the end of this call.
-    fq.process_queue_async(&mut initial_frames).await;
+    umem.process_fill_queue_async(&mut initial_frames).await;
 
     // Create a buffer to receive frames into, in theory we could have used the [frames] object above for this usecase,
     // however this is showing that the [LocalFrameBuffer] can be used freely and is a thin wrapper around a [VecDeque] of frames.
@@ -116,7 +116,7 @@ async fn main() {
     let mut incoming = LocalFrameBuffer::new(args.busy_poll_batch_size);
     while !exit.load(Ordering::Relaxed) {
         // Start by reading some frames from the socket. The result of this call is guaranteed to be between 1 and the batch size.
-        let received = socket.rx().recv_async(&mut incoming).await;
+        let received = socket.recv_async(&mut incoming).await;
         debug_assert!(
             received > 0 && received <= args.busy_poll_batch_size as u32,
             "Received more frames than the batch size or 0 frames, this should \
@@ -140,10 +140,10 @@ async fn main() {
         // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
         //
         // Note: Errors here are fatal and should cause the program to exit, or reset the XDP state from scratch.
-        fq.maybe_wake_async(socket.fd()).await.unwrap();
+        umem.maybe_wake_async(socket.fd()).await.unwrap();
 
         // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
-        fq.process_queue_async(&mut incoming).await;
+        umem.process_fill_queue_async(&mut incoming).await;
         debug_assert_eq!(
             incoming.num_frames(),
             0,

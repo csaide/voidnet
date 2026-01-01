@@ -3,12 +3,12 @@ use std::sync::Arc;
 use libc::c_int;
 use libxdp_sys::{xsk_socket, xsk_socket__delete};
 
-use crate::xdp::umem::Umem;
+use crate::xdp::umem::UmemOwner;
 
 /// A frame based XDP socket exposing zero copy batched receive and send operations.
 pub struct SocketOwner {
     // We need the Umem to live longer than us, as all of our memory is directly owned by the Umem.
-    pub(super) _umem: Arc<Umem>,
+    pub(super) _umem: Arc<UmemOwner>,
     pub(super) socket: *mut xsk_socket,
     pub(super) fd: c_int,
 }

@@ -55,7 +55,7 @@ fn main() {
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
     // - Frames (frames) > A set of frames that are backed by the umem which are shared between the kernel and user space.
-    let (umem, mut fq, _cq, mut frames) = Umem::builder()
+    let (mut umem, mut frames) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -77,7 +77,7 @@ fn main() {
         .busy_poll_batch_size(args.busy_poll_batch_size)
         .busy_poll_timeout_us(args.busy_poll_timeout_us)
         .copy_mode(args.copy_mode)
-        .build(umem)
+        .build(&mut umem)
         .expect("Failed to create socket");
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.
@@ -98,10 +98,10 @@ fn main() {
     // For reads to work we need to hand some buffers to the kernel, so it can start reading data into them.
 
     // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
-    fq.maybe_wake(socket.fd()).unwrap();
+    umem.maybe_wake(socket.fd()).unwrap();
 
     // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
-    fq.process_queue(&mut frames);
+    umem.process_fill_queue(&mut frames);
 
     // Loop forever reading packets from the socket.
     while !exit.load(Ordering::Relaxed) {
@@ -132,10 +132,10 @@ fn main() {
         // Now we need to give back the frames to the kernel by means of the fill queue.
 
         // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
-        fq.maybe_wake(socket.fd()).unwrap();
+        umem.maybe_wake(socket.fd()).unwrap();
 
         // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
-        fq.process_queue(&mut frames);
+        umem.process_fill_queue(&mut frames);
 
         stats.maybe_print();
     }

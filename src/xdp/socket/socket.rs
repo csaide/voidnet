@@ -8,14 +8,17 @@ use libxdp_sys::{
     xsk_socket_config, xsk_socket_config__bindgen_ty_1,
 };
 
-use crate::xdp::{
-    context::XdpContext,
-    error::{Error, NonBlocking, Result},
-    flags::{XDP_USE_NEED_WAKEUP, XDP_USE_SG},
-    frame::FrameBuffer,
-    ring::{Consumer, Producer},
-    socket::{BindMode, mode::CopyMode},
-    umem::Umem,
+use crate::{
+    futures::{RecvFuture, SendFuture},
+    xdp::{
+        context::XdpContext,
+        error::{Error, NonBlocking, Result},
+        flags::{XDP_USE_NEED_WAKEUP, XDP_USE_SG},
+        frame::FrameBuffer,
+        ring::{Consumer, Producer},
+        socket::{BindMode, mode::CopyMode},
+        umem::Umem,
+    },
 };
 
 use super::{SocketOwner, SocketRx, SocketTx};
@@ -104,7 +107,7 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
     /// Builds the socket taking shared ownership of the Umem, allowing for multiple sockets on a single Device/Queue pair.
     ///
     /// Note: This will likely not get you more throughput or lower latency than a single socket, but it is useful for certain heavy loads where you need to offload packet processing onto different threads. Almost always prefer a single socket to a single Umem.
-    pub fn build(self, umem: Arc<Umem>) -> Result<Socket> {
+    pub fn build(self, umem: &mut Umem) -> Result<Socket> {
         let socket = Socket::new(
             self.if_name,
             self.queue,
@@ -189,7 +192,7 @@ impl Socket {
     pub fn new(
         if_name: &str,
         queue: u32,
-        umem: Arc<Umem>,
+        umem: &mut Umem,
         rx_ring_size: u32,
         tx_ring_size: u32,
         busy_poll: bool,
@@ -242,11 +245,11 @@ impl Socket {
         let tx = unsafe { tx.init() };
 
         let owner = Arc::new(SocketOwner {
-            _umem: umem.clone(),
+            _umem: umem.owner().clone(),
             socket: xsk,
             fd: unsafe { xsk_socket__fd(xsk) },
         });
-        let rx = SocketRx::new(owner.clone(), rx, umem.frame_stack());
+        let rx = SocketRx::new(owner.clone(), rx, umem.owner().clone());
         let tx = SocketTx::new(owner.clone(), tx, busy_poll);
         let socket = Self { owner, rx, tx };
         if busy_poll {
@@ -294,6 +297,14 @@ impl Socket {
         self.rx.recv(batch)
     }
 
+    /// Receives a batch of frames from the socket asynchronously.
+    ///
+    /// This function will return a future that will be ready when the frames are received.
+    #[inline(always)]
+    pub fn recv_async<B: FrameBuffer>(&mut self, batch: B) -> RecvFuture<'_, B> {
+        self.rx.recv_async(batch)
+    }
+
     /// Sends a batch of frames to the socket.
     ///
     /// Note that it is not guaranteed that the resulting Vec of frames will match the batch size supplied.
@@ -305,5 +316,13 @@ impl Socket {
     #[inline(always)]
     pub fn send<B: FrameBuffer>(&mut self, frames: B) -> NonBlocking<u32> {
         self.tx.send(frames)
+    }
+
+    /// Sends a batch of frames to the socket asynchronously.
+    ///
+    /// This function will return a future that will be ready when the frames are sent.
+    #[inline(always)]
+    pub fn send_async<B: FrameBuffer>(&mut self, frames: B) -> SendFuture<'_, B> {
+        self.tx.send_async(frames)
     }
 }

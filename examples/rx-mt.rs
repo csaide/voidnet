@@ -15,7 +15,7 @@ use libvoid::xdp::{
     context::XdpContext,
     frame::{FrameBuffer, LocalFrameBuffer},
     socket::Socket,
-    umem::{FillQueue, Umem},
+    umem::Umem,
 };
 
 mod common;
@@ -90,18 +90,18 @@ fn worker_thread(
 
 fn umem_thread(
     exit: Arc<AtomicBool>,
-    mut fill_queue: FillQueue,
+    mut umem: Umem,
     frame_stack: Arc<Mutex<LocalFrameBuffer>>,
     fds: Vec<c_int>,
 ) {
     while !exit.load(Ordering::Relaxed) {
         for fd in fds.iter() {
-            fill_queue.maybe_wake(*fd).unwrap();
+            umem.maybe_wake(*fd).unwrap();
         }
 
         {
             let mut guard = frame_stack.lock().unwrap();
-            fill_queue.process_queue(&mut guard);
+            umem.process_fill_queue(&mut guard);
         }
     }
 }
@@ -123,7 +123,7 @@ fn main() {
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
     // - Frames (frames) > A set of frames that are backed by the umem which are shared between the kernel and user space.
-    let (umem, mut fq, _cq, mut frames) = Umem::builder()
+    let (mut umem, mut frames) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -149,7 +149,7 @@ fn main() {
 
     // For reads to work we need to hand some buffers to the kernel, so it can start reading data into them.
     // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
-    fq.process_queue(&mut frames);
+    umem.process_fill_queue(&mut frames);
 
     // Since we are going to be using multiple threads, we need to wrap up our frame stack in a arc/mutex to
     // share it between the workers and umem threads
@@ -173,7 +173,7 @@ fn main() {
             .busy_poll_batch_size(args.busy_poll_batch_size)
             .busy_poll_timeout_us(args.busy_poll_timeout_us)
             .copy_mode(args.copy_mode)
-            .build(umem.clone())
+            .build(&mut umem)
             .expect("Failed to create socket");
         socket_fds.push(socket.fd());
 
@@ -185,7 +185,7 @@ fn main() {
 
     // Spawn our Umem thread, this will handle actually submitting frames to the fill queue.
     threads.push(thread::spawn(move || {
-        umem_thread(exit, fq, frame_stack, socket_fds)
+        umem_thread(exit, umem, frame_stack, socket_fds)
     }));
 
     println!("All threads created, listening for packets...");

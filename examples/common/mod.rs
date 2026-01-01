@@ -13,6 +13,7 @@ use pnet::{
         ip::IpNextHeaderProtocols,
         ipv4::MutableIpv4Packet,
         ipv6::{Ipv6Packet, MutableIpv6Packet},
+        tcp::MutableTcpPacket,
         udp::{MutableUdpPacket, UdpPacket},
     },
     util::MacAddr,
@@ -99,7 +100,7 @@ impl Stats {
         println!(
             "{}Packets: {}M | Fragments: {}M | Bytes: {:.2}GiB | Packet rate: {:.2} Mpps | Fragment rate: {:.2} Mfps | Byte rate: {:.2} Gbps",
             self.id
-                .map(|id| format!("Worker {} |", id))
+                .map(|id| format!("Worker {} | ", id))
                 .unwrap_or_default(),
             packets_received / 1_000_000,
             fragments_received / 1_000_000,
@@ -146,6 +147,12 @@ pub fn swap_addresses(frame: &mut [u8]) -> Option<()> {
             let dst = udp.get_destination();
             udp.set_destination(udp.get_source());
             udp.set_source(dst);
+        }
+        IpNextHeaderProtocols::Tcp => {
+            let mut tcp = MutableTcpPacket::new(&mut frame[payload_offset..])?;
+            let dst = tcp.get_destination();
+            tcp.set_destination(tcp.get_source());
+            tcp.set_source(dst);
         }
         _ => return None,
     }

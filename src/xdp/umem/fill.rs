@@ -8,22 +8,24 @@ use crate::{
     futures::{ProcessFillQueueFuture, WakeFillQueueFuture},
     xdp::{
         error::{Error, Result},
-        frame::{FrameBuffer, FrameStack},
+        frame::FrameBuffer,
         ring::{Init, Producer},
     },
 };
 
+use super::UmemOwner;
+
 pub struct FillQueue {
-    _stack: Arc<FrameStack>,
+    _owner: Arc<UmemOwner>,
     ring: Producer<Init>,
     busy_poll: bool,
 }
 
 impl FillQueue {
-    pub fn new(ring: Producer<Init>, stack: Arc<FrameStack>, busy_poll: bool) -> Self {
+    pub fn new(ring: Producer<Init>, owner: Arc<UmemOwner>, busy_poll: bool) -> Self {
         Self {
             ring,
-            _stack: stack,
+            _owner: owner,
             busy_poll,
         }
     }

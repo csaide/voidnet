@@ -5,20 +5,22 @@ use libxdp_sys::xsk_ring_cons;
 use crate::{
     futures::CompFuture,
     xdp::{
-        frame::{FrameBuffer, FrameStack},
+        frame::FrameBuffer,
         ring::{Consumer, Init},
         socket::SocketTx,
     },
 };
 
+use super::UmemOwner;
+
 pub struct CompletionQueue {
     ring: Consumer<Init>,
-    stack: Arc<FrameStack>,
+    owner: Arc<UmemOwner>,
 }
 
 impl CompletionQueue {
-    pub fn new(ring: Consumer<Init>, stack: Arc<FrameStack>) -> Self {
-        Self { ring, stack }
+    pub fn new(ring: Consumer<Init>, owner: Arc<UmemOwner>) -> Self {
+        Self { ring, owner }
     }
 
     #[inline(always)]
@@ -30,7 +32,7 @@ impl CompletionQueue {
 
         for _ in 0..ready {
             let addr = self.ring.comp_addr(idx);
-            batch.push(self.stack.to_frame(addr, 0, false));
+            batch.push(self.owner.to_frame(addr, 0, false));
             idx += 1;
         }
 

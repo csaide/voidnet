@@ -7,8 +7,9 @@ use crate::{
     futures::RecvFuture,
     xdp::{
         error::{NonBlocking, WouldBlock},
-        frame::{FrameBuffer, FrameStack},
+        frame::FrameBuffer,
         ring::{Consumer, Init},
+        umem::UmemOwner,
     },
 };
 
@@ -17,15 +18,15 @@ use super::SocketOwner;
 pub struct SocketRx {
     _socket: Arc<SocketOwner>,
     ring: Consumer<Init>,
-    stack: Arc<FrameStack>,
+    owner: Arc<UmemOwner>,
 }
 
 impl SocketRx {
-    pub fn new(socket: Arc<SocketOwner>, ring: Consumer<Init>, stack: Arc<FrameStack>) -> Self {
+    pub fn new(socket: Arc<SocketOwner>, ring: Consumer<Init>, owner: Arc<UmemOwner>) -> Self {
         Self {
             _socket: socket,
             ring,
-            stack,
+            owner,
         }
     }
 
@@ -39,7 +40,7 @@ impl SocketRx {
 
         for _ in 0..rcvd as usize {
             let desc = self.ring.rx_desc(idx_rx);
-            batch.push(self.stack.to_frame(
+            batch.push(self.owner.to_frame(
                 xsk_umem_extract_addr(desc.addr),
                 desc.len as usize,
                 desc.options & XDP_PKT_CONTD == XDP_PKT_CONTD,
