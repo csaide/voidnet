@@ -63,24 +63,38 @@ impl Default for XdpInfo {
 
 impl std::fmt::Debug for XdpInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "XdpInfo(prog_id: {}, drv_prog_id: {}, hw_prog_id: {}, skb_prog_id: {}, attach_mode: {}, features: {{ basic: {}, redirect: {}, ndo_xmit: {}, xsk_zero_copy: {}, hw_offload: {}, fragmentation: {}, ndo_xmit_fragmentation: {}, max_fragments: {}, mtu: {} }})",
-            self.prog_id,
-            self.drv_prog_id,
-            self.hw_prog_id,
-            self.skb_prog_id,
-            self.attach_mode,
-            self.basic_support(),
-            self.redirect_support(),
-            self.ndo_xmit_support(),
-            self.xsk_zero_copy_support(),
-            self.hw_offload_support(),
-            self.fragmentation_support(),
-            self.ndo_xmit_fragmentation_support(),
-            self.max_fragments(),
-            self.mtu
-        )
+        #[derive(Debug)]
+        #[allow(dead_code)]
+        struct Features {
+            basic: bool,
+            redirect: bool,
+            ndo_xmit: bool,
+            xsk_zero_copy: bool,
+            hw_offload: bool,
+            fragmentation: bool,
+            ndo_xmit_fragmentation: bool,
+        }
+
+        let features = Features {
+            basic: self.basic_support(),
+            redirect: self.redirect_support(),
+            ndo_xmit: self.ndo_xmit_support(),
+            xsk_zero_copy: self.xsk_zero_copy_support(),
+            hw_offload: self.hw_offload_support(),
+            fragmentation: self.fragmentation_support(),
+            ndo_xmit_fragmentation: self.ndo_xmit_fragmentation_support(),
+        };
+
+        f.debug_struct("XdpInfo")
+            .field("prog_id", &self.prog_id)
+            .field("drv_prog_id", &self.drv_prog_id)
+            .field("hw_prog_id", &self.hw_prog_id)
+            .field("skb_prog_id", &self.skb_prog_id)
+            .field("attach_mode", &self.attach_mode)
+            .field("max_fragments", &self.xdp_zc_max_segs)
+            .field("mtu", &self.mtu)
+            .field("features", &features)
+            .finish()
     }
 }
 

@@ -3,9 +3,10 @@ use std::{ffi::CString, os::raw::c_void, ptr::null};
 use errno::errno;
 use libc::if_nametoindex;
 use libxdp_sys::{
-    bpf_object__find_map_by_name, bpf_object__open_mem, bpf_xdp_query, bpf_xdp_query_opts,
-    libxdp_get_error, xdp_program, xdp_program__attach, xdp_program__bpf_obj, xdp_program__close,
-    xdp_program__detach, xdp_program__from_bpf_obj, xdp_program__set_xdp_frags_support,
+    bpf_map__fd, bpf_map_get_info_by_fd, bpf_map_info, bpf_object__find_map_by_name,
+    bpf_object__open_mem, bpf_xdp_query, bpf_xdp_query_opts, libxdp_get_error, xdp_program,
+    xdp_program__attach, xdp_program__bpf_obj, xdp_program__close, xdp_program__detach,
+    xdp_program__from_bpf_obj, xdp_program__set_xdp_frags_support,
 };
 use neli::{
     consts::{
@@ -122,7 +123,16 @@ impl XdpProgram {
         if err < 0 {
             return Err(Error::FindMap(errno()));
         }
-        Ok(Map::new(map))
+
+        let map_fd = unsafe { bpf_map__fd(map as *const _) };
+
+        let mut info: bpf_map_info = unsafe { std::mem::zeroed() };
+        let mut info_len = std::mem::size_of::<bpf_map_info>() as u32;
+        let err = unsafe { bpf_map_get_info_by_fd(map_fd, &mut info, &mut info_len) };
+        if err < 0 {
+            return Err(Error::GetMapInfo(errno()));
+        }
+        Ok(Map::new(map, info))
     }
 }
 

@@ -42,10 +42,12 @@ impl XdpContext {
         self.num_sockets += 1;
 
         // Update our xsks_map with the socket's file descriptor.
-        self.xsks_map.update_elem(&loc, &socket.fd())?;
+        unsafe { self.xsks_map.update_elem(&loc, &socket.fd())? };
 
         const KEY: u32 = 0;
         // Update our num_sockets counter in the XDP program's .bss map.
-        self.data_map.update_elem(&KEY, &self.num_sockets)
+        unsafe { self.data_map.update_elem(&KEY, &self.num_sockets)? };
+
+        Ok(())
     }
 }

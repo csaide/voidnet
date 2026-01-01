@@ -10,6 +10,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("failed while finding map: {0}")]
     FindMap(Errno),
+    #[error("failed while getting map info: {0}")]
+    GetMapInfo(Errno),
     #[error("failed while updating map element: {0}")]
     UpdateMapElement(Errno),
     #[error("failed to find specified interface")]

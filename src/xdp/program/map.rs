@@ -1,19 +1,34 @@
 use std::os::raw::c_void;
 
 use errno::errno;
-use libxdp_sys::{bpf_map, bpf_map__fd, bpf_map_update_elem};
+use libxdp_sys::{bpf_map, bpf_map__fd, bpf_map_info, bpf_map_update_elem};
 
 use crate::xdp::error::{Error, Result};
 
-/// A wrapper around a raw [bpf_map] object, this exposes a safe API for setting values in a BPF map.
+/// A wrapper around a raw [bpf_map] object, this exposes a mostly safe API for setting values in a BPF map.
+///
+/// We left the update_elem function unsafe because maps are a bit hard to fully map to a type safe variant. There are cases,
+/// such as the `.bss` map, where the values could be different types depending on the static data in the BPF program. Generally,
+/// keys are always the same type, and some variant of an integer type.
 pub struct Map {
     map: *mut bpf_map,
+    info: bpf_map_info,
+    name: String,
 }
 
 impl Map {
-    /// Wraps a raw [bpf_map] object, this is the only way to create a new [Map] object.
-    pub fn new(map: *mut bpf_map) -> Self {
-        Self { map }
+    /// Wraps a raw [bpf_map] and its corresponding [bpf_map_info] object.
+    pub fn new(map: *mut bpf_map, info: bpf_map_info) -> Self {
+        Self {
+            map,
+            info,
+            name: String::from_utf8_lossy(&info.name[..]).to_string(),
+        }
+    }
+
+    /// Returns the name of the map.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Returns a mutable pointer to the raw [bpf_map] object.
@@ -26,12 +41,38 @@ impl Map {
         self.map
     }
 
-    /// Updates the value of an element in the map with the given key and value.
-    pub fn update_elem<K, V>(&self, key: &K, value: &V) -> Result<()>
+    /// Returns the information about the map.
+    pub fn info(&self) -> &bpf_map_info {
+        &self.info
+    }
+
+    /// Updates an element in the map at the given key with the given value.
+    ///
+    /// A few notes for those not familiar with BPF maps:
+    /// - The value supplied is bitwise copied into the map by the kernel via the pointer provided (reference).
+    /// - There is no "type" for the key or value here everything is done based on size and then binary comparisons/copy.
+    /// - That isn't to say its safe to use the _wrong_ type either, see the safety section below.
+    ///
+    /// # Safety
+    ///
+    /// It is the responsibility of the caller to ensure that the key and value are the correct size and type for the map.
+    ///
+    /// This will panic in debug builds if the key or value are not the correct size for the map, but we can't enforce type checks here
+    /// always confirm the types you are using are correct, for the map you are using.
+    pub unsafe fn update_elem<K, V>(&self, key: &K, value: &V) -> Result<()>
     where
-        K: Sized,
-        V: Sized,
+        K: Sized + Copy,
+        V: Sized + Copy,
     {
+        debug_assert!(
+            std::mem::size_of::<K>() == self.info.key_size as usize,
+            "key size does not match map key size"
+        );
+        debug_assert!(
+            std::mem::size_of::<V>() == self.info.value_size as usize,
+            "value size does not match map value size"
+        );
+
         let ret = unsafe {
             bpf_map_update_elem(
                 bpf_map__fd(self.map),
