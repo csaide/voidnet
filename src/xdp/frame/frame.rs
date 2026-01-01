@@ -90,7 +90,7 @@ impl Frame {
 
         debug_assert!(
             self.capacity >= incoming.len(),
-            "frame must be full to copy from"
+            "incoming data length is greater than the frame capacity"
         );
 
         self.len = incoming.len();

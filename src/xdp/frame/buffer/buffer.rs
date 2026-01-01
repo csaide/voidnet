@@ -1,25 +1,39 @@
-use std::sync::MutexGuard;
-
 use super::Frame;
 
+/// A buffer that can be used to store and retrieve frames.
 pub trait FrameBuffer {
-    type Drain<'a>: Iterator<Item = Frame>
+    /// A consuming iterator that yields frames, it should remove the frames from the buffer and pass ownership of them to the caller.
+    type Drain<'a>: Iterator<Item = Frame> + ExactSizeIterator
     where
         Self: 'a;
 
-    type IterMut<'a>: Iterator<Item = &'a mut Frame>
+    /// A non-consuming iterator that yields mutable references to frames, it should not remove the frames from the buffer.
+    type IterMut<'a>: Iterator<Item = &'a mut Frame> + ExactSizeIterator
     where
         Self: 'a;
 
-    type Iter<'a>: Iterator<Item = &'a Frame>
+    /// A non-consuming iterator that yields immutable references to frames, it should not remove the frames from the buffer.
+    type Iter<'a>: Iterator<Item = &'a Frame> + ExactSizeIterator
     where
         Self: 'a;
 
+    /// Returns the number of free slots in the buffer, while its not a technical requirement to never grow, the entire XDP subsystem will honor this value as a maximum number
+    /// of frames that can be pushed into the buffer. It is important for performance that this is accurate and ensure that if the caluclation is expensive to cache the result appropriately.
     fn free_space(&self) -> usize;
+
+    /// Returns the number of frames in the buffer, this is the number of frames that have been pushed into the buffer and are still in it.
     fn num_frames(&self) -> usize;
+
+    /// Pushes a frame into the buffer, note again that the XDP subsystem will use free_space above to determine how many frames to push this should be infalible in every way.
     fn push(&mut self, frame: Frame);
+
+    /// Drain all frames from the buffer and pass off ownership to the caller, this is used to take the frames and pass them off to the kernel.
     fn take_frames(&mut self) -> Self::Drain<'_>;
+
+    /// Iterate over all the frames in the buffer.
     fn iter(&self) -> Self::Iter<'_>;
+
+    /// Iterate over all the frames in the buffer mutably.
     fn iter_mut(&mut self) -> Self::IterMut<'_>;
 }
 
@@ -70,7 +84,7 @@ impl<B: FrameBuffer> FrameBuffer for &mut B {
     }
 }
 
-impl<B: FrameBuffer> FrameBuffer for MutexGuard<'_, B> {
+impl<B: FrameBuffer> FrameBuffer for std::sync::MutexGuard<'_, B> {
     type Drain<'a>
         = B::Drain<'a>
     where
