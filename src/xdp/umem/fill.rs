@@ -69,7 +69,7 @@ impl FillQueue {
             return;
         }
 
-        for frame in batch.drain() {
+        for frame in batch.take_frames() {
             let ptr = self.ring.fill_addr(idx);
             unsafe { *ptr = frame.addr() };
             idx += 1;

@@ -54,7 +54,7 @@ impl SocketTx {
             return Err(WouldBlock);
         }
 
-        for frame in frames.drain() {
+        for frame in frames.take_frames() {
             let desc = self.ring.tx_desc(idx_tx);
             unsafe {
                 (*desc).addr = frame.addr();

@@ -10,7 +10,7 @@ use clap::Parser;
 
 use libvoid::xdp::{
     context::XdpContext,
-    frame::{LocalFrameBuffer, PacketWriter},
+    frame::{FrameBuffer, LocalFrameBuffer, PacketWriter},
     socket::Socket,
     umem::Umem,
 };
@@ -102,7 +102,7 @@ fn main() {
 
     println!("Socket created, sending packets...");
 
-    let frames = write_frames.len();
+    let frames = write_frames.num_frames();
     while !exit.load(Ordering::Relaxed) {
         // Copy the data into the frames, this is intentionally in the loop to show performance of a real world application.
         // Since generally at some point a copy into the frame is needed from userspace, how this copy is done is up to the caller.
@@ -137,7 +137,7 @@ fn main() {
         // Process any outstanding descriptors on the completion queue retrieving the sent frames.
         //
         // This should be a loop because the kernel can only transmit a limited number of frames at a time.
-        while write_frames.len() < sent as usize {
+        while write_frames.num_frames() < sent as usize {
             // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
             //
             // Note: Errors here are fatal and should cause the program to exit, or reset the XDP state from scratch.

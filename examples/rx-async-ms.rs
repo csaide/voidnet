@@ -13,7 +13,7 @@ use futures::lock::Mutex;
 
 use libvoid::xdp::{
     context::XdpContext,
-    frame::LocalFrameBuffer,
+    frame::{FrameBuffer, LocalFrameBuffer},
     socket::Socket,
     umem::{FillQueue, Umem},
 };

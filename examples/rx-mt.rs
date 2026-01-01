@@ -13,7 +13,7 @@ use clap::Parser;
 use libc::c_int;
 use libvoid::xdp::{
     context::XdpContext,
-    frame::LocalFrameBuffer,
+    frame::{FrameBuffer, LocalFrameBuffer},
     socket::Socket,
     umem::{FillQueue, Umem},
 };
@@ -99,8 +99,10 @@ fn umem_thread(
             fill_queue.maybe_wake(*fd).unwrap();
         }
 
-        let mut guard = frame_stack.lock().unwrap();
-        fill_queue.process_queue(&mut guard);
+        {
+            let mut guard = frame_stack.lock().unwrap();
+            fill_queue.process_queue(&mut guard);
+        }
     }
 }
 

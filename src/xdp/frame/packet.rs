@@ -1,6 +1,6 @@
 use std::{cmp::min, collections::vec_deque::IterMut};
 
-use crate::xdp::frame::LocalFrameBuffer;
+use crate::xdp::frame::{FrameBuffer, LocalFrameBuffer};
 
 use super::Frame;
 

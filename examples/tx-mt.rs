@@ -12,7 +12,7 @@ use clap::Parser;
 
 use libvoid::xdp::{
     context::XdpContext,
-    frame::LocalFrameBuffer,
+    frame::{FrameBuffer, LocalFrameBuffer},
     socket::Socket,
     umem::{CompletionQueue, Umem},
 };
@@ -57,7 +57,7 @@ fn worker_thread(
     while !exit.load(Ordering::Relaxed) {
         let mut frames: LocalFrameBuffer = {
             let mut frame_stack = frame_stack.lock().unwrap();
-            let batch_size = frame_stack.len().min(batch_size);
+            let batch_size = frame_stack.num_frames().min(batch_size);
             if batch_size == 0 {
                 socket.maybe_wake().unwrap();
                 continue;

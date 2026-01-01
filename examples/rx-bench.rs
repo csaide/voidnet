@@ -8,7 +8,12 @@ use std::{
 
 use clap::Parser;
 
-use libvoid::xdp::{context::XdpContext, frame::LocalFrameBuffer, socket::Socket, umem::Umem};
+use libvoid::xdp::{
+    context::XdpContext,
+    frame::{FrameBuffer, LocalFrameBuffer},
+    socket::Socket,
+    umem::Umem,
+};
 
 mod common;
 use common::{BaseArgs, Stats};

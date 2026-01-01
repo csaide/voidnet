@@ -1,9 +1,9 @@
 use std::{
     collections::{
         VecDeque,
-        vec_deque::{Drain, IterMut},
+        vec_deque::{Drain, Iter, IterMut},
     },
-    ops::{Deref, DerefMut, RangeBounds},
+    ops::RangeBounds,
 };
 
 use super::{Frame, FrameBuffer};
@@ -34,6 +34,7 @@ impl LocalFrameBuffer {
 impl FrameBuffer for LocalFrameBuffer {
     type Drain<'a> = Drain<'a, Frame>;
     type IterMut<'a> = IterMut<'a, Frame>;
+    type Iter<'a> = Iter<'a, Frame>;
 
     fn free_space(&self) -> usize {
         self.free_space
@@ -49,12 +50,16 @@ impl FrameBuffer for LocalFrameBuffer {
         self.frames.push_back(frame);
     }
 
-    fn drain(&mut self) -> Self::Drain<'_> {
-        LocalFrameBuffer::drain(self, ..)
+    fn take_frames(&mut self) -> Self::Drain<'_> {
+        self.drain(..)
     }
 
     fn iter_mut(&mut self) -> Self::IterMut<'_> {
         self.frames.iter_mut()
+    }
+
+    fn iter(&self) -> Self::Iter<'_> {
+        self.frames.iter()
     }
 }
 
@@ -77,19 +82,5 @@ impl Extend<Frame> for LocalFrameBuffer {
         self.free_space += frames.capacity() - frames.len();
         self.num_frames += frames.len();
         self.frames.extend(frames);
-    }
-}
-
-impl Deref for LocalFrameBuffer {
-    type Target = VecDeque<Frame>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.frames
-    }
-}
-
-impl DerefMut for LocalFrameBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.frames
     }
 }

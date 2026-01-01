@@ -9,7 +9,11 @@ use std::{
 use clap::Parser;
 
 use libvoid::xdp::{
-    context::XdpContext, error::WouldBlock, frame::LocalFrameBuffer, socket::Socket, umem::Umem,
+    context::XdpContext,
+    error::WouldBlock,
+    frame::{FrameBuffer, LocalFrameBuffer},
+    socket::Socket,
+    umem::Umem,
 };
 
 mod common;
@@ -113,7 +117,7 @@ fn main() {
         };
 
         // Guaranteed by the socket.recv() function, given an empty input buffer.
-        debug_assert_eq!(frames.len(), received as usize);
+        debug_assert_eq!(frames.num_frames(), received as usize);
 
         // For each received frame, attempt to swap the addresses.
         for mut frame in frames.iter_mut() {
@@ -126,10 +130,10 @@ fn main() {
         let _ = socket.send(&mut frames);
 
         // Send will always fully consume the input buffer, so we should have no frames left.
-        debug_assert_eq!(frames.len(), 0);
+        debug_assert_eq!(frames.num_frames(), 0);
 
         // So we "sent" the packets but now we need to actually drive the completion of those sends.
-        while frames.len() < received as usize {
+        while frames.num_frames() < received as usize {
             socket.maybe_wake().expect("Failed to wake tx queue");
             cq.process_queue(&mut frames);
         }

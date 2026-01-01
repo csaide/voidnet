@@ -11,10 +11,15 @@ pub trait FrameBuffer {
     where
         Self: 'a;
 
+    type Iter<'a>: Iterator<Item = &'a Frame>
+    where
+        Self: 'a;
+
     fn free_space(&self) -> usize;
     fn num_frames(&self) -> usize;
     fn push(&mut self, frame: Frame);
-    fn drain(&mut self) -> Self::Drain<'_>;
+    fn take_frames(&mut self) -> Self::Drain<'_>;
+    fn iter(&self) -> Self::Iter<'_>;
     fn iter_mut(&mut self) -> Self::IterMut<'_>;
 }
 
@@ -26,6 +31,11 @@ impl<B: FrameBuffer> FrameBuffer for &mut B {
 
     type IterMut<'a>
         = B::IterMut<'a>
+    where
+        Self: 'a;
+
+    type Iter<'a>
+        = B::Iter<'a>
     where
         Self: 'a;
 
@@ -45,13 +55,18 @@ impl<B: FrameBuffer> FrameBuffer for &mut B {
     }
 
     #[inline(always)]
-    fn drain(&mut self) -> Self::Drain<'_> {
-        B::drain(self)
+    fn take_frames(&mut self) -> Self::Drain<'_> {
+        B::take_frames(self)
     }
 
     #[inline(always)]
     fn iter_mut(&mut self) -> Self::IterMut<'_> {
         B::iter_mut(self)
+    }
+
+    #[inline(always)]
+    fn iter(&self) -> Self::Iter<'_> {
+        B::iter(self)
     }
 }
 
@@ -66,6 +81,11 @@ impl<B: FrameBuffer> FrameBuffer for MutexGuard<'_, B> {
     where
         Self: 'a;
 
+    type Iter<'a>
+        = B::Iter<'a>
+    where
+        Self: 'a;
+
     #[inline(always)]
     fn free_space(&self) -> usize {
         B::free_space(&*self)
@@ -82,13 +102,18 @@ impl<B: FrameBuffer> FrameBuffer for MutexGuard<'_, B> {
     }
 
     #[inline(always)]
-    fn drain(&mut self) -> Self::Drain<'_> {
-        B::drain(&mut *self)
+    fn take_frames(&mut self) -> Self::Drain<'_> {
+        B::take_frames(&mut *self)
     }
 
     #[inline(always)]
     fn iter_mut(&mut self) -> Self::IterMut<'_> {
         B::iter_mut(&mut *self)
+    }
+
+    #[inline(always)]
+    fn iter(&self) -> Self::Iter<'_> {
+        B::iter(&*self)
     }
 }
 
@@ -103,6 +128,11 @@ impl<B: FrameBuffer> FrameBuffer for futures::lock::MutexGuard<'_, B> {
     where
         Self: 'a;
 
+    type Iter<'a>
+        = B::Iter<'a>
+    where
+        Self: 'a;
+
     #[inline(always)]
     fn free_space(&self) -> usize {
         B::free_space(&*self)
@@ -119,13 +149,18 @@ impl<B: FrameBuffer> FrameBuffer for futures::lock::MutexGuard<'_, B> {
     }
 
     #[inline(always)]
-    fn drain(&mut self) -> Self::Drain<'_> {
-        B::drain(&mut *self)
+    fn take_frames(&mut self) -> Self::Drain<'_> {
+        B::take_frames(&mut *self)
     }
 
     #[inline(always)]
     fn iter_mut(&mut self) -> Self::IterMut<'_> {
         B::iter_mut(&mut *self)
+    }
+
+    #[inline(always)]
+    fn iter(&self) -> Self::Iter<'_> {
+        B::iter(&*self)
     }
 }
 
@@ -145,8 +180,9 @@ mod tests {
         FrameBuffer::push(&mut guard, unsafe {
             Frame::new(0, std::ptr::null_mut(), 0, 0, false)
         });
-        let drain = FrameBuffer::drain(&mut guard);
+        let drain = FrameBuffer::take_frames(&mut guard);
         let frames: LocalFrameBuffer = drain.collect();
+        let frames = frames.iter().collect::<Vec<_>>();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].addr(), 0);
         assert_eq!(frames[0].len(), 0);

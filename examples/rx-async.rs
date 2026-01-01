@@ -8,7 +8,12 @@ use std::{
 
 use clap::Parser;
 
-use libvoid::xdp::{context::XdpContext, frame::LocalFrameBuffer, socket::Socket, umem::Umem};
+use libvoid::xdp::{
+    context::XdpContext,
+    frame::{FrameBuffer, LocalFrameBuffer},
+    socket::Socket,
+    umem::Umem,
+};
 
 mod common;
 use common::{BaseArgs, Stats};
@@ -140,7 +145,7 @@ async fn main() {
         // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
         fq.process_queue_async(&mut incoming).await;
         debug_assert_eq!(
-            incoming.len(),
+            incoming.num_frames(),
             0,
             "Frames left after processing fill queue, this should never happen \
             unless our batch size is larger than the fill ring."
