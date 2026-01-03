@@ -25,7 +25,7 @@ impl FillQueue {
     pub fn new(ring: Producer<Init>, owner: Arc<UmemOwner>, busy_poll: bool) -> Self {
         Self {
             ring,
-            _owner: owner,
+            _owner: owner.clone(),
             busy_poll,
         }
     }

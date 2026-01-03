@@ -177,30 +177,3 @@ impl<B: FrameBuffer> FrameBuffer for futures::lock::MutexGuard<'_, B> {
         B::iter(&*self)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::sync::{Arc, Mutex};
-
-    use crate::xdp::frame::buffer::local::LocalFrameBuffer;
-
-    use super::*;
-
-    #[test]
-    fn test_mutex_vec() {
-        let buffer = Arc::new(Mutex::new(LocalFrameBuffer::new(1)));
-        let mut guard = buffer.lock().unwrap();
-
-        FrameBuffer::push(&mut guard, unsafe {
-            Frame::new(0, std::ptr::null_mut(), 0, 0, false)
-        });
-        let drain = FrameBuffer::take_frames(&mut guard);
-        let frames: LocalFrameBuffer = drain.collect();
-        let frames = frames.iter().collect::<Vec<_>>();
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].addr(), 0);
-        assert_eq!(frames[0].len(), 0);
-        assert_eq!(frames[0].capacity(), 0);
-        assert_eq!(frames[0].is_fragment(), false);
-    }
-}

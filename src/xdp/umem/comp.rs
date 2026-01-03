@@ -32,7 +32,9 @@ impl CompletionQueue {
 
         for _ in 0..ready {
             let addr = self.ring.comp_addr(idx);
-            batch.push(self.owner.to_frame(addr, 0, false));
+            // SAFETY: The address is valid because it is from the completion ring and kernel guarantees it is valid.
+            // a length of 0 is always valid.
+            batch.push(unsafe { self.owner.to_frame(addr, 0, false) });
             idx += 1;
         }
 

@@ -1,4 +1,9 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
+
+use memmap2::MmapMut;
 
 /// A frame is a contiguous memory region that is used to store data for a packet, this is a simple wrapper around a pointer to a MMAP'd memory region.
 #[derive(Debug)]
@@ -8,6 +13,7 @@ pub struct Frame {
     capacity: usize,
     data: *mut u8,
     is_fragment: bool,
+    _mmap: Arc<MmapMut>, // Guarantee we can't outlive the mmap.
 }
 
 unsafe impl Send for Frame {}
@@ -25,22 +31,30 @@ impl Frame {
     /// be initialized to valid u8 values for all locations.
     pub unsafe fn new(
         addr: u64,
-        data: *mut u8,
         len: usize,
         capacity: usize,
         is_fragment: bool,
+        mmap: Arc<MmapMut>,
     ) -> Self {
         debug_assert!(
             capacity > 0 && len <= capacity,
             "len must be less than or equal to capacity, which must be greater than 0"
+        );
+        debug_assert!(
+            addr + len as u64 <= mmap.len() as u64,
+            "addr + len is greater than the mmap length"
         );
 
         Self {
             addr,
             len,
             capacity,
-            data,
+            // SAFETY: this is safe because the mmap is guaranteed to be valid.
+            // We also _have_ to change the pointer type from *const u8 to *mut u8 as Frame's are mutable and we need multiple of them which
+            // are guaranteed to be non-overlapping, so its safe to cast it to a mutable pointer, no two callers can access the same frame address.
+            data: unsafe { mmap.as_ptr().offset(addr as isize) as *mut u8 },
             is_fragment,
+            _mmap: mmap,
         }
     }
 

@@ -40,11 +40,14 @@ impl SocketRx {
 
         for _ in 0..rcvd as usize {
             let desc = self.ring.rx_desc(idx_rx);
-            batch.push(self.owner.to_frame(
-                xsk_umem_extract_addr(desc.addr),
-                desc.len as usize,
-                desc.options & XDP_PKT_CONTD == XDP_PKT_CONTD,
-            ));
+            batch.push(unsafe {
+                // SAFETY: The address/length/options are valid because it is from the RX ring and kernel guarantees them.
+                self.owner.to_frame(
+                    xsk_umem_extract_addr(desc.addr),
+                    desc.len as usize,
+                    desc.options & XDP_PKT_CONTD == XDP_PKT_CONTD,
+                )
+            });
             idx_rx += 1;
         }
 

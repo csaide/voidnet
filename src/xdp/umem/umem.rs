@@ -170,14 +170,15 @@ impl Umem {
 
         let owner = Arc::new(UmemOwner {
             umem,
-            mmap,
+            mmap: Arc::new(mmap),
             frame_size,
         });
         let fq = FillQueue::new(fill_ring, owner.clone(), busy_poll);
         let cq = CompletionQueue::new(comp_ring, owner.clone());
 
         let frames = (0..num_frames)
-            .map(|i| owner.to_frame(i as u64 * frame_size as u64, 0, false))
+            // SAFETY: The frames are created with based on the configuration for the mmap so these are valid.
+            .map(|i| unsafe { owner.to_frame(i as u64 * frame_size as u64, 0, false) })
             .collect();
         Ok((Self { owner, fq, cq }, frames))
     }
