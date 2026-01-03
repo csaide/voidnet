@@ -7,14 +7,16 @@ use libxdp_sys::{xdp_desc, xsk_ring_cons};
 
 use crate::xdp::ring::{Init, Uninit};
 
-/// A consumer ring is a ring of descriptors that are used to transfer packets from the kernel to the user.
+/// A consumer ring is a ring of descriptors that are used to transfer packets from the kernel to the user. This is a thin wrapper around
+/// the xsk_ring_cons struct, exposing a safe API for interacting with the ring.
 pub struct Consumer<I> {
     ring: xsk_ring_cons,
     _init: PhantomData<I>,
 }
 
 // SAFETY: The only reason [Consumer] is not send is because of the *mut u32 in xsk_ring_cons, the pointer is tied to this
-// xsk_ring_cons so its lifetime is tied to it and we can safely send this to another thread.
+// xsk_ring_cons so its lifetime is tied to it and we can safely send this to another thread because the pointer is into a heap
+// allocated memory region that cannot move.
 unsafe impl<I> Send for Consumer<I> {}
 
 impl<I> Consumer<I> {

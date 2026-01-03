@@ -7,14 +7,16 @@ use libxdp_sys::{XDP_RING_NEED_WAKEUP, xdp_desc, xsk_ring_prod};
 
 use super::{Init, Uninit};
 
-/// A producer ring is a ring of descriptors that are used to transfer packets from the user to the kernel.
+/// A producer ring is a ring of descriptors that are used to transfer packets from the user to the kernel. This is a thin wrapper around
+/// the xsk_ring_prod struct, exposing a safe API for interacting with the ring.
 pub struct Producer<I> {
     ring: xsk_ring_prod,
     _init: PhantomData<I>,
 }
 
 // SAFETY: The only reason [Producer] is not send is because of the *mut u32 in xsk_ring_prod, the pointer is tied to this
-// xsk_ring_prod so its lifetime is tied to it and we can safely send this to another thread.
+// xsk_ring_prod so its lifetime is tied to it and we can safely send this to another thread because the pointer is into a heap
+// allocated memory region that cannot move.
 unsafe impl<I> Send for Producer<I> {}
 
 impl<I> Producer<I> {
@@ -56,7 +58,7 @@ impl Producer<Uninit> {
     /// # Safety
     ///
     /// It is on the caller to ensure that the producer has been properly initialized by the kernel, by a call to `xsk_umem__create`/`xsk_socket__create`/`xsk_socket__create_shared`.
-    pub unsafe fn init(self) -> Producer<Init> {
+    pub unsafe fn assume_init(self) -> Producer<Init> {
         Producer::<Init> {
             ring: self.ring,
             _init: PhantomData,

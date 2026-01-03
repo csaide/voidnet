@@ -165,7 +165,7 @@ impl Umem {
             return Err(Error::CreateUmem(errno()));
         }
 
-        let fill_ring = unsafe { fill_ring.init() };
+        let fill_ring = unsafe { fill_ring.assume_init() };
         let comp_ring = unsafe { comp_ring.assume_init() };
 
         let owner = Arc::new(UmemOwner {

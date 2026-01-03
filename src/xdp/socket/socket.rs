@@ -242,7 +242,7 @@ impl Socket {
             return Err(Error::CreateSocket(errno()));
         }
         let rx = unsafe { rx.assume_init() };
-        let tx = unsafe { tx.init() };
+        let tx = unsafe { tx.assume_init() };
 
         let owner = Arc::new(SocketOwner {
             _umem: umem.owner().clone(),
