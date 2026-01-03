@@ -3,7 +3,7 @@ use std::sync::Arc;
 use libxdp_sys::{xsk_umem, xsk_umem__delete};
 use memmap2::MmapMut;
 
-use crate::xdp::frame::Frame;
+use crate::xdp::frame_v2::Frame;
 
 /// The owner of a UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
 pub struct UmemOwner {
@@ -26,8 +26,25 @@ impl UmemOwner {
     /// This function does not check if the address is valid or if it points to a contiguous memory
     /// region of size `len`. It is the responsibility of the caller to ensure that the address is valid
     /// and that the pointer points to a contiguous memory region of size `len`, which is fully initialized.
-    pub unsafe fn to_frame(&self, addr: u64, len: usize, is_fragment: bool) -> Frame {
-        unsafe { Frame::new(addr, len, self.frame_size, is_fragment, self.mmap.clone()) }
+    pub fn to_frame(&self, addr: u64, len: usize, is_fragment: bool) -> Frame<'_> {
+        debug_assert!(len <= self.frame_size, "len is greater than the frame size");
+        debug_assert!(
+            addr + len as u64 <= self.mmap.len() as u64,
+            "addr + len is greater than the mmap length"
+        );
+
+        unsafe {
+            Frame::new(
+                addr,
+                std::slice::from_raw_parts_mut(
+                    self.mmap.as_ptr().offset(addr as isize) as *mut u8,
+                    self.frame_size,
+                ),
+                len,
+                self.frame_size,
+                is_fragment,
+            )
+        }
     }
 }
 

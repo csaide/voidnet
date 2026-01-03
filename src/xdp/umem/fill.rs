@@ -1,4 +1,4 @@
-use std::{ptr::null_mut, sync::Arc};
+use std::{marker::PhantomData, ptr::null_mut, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
@@ -8,7 +8,7 @@ use crate::{
     futures::{ProcessFillQueueFuture, WakeFillQueueFuture},
     xdp::{
         error::{Error, Result},
-        frame::FrameBuffer,
+        frame_v2::FrameBuffer,
         ring::{Init, Producer},
     },
 };
@@ -25,7 +25,7 @@ impl FillQueue {
     pub fn new(ring: Producer<Init>, owner: Arc<UmemOwner>, busy_poll: bool) -> Self {
         Self {
             ring,
-            _owner: owner.clone(),
+            _owner: owner,
             busy_poll,
         }
     }
@@ -56,16 +56,17 @@ impl FillQueue {
     }
 
     #[inline(always)]
-    pub fn maybe_wake_async(&self, fd: c_int) -> WakeFillQueueFuture<'_> {
+    pub fn maybe_wake_async<'umem>(&self, fd: c_int) -> WakeFillQueueFuture<'_, 'umem> {
         WakeFillQueueFuture {
             fill_queue: &self,
             fd,
+            _lifetime: PhantomData,
         }
     }
 
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
-    pub fn process_queue<B: FrameBuffer>(&mut self, mut batch: B) {
+    pub fn process_queue<'umem, B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
         let (mut idx, ready) = self.ring.reserve(batch.num_frames() as u32);
         if ready == 0 {
             return;
@@ -81,13 +82,14 @@ impl FillQueue {
     }
 
     #[inline(always)]
-    pub fn process_queue_async<B: FrameBuffer>(
+    pub fn process_queue_async<'umem, B: FrameBuffer<'umem>>(
         &mut self,
         batch: B,
-    ) -> ProcessFillQueueFuture<'_, B> {
+    ) -> ProcessFillQueueFuture<'_, 'umem, B> {
         ProcessFillQueueFuture {
             fill_queue: self,
             batch,
+            _lifetime: PhantomData,
         }
     }
 

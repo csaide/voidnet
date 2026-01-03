@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::{marker::PhantomData, mem::transmute, sync::Arc};
 
 use libxdp_sys::xsk_ring_cons;
 
 use crate::{
     futures::CompFuture,
     xdp::{
-        frame::FrameBuffer,
+        frame_v2::{Frame, FrameBuffer},
         ring::{Consumer, Init},
         socket::SocketTx,
     },
@@ -24,7 +24,7 @@ impl CompletionQueue {
     }
 
     #[inline(always)]
-    pub fn process_queue<B: FrameBuffer>(&mut self, mut batch: B) {
+    pub fn process_queue<'umem, B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
         let (mut idx, ready) = self.ring.peek(batch.free_space() as u32);
         if ready == 0 {
             return;
@@ -34,7 +34,9 @@ impl CompletionQueue {
             let addr = self.ring.comp_addr(idx);
             // SAFETY: The address is valid because it is from the completion ring and kernel guarantees it is valid.
             // a length of 0 is always valid.
-            batch.push(unsafe { self.owner.to_frame(addr, 0, false) });
+            let frame = self.owner.to_frame(addr, 0, false);
+            let frame = unsafe { transmute::<Frame<'_>, Frame<'umem>>(frame) };
+            batch.push(frame);
             idx += 1;
         }
 
@@ -42,17 +44,18 @@ impl CompletionQueue {
     }
 
     #[inline(always)]
-    pub fn process_queue_async<'a, 'b, B: FrameBuffer>(
-        &'a mut self,
+    pub fn process_queue_async<'s, 'umem, 'sock, B: FrameBuffer<'umem>>(
+        &'s mut self,
         batch: B,
         expected: usize,
-        socket: &'b mut SocketTx,
-    ) -> CompFuture<'a, 'b, B> {
+        socket: &'sock mut SocketTx,
+    ) -> CompFuture<'s, 'umem, 'sock, B> {
         CompFuture {
             completion_queue: self,
             socket,
             batch,
             expected,
+            _lifetime: PhantomData,
         }
     }
 

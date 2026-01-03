@@ -1,16 +1,18 @@
 use std::{
+    marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use crate::xdp::{frame::FrameBuffer, socket::SocketTx};
+use crate::xdp::{frame_v2::FrameBuffer, socket::SocketTx};
 
-pub struct SendFuture<'a, B: FrameBuffer> {
+pub struct SendFuture<'a, 'umem, B: FrameBuffer<'umem>> {
     pub(crate) socket: &'a mut SocketTx,
     pub(crate) batch: B,
+    pub(crate) _lifetime: PhantomData<&'umem ()>,
 }
 
-impl<'a, B: FrameBuffer> Future for SendFuture<'a, B> {
+impl<'a, 'umem, B: FrameBuffer<'umem>> Future for SendFuture<'a, 'umem, B> {
     type Output = u32;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

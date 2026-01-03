@@ -2,6 +2,7 @@ pub mod context;
 pub mod error;
 pub mod flags;
 pub mod frame;
+pub mod frame_v2;
 pub mod program;
 pub mod ring;
 pub mod socket;

@@ -1,17 +1,19 @@
 use std::{
     ffi::c_int,
+    marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use crate::xdp::{error::Result, frame::FrameBuffer, umem::FillQueue};
+use crate::xdp::{error::Result, frame_v2::FrameBuffer, umem::FillQueue};
 
-pub struct ProcessFillQueueFuture<'a, B: FrameBuffer> {
+pub struct ProcessFillQueueFuture<'a, 'umem, B: FrameBuffer<'umem>> {
     pub(crate) fill_queue: &'a mut FillQueue,
     pub(crate) batch: B,
+    pub(crate) _lifetime: PhantomData<&'umem ()>,
 }
 
-impl<'a, B: FrameBuffer> Future for ProcessFillQueueFuture<'a, B> {
+impl<'a, 'owner, B: FrameBuffer<'owner>> Future for ProcessFillQueueFuture<'a, 'owner, B> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -27,12 +29,13 @@ impl<'a, B: FrameBuffer> Future for ProcessFillQueueFuture<'a, B> {
     }
 }
 
-pub struct WakeFillQueueFuture<'a> {
+pub struct WakeFillQueueFuture<'a, 'umem> {
     pub(crate) fill_queue: &'a FillQueue,
     pub(crate) fd: c_int,
+    pub(crate) _lifetime: PhantomData<&'umem ()>,
 }
 
-impl<'a> Future for WakeFillQueueFuture<'a> {
+impl<'a, 'umem> Future for WakeFillQueueFuture<'a, 'umem> {
     type Output = Result<()>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {

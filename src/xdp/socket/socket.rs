@@ -14,7 +14,7 @@ use crate::{
         context::XdpContext,
         error::{Error, NonBlocking, Result},
         flags::{XDP_USE_NEED_WAKEUP, XDP_USE_SG},
-        frame::FrameBuffer,
+        frame_v2::FrameBuffer,
         ring::{Consumer, Producer},
         socket::{BindMode, mode::CopyMode},
         umem::Umem,
@@ -293,7 +293,7 @@ impl Socket {
     ///
     /// If no frames are available to read this returns None.
     #[inline(always)]
-    pub fn recv<B: FrameBuffer>(&mut self, batch: B) -> NonBlocking<u32> {
+    pub fn recv<'umem, B: FrameBuffer<'umem>>(&mut self, batch: B) -> NonBlocking<u32> {
         self.rx.recv(batch)
     }
 
@@ -301,7 +301,10 @@ impl Socket {
     ///
     /// This function will return a future that will be ready when the frames are received.
     #[inline(always)]
-    pub fn recv_async<B: FrameBuffer>(&mut self, batch: B) -> RecvFuture<'_, B> {
+    pub fn recv_async<'umem, B: FrameBuffer<'umem>>(
+        &mut self,
+        batch: B,
+    ) -> RecvFuture<'_, 'umem, B> {
         self.rx.recv_async(batch)
     }
 
@@ -314,7 +317,7 @@ impl Socket {
     ///
     /// If no frames are availabel to send this returns an error of type [std::result::Result<(), ()>].
     #[inline(always)]
-    pub fn send<B: FrameBuffer>(&mut self, frames: B) -> NonBlocking<u32> {
+    pub fn send<'umem, B: FrameBuffer<'umem>>(&mut self, frames: B) -> NonBlocking<u32> {
         self.tx.send(frames)
     }
 
@@ -322,7 +325,10 @@ impl Socket {
     ///
     /// This function will return a future that will be ready when the frames are sent.
     #[inline(always)]
-    pub fn send_async<B: FrameBuffer>(&mut self, frames: B) -> SendFuture<'_, B> {
+    pub fn send_async<'umem, B: FrameBuffer<'umem>>(
+        &mut self,
+        frames: B,
+    ) -> SendFuture<'_, 'umem, B> {
         self.tx.send_async(frames)
     }
 }

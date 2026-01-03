@@ -12,7 +12,7 @@ use crate::{
     futures::{CompFuture, ProcessFillQueueFuture, WakeFillQueueFuture},
     xdp::{
         error::{Error, Result},
-        frame::{Frame, FrameBuffer},
+        frame_v2::FrameBuffer,
         ring::{Consumer, Producer},
         socket::SocketTx,
     },
@@ -83,7 +83,7 @@ impl UmemBuilder {
         self
     }
 
-    pub fn build<B: FrameBuffer + FromIterator<Frame>>(self) -> Result<(Umem, B)> {
+    pub fn build(self) -> Result<Umem> {
         if self.frame_size & (self.frame_size - 1) != 0 && !self.unaligned {
             return Err(Error::InvalidFrameSize(self.frame_size));
         }
@@ -121,7 +121,7 @@ impl Umem {
         UmemBuilder::new()
     }
 
-    fn new<B: FrameBuffer + FromIterator<Frame>>(
+    fn new(
         completion_ring_size: u32,
         fill_ring_size: u32,
         busy_poll: bool,
@@ -129,7 +129,7 @@ impl Umem {
         frame_size: usize,
         huge_tables: bool,
         unaligned: bool,
-    ) -> Result<(Self, B)> {
+    ) -> Result<Self> {
         let size = (num_frames * frame_size) as u64;
 
         let mut opts = xsk_umem_opts {
@@ -181,18 +181,23 @@ impl Umem {
         });
         let fq = FillQueue::new(fill_ring, owner.clone(), busy_poll);
         let cq = CompletionQueue::new(comp_ring, owner.clone());
+        // let frames = (0..num_frames)
+        //     .map(|i| owner.to_frame(i as u64 * frame_size as u64, 0, false))
+        //     .collect();
 
-        let frames = (0..num_frames)
-            // SAFETY: The frames are created with based on the configuration for the mmap so these are valid.
-            .map(|i| unsafe { owner.to_frame(i as u64 * frame_size as u64, 0, false) })
-            .collect();
-        Ok((Self { owner, fq, cq }, frames))
+        Ok(Self { owner, fq, cq })
     }
 
     /// Returns a pointer to the kernel UMEM object.
     #[inline(always)]
     pub fn umem(&self) -> *mut xsk_umem {
         self.owner.umem
+    }
+
+    /// Splits the Umem into its owner, fill queue, and completion queue components.
+    #[inline(always)]
+    pub fn split(self) -> (Arc<UmemOwner>, FillQueue, CompletionQueue) {
+        (self.owner, self.fq, self.cq)
     }
 
     /// Returns a reference to the owner of the UMEM.
@@ -221,39 +226,39 @@ impl Umem {
 
     /// Possibly wakes the fill queue asynchronously, so the kernel continues to process incoming packets.
     #[inline(always)]
-    pub fn maybe_wake_async(&self, fd: c_int) -> WakeFillQueueFuture<'_> {
+    pub fn maybe_wake_async<'umem>(&self, fd: c_int) -> WakeFillQueueFuture<'_, 'umem> {
         self.fq.maybe_wake_async(fd)
     }
 
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
-    pub fn process_fill_queue<B: FrameBuffer>(&mut self, mut batch: B) {
+    pub fn process_fill_queue<'umem, B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
         self.fq.process_queue(&mut batch);
     }
 
     /// Processes the fill queue asynchronously, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
-    pub fn process_fill_queue_async<B: FrameBuffer>(
+    pub fn process_fill_queue_async<'umem, B: FrameBuffer<'umem>>(
         &mut self,
         batch: B,
-    ) -> ProcessFillQueueFuture<'_, B> {
+    ) -> ProcessFillQueueFuture<'_, 'umem, B> {
         self.fq.process_queue_async(batch)
     }
 
     /// Processes the completion queue, submitting the completed frames to the socket.
     #[inline(always)]
-    pub fn process_completion_queue<B: FrameBuffer>(&mut self, mut batch: B) {
+    pub fn process_completion_queue<'umem, B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
         self.cq.process_queue(&mut batch);
     }
 
     /// Processes the completion queue asynchronously, submitting the completed frames to the socket.
     #[inline(always)]
-    pub fn process_completion_queue_async<'a, 'b, B: FrameBuffer>(
-        &'a mut self,
+    pub fn process_completion_queue_async<'s, 'umem, 'sock, B: FrameBuffer<'umem>>(
+        &'s mut self,
         batch: B,
         expected: usize,
-        socket: &'b mut SocketTx,
-    ) -> CompFuture<'a, 'b, B> {
+        socket: &'sock mut SocketTx,
+    ) -> CompFuture<'s, 'umem, 'sock, B> {
         self.cq.process_queue_async(batch, expected, socket)
     }
 }
