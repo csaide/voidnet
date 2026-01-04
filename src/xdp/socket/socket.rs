@@ -4,8 +4,8 @@ use errno::errno;
 use libc::{SO_BUSY_POLL, SO_BUSY_POLL_BUDGET, SO_PREFER_BUSY_POLL, SOL_SOCKET, c_int, setsockopt};
 use libxdp_sys::{
     XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD, XSK_RING_CONS__DEFAULT_NUM_DESCS,
-    XSK_RING_PROD__DEFAULT_NUM_DESCS, xsk_socket, xsk_socket__create, xsk_socket__fd,
-    xsk_socket_config, xsk_socket_config__bindgen_ty_1,
+    XSK_RING_PROD__DEFAULT_NUM_DESCS, xsk_socket, xsk_socket__create, xsk_socket_config,
+    xsk_socket_config__bindgen_ty_1,
 };
 
 use crate::{
@@ -134,52 +134,6 @@ pub struct Socket<'umem> {
 // unsafe impl<'umem> Send for Socket<'umem> {}
 
 impl<'umem> Socket<'umem> {
-    fn setup_busy_poll(&self, busy_poll_timeout_us: i32, batch_size: usize) -> Result<()> {
-        let opt = 1i32;
-        let ret = unsafe {
-            setsockopt(
-                self.owner.fd,
-                SOL_SOCKET,
-                SO_PREFER_BUSY_POLL,
-                &opt as *const _ as *const c_void,
-                std::mem::size_of::<i32>() as u32,
-            )
-        };
-        if ret < 0 {
-            return Err(Error::SetSocketOption(errno()));
-        }
-
-        let opt = busy_poll_timeout_us;
-        let ret = unsafe {
-            setsockopt(
-                self.owner.fd,
-                SOL_SOCKET,
-                SO_BUSY_POLL,
-                &opt as *const _ as *const c_void,
-                std::mem::size_of::<i32>() as u32,
-            )
-        };
-        if ret < 0 {
-            return Err(Error::SetSocketOption(errno()));
-        }
-
-        let opt = batch_size as i32;
-        let ret = unsafe {
-            setsockopt(
-                self.owner.fd,
-                SOL_SOCKET,
-                SO_BUSY_POLL_BUDGET,
-                &opt as *const _ as *const c_void,
-                std::mem::size_of::<i32>() as u32,
-            )
-        };
-        if ret < 0 {
-            return Err(Error::SetSocketOption(errno()));
-        }
-
-        Ok(())
-    }
-
     /// Returns a builder for creating a new socket.
     pub fn builder<'a, 'b>(
         xdp_ctx: &'b mut XdpContext,
@@ -189,7 +143,7 @@ impl<'umem> Socket<'umem> {
         SocketBuilder::new(xdp_ctx, if_name, queue)
     }
 
-    pub fn new(
+    fn new(
         if_name: &str,
         queue: u32,
         umem: Arc<UmemOwner<'umem>>,
@@ -244,16 +198,12 @@ impl<'umem> Socket<'umem> {
         let rx = unsafe { rx.assume_init() };
         let tx = unsafe { tx.assume_init() };
 
-        let owner = Arc::new(SocketOwner {
-            umem: umem.clone(),
-            socket: xsk,
-            fd: unsafe { xsk_socket__fd(xsk) },
-        });
+        let owner = Arc::new(SocketOwner::new(umem.clone(), xsk));
         let rx = SocketRx::new(owner.clone(), rx);
         let tx = SocketTx::new(owner.clone(), tx, busy_poll);
         let socket = Self { owner, rx, tx };
         if busy_poll {
-            socket.setup_busy_poll(busy_poll_timeout_us, busy_poll_batch_size)?;
+            setup_busy_poll(socket.fd(), busy_poll_timeout_us, busy_poll_batch_size)?;
         }
         Ok(socket)
     }
@@ -264,20 +214,10 @@ impl<'umem> Socket<'umem> {
         (self.owner, self.rx, self.tx)
     }
 
-    #[inline(always)]
-    pub fn tx(&mut self) -> &mut SocketTx<'umem> {
-        &mut self.tx
-    }
-
-    #[inline(always)]
-    pub fn rx(&mut self) -> &mut SocketRx<'umem> {
-        &mut self.rx
-    }
-
     /// Returns the file descriptor of the socket.
     #[inline(always)]
     pub fn fd(&self) -> c_int {
-        self.owner.fd
+        self.owner.fd()
     }
 
     /// Possibly wakes the tx queue, so the kernel continues to process outgoing packets.
@@ -325,4 +265,50 @@ impl<'umem> Socket<'umem> {
     pub fn send_async<B: FrameBuffer<'umem>>(&mut self, frames: B) -> SendFuture<'_, 'umem, B> {
         self.tx.send_async(frames)
     }
+}
+
+fn setup_busy_poll(fd: c_int, busy_poll_timeout_us: i32, batch_size: usize) -> Result<()> {
+    let opt = 1i32;
+    let ret = unsafe {
+        setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_PREFER_BUSY_POLL,
+            &opt as *const _ as *const c_void,
+            std::mem::size_of::<i32>() as u32,
+        )
+    };
+    if ret < 0 {
+        return Err(Error::SetSocketOption(errno()));
+    }
+
+    let opt = busy_poll_timeout_us;
+    let ret = unsafe {
+        setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_BUSY_POLL,
+            &opt as *const _ as *const c_void,
+            std::mem::size_of::<i32>() as u32,
+        )
+    };
+    if ret < 0 {
+        return Err(Error::SetSocketOption(errno()));
+    }
+
+    let opt = batch_size as i32;
+    let ret = unsafe {
+        setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_BUSY_POLL_BUDGET,
+            &opt as *const _ as *const c_void,
+            std::mem::size_of::<i32>() as u32,
+        )
+    };
+    if ret < 0 {
+        return Err(Error::SetSocketOption(errno()));
+    }
+
+    Ok(())
 }

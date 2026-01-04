@@ -5,7 +5,6 @@ use std::ops::{Deref, DerefMut};
 pub struct Frame<'umem> {
     addr: u64,
     len: usize,
-    capacity: usize,
     data: &'umem mut [u8],
     is_fragment: bool,
 }
@@ -14,31 +13,15 @@ unsafe impl<'umem> Send for Frame<'umem> {}
 
 impl<'umem> Frame<'umem> {
     /// Create a new frame with the given address, data pointer, length, and capacity.
-    ///
-    /// # Safety
-    ///
-    /// This function does not check if the address is valid or if it points to a contiguous memory
-    /// region of size `capacity`. It is the responsibility of the caller to ensure that the address is valid
-    /// and that the pointer points to a contiguous memory region of size `capacity`, which is fully initialized.
-    ///
-    /// NOTE: the data does not need to be fully 0'ed, it just must be assumed it will be read entirely and therefore must
-    /// be initialized to valid u8 values for all locations.
-    pub unsafe fn new(
-        addr: u64,
-        data: &'umem mut [u8],
-        len: usize,
-        capacity: usize,
-        is_fragment: bool,
-    ) -> Self {
+    pub(crate) fn new(addr: u64, data: &'umem mut [u8], len: usize, is_fragment: bool) -> Self {
         debug_assert!(
-            capacity > 0 && len <= capacity,
+            data.len() > 0 && len <= data.len(),
             "len must be less than or equal to capacity, which must be greater than 0"
         );
 
         Self {
             addr,
             len,
-            capacity,
             data,
             is_fragment,
         }
@@ -63,7 +46,7 @@ impl<'umem> Frame<'umem> {
     /// This is the total number of bytes that the frame can hold.
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.data.len()
     }
 
     /// Returns whether the frame is a fragment.
@@ -89,7 +72,7 @@ impl<'umem> Frame<'umem> {
         let incoming = incoming.as_ref();
 
         debug_assert!(
-            self.capacity >= incoming.len(),
+            self.data.len() >= incoming.len(),
             "incoming data length is greater than the frame capacity"
         );
 

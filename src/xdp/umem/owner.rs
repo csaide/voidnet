@@ -11,15 +11,21 @@ use memmap2::MmapMut;
 
 use crate::xdp::frame::{Frame, FrameBuffer};
 
-/// The owner of a UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
+/// The owner of a UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done. It is also the memory
+/// anchor for the frames in the UMEM, all frames are backed by the memory owned by this instance. The embedded lifetime will end up being that of the
+/// calling scope of the main thread that creates the initial Umem.
 pub struct UmemOwner<'umem> {
-    pub(super) umem: *mut xsk_umem,
-    pub(super) mmap: Arc<MmapMut>,
-    pub(super) frame_size: usize,
-    pub(super) num_frames: usize,
-    pub(super) init: AtomicBool,
-    // So why is this here? We need to have _some_ frame lifetime but we going to end up wrapped as an Arc<UmemOwner> and guess what that loses...
-    pub(super) _lifetime: PhantomData<&'umem ()>,
+    umem: *mut xsk_umem,
+    mmap: Arc<MmapMut>,
+    frame_size: usize,
+    num_frames: usize,
+    init: AtomicBool,
+
+    // Ok so some explanation here, to make sure our Frame's can't outlive the actual memory that is backing them we need some lifetime to use. That said
+    // we are going to end up being wrapped in an Arc which will lose all concept of lifetimes for its references as it should. So to get around this
+    // problem we embed the lifetime we need to have the frames live for here. In practice this will end up being pinned to the lifetime of the calling
+    // scope of the main thread that creates the initial Umem.
+    _lifetime: PhantomData<&'umem ()>,
 }
 
 // SAFETY: UmemOwner is thread safe because it is immutable. And the only non-send/sync fields are owned by the kernel and guaranteed to be valid.
@@ -29,38 +35,49 @@ unsafe impl<'umem> Send for UmemOwner<'umem> {}
 unsafe impl<'umem> Sync for UmemOwner<'umem> {}
 
 impl<'umem> UmemOwner<'umem> {
-    /// Creates a new frame from the given address and length.
-    ///
-    /// # Safety
-    ///
-    /// This function does not check if the address is valid or if it points to a contiguous memory
-    /// region of size `len`. It is the responsibility of the caller to ensure that the address is valid
-    /// and that the pointer points to a contiguous memory region of size `len`, which is fully initialized.
-    pub fn to_frame(&self, addr: u64, len: usize, is_fragment: bool) -> Frame<'umem> {
+    pub(super) fn new(
+        umem: *mut xsk_umem,
+        mmap: Arc<MmapMut>,
+        frame_size: usize,
+        num_frames: usize,
+    ) -> Self {
+        Self {
+            umem,
+            mmap,
+            frame_size,
+            num_frames,
+            init: AtomicBool::new(false),
+            _lifetime: PhantomData,
+        }
+    }
+
+    pub(crate) fn to_frame(&self, addr: u64, len: usize, is_fragment: bool) -> Frame<'umem> {
         debug_assert!(len <= self.frame_size, "len is greater than the frame size");
         debug_assert!(
             addr + len as u64 <= self.mmap.len() as u64,
             "addr + len is greater than the mmap length"
         );
 
-        unsafe {
-            Frame::new(
-                addr,
+        Frame::new(
+            addr,
+            // SAFETY: The address is valid because it is from the mmap and kernel guarantees it is valid, our assertions guarantee the addr/length are valid.
+            unsafe {
                 std::slice::from_raw_parts_mut(
-                    self.mmap.as_ptr().offset(addr as isize) as *mut u8,
+                    self.mmap.as_ptr().add(addr as usize) as *mut u8,
                     self.frame_size,
-                ),
-                len,
-                self.frame_size,
-                is_fragment,
-            )
-        }
+                )
+            },
+            len,
+            is_fragment,
+        )
     }
 
-    pub fn as_ptr(&self) -> *mut xsk_umem {
+    pub(crate) fn as_ptr(&self) -> *mut xsk_umem {
         self.umem
     }
 
+    /// Initialize the frame buffer with the frames from the UMEM, its then up to the caller what to do with these frames, you can push them into the fill queue, use them
+    /// for writing packets, or some combination of the two. This can only be called once on the [UmemOwner] instance, and will return None on every subsequent call.
     pub fn init_buffer<B: FrameBuffer<'umem> + FromIterator<Frame<'umem>>>(&self) -> Option<B> {
         if self.init.swap(true, Ordering::AcqRel) {
             return None;

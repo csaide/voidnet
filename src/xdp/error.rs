@@ -67,5 +67,6 @@ pub type NonBlocking<T> = std::result::Result<T, WouldBlock>;
 pub fn get_xdp_error_message(err: i32) -> String {
     let mut buf = [0; 1024];
     unsafe { libxdp_strerror(err, buf.as_mut_ptr(), buf.len()) };
-    String::from_utf8_lossy(&buf).to_string()
+    let nul_pos = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..nul_pos]).to_string()
 }

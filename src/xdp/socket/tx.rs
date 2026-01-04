@@ -32,7 +32,7 @@ impl<'umem> SocketTx<'umem> {
     #[inline(always)]
     pub fn maybe_wake(&self) -> Result<()> {
         if self.busy_poll || self.ring.needs_wakeup() {
-            let ret = unsafe { sendto(self.socket.fd, null(), 0, MSG_DONTWAIT, null(), 0) };
+            let ret = unsafe { sendto(self.socket.fd(), null(), 0, MSG_DONTWAIT, null(), 0) };
             let errno = errno();
             if ret < 0
                 && errno.0 != ENOBUFS

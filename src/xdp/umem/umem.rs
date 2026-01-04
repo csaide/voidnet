@@ -1,8 +1,4 @@
-use std::{
-    marker::PhantomData,
-    os::raw::c_void,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::{os::raw::c_void, sync::Arc};
 
 use errno::errno;
 use libxdp_sys::{
@@ -179,14 +175,7 @@ impl Umem {
         let fill_ring = unsafe { fill_ring.assume_init() };
         let comp_ring = unsafe { comp_ring.assume_init() };
 
-        let owner = Arc::new(UmemOwner {
-            umem,
-            mmap: Arc::new(mmap),
-            frame_size,
-            num_frames,
-            init: AtomicBool::new(false),
-            _lifetime: PhantomData,
-        });
+        let owner = Arc::new(UmemOwner::new(umem, Arc::new(mmap), frame_size, num_frames));
         let fq = FillQueue::new(fill_ring, owner.clone(), busy_poll);
         let cq = CompletionQueue::new(comp_ring, owner.clone());
 
