@@ -119,7 +119,10 @@ impl XdpProgram {
 
     /// Finds a map by name in the program.
     pub fn find_map(&self, name: &str) -> Result<Map> {
-        let name = CString::new(name).unwrap();
+        let name = match CString::new(name) {
+            Ok(c) => c,
+            Err(e) => return Err(Error::InvalidMapName(e)),
+        };
         let map = unsafe {
             bpf_object__find_map_by_name(xdp_program__bpf_obj(self.program), name.as_ptr())
         };

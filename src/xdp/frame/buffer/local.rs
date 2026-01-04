@@ -79,7 +79,6 @@ impl FromIterator<Frame> for LocalFrameBuffer {
 impl Extend<Frame> for LocalFrameBuffer {
     fn extend<T: IntoIterator<Item = Frame>>(&mut self, iter: T) {
         let frames: VecDeque<Frame> = iter.into_iter().collect();
-        self.free_space += frames.capacity() - frames.len();
         self.num_frames += frames.len();
         self.frames.extend(frames);
     }

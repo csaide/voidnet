@@ -19,7 +19,10 @@ impl SocketOwner {
     }
 }
 
+// SAFETY: SocketOwner is thread safe because it is immutable. And the only non-send/sync fields are owned by the kernel and guaranteed to be valid.
 unsafe impl Sync for SocketOwner {}
+
+// SAFETY: SocketOwner is thread safe because it is immutable. And the only non-send/sync fields are owned by the kernel and guaranteed to be valid.
 unsafe impl Send for SocketOwner {}
 
 impl Drop for SocketOwner {

@@ -44,7 +44,7 @@ async fn main() {
     let mut stats = Stats::new();
     let args = Args::parse();
 
-    // We are relying on this invariant in the benchmark code bellow, though to be absolutely clear this isn't
+    // We are relying on this invariant in the benchmark code below, though to be absolutely clear this isn't
     // actually a requirement, in the XDP subsystem itself, though its HIGHLY encouraged.
     debug_assert!(
         args.fill_ring_size >= args.busy_poll_batch_size as u32,

@@ -38,7 +38,7 @@ pub struct SocketBuilder<'a, 'b> {
 }
 
 impl<'a, 'b> SocketBuilder<'a, 'b> {
-    /// Creates a new socket builder, using the supllied interface name and queue number.
+    /// Creates a new socket builder, using the supplied interface name and queue number.
     ///
     /// The defaults included are sane values for most use cases.
     pub fn new(ctx: &'b mut XdpContext, if_name: &'a str, queue: u32) -> Self {

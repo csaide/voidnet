@@ -31,8 +31,9 @@ impl<'a> PacketWriter<'a> {
 
             unsafe {
                 frame.copy_from(&incoming[start..end]);
-                frame.set_fragment(end != incoming.len());
             }
+
+            frame.set_fragment(end != incoming.len());
 
             start = end;
         }

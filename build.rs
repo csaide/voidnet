@@ -9,7 +9,16 @@ fn main() {
         .arg("-r")
         .output()
         .expect("Failed executing uname: unable to determine kernel version");
-    let kernel_version = String::from_utf8(kernel_version.stdout).unwrap();
+    if !kernel_version.status.success() {
+        eprintln!(
+            "Failed to get kernel version: {}",
+            String::from_utf8_lossy(&kernel_version.stderr)
+        );
+        std::process::exit(1);
+    }
+
+    let kernel_version = String::from_utf8(kernel_version.stdout)
+        .expect("Failed to parse kernel version from uname output: invalid UTF-8");
 
     let target = std::env::var("TARGET").unwrap();
     let (target_arch, target_arch_triplet) = match target.as_str() {
@@ -28,11 +37,13 @@ fn main() {
         "-g".to_string(),
         format!(
             "-I/lib/modules/{}/build/arch/{}/include",
-            kernel_version, target_arch
+            kernel_version.trim(),
+            target_arch
         ),
         format!(
             "-I/lib/modules/{}/build/arch/{}/include/uapi",
-            kernel_version, target_arch
+            kernel_version.trim(),
+            target_arch
         ),
         format!("-I/usr/include/{}", target_arch_triplet),
     ];

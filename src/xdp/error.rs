@@ -18,6 +18,8 @@ pub enum Error {
     InterfaceNotFound,
     #[error("failed while converting interface name to index: {0}")]
     InterfaceNameToIndex(std::ffi::NulError),
+    #[error("failed while converting map name to C string: {0}")]
+    InvalidMapName(std::ffi::NulError),
     #[error("failed while opening XDP program: {0}: {1}")]
     OpenProgram(Errno, String),
     #[error("failed while attaching XDP program: {0}")]
