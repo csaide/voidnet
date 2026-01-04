@@ -30,6 +30,11 @@ impl<'umem> SocketTx<'umem> {
     }
 
     #[inline(always)]
+    pub fn fd(&self) -> i32 {
+        self.socket.fd()
+    }
+
+    #[inline(always)]
     pub fn maybe_wake(&self) -> Result<()> {
         if self.busy_poll || self.ring.needs_wakeup() {
             let ret = unsafe { sendto(self.socket.fd(), null(), 0, MSG_DONTWAIT, null(), 0) };

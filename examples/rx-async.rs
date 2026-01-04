@@ -60,13 +60,9 @@ async fn main() {
     // You will need one of these for each unique device you want to use.
     //
     // Each Umem comes associated with three key components:
+    // - Owner (umem) > The owner of the UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
-    // - Frames (initial_frames) > A set of frames that are backed by the umem which are shared between the kernel and user space.
-    //
-    // Note: The initial frames can be used for anything you need. Namely there are a few key use cases:
-    // - Listeners/Traffic Analyzers: Dump all, or some number, of frames into the fill ring to prewarm the ring for reads.
-    // - Clients/Traffic Generators: Using them as a pool of buffers for writing packet data to, and sending it out the socket.
     let (umem, mut fq, _cq) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
@@ -110,7 +106,17 @@ async fn main() {
 
     while !exit.load(Ordering::Relaxed) {
         // Start by reading some frames from the socket. The result of this call is guaranteed to be between 1 and the batch size.
-        socket.recv_async(&mut frames).await;
+        match socket.recv_async(&mut frames).await {
+            Ok(received) => {
+                debug_assert!(
+                    received > 0 && received <= args.busy_poll_batch_size as u32,
+                    "Received more frames than the batch size or 0 frames, this should never happen!"
+                );
+            }
+            Err(_) => {
+                continue;
+            }
+        }
 
         // You now have a batch of raw frames, at this level this is an L2 frame, almost assuredly Ethernet based.
         for frame in frames.iter_frames_mut() {

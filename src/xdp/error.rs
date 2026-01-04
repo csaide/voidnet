@@ -54,6 +54,8 @@ pub enum Error {
     QueryXdpFeatures(Errno),
     #[error("failed while getting MTU: {0}")]
     GetMtu(String),
+    #[error("failed while registering waker: {0}")]
+    Poller(crate::futures::Error),
 }
 
 /// A simple ZST error variant for would block scenarios, this is explicitly a ZST to avoid the allocations and eventual drop calls of the error case.

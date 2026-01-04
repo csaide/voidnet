@@ -3,7 +3,13 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::xdp::{frame::FrameBuffer, socket::SocketRx};
+use crate::xdp::{
+    error::{Error, Result},
+    frame::FrameBuffer,
+    socket::SocketRx,
+};
+
+use super::get_poller;
 
 pub struct RecvFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
     pub(crate) socket: &'sock mut SocketRx<'umem>,
@@ -11,7 +17,7 @@ pub struct RecvFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
 }
 
 impl<'a, 'umem, B: FrameBuffer<'umem>> Future for RecvFuture<'a, 'umem, B> {
-    type Output = u32;
+    type Output = Result<u32>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // We guarantee not to move self, just access its fields.
@@ -19,9 +25,12 @@ impl<'a, 'umem, B: FrameBuffer<'umem>> Future for RecvFuture<'a, 'umem, B> {
         let this = unsafe { self.get_unchecked_mut() };
 
         match this.socket.recv(&mut this.batch) {
-            Ok(received) => Poll::Ready(received),
+            Ok(received) => Poll::Ready(Ok(received)),
             Err(_) => {
-                cx.waker().wake_by_ref();
+                match get_poller().register_waker(this.socket.fd(), cx.waker()) {
+                    Ok(_) => (),
+                    Err(e) => return Poll::Ready(Err(Error::Poller(e))),
+                }
                 Poll::Pending
             }
         }

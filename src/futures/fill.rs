@@ -4,7 +4,13 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::xdp::{error::Result, frame::FrameBuffer, umem::FillQueue};
+use crate::xdp::{
+    error::{Error, Result},
+    frame::FrameBuffer,
+    umem::FillQueue,
+};
+
+use super::get_poller;
 
 pub struct ProcessFillQueueFuture<'que, 'umem, B: FrameBuffer<'umem>> {
     pub(crate) fill_queue: &'que mut FillQueue<'umem>,
@@ -12,17 +18,20 @@ pub struct ProcessFillQueueFuture<'que, 'umem, B: FrameBuffer<'umem>> {
 }
 
 impl<'a, 'owner, B: FrameBuffer<'owner>> Future for ProcessFillQueueFuture<'a, 'owner, B> {
-    type Output = ();
+    type Output = Result<()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
         this.fill_queue.process_queue(&mut this.batch);
         if this.batch.num_frames() > 0 {
-            cx.waker().wake_by_ref();
+            match get_poller().register_waker(this.fill_queue.fd(), cx.waker()) {
+                Ok(_) => (),
+                Err(e) => return Poll::Ready(Err(Error::Poller(e))),
+            }
             Poll::Pending
         } else {
-            Poll::Ready(())
+            Poll::Ready(Ok(()))
         }
     }
 }

@@ -3,7 +3,13 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::xdp::{frame::FrameBuffer, socket::SocketTx};
+use crate::xdp::{
+    error::{Error, Result},
+    frame::FrameBuffer,
+    socket::SocketTx,
+};
+
+use super::get_poller;
 
 pub struct SendFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
     pub(crate) socket: &'sock mut SocketTx<'umem>,
@@ -11,14 +17,17 @@ pub struct SendFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
 }
 
 impl<'a, 'umem, B: FrameBuffer<'umem>> Future for SendFuture<'a, 'umem, B> {
-    type Output = u32;
+    type Output = Result<u32>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
         match this.socket.send(&mut this.batch) {
-            Ok(sent) => Poll::Ready(sent),
+            Ok(sent) => Poll::Ready(Ok(sent)),
             Err(_) => {
-                cx.waker().wake_by_ref();
+                match get_poller().register_waker(this.socket.fd(), cx.waker()) {
+                    Ok(_) => (),
+                    Err(e) => return Poll::Ready(Err(Error::Poller(e))),
+                }
                 Poll::Pending
             }
         }

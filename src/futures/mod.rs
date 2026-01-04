@@ -8,6 +8,6 @@ mod send;
 pub use comp::CompFuture;
 pub use error::{Error, Result};
 pub use fill::{ProcessFillQueueFuture, WakeFillQueueFuture};
-pub use poller::Poller;
+pub(crate) use poller::get_poller;
 pub use recv::RecvFuture;
 pub use send::SendFuture;

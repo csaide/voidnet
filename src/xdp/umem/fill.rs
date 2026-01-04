@@ -31,6 +31,11 @@ impl<'umem> FillQueue<'umem> {
     }
 
     #[inline(always)]
+    pub fn fd(&self) -> i32 {
+        self._owner.fd()
+    }
+
+    #[inline(always)]
     pub fn size(&self) -> u32 {
         self.ring.size()
     }

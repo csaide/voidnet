@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use libxdp_sys::{xsk_umem, xsk_umem__delete};
+use libxdp_sys::{xsk_umem, xsk_umem__delete, xsk_umem__fd};
 use memmap2::MmapMut;
 
 use crate::xdp::frame::{Frame, FrameBuffer};
@@ -16,6 +16,7 @@ use crate::xdp::frame::{Frame, FrameBuffer};
 /// calling scope of the main thread that creates the initial Umem.
 pub struct UmemOwner<'umem> {
     umem: *mut xsk_umem,
+    fd: i32,
     mmap: Arc<MmapMut>,
     frame_size: usize,
     num_frames: usize,
@@ -43,12 +44,17 @@ impl<'umem> UmemOwner<'umem> {
     ) -> Self {
         Self {
             umem,
+            fd: unsafe { xsk_umem__fd(umem) },
             mmap,
             frame_size,
             num_frames,
             init: AtomicBool::new(false),
             _lifetime: PhantomData,
         }
+    }
+
+    pub(crate) fn fd(&self) -> i32 {
+        self.fd
     }
 
     pub(crate) fn to_frame(&self, addr: u64, len: usize, is_fragment: bool) -> Frame<'umem> {

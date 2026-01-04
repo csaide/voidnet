@@ -24,6 +24,11 @@ impl<'umem> CompletionQueue<'umem> {
     }
 
     #[inline(always)]
+    pub fn fd(&self) -> i32 {
+        self.owner.fd()
+    }
+
+    #[inline(always)]
     pub fn process_queue<B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
         let (mut idx, ready) = self.ring.peek(batch.free_space() as u32);
         if ready == 0 {
