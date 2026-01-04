@@ -1,11 +1,11 @@
-use std::{mem::transmute, sync::Arc};
+use std::sync::Arc;
 
 use libxdp_sys::xsk_ring_cons;
 
 use crate::{
     futures::CompFuture,
     xdp::{
-        frame::{Frame, FrameBuffer},
+        frame::FrameBuffer,
         ring::{Consumer, Init},
         socket::SocketTx,
     },
@@ -34,9 +34,7 @@ impl<'umem> CompletionQueue<'umem> {
             let addr = self.ring.comp_addr(idx);
             // SAFETY: The address is valid because it is from the completion ring and kernel guarantees it is valid.
             // a length of 0 is always valid.
-            let frame = self.owner.to_frame(addr, 0, false);
-            let frame = unsafe { transmute::<Frame<'_>, Frame<'umem>>(frame) };
-            batch.push(frame);
+            batch.push(self.owner.to_frame(addr, 0, false));
             idx += 1;
         }
 

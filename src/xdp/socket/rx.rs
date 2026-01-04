@@ -1,4 +1,4 @@
-use std::{mem::transmute, sync::Arc};
+use std::sync::Arc;
 
 use libc::XDP_PKT_CONTD;
 use libxdp_sys::XSK_UNALIGNED_BUF_ADDR_MASK;
@@ -7,7 +7,7 @@ use crate::{
     futures::RecvFuture,
     xdp::{
         error::{NonBlocking, WouldBlock},
-        frame::{Frame, FrameBuffer},
+        frame::FrameBuffer,
         ring::{Consumer, Init},
     },
 };
@@ -35,14 +35,11 @@ impl<'umem> SocketRx<'umem> {
         for _ in 0..rcvd as usize {
             let desc = self.ring.rx_desc(idx_rx);
             // SAFETY: The address/length/options are valid because it is from the RX ring and kernel guarantees them.
-            let frame = self.socket.umem.to_frame(
+            batch.push(self.socket.umem.to_frame(
                 xsk_umem_extract_addr(desc.addr),
                 desc.len as usize,
                 desc.options & XDP_PKT_CONTD == XDP_PKT_CONTD,
-            );
-
-            let frame = unsafe { transmute::<Frame<'_>, Frame<'umem>>(frame) };
-            batch.push(frame);
+            ));
             idx_rx += 1;
         }
 

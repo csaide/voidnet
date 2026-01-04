@@ -74,7 +74,7 @@ impl<'umem> Frame<'umem> {
 
     /// Set the fragment flag for the frame.
     #[inline]
-    pub unsafe fn set_fragment(&mut self, is_fragment: bool) {
+    pub fn set_fragment(&mut self, is_fragment: bool) {
         self.is_fragment = is_fragment;
     }
 
