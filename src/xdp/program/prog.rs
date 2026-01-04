@@ -40,7 +40,11 @@ impl XdpProgram {
         attach_mode: AttachMode,
         enable_fragmentation: bool,
     ) -> Result<Self> {
-        let if_name_c = CString::new(if_name).unwrap();
+        let if_name_c = match CString::new(if_name) {
+            Ok(c) => c,
+            Err(e) => return Err(Error::InterfaceNameToIndex(e)),
+        };
+
         let if_index = unsafe { if_nametoindex(if_name_c.as_ptr()) } as i32;
         if if_index == 0 {
             return Err(Error::InterfaceNotFound);

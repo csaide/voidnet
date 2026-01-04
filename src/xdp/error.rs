@@ -16,6 +16,8 @@ pub enum Error {
     UpdateMapElement(Errno),
     #[error("failed to find specified interface")]
     InterfaceNotFound,
+    #[error("failed while converting interface name to index: {0}")]
+    InterfaceNameToIndex(std::ffi::NulError),
     #[error("failed while opening XDP program: {0}: {1}")]
     OpenProgram(Errno, String),
     #[error("failed while attaching XDP program: {0}")]
@@ -30,6 +32,10 @@ pub enum Error {
         "failed to create umem: invalid frame size: {0}: must be a power of 2 or unaligned must be enabled"
     )]
     InvalidFrameSize(usize),
+    #[error("failed while creating umem: invalid fill ring size: {0}: must be a power of 2")]
+    InvalidFillRingSize(u32),
+    #[error("failed while creating umem: invalid completion ring size: {0}: must be a power of 2")]
+    InvalidCompletionRingSize(u32),
     #[error("failed while creating umem: {0}")]
     CreateUmem(Errno),
     #[error("failed while creating socket: {0}")]

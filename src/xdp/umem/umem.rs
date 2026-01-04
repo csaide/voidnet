@@ -87,6 +87,12 @@ impl UmemBuilder {
         if self.frame_size & (self.frame_size - 1) != 0 && !self.unaligned {
             return Err(Error::InvalidFrameSize(self.frame_size));
         }
+        if self.fill_ring_size & (self.fill_ring_size - 1) != 0 {
+            return Err(Error::InvalidFillRingSize(self.fill_ring_size));
+        }
+        if self.completion_ring_size & (self.completion_ring_size - 1) != 0 {
+            return Err(Error::InvalidCompletionRingSize(self.completion_ring_size));
+        }
 
         Umem::new(
             self.completion_ring_size,

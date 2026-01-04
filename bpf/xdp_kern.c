@@ -1,6 +1,8 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
+char LICENSE[] SEC("license") = "GPL";
+
 // Our socket map for redirects, this is filled by the user space application as sockets are registered.
 struct {
 	__uint(type, BPF_MAP_TYPE_XSKMAP);

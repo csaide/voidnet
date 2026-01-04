@@ -16,6 +16,9 @@ pub struct Frame {
     _mmap: Arc<MmapMut>, // Guarantee we can't outlive the mmap.
 }
 
+// SAFETY: The only reason [Frame] is not send is because of the *mut u8 in data, the pointer is tied to a Mmap'ed memory region
+// so its safe to send this to another thread as the pointer will remain valid for the life time of the mmap which is contained inside the
+// frame.
 unsafe impl Send for Frame {}
 
 impl Frame {
@@ -52,7 +55,7 @@ impl Frame {
             // SAFETY: this is safe because the mmap is guaranteed to be valid.
             // We also _have_ to change the pointer type from *const u8 to *mut u8 as Frame's are mutable and we need multiple of them which
             // are guaranteed to be non-overlapping, so its safe to cast it to a mutable pointer, no two callers can access the same frame address.
-            data: unsafe { mmap.as_ptr().offset(addr as isize) as *mut u8 },
+            data: unsafe { mmap.as_ptr().add(addr as usize) as *mut u8 },
             is_fragment,
             _mmap: mmap,
         }

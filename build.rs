@@ -5,13 +5,6 @@ fn main() {
     println!("cargo::rerun-if-changed=bpf/xdp_kern.c");
     println!("cargo::rerun-if-env-changed=TARGET");
 
-    let mut args = vec![
-        "-target".to_string(),
-        "bpf".to_string(),
-        "-O2".to_string(),
-        "-g".to_string(),
-    ];
-
     let kernel_version = Command::new("uname")
         .arg("-r")
         .output()
@@ -28,17 +21,23 @@ fn main() {
         ),
     };
 
-    args.push(format!(
-        "-I/lib/modules/{}/build/arch/{}/include",
-        kernel_version, target_arch
-    ));
-    args.push(format!(
-        "-I/lib/modules/{}/build/arch/{}/include/uapi",
-        kernel_version, target_arch
-    ));
-    args.push(format!("-I/usr/include/{}", target_arch_triplet));
+    let args = vec![
+        "-target".to_string(),
+        "bpf".to_string(),
+        "-O2".to_string(),
+        "-g".to_string(),
+        format!(
+            "-I/lib/modules/{}/build/arch/{}/include",
+            kernel_version, target_arch
+        ),
+        format!(
+            "-I/lib/modules/{}/build/arch/{}/include/uapi",
+            kernel_version, target_arch
+        ),
+        format!("-I/usr/include/{}", target_arch_triplet),
+    ];
 
-    Command::new("clang")
+    let output = Command::new("clang")
         .args(&args)
         .arg("-c")
         .arg("bpf/xdp_kern.c")
@@ -46,4 +45,12 @@ fn main() {
         .arg("bpf/xdp_kern.o")
         .output()
         .expect("Failed to compile BPF program");
+
+    if !output.status.success() {
+        eprintln!(
+            "Failed to compile BPF program: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::process::exit(1);
+    }
 }
