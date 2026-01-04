@@ -1,10 +1,6 @@
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    ptr::null_mut,
-    sync::{Arc, Mutex, MutexGuard},
-    task::Waker,
-};
+use std::{ptr::null_mut, sync::Arc, task::Waker};
 
+use dashmap::{DashMap, Entry};
 use errno::errno;
 use libc::{
     EPOLL_CLOEXEC, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLLET, EPOLLIN, EPOLLOUT, epoll_create1,
@@ -33,7 +29,7 @@ pub struct Poller {
     poll_fd: i32,
     timeout_ms: i32,
     max_events: usize,
-    wakers: Mutex<HashMap<u64, Waker>>,
+    wakers: DashMap<u64, Waker>,
 }
 
 impl Poller {
@@ -47,12 +43,8 @@ impl Poller {
             poll_fd,
             timeout_ms,
             max_events,
-            wakers: Mutex::new(HashMap::new()),
+            wakers: DashMap::new(),
         })
-    }
-
-    fn wakers(&self) -> MutexGuard<'_, HashMap<u64, Waker>> {
-        self.wakers.lock().expect("Failed to lock wakers: poisoned")
     }
 
     pub fn register_socket(&self, fd: i32) -> Result<()> {
@@ -77,7 +69,7 @@ impl Poller {
     }
 
     pub fn register_waker(&self, fd: i32, waker: &Waker) -> Result<()> {
-        match self.wakers().entry(fd as u64) {
+        match self.wakers.entry(fd as u64) {
             Entry::Occupied(mut entry) => {
                 entry.get_mut().clone_from(&waker);
             }
@@ -110,9 +102,8 @@ impl Poller {
 
             unsafe { events.set_len(n as usize) };
 
-            let mut wakers = self.wakers();
             for event in events.drain(..) {
-                if let Some(waker) = wakers.remove(&event.u64) {
+                if let Some((_, waker)) = self.wakers.remove(&event.u64) {
                     self.deregister_socket(event.u64 as i32)?;
                     waker.wake();
                 }
