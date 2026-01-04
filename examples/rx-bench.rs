@@ -10,7 +10,7 @@ use clap::Parser;
 
 use libvoid::xdp::{
     context::XdpContext,
-    frame_v2::{BasicFrameBuffer, FrameBuffer},
+    frame::{BasicFrameBuffer, FrameBuffer},
     socket::Socket,
     umem::Umem,
 };
@@ -52,10 +52,10 @@ fn main() {
     // You will need one of these for each unique device you want to use.
     //
     // Each Umem comes associated with three key components:
+    // - Owner (umem) > The owner of the UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
-    // - Frames (frames) > A set of frames that are backed by the umem which are shared between the kernel and user space.
-    let mut umem = Umem::builder()
+    let (umem, mut fq, _cq) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -77,11 +77,8 @@ fn main() {
         .busy_poll_batch_size(args.busy_poll_batch_size)
         .busy_poll_timeout_us(args.busy_poll_timeout_us)
         .copy_mode(args.copy_mode)
-        .build(&mut umem)
+        .build(umem.clone())
         .expect("Failed to create socket");
-
-    // Split the Umem into its owner, fill queue, and completion queue components.
-    let (umem, mut fq, _cq) = umem.split();
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.
     //
@@ -104,10 +101,7 @@ fn main() {
     fq.maybe_wake(socket.fd()).unwrap();
 
     // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
-    let mut frames: BasicFrameBuffer = (0..args.busy_poll_batch_size)
-        .map(|i| umem.to_frame(i as u64 * args.frame_size as u64, 0, false))
-        .collect();
-
+    let mut frames = umem.init_buffer::<BasicFrameBuffer>().unwrap();
     fq.process_queue(&mut frames);
 
     // Loop forever reading packets from the socket.

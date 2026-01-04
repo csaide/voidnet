@@ -10,7 +10,7 @@ use clap::Parser;
 
 use libvoid::xdp::{
     context::XdpContext,
-    frame::{FrameBuffer, LocalFrameBuffer, PacketWriter},
+    frame::{BasicFrameBuffer, FrameBuffer},
     socket::Socket,
     umem::Umem,
 };
@@ -55,10 +55,10 @@ fn main() {
     // You will need one of these for each unique device you want to use.
     //
     // Each Umem comes associated with three key components:
+    // - Owner (umem) > The owner of the UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
-    // - Write Frames (write_frames) > A set of frames that are backed by the umem which can be used for immediate writes.
-    let (mut umem, mut write_frames) = Umem::builder()
+    let (umem, _fq, mut cq) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -66,7 +66,7 @@ fn main() {
         .num_frames(args.busy_poll_batch_size)
         .huge_tables(args.huge_tables)
         .unaligned(args.unaligned)
-        .build::<LocalFrameBuffer>()
+        .build()
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
@@ -81,7 +81,7 @@ fn main() {
         .busy_poll(args.busy_poll)
         .copy_mode(args.copy_mode)
         .enable_fragmentation(args.enable_fragmentation)
-        .build(&mut umem)
+        .build(umem.clone())
         .expect("Failed to create socket");
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.
@@ -101,7 +101,7 @@ fn main() {
     let packet_data = build_frame(&args.generator);
 
     println!("Socket created, sending packets...");
-
+    let mut write_frames = umem.init_buffer::<BasicFrameBuffer>().unwrap();
     let frames = write_frames.num_frames();
     while !exit.load(Ordering::Relaxed) {
         // Copy the data into the frames, this is intentionally in the loop to show performance of a real world application.
@@ -110,9 +110,8 @@ fn main() {
         // Note: Technically the frames SHOULD be untouched after each iteration, so in theory if the frame size/fragmentation is known
         // here you can just set the frame metadata and avoid the copy if done outside the loop and you are simply re-sending the same
         // data.... But be ware this is where dragons live...
-        let mut writer = PacketWriter::new(&mut write_frames, args.frame_size);
-        while let Some(()) = unsafe { writer.copy_from(&packet_data) } {
-            // We copied the data into the frames, so we can continue.
+        for frame in write_frames.iter_frames_mut() {
+            unsafe { frame.copy_from(&packet_data) };
         }
 
         // Send the prepared frames to the socket.
@@ -145,7 +144,7 @@ fn main() {
 
             // Process the writen frames, this will consume as many frames as possible from the kernel, but it
             // will be limited to the devices descriptor count.
-            umem.process_completion_queue(&mut write_frames);
+            cq.process_queue(&mut write_frames);
         }
 
         stats.maybe_print();

@@ -13,9 +13,9 @@ use futures::lock::Mutex;
 
 use libvoid::xdp::{
     context::XdpContext,
-    frame::{FrameBuffer, LocalFrameBuffer},
+    frame::{BasicFrameBuffer, FrameBuffer},
     socket::Socket,
-    umem::Umem,
+    umem::{FillQueue, Umem},
 };
 
 mod common;
@@ -44,27 +44,20 @@ impl DerefMut for Args {
     }
 }
 
-async fn worker_task(
+async fn worker_task<'umem>(
     exit: Arc<AtomicBool>,
     mut stats: Stats,
-    mut socket: Socket,
-    frame_stack: Arc<Mutex<LocalFrameBuffer>>,
+    mut socket: Socket<'umem>,
+    frame_stack: Arc<Mutex<BasicFrameBuffer<'umem>>>,
     batch_size: usize,
 ) {
-    let mut incoming = LocalFrameBuffer::new(batch_size);
+    let mut frames = BasicFrameBuffer::new(batch_size);
     while !exit.load(Ordering::Relaxed) {
         // Start by reading some frames from the socket. The result of this call is guaranteed to be between 1 and the batch size.
-        let received = socket.recv_async(&mut incoming).await;
-        debug_assert!(
-            received > 0 && received <= batch_size as u32,
-            "Received {} frames, expected between 1 and {}, this should \
-            never happen!",
-            received,
-            batch_size
-        );
+        socket.recv_async(&mut frames).await;
 
         // You now have a batch of raw frames, at this level this is an L2 frame, almost assuredly Ethernet based.
-        for frame in incoming.iter() {
+        for frame in frames.iter_frames() {
             // Do something with the frame!
             //
             // Note checking the frame.is_fragment() is needed, iff we have fragmentation enabled. In this mode it is possible
@@ -78,7 +71,7 @@ async fn worker_task(
         // - Return the data to the kernel by means of the fill queue. Which is what will be doing here.
         {
             let mut guard = frame_stack.lock().await;
-            guard.extend(incoming.drain(..));
+            guard.extend(frames.drain(..));
         }
 
         // Maybe print the stats for this iteration.
@@ -86,20 +79,20 @@ async fn worker_task(
     }
 }
 
-async fn umem_task(
+async fn umem_task<'umem>(
     exit: Arc<AtomicBool>,
-    mut umem: Umem,
-    frame_stack: Arc<Mutex<LocalFrameBuffer>>,
+    mut fq: FillQueue<'umem>,
+    frame_stack: Arc<Mutex<BasicFrameBuffer<'umem>>>,
     fds: Vec<c_int>,
 ) {
     while !exit.load(Ordering::Relaxed) {
         for fd in fds.iter() {
-            umem.maybe_wake(*fd).unwrap();
+            fq.maybe_wake(*fd).unwrap();
         }
 
         {
-            let mut guard = frame_stack.lock().await;
-            umem.process_fill_queue_async(&mut guard).await;
+            let guard = frame_stack.lock().await;
+            fq.process_queue(guard);
         }
 
         tokio::task::yield_now().await;
@@ -133,7 +126,7 @@ async fn main() {
     // Note: The initial frames can be used for anything you need. Namely there are a few key use cases:
     // - Listeners/Traffic Analyzers: Dump all, or some number, of frames into the fill ring to prewarm the ring for reads.
     // - Clients/Traffic Generators: Using them as a pool of buffers for writing packet data to, and sending it out the socket.
-    let (mut umem, mut initial_frames) = Umem::builder()
+    let (umem, mut fq, _cq) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -141,7 +134,7 @@ async fn main() {
         .num_frames(args.fill_ring_size as usize) // We are benching reads so just set the num frames to the fill ring size.
         .huge_tables(args.huge_tables)
         .unaligned(args.unaligned)
-        .build::<LocalFrameBuffer>()
+        .build()
         .expect("Failed to create umem");
 
     let exit = Arc::new(AtomicBool::new(false));
@@ -153,9 +146,10 @@ async fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    umem.process_fill_queue_async(&mut initial_frames).await;
+    let mut frames = umem.init_buffer::<BasicFrameBuffer>().unwrap();
+    fq.process_queue(&mut frames);
 
-    let frame_stack = Arc::new(Mutex::new(initial_frames));
+    let frame_stack = Arc::new(Mutex::new(frames));
 
     let mut threads = Vec::with_capacity(args.num_threads.get() + 1);
     let mut socket_fds = Vec::with_capacity(args.num_threads.get());
@@ -177,7 +171,7 @@ async fn main() {
             .busy_poll_batch_size(args.busy_poll_batch_size)
             .busy_poll_timeout_us(args.busy_poll_timeout_us)
             .copy_mode(args.copy_mode)
-            .build(&mut umem)
+            .build(umem.clone())
             .expect("Failed to create socket");
         socket_fds.push(socket.fd());
 
@@ -187,7 +181,7 @@ async fn main() {
     }
 
     // Spawn our Umem thread, this will handle actually submitting frames to the fill queue.
-    threads.push(tokio::spawn(umem_task(exit, umem, frame_stack, socket_fds)));
+    threads.push(tokio::spawn(umem_task(exit, fq, frame_stack, socket_fds)));
 
     println!("All threads created, listening for packets...");
 

@@ -11,7 +11,7 @@ use clap::Parser;
 use libvoid::xdp::{
     context::XdpContext,
     error::WouldBlock,
-    frame::{FrameBuffer, LocalFrameBuffer},
+    frame::{BasicFrameBuffer, FrameBuffer},
     socket::Socket,
     umem::Umem,
 };
@@ -53,10 +53,10 @@ fn main() {
     // You will need one of these for each unique device you want to use.
     //
     // Each Umem comes associated with three key components:
+    // - Owner (umem) > The owner of the UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
-    // - Frames (frames) > A set of frames that are backed by the umem which are shared between the kernel and user space.
-    let (mut umem, mut frames) = Umem::builder()
+    let (umem, mut fq, mut cq) = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -64,7 +64,7 @@ fn main() {
         .num_frames(args.busy_poll_batch_size)
         .huge_tables(args.huge_tables)
         .unaligned(args.unaligned)
-        .build::<LocalFrameBuffer>()
+        .build()
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
@@ -79,7 +79,7 @@ fn main() {
         .busy_poll_timeout_us(args.busy_poll_timeout_us)
         .copy_mode(args.copy_mode)
         .enable_fragmentation(args.enable_fragmentation)
-        .build(&mut umem)
+        .build(umem.clone())
         .expect("Failed to create socket");
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.
@@ -100,10 +100,11 @@ fn main() {
     // For reads to work we need to hand some buffers to the kernel, so it can start reading data into them.
 
     // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
-    umem.maybe_wake(socket.fd()).unwrap();
+    fq.maybe_wake(socket.fd()).unwrap();
 
     // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
-    umem.process_fill_queue(&mut frames);
+    let mut frames = umem.init_buffer::<BasicFrameBuffer>().unwrap();
+    fq.process_queue(&mut frames);
 
     // Loop forever reading packets from the socket.
     while !exit.load(Ordering::Relaxed) {
@@ -120,7 +121,7 @@ fn main() {
         debug_assert_eq!(frames.num_frames(), received as usize);
 
         // For each received frame, attempt to swap the addresses.
-        for mut frame in frames.iter_mut() {
+        for mut frame in frames.iter_frames_mut() {
             stats.update(frame.len(), frame.is_fragment());
 
             swap_addresses(&mut frame).unwrap();
@@ -135,12 +136,12 @@ fn main() {
         // So we "sent" the packets but now we need to actually drive the completion of those sends.
         while frames.num_frames() < received as usize {
             socket.maybe_wake().expect("Failed to wake tx queue");
-            umem.process_completion_queue(&mut frames);
+            cq.process_queue(&mut frames);
         }
 
         // Now give back all our frames to the kernel by means of the fill queue.
-        umem.maybe_wake(socket.fd()).unwrap();
-        umem.process_fill_queue(&mut frames);
+        fq.maybe_wake(socket.fd()).unwrap();
+        fq.process_queue(&mut frames);
 
         stats.maybe_print();
     }

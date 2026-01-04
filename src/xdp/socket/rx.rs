@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, mem::transmute, sync::Arc};
+use std::{mem::transmute, sync::Arc};
 
 use libc::XDP_PKT_CONTD;
 use libxdp_sys::XSK_UNALIGNED_BUF_ADDR_MASK;
@@ -7,31 +7,25 @@ use crate::{
     futures::RecvFuture,
     xdp::{
         error::{NonBlocking, WouldBlock},
-        frame_v2::{Frame, FrameBuffer},
+        frame::{Frame, FrameBuffer},
         ring::{Consumer, Init},
-        umem::UmemOwner,
     },
 };
 
 use super::SocketOwner;
 
-pub struct SocketRx {
-    _socket: Arc<SocketOwner>,
+pub struct SocketRx<'umem> {
+    socket: Arc<SocketOwner<'umem>>,
     ring: Consumer<Init>,
-    owner: Arc<UmemOwner>,
 }
 
-impl SocketRx {
-    pub fn new(socket: Arc<SocketOwner>, ring: Consumer<Init>, owner: Arc<UmemOwner>) -> Self {
-        Self {
-            _socket: socket,
-            ring,
-            owner,
-        }
+impl<'umem> SocketRx<'umem> {
+    pub fn new(socket: Arc<SocketOwner<'umem>>, ring: Consumer<Init>) -> Self {
+        Self { socket, ring }
     }
 
     #[inline(always)]
-    pub fn recv<'umem, B: FrameBuffer<'umem>>(&mut self, mut batch: B) -> NonBlocking<u32> {
+    pub fn recv<B: FrameBuffer<'umem>>(&mut self, mut batch: B) -> NonBlocking<u32> {
         // Take at least 1 frame up to the number of free slots in the batch.
         let (mut idx_rx, rcvd) = self.ring.peek(batch.free_space() as u32);
         if rcvd == 0 {
@@ -41,7 +35,7 @@ impl SocketRx {
         for _ in 0..rcvd as usize {
             let desc = self.ring.rx_desc(idx_rx);
             // SAFETY: The address/length/options are valid because it is from the RX ring and kernel guarantees them.
-            let frame = self.owner.to_frame(
+            let frame = self.socket.umem.to_frame(
                 xsk_umem_extract_addr(desc.addr),
                 desc.len as usize,
                 desc.options & XDP_PKT_CONTD == XDP_PKT_CONTD,
@@ -57,14 +51,10 @@ impl SocketRx {
     }
 
     #[inline(always)]
-    pub fn recv_async<'umem, B: FrameBuffer<'umem>>(
-        &mut self,
-        batch: B,
-    ) -> RecvFuture<'_, 'umem, B> {
+    pub fn recv_async<B: FrameBuffer<'umem>>(&mut self, batch: B) -> RecvFuture<'_, 'umem, B> {
         RecvFuture {
             socket: self,
             batch,
-            _lifetime: PhantomData,
         }
     }
 }

@@ -14,10 +14,10 @@ use crate::{
         context::XdpContext,
         error::{Error, NonBlocking, Result},
         flags::{XDP_USE_NEED_WAKEUP, XDP_USE_SG},
-        frame_v2::FrameBuffer,
+        frame::FrameBuffer,
         ring::{Consumer, Producer},
         socket::{BindMode, mode::CopyMode},
-        umem::Umem,
+        umem::UmemOwner,
     },
 };
 
@@ -107,7 +107,7 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
     /// Builds the socket taking shared ownership of the Umem, allowing for multiple sockets on a single Device/Queue pair.
     ///
     /// Note: This will likely not get you more throughput or lower latency than a single socket, but it is useful for certain heavy loads where you need to offload packet processing onto different threads. Almost always prefer a single socket to a single Umem.
-    pub fn build(self, umem: &mut Umem) -> Result<Socket> {
+    pub fn build<'umem>(self, umem: Arc<UmemOwner<'umem>>) -> Result<Socket<'umem>> {
         let socket = Socket::new(
             self.if_name,
             self.queue,
@@ -125,15 +125,15 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
     }
 }
 
-pub struct Socket {
-    owner: Arc<SocketOwner>,
-    rx: SocketRx,
-    tx: SocketTx,
+pub struct Socket<'umem> {
+    owner: Arc<SocketOwner<'umem>>,
+    rx: SocketRx<'umem>,
+    tx: SocketTx<'umem>,
 }
 
-unsafe impl Send for Socket {}
+// unsafe impl<'umem> Send for Socket<'umem> {}
 
-impl Socket {
+impl<'umem> Socket<'umem> {
     fn setup_busy_poll(&self, busy_poll_timeout_us: i32, batch_size: usize) -> Result<()> {
         let opt = 1i32;
         let ret = unsafe {
@@ -192,7 +192,7 @@ impl Socket {
     pub fn new(
         if_name: &str,
         queue: u32,
-        umem: &mut Umem,
+        umem: Arc<UmemOwner<'umem>>,
         rx_ring_size: u32,
         tx_ring_size: u32,
         busy_poll: bool,
@@ -231,7 +231,7 @@ impl Socket {
                 xsk_ptr,
                 if_name_c.as_ptr(),
                 queue as u32,
-                umem.umem(),
+                umem.as_ptr(),
                 rx.as_mut_ptr(),
                 tx.as_mut_ptr(),
                 &cfg,
@@ -245,11 +245,11 @@ impl Socket {
         let tx = unsafe { tx.assume_init() };
 
         let owner = Arc::new(SocketOwner {
-            _umem: umem.owner().clone(),
+            umem: umem.clone(),
             socket: xsk,
             fd: unsafe { xsk_socket__fd(xsk) },
         });
-        let rx = SocketRx::new(owner.clone(), rx, umem.owner().clone());
+        let rx = SocketRx::new(owner.clone(), rx);
         let tx = SocketTx::new(owner.clone(), tx, busy_poll);
         let socket = Self { owner, rx, tx };
         if busy_poll {
@@ -260,24 +260,24 @@ impl Socket {
 
     /// Splits the socket into its owner, rx, and tx components.
     #[inline(always)]
-    pub fn split(self) -> (Arc<SocketOwner>, SocketRx, SocketTx) {
+    pub fn split(self) -> (Arc<SocketOwner<'umem>>, SocketRx<'umem>, SocketTx<'umem>) {
         (self.owner, self.rx, self.tx)
     }
 
     #[inline(always)]
-    pub fn tx(&mut self) -> &mut SocketTx {
+    pub fn tx(&mut self) -> &mut SocketTx<'umem> {
         &mut self.tx
     }
 
     #[inline(always)]
-    pub fn rx(&mut self) -> &mut SocketRx {
+    pub fn rx(&mut self) -> &mut SocketRx<'umem> {
         &mut self.rx
     }
 
     /// Returns the file descriptor of the socket.
     #[inline(always)]
     pub fn fd(&self) -> c_int {
-        self.owner.fd()
+        self.owner.fd
     }
 
     /// Possibly wakes the tx queue, so the kernel continues to process outgoing packets.
@@ -293,7 +293,7 @@ impl Socket {
     ///
     /// If no frames are available to read this returns None.
     #[inline(always)]
-    pub fn recv<'umem, B: FrameBuffer<'umem>>(&mut self, batch: B) -> NonBlocking<u32> {
+    pub fn recv<B: FrameBuffer<'umem>>(&mut self, batch: B) -> NonBlocking<u32> {
         self.rx.recv(batch)
     }
 
@@ -301,10 +301,7 @@ impl Socket {
     ///
     /// This function will return a future that will be ready when the frames are received.
     #[inline(always)]
-    pub fn recv_async<'umem, B: FrameBuffer<'umem>>(
-        &mut self,
-        batch: B,
-    ) -> RecvFuture<'_, 'umem, B> {
+    pub fn recv_async<B: FrameBuffer<'umem>>(&mut self, batch: B) -> RecvFuture<'_, 'umem, B> {
         self.rx.recv_async(batch)
     }
 
@@ -317,7 +314,7 @@ impl Socket {
     ///
     /// If no frames are availabel to send this returns an error of type [std::result::Result<(), ()>].
     #[inline(always)]
-    pub fn send<'umem, B: FrameBuffer<'umem>>(&mut self, frames: B) -> NonBlocking<u32> {
+    pub fn send<B: FrameBuffer<'umem>>(&mut self, frames: B) -> NonBlocking<u32> {
         self.tx.send(frames)
     }
 
@@ -325,10 +322,7 @@ impl Socket {
     ///
     /// This function will return a future that will be ready when the frames are sent.
     #[inline(always)]
-    pub fn send_async<'umem, B: FrameBuffer<'umem>>(
-        &mut self,
-        frames: B,
-    ) -> SendFuture<'_, 'umem, B> {
+    pub fn send_async<B: FrameBuffer<'umem>>(&mut self, frames: B) -> SendFuture<'_, 'umem, B> {
         self.tx.send_async(frames)
     }
 }

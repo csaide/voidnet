@@ -1,11 +1,11 @@
-use std::{marker::PhantomData, mem::transmute, sync::Arc};
+use std::{mem::transmute, sync::Arc};
 
 use libxdp_sys::xsk_ring_cons;
 
 use crate::{
     futures::CompFuture,
     xdp::{
-        frame_v2::{Frame, FrameBuffer},
+        frame::{Frame, FrameBuffer},
         ring::{Consumer, Init},
         socket::SocketTx,
     },
@@ -13,18 +13,18 @@ use crate::{
 
 use super::UmemOwner;
 
-pub struct CompletionQueue {
+pub struct CompletionQueue<'umem> {
     ring: Consumer<Init>,
-    owner: Arc<UmemOwner>,
+    owner: Arc<UmemOwner<'umem>>,
 }
 
-impl CompletionQueue {
-    pub fn new(ring: Consumer<Init>, owner: Arc<UmemOwner>) -> Self {
+impl<'umem> CompletionQueue<'umem> {
+    pub fn new(ring: Consumer<Init>, owner: Arc<UmemOwner<'umem>>) -> Self {
         Self { ring, owner }
     }
 
     #[inline(always)]
-    pub fn process_queue<'umem, B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
+    pub fn process_queue<B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
         let (mut idx, ready) = self.ring.peek(batch.free_space() as u32);
         if ready == 0 {
             return;
@@ -44,18 +44,17 @@ impl CompletionQueue {
     }
 
     #[inline(always)]
-    pub fn process_queue_async<'s, 'umem, 'sock, B: FrameBuffer<'umem>>(
-        &'s mut self,
+    pub fn process_queue_async<'que, 'sock, B: FrameBuffer<'umem>>(
+        &'que mut self,
         batch: B,
         expected: usize,
-        socket: &'sock mut SocketTx,
-    ) -> CompFuture<'s, 'umem, 'sock, B> {
+        socket: &'sock mut SocketTx<'umem>,
+    ) -> CompFuture<'que, 'umem, 'sock, B> {
         CompFuture {
             completion_queue: self,
             socket,
             batch,
             expected,
-            _lifetime: PhantomData,
         }
     }
 

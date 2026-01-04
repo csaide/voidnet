@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, ptr::null, sync::Arc};
+use std::{ptr::null, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, XDP_PKT_CONTD, sendto};
@@ -7,21 +7,21 @@ use crate::{
     futures::SendFuture,
     xdp::{
         error::{Error, NonBlocking, Result, WouldBlock},
-        frame_v2::FrameBuffer,
+        frame::FrameBuffer,
         ring::{Init, Producer},
     },
 };
 
 use super::SocketOwner;
 
-pub struct SocketTx {
-    socket: Arc<SocketOwner>,
+pub struct SocketTx<'umem> {
+    socket: Arc<SocketOwner<'umem>>,
     ring: Producer<Init>,
     busy_poll: bool,
 }
 
-impl SocketTx {
-    pub fn new(socket: Arc<SocketOwner>, ring: Producer<Init>, busy_poll: bool) -> Self {
+impl<'umem> SocketTx<'umem> {
+    pub fn new(socket: Arc<SocketOwner<'umem>>, ring: Producer<Init>, busy_poll: bool) -> Self {
         Self {
             socket,
             ring,
@@ -47,7 +47,7 @@ impl SocketTx {
     }
 
     #[inline(always)]
-    pub fn send<'umem, B: FrameBuffer<'umem>>(&mut self, mut frames: B) -> NonBlocking<u32> {
+    pub fn send<B: FrameBuffer<'umem>>(&mut self, mut frames: B) -> NonBlocking<u32> {
         // Take exactly the number of frames we need to send.
         let (mut idx_tx, ready) = self.ring.reserve(frames.num_frames() as u32);
         if ready == 0 {
@@ -73,14 +73,10 @@ impl SocketTx {
     }
 
     #[inline(always)]
-    pub fn send_async<'umem, B: FrameBuffer<'umem>>(
-        &mut self,
-        batch: B,
-    ) -> SendFuture<'_, 'umem, B> {
+    pub fn send_async<B: FrameBuffer<'umem>>(&mut self, batch: B) -> SendFuture<'_, 'umem, B> {
         SendFuture {
             socket: self,
             batch,
-            _lifetime: PhantomData,
         }
     }
 }

@@ -1,27 +1,18 @@
-use std::{
-    ops::{Deref, DerefMut},
-    sync::Arc,
-};
-
-use memmap2::MmapMut;
+use std::ops::{Deref, DerefMut};
 
 /// A frame is a contiguous memory region that is used to store data for a packet, this is a simple wrapper around a pointer to a MMAP'd memory region.
 #[derive(Debug)]
-pub struct Frame {
+pub struct Frame<'umem> {
     addr: u64,
     len: usize,
     capacity: usize,
-    data: *mut u8,
+    data: &'umem mut [u8],
     is_fragment: bool,
-    _mmap: Arc<MmapMut>, // Guarantee we can't outlive the mmap.
 }
 
-// SAFETY: The only reason [Frame] is not send is because of the *mut u8 in data, the pointer is tied to a Mmap'ed memory region
-// so its safe to send this to another thread as the pointer will remain valid for the life time of the mmap which is contained inside the
-// frame.
-unsafe impl Send for Frame {}
+unsafe impl<'umem> Send for Frame<'umem> {}
 
-impl Frame {
+impl<'umem> Frame<'umem> {
     /// Create a new frame with the given address, data pointer, length, and capacity.
     ///
     /// # Safety
@@ -34,30 +25,22 @@ impl Frame {
     /// be initialized to valid u8 values for all locations.
     pub unsafe fn new(
         addr: u64,
+        data: &'umem mut [u8],
         len: usize,
         capacity: usize,
         is_fragment: bool,
-        mmap: Arc<MmapMut>,
     ) -> Self {
         debug_assert!(
             capacity > 0 && len <= capacity,
             "len must be less than or equal to capacity, which must be greater than 0"
-        );
-        debug_assert!(
-            addr + len as u64 <= mmap.len() as u64,
-            "addr + len is greater than the mmap length"
         );
 
         Self {
             addr,
             len,
             capacity,
-            // SAFETY: this is safe because the mmap is guaranteed to be valid.
-            // We also _have_ to change the pointer type from *const u8 to *mut u8 as Frame's are mutable and we need multiple of them which
-            // are guaranteed to be non-overlapping, so its safe to cast it to a mutable pointer, no two callers can access the same frame address.
-            data: unsafe { mmap.as_ptr().add(addr as usize) as *mut u8 },
+            data,
             is_fragment,
-            _mmap: mmap,
         }
     }
 
@@ -91,7 +74,7 @@ impl Frame {
 
     /// Set the fragment flag for the frame.
     #[inline]
-    pub fn set_fragment(&mut self, is_fragment: bool) {
+    pub unsafe fn set_fragment(&mut self, is_fragment: bool) {
         self.is_fragment = is_fragment;
     }
 
@@ -111,20 +94,22 @@ impl Frame {
         );
 
         self.len = incoming.len();
-        unsafe { std::ptr::copy_nonoverlapping(incoming.as_ptr(), self.data, self.len) };
+        unsafe {
+            std::ptr::copy_nonoverlapping(incoming.as_ptr(), self.data.as_mut_ptr(), self.len)
+        };
     }
 }
 
-impl Deref for Frame {
+impl<'umem> Deref for Frame<'umem> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        unsafe { std::slice::from_raw_parts(self.data, self.len) }
+        &self.data[..self.len]
     }
 }
 
-impl DerefMut for Frame {
+impl<'umem> DerefMut for Frame<'umem> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { std::slice::from_raw_parts_mut(self.data, self.len) }
+        &mut self.data[..self.len]
     }
 }

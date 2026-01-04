@@ -1,17 +1,15 @@
 use std::{
-    marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use crate::xdp::{error::Result, frame_v2::FrameBuffer, socket::SocketTx, umem::CompletionQueue};
+use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketTx, umem::CompletionQueue};
 
-pub struct CompFuture<'s, 'umem, 'sock, B: FrameBuffer<'umem>> {
-    pub(crate) completion_queue: &'s mut CompletionQueue,
-    pub(crate) socket: &'sock mut SocketTx,
+pub struct CompFuture<'que, 'umem, 'sock, B: FrameBuffer<'umem>> {
+    pub(crate) completion_queue: &'que mut CompletionQueue<'umem>,
+    pub(crate) socket: &'sock mut SocketTx<'umem>,
     pub(crate) batch: B,
     pub(crate) expected: usize,
-    pub(crate) _lifetime: PhantomData<&'umem ()>,
 }
 
 impl<'a, 'owner, 'b, B: FrameBuffer<'owner>> Future for CompFuture<'a, 'owner, 'b, B> {

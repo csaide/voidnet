@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, ptr::null_mut, sync::Arc};
+use std::{ptr::null_mut, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
@@ -8,21 +8,21 @@ use crate::{
     futures::{ProcessFillQueueFuture, WakeFillQueueFuture},
     xdp::{
         error::{Error, Result},
-        frame_v2::FrameBuffer,
+        frame::FrameBuffer,
         ring::{Init, Producer},
     },
 };
 
 use super::UmemOwner;
 
-pub struct FillQueue {
-    _owner: Arc<UmemOwner>,
+pub struct FillQueue<'umem> {
+    _owner: Arc<UmemOwner<'umem>>,
     ring: Producer<Init>,
     busy_poll: bool,
 }
 
-impl FillQueue {
-    pub fn new(ring: Producer<Init>, owner: Arc<UmemOwner>, busy_poll: bool) -> Self {
+impl<'umem> FillQueue<'umem> {
+    pub fn new(ring: Producer<Init>, owner: Arc<UmemOwner<'umem>>, busy_poll: bool) -> Self {
         Self {
             ring,
             _owner: owner,
@@ -56,17 +56,16 @@ impl FillQueue {
     }
 
     #[inline(always)]
-    pub fn maybe_wake_async<'umem>(&self, fd: c_int) -> WakeFillQueueFuture<'_, 'umem> {
+    pub fn maybe_wake_async(&self, fd: c_int) -> WakeFillQueueFuture<'_, 'umem> {
         WakeFillQueueFuture {
             fill_queue: &self,
             fd,
-            _lifetime: PhantomData,
         }
     }
 
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
-    pub fn process_queue<'umem, B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
+    pub fn process_queue<B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
         let (mut idx, ready) = self.ring.reserve(batch.num_frames() as u32);
         if ready == 0 {
             return;
@@ -82,14 +81,13 @@ impl FillQueue {
     }
 
     #[inline(always)]
-    pub fn process_queue_async<'umem, B: FrameBuffer<'umem>>(
+    pub fn process_queue_async<B: FrameBuffer<'umem>>(
         &mut self,
         batch: B,
     ) -> ProcessFillQueueFuture<'_, 'umem, B> {
         ProcessFillQueueFuture {
             fill_queue: self,
             batch,
-            _lifetime: PhantomData,
         }
     }
 
