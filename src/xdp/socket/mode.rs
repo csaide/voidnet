@@ -6,7 +6,7 @@ use crate::xdp::{
     program::AttachMode,
 };
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum BindMode {
     #[default]
@@ -25,7 +25,7 @@ impl From<AttachMode> for BindMode {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum CopyMode {
     #[default]

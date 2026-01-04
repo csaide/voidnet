@@ -56,6 +56,10 @@ pub enum Error {
     GetMtu(String),
     #[error("failed while registering waker: {0}")]
     Poller(crate::futures::Error),
+    #[error("fragmentation not supported by the network interface")]
+    FragmentationNotSupported,
+    #[error("zero copy not supported by the network interface")]
+    ZeroCopyNotSupported,
 }
 
 /// A simple ZST error variant for would block scenarios, this is explicitly a ZST to avoid the allocations and eventual drop calls of the error case.

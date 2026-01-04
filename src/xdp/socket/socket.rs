@@ -108,6 +108,13 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
     ///
     /// Note: This will likely not get you more throughput or lower latency than a single socket, but it is useful for certain heavy loads where you need to offload packet processing onto different threads. Almost always prefer a single socket to a single Umem.
     pub fn build<'umem>(self, umem: Arc<UmemOwner<'umem>>) -> Result<Socket<'umem>> {
+        let info = self.ctx.info();
+        if !info.fragmentation_support() && self.enable_fragmentation {
+            return Err(Error::FragmentationNotSupported);
+        }
+        if !info.xsk_zero_copy_support() && self.copy_mode == CopyMode::ZeroCopy {
+            return Err(Error::ZeroCopyNotSupported);
+        }
         let socket = Socket::new(
             self.if_name,
             self.queue,
@@ -178,7 +185,10 @@ impl<'umem> Socket<'umem> {
         let mut xsk: *mut xsk_socket = std::ptr::null_mut();
         let xsk_ptr: *mut *mut xsk_socket = &mut xsk;
 
-        let if_name_c = CString::new(if_name).unwrap();
+        let if_name_c = match CString::new(if_name) {
+            Ok(c) => c,
+            Err(e) => return Err(Error::InterfaceNameToIndex(e)),
+        };
 
         let ret: std::os::raw::c_int = unsafe {
             xsk_socket__create(
