@@ -54,12 +54,16 @@ pub enum Error {
     QueryXdpFeatures(Errno),
     #[error("failed while getting MTU: {0}")]
     GetMtu(String),
-    #[error("failed while registering waker: {0}")]
-    Poller(crate::futures::Error),
     #[error("fragmentation not supported by the network interface")]
     FragmentationNotSupported,
     #[error("zero copy not supported by the network interface")]
     ZeroCopyNotSupported,
+    #[error("failed to create epoll instance: {0}")]
+    EpollCreate(Errno),
+    #[error("failed to wait on epoll instance: {0}")]
+    EpollWait(Errno),
+    #[error("failed to register file descriptor with epoll instance: {0}")]
+    EpollCtl(Errno),
 }
 
 /// A simple ZST error variant for would block scenarios, this is explicitly a ZST to avoid the allocations and eventual drop calls of the error case.

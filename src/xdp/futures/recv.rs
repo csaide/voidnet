@@ -3,11 +3,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::xdp::{
-    error::{Error, Result},
-    frame::FrameBuffer,
-    socket::SocketRx,
-};
+use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketRx};
 
 use super::get_poller;
 
@@ -29,7 +25,7 @@ impl<'a, 'umem, B: FrameBuffer<'umem>> Future for RecvFuture<'a, 'umem, B> {
             Err(_) => {
                 match get_poller().register_waker(this.socket.fd(), cx.waker()) {
                     Ok(_) => (),
-                    Err(e) => return Poll::Ready(Err(Error::Poller(e))),
+                    Err(e) => return Poll::Ready(Err(e)),
                 }
                 Poll::Pending
             }

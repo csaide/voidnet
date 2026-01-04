@@ -4,11 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::xdp::{
-    error::{Error, Result},
-    frame::FrameBuffer,
-    umem::FillQueue,
-};
+use crate::xdp::{error::Result, frame::FrameBuffer, umem::FillQueue};
 
 use super::get_poller;
 
@@ -27,7 +23,7 @@ impl<'a, 'owner, B: FrameBuffer<'owner>> Future for ProcessFillQueueFuture<'a, '
         if this.batch.num_frames() > 0 {
             match get_poller().register_waker(this.fill_queue.fd(), cx.waker()) {
                 Ok(_) => (),
-                Err(e) => return Poll::Ready(Err(Error::Poller(e))),
+                err => return Poll::Ready(err),
             }
             Poll::Pending
         } else {

@@ -3,13 +3,11 @@ use std::{ptr::null, sync::Arc};
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, XDP_PKT_CONTD, sendto};
 
-use crate::{
+use crate::xdp::{
+    error::{Error, NonBlocking, Result, WouldBlock},
+    frame::FrameBuffer,
     futures::SendFuture,
-    xdp::{
-        error::{Error, NonBlocking, Result, WouldBlock},
-        frame::FrameBuffer,
-        ring::{Init, Producer},
-    },
+    ring::{Init, Producer},
 };
 
 use super::SocketOwner;

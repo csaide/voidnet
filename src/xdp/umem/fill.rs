@@ -4,13 +4,11 @@ use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
 use libxdp_sys::xsk_ring_prod;
 
-use crate::{
+use crate::xdp::{
+    error::{Error, Result},
+    frame::FrameBuffer,
     futures::{ProcessFillQueueFuture, WakeFillQueueFuture},
-    xdp::{
-        error::{Error, Result},
-        frame::FrameBuffer,
-        ring::{Init, Producer},
-    },
+    ring::{Init, Producer},
 };
 
 use super::UmemOwner;

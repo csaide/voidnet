@@ -2,13 +2,11 @@ use std::sync::Arc;
 
 use libxdp_sys::xsk_ring_cons;
 
-use crate::{
+use crate::xdp::{
+    frame::FrameBuffer,
     futures::CompFuture,
-    xdp::{
-        frame::FrameBuffer,
-        ring::{Consumer, Init},
-        socket::SocketTx,
-    },
+    ring::{Consumer, Init},
+    socket::SocketTx,
 };
 
 use super::UmemOwner;

@@ -2,6 +2,7 @@ pub mod context;
 pub mod error;
 pub mod flags;
 pub mod frame;
+pub mod futures;
 pub mod program;
 pub mod ring;
 pub mod socket;

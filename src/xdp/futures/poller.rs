@@ -7,7 +7,7 @@ use libc::{
     epoll_ctl, epoll_event, epoll_wait,
 };
 
-use super::error::{Error, Result};
+use crate::xdp::error::{Error, Result};
 
 static POLLER: std::sync::OnceLock<Arc<Poller>> = std::sync::OnceLock::new();
 

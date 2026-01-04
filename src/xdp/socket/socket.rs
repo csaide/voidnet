@@ -8,17 +8,15 @@ use libxdp_sys::{
     xsk_socket_config__bindgen_ty_1,
 };
 
-use crate::{
+use crate::xdp::{
+    context::XdpContext,
+    error::{Error, NonBlocking, Result},
+    flags::{XDP_USE_NEED_WAKEUP, XDP_USE_SG},
+    frame::FrameBuffer,
     futures::{RecvFuture, SendFuture},
-    xdp::{
-        context::XdpContext,
-        error::{Error, NonBlocking, Result},
-        flags::{XDP_USE_NEED_WAKEUP, XDP_USE_SG},
-        frame::FrameBuffer,
-        ring::{Consumer, Producer},
-        socket::{BindMode, mode::CopyMode},
-        umem::UmemOwner,
-    },
+    ring::{Consumer, Producer},
+    socket::{BindMode, mode::CopyMode},
+    umem::UmemOwner,
 };
 
 use super::{SocketOwner, SocketRx, SocketTx};

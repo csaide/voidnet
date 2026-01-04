@@ -3,13 +3,11 @@ use std::sync::Arc;
 use libc::XDP_PKT_CONTD;
 use libxdp_sys::XSK_UNALIGNED_BUF_ADDR_MASK;
 
-use crate::{
+use crate::xdp::{
+    error::{NonBlocking, WouldBlock},
+    frame::FrameBuffer,
     futures::RecvFuture,
-    xdp::{
-        error::{NonBlocking, WouldBlock},
-        frame::FrameBuffer,
-        ring::{Consumer, Init},
-    },
+    ring::{Consumer, Init},
 };
 
 use super::SocketOwner;
