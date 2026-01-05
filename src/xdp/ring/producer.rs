@@ -14,8 +14,8 @@ pub struct Producer<I> {
     _init: PhantomData<I>,
 }
 
-// SAFETY: The only reason [Producer] is not send is because of the *mut u32 in xsk_ring_prod, the pointer is tied to this
-// xsk_ring_prod so its lifetime is tied to it and we can safely send this to another thread because the pointer is into a heap
+// SAFETY: The only reason [Producer] is not send is because of the raw pointers in xsk_ring_prod, these pointers are tied to this
+// xsk_ring_prod so their lifetime is tied to it and we can safely send this to another thread because the pointers are into a heap
 // allocated memory region that cannot move.
 unsafe impl<I> Send for Producer<I> {}
 
@@ -150,7 +150,7 @@ impl Producer<Init> {
         (idx, batch_size)
     }
 
-    /// Returns a mutable reference to the TX descriptor at the given index.
+    /// Returns a mutable pointer to the TX descriptor at the given index.
     ///
     /// This mirrors the functionality of the `xsk_ring_prod__tx_desc` function:
     /// Path: `vendor/xdp-tools/headers/xdp/xsk.h:71`
@@ -168,7 +168,7 @@ impl Producer<Init> {
         unsafe { (self.ring.ring as *mut xdp_desc).add((index & self.ring.mask) as usize) }
     }
 
-    /// Returns a mutable reference to the fill address at the given index.
+    /// Returns a mutable pointer to the fill address at the given index.
     ///
     /// This mirrors the functionality of the `xsk_ring_prod__fill_addr` function:
     /// Path: `vendor/xdp-tools/headers/xdp/xsk.h:55`
@@ -222,5 +222,243 @@ impl Producer<Init> {
     #[inline(always)]
     pub fn needs_wakeup(&self) -> bool {
         unsafe { *self.ring.flags & XDP_RING_NEED_WAKEUP != 0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test harness that simulates a kernel-initialized Producer ring.
+    /// Uses boxed slice for stable pointers that won't move.
+    struct Harness<T: Copy + Default> {
+        ring: Box<[T]>,
+        producer: Box<u32>,
+        consumer: Box<u32>,
+        flags: Box<u32>,
+    }
+
+    impl<T: Copy + Default> Harness<T> {
+        fn new(size: u32) -> Self {
+            assert!(size.is_power_of_two());
+            Self {
+                ring: vec![T::default(); size as usize].into_boxed_slice(),
+                producer: Box::new(0),
+                consumer: Box::new(0),
+                flags: Box::new(0),
+            }
+        }
+
+        fn init(&mut self, cached_prod: u32, cached_cons: u32) -> Producer<Init> {
+            let mut p = Producer::<Uninit>::new();
+            unsafe {
+                let r = p.as_mut_ptr();
+                (*r).size = self.ring.len() as u32;
+                (*r).mask = self.ring.len() as u32 - 1;
+                (*r).producer = self.producer.as_mut();
+                (*r).consumer = self.consumer.as_mut();
+                (*r).ring = self.ring.as_mut_ptr() as *mut _;
+                (*r).flags = self.flags.as_mut();
+                (*r).cached_prod = cached_prod;
+                (*r).cached_cons = cached_cons;
+            }
+            unsafe { p.assume_init() }
+        }
+    }
+
+    // Wrapper to provide Default for xdp_desc
+    #[derive(Copy, Clone)]
+    #[repr(transparent)]
+    struct Desc(xdp_desc);
+
+    impl Default for Desc {
+        fn default() -> Self {
+            Self(xdp_desc {
+                addr: 0,
+                len: 0,
+                options: 0,
+            })
+        }
+    }
+
+    // ============================================================================
+    // Construction & Pointer Access
+    // ============================================================================
+
+    #[test]
+    fn test_uninit_producer() {
+        let mut p = Producer::<Uninit>::new();
+
+        // Verify zeroed state and pointer access
+        unsafe {
+            let r = &*p.as_ptr();
+            assert_eq!((r.cached_prod, r.cached_cons, r.mask, r.size), (0, 0, 0, 0));
+            assert!(r.producer.is_null() && r.consumer.is_null() && r.ring.is_null());
+            (*p.as_mut_ptr()).size = 42;
+        }
+        assert_eq!(p.ring.size, 42);
+
+        // Verify size after init
+        let mut h = Harness::<u64>::new(32);
+        assert_eq!(h.init(0, 0).size(), 32);
+    }
+
+    // ============================================================================
+    // nb_free & reserve
+    // ============================================================================
+
+    #[test]
+    fn test_nb_free() {
+        let mut h = Harness::<u64>::new(16);
+
+        // Fast path: cached free >= batch, returns cached value without refresh
+        *h.consumer = 100; // Set different value to verify no refresh
+        let mut p = h.init(5, 20); // free = 15 >= 10
+        assert_eq!(p.nb_free(10), 15);
+        unsafe { assert_eq!((*p.as_ptr()).cached_cons, 20) }; // Unchanged
+
+        // Slow path: cached free < batch, triggers refresh from consumer
+        *h.consumer = 10;
+        let mut p = h.init(5, 5); // free = 0 < 8, triggers refresh
+        // After refresh: cached_cons = consumer(10) + size(16) = 26, free = 21
+        assert_eq!(p.nb_free(8), 21);
+        unsafe { assert_eq!((*p.as_ptr()).cached_cons, 26) };
+    }
+
+    #[test]
+    fn test_reserve() {
+        let mut h = Harness::<u64>::new(16);
+
+        // Success: returns (idx, count) and advances cached_prod
+        let mut p = h.init(5, 20); // free = 15
+        assert_eq!(p.reserve(10), (5, 10));
+        unsafe { assert_eq!((*p.as_ptr()).cached_prod, 15) };
+
+        // Failure: returns (0, 0) when insufficient even after refresh
+        *h.consumer = 0;
+        let mut p = h.init(10, 10); // free = 0, after refresh = 6 < 8
+        assert_eq!(p.reserve(8), (0, 0));
+
+        // Sequential: idx advances correctly
+        let mut p = h.init(0, 32);
+        assert_eq!(p.reserve(5), (0, 5));
+        assert_eq!(p.reserve(5), (5, 5));
+        assert_eq!(p.reserve(5), (10, 5));
+        assert_eq!(p.reserve(20), (0, 0)); // Only 17 free
+    }
+
+    // ============================================================================
+    // Ring Access (tx_desc, fill_addr)
+    // ============================================================================
+
+    #[test]
+    fn test_tx_desc() {
+        let mut h = Harness::<Desc>::new(8); // mask = 7
+        let mut p = h.init(0, 16);
+
+        // Direct and masked access
+        unsafe {
+            (*p.tx_desc(0)).addr = 0x1000;
+            (*p.tx_desc(3)).addr = 0xDEAD;
+            (*p.tx_desc(8)).addr = 0x8888; // 8 & 7 = 0 (wraparound)
+            (*p.tx_desc(19)).addr = 0x1919; // 19 & 7 = 3 (wraparound)
+        }
+        assert_eq!(h.ring[0].0.addr, 0x8888); // Overwritten by idx 8
+        assert_eq!(h.ring[3].0.addr, 0x1919); // Overwritten by idx 19
+    }
+
+    #[test]
+    fn test_fill_addr() {
+        let mut h = Harness::<u64>::new(8); // mask = 7
+        let mut p = h.init(0, 16);
+
+        // Direct and masked access
+        unsafe {
+            *p.fill_addr(0) = 0x1000;
+            *p.fill_addr(3) = 0xDEAD;
+            *p.fill_addr(8) = 0x8888; // 8 & 7 = 0 (wraparound)
+            *p.fill_addr(19) = 0x1919; // 19 & 7 = 3 (wraparound)
+        }
+        assert_eq!(h.ring[0], 0x8888); // Overwritten by idx 8
+        assert_eq!(h.ring[3], 0x1919); // Overwritten by idx 19
+    }
+
+    // ============================================================================
+    // submit & needs_wakeup
+    // ============================================================================
+
+    #[test]
+    fn test_submit() {
+        let mut h = Harness::<u64>::new(16);
+        let mut p = h.init(0, 16);
+
+        p.submit(3);
+        assert_eq!(*h.producer, 3);
+        p.submit(5);
+        assert_eq!(*h.producer, 8);
+    }
+
+    #[test]
+    fn test_needs_wakeup() {
+        let mut h = Harness::<u64>::new(16);
+
+        *h.flags = 0;
+        assert!(!h.init(0, 0).needs_wakeup());
+
+        *h.flags = XDP_RING_NEED_WAKEUP;
+        assert!(h.init(0, 0).needs_wakeup());
+
+        *h.flags = XDP_RING_NEED_WAKEUP | 0xF0; // Mixed bits
+        assert!(h.init(0, 0).needs_wakeup());
+    }
+
+    // ============================================================================
+    // Integration: Full Workflows
+    // ============================================================================
+
+    #[test]
+    fn test_tx_workflow() {
+        let mut h = Harness::<Desc>::new(8);
+        let mut p = h.init(0, 8);
+
+        // Reserve, fill, submit
+        let (idx, n) = p.reserve(4);
+        assert_eq!((idx, n), (0, 4));
+        for i in 0..n {
+            unsafe {
+                (*p.tx_desc(idx + i)).addr = (i as u64) * 4096;
+                (*p.tx_desc(idx + i)).len = 64;
+            }
+        }
+        p.submit(n);
+        assert_eq!(*h.producer, 4);
+
+        // Ring is now full, reserve fails
+        assert_eq!(p.reserve(8), (0, 0));
+
+        // Kernel consumes, wakeup flag set
+        *h.consumer = 4;
+        *h.flags = XDP_RING_NEED_WAKEUP;
+        assert!(p.needs_wakeup());
+
+        // After wakeup, can reserve again (refresh: cached_cons = 4 + 8 = 12)
+        let (idx, n) = p.reserve(4);
+        assert_eq!((idx, n), (4, 4));
+    }
+
+    #[test]
+    fn test_fill_workflow() {
+        let mut h = Harness::<u64>::new(8);
+        let mut p = h.init(0, 8);
+
+        // Reserve, fill addresses, submit
+        let (idx, n) = p.reserve(3);
+        for i in 0..n {
+            unsafe { *p.fill_addr(idx + i) = (i as u64) * 0x1000 };
+        }
+        p.submit(n);
+
+        assert_eq!((h.ring[0], h.ring[1], h.ring[2]), (0x0000, 0x1000, 0x2000));
+        assert_eq!(*h.producer, 3);
     }
 }
