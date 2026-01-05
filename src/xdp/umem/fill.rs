@@ -2,17 +2,18 @@ use std::{ptr::null_mut, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
-use libxdp_sys::xsk_ring_prod;
 
 use crate::xdp::{
     error::{Error, Result},
     frame::FrameBuffer,
-    futures::{ProcessFillQueueFuture, WakeFillQueueFuture},
+    futures::ProcessFillQueueFuture,
     ring::{Init, Producer},
 };
 
 use super::UmemOwner;
 
+/// A fill queue is a ring of descriptors that are used to transfer packets from the user to the kernel. This is a thin wrapper around
+/// the xsk_ring_prod struct, exposing a safe API for interacting with the ring.
 pub struct FillQueue<'umem> {
     _owner: Arc<UmemOwner<'umem>>,
     ring: Producer<Init>,
@@ -20,7 +21,8 @@ pub struct FillQueue<'umem> {
 }
 
 impl<'umem> FillQueue<'umem> {
-    pub fn new(ring: Producer<Init>, owner: Arc<UmemOwner<'umem>>, busy_poll: bool) -> Self {
+    /// Creates a new fill queue.
+    pub(crate) fn new(ring: Producer<Init>, owner: Arc<UmemOwner<'umem>>, busy_poll: bool) -> Self {
         Self {
             ring,
             _owner: owner,
@@ -29,10 +31,11 @@ impl<'umem> FillQueue<'umem> {
     }
 
     #[inline(always)]
-    pub fn fd(&self) -> i32 {
+    pub(crate) fn fd(&self) -> i32 {
         self._owner.fd()
     }
 
+    /// Returns the size of the fill ring.
     #[inline(always)]
     pub fn size(&self) -> u32 {
         self.ring.size()
@@ -58,14 +61,6 @@ impl<'umem> FillQueue<'umem> {
         Ok(())
     }
 
-    #[inline(always)]
-    pub fn maybe_wake_async(&self, fd: c_int) -> WakeFillQueueFuture<'_, 'umem> {
-        WakeFillQueueFuture {
-            fill_queue: &self,
-            fd,
-        }
-    }
-
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
     pub fn process_queue<B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
@@ -83,6 +78,7 @@ impl<'umem> FillQueue<'umem> {
         self.ring.submit(ready);
     }
 
+    /// Processes the fill queue asynchronously, returning a future that will be ready when the fill queue is processed.
     #[inline(always)]
     pub fn process_queue_async<B: FrameBuffer<'umem>>(
         &mut self,
@@ -92,15 +88,5 @@ impl<'umem> FillQueue<'umem> {
             fill_queue: self,
             batch,
         }
-    }
-
-    #[inline(always)]
-    pub fn as_mut(&mut self) -> *mut xsk_ring_prod {
-        self.ring.as_mut_ptr()
-    }
-
-    #[inline(always)]
-    pub fn as_ref(&self) -> *const xsk_ring_prod {
-        self.ring.as_ptr()
     }
 }

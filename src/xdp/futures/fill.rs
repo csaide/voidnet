@@ -1,5 +1,4 @@
 use std::{
-    ffi::c_int,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -29,21 +28,5 @@ impl<'a, 'owner, B: FrameBuffer<'owner>> Future for ProcessFillQueueFuture<'a, '
         } else {
             Poll::Ready(Ok(()))
         }
-    }
-}
-
-pub struct WakeFillQueueFuture<'que, 'umem> {
-    pub(crate) fill_queue: &'que FillQueue<'umem>,
-    pub(crate) fd: c_int,
-}
-
-impl<'que, 'umem> Future for WakeFillQueueFuture<'que, 'umem> {
-    type Output = Result<()>;
-
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Err(e) = self.fill_queue.maybe_wake(self.fd) {
-            return Poll::Ready(Err(e));
-        }
-        Poll::Ready(Ok(()))
     }
 }

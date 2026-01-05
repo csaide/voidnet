@@ -36,7 +36,7 @@ unsafe impl<'umem> Send for UmemOwner<'umem> {}
 unsafe impl<'umem> Sync for UmemOwner<'umem> {}
 
 impl<'umem> UmemOwner<'umem> {
-    pub(super) fn new(
+    pub(crate) fn new(
         umem: *mut xsk_umem,
         mmap: Arc<MmapMut>,
         frame_size: usize,

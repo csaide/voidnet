@@ -20,7 +20,7 @@ pub struct UmemBuilder {
     completion_ring_size: u32,
     fill_ring_size: u32,
     frame_size: usize,
-    num_frames: usize,
+    num_frames: Option<usize>,
     busy_poll: bool,
     huge_tables: bool,
     unaligned: bool,
@@ -29,15 +29,14 @@ pub struct UmemBuilder {
 impl UmemBuilder {
     pub fn new() -> Self {
         let completion_ring_size = XSK_RING_CONS__DEFAULT_NUM_DESCS;
-        let fill_ring_size = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2;
+        let fill_ring_size = XSK_RING_PROD__DEFAULT_NUM_DESCS;
         let frame_size = XSK_UMEM__DEFAULT_FRAME_SIZE as usize;
-        let busy_poll = false;
         Self {
             completion_ring_size,
             fill_ring_size,
             frame_size,
-            num_frames: (completion_ring_size + fill_ring_size) as usize,
-            busy_poll,
+            num_frames: None,
+            busy_poll: false,
             huge_tables: false,
             unaligned: false,
         }
@@ -59,7 +58,7 @@ impl UmemBuilder {
     }
 
     pub fn num_frames(mut self, num_frames: usize) -> Self {
-        self.num_frames = num_frames;
+        self.num_frames = Some(num_frames);
         self
     }
 
@@ -88,6 +87,9 @@ impl UmemBuilder {
         if self.frame_size & (self.frame_size - 1) != 0 && !self.unaligned {
             return Err(Error::InvalidFrameSize(self.frame_size));
         }
+        if self.frame_size > XSK_UMEM__DEFAULT_FRAME_SIZE as usize {
+            return Err(Error::InvalidFrameSizeTooLarge(self.frame_size));
+        }
         if self.fill_ring_size & (self.fill_ring_size - 1) != 0 {
             return Err(Error::InvalidFillRingSize(self.fill_ring_size));
         }
@@ -95,11 +97,15 @@ impl UmemBuilder {
             return Err(Error::InvalidCompletionRingSize(self.completion_ring_size));
         }
 
+        let num_frames = self
+            .num_frames
+            .unwrap_or_else(|| (self.completion_ring_size + self.fill_ring_size) as usize);
+
         Umem::new(
             self.completion_ring_size,
             self.fill_ring_size,
             self.busy_poll,
-            self.num_frames,
+            num_frames,
             self.frame_size,
             self.huge_tables,
             self.unaligned,

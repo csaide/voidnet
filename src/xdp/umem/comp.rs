@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use libxdp_sys::xsk_ring_cons;
-
 use crate::xdp::{
     frame::FrameBuffer,
     futures::CompFuture,
@@ -11,21 +9,26 @@ use crate::xdp::{
 
 use super::UmemOwner;
 
+/// A completion queue is a ring of descriptors that are used to transfer packets from the kernel to the user. This is a thin wrapper around
+/// the xsk_ring_cons struct, exposing a safe API for interacting with the ring.
 pub struct CompletionQueue<'umem> {
     ring: Consumer<Init>,
     owner: Arc<UmemOwner<'umem>>,
 }
 
 impl<'umem> CompletionQueue<'umem> {
-    pub fn new(ring: Consumer<Init>, owner: Arc<UmemOwner<'umem>>) -> Self {
+    /// Creates a new completion queue.
+    pub(crate) fn new(ring: Consumer<Init>, owner: Arc<UmemOwner<'umem>>) -> Self {
         Self { ring, owner }
     }
 
+    /// Returns the file descriptor of the completion queue, which is actually the file descriptor of the UMEM.
     #[inline(always)]
-    pub fn fd(&self) -> i32 {
+    pub(crate) fn fd(&self) -> i32 {
         self.owner.fd()
     }
 
+    /// Processes the completion queue, allocating new frames from the frame stack and submitting them to the completion ring up to the size of the completion ring.
     #[inline(always)]
     pub fn process_queue<B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
         let (mut idx, ready) = self.ring.peek(batch.free_space() as u32);
@@ -44,6 +47,7 @@ impl<'umem> CompletionQueue<'umem> {
         self.ring.release(ready as u32);
     }
 
+    /// Processes the completion queue asynchronously, returning a future that will be ready when the completion queue is processed.
     #[inline(always)]
     pub fn process_queue_async<'que, 'sock, B: FrameBuffer<'umem>>(
         &'que mut self,
@@ -57,14 +61,5 @@ impl<'umem> CompletionQueue<'umem> {
             batch,
             expected,
         }
-    }
-
-    pub fn as_mut(&mut self) -> *mut xsk_ring_cons {
-        self.ring.as_mut_ptr()
-    }
-
-    #[inline(always)]
-    pub fn as_ref(&self) -> *const xsk_ring_cons {
-        self.ring.as_ptr()
     }
 }
