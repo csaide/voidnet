@@ -80,7 +80,7 @@ impl<'umem> FrameBuffer<'umem> for BasicFrameBuffer<'umem> {
 impl<'umem> FromIterator<Frame<'umem>> for BasicFrameBuffer<'umem> {
     fn from_iter<T: IntoIterator<Item = Frame<'umem>>>(iter: T) -> Self {
         let frames: VecDeque<Frame<'umem>> = iter.into_iter().collect();
-        let free_space = frames.capacity() - frames.len();
+        let free_space = 0;
         let num_frames = frames.len();
         Self {
             frames,
@@ -101,5 +101,127 @@ impl<'umem> Extend<Frame<'umem>> for BasicFrameBuffer<'umem> {
         self.free_space -= frames.len();
         self.num_frames += frames.len();
         self.frames.extend(frames);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_frame_buffer_new() {
+        let buffer = BasicFrameBuffer::new(10);
+        assert_eq!(buffer.free_space(), 10);
+        assert_eq!(buffer.num_frames(), 0);
+        assert_eq!(buffer.iter_frames().count(), 0);
+    }
+
+    #[test]
+    fn test_basic_frame_buffer_push() {
+        let mut buffer = BasicFrameBuffer::new(5);
+        let mut data1 = [1u8; 10];
+        let mut data2 = [2u8; 10];
+
+        let frame1 = Frame::new(100, &mut data1, 10, false);
+        let frame2 = Frame::new(200, &mut data2, 10, true);
+
+        buffer.push(frame1);
+        assert_eq!(buffer.num_frames(), 1);
+        assert_eq!(buffer.free_space(), 4);
+
+        buffer.push(frame2);
+        assert_eq!(buffer.num_frames(), 2);
+        assert_eq!(buffer.free_space(), 3);
+
+        let frames: Vec<_> = buffer.iter_frames().collect();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].addr(), 100);
+        assert_eq!(frames[1].addr(), 200);
+        assert!(frames[1].is_fragment());
+    }
+
+    #[test]
+    fn test_basic_frame_buffer_drain() {
+        let mut buffer = BasicFrameBuffer::new(5);
+        let mut data0 = [0u8; 10];
+        let mut data1 = [0u8; 10];
+        let mut data2 = [0u8; 10];
+
+        buffer.push(Frame::new(0, &mut data0, 10, false));
+        buffer.push(Frame::new(1, &mut data1, 10, false));
+        buffer.push(Frame::new(2, &mut data2, 10, false));
+
+        assert_eq!(buffer.num_frames(), 3);
+        assert_eq!(buffer.free_space(), 2);
+
+        {
+            let mut drained = buffer.drain(0..1);
+            assert_eq!(drained.len(), 1);
+            let frame = drained.next().unwrap();
+            assert_eq!(frame.addr(), 0);
+        }
+
+        assert_eq!(buffer.num_frames(), 2);
+        assert_eq!(buffer.free_space(), 3);
+
+        let remaining_addrs: Vec<_> = buffer.iter_frames().map(|f| f.addr()).collect();
+        assert_eq!(remaining_addrs, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_basic_frame_buffer_take_frames() {
+        let mut buffer = BasicFrameBuffer::new(5);
+        let mut data0 = [0u8; 10];
+        let mut data1 = [0u8; 10];
+
+        buffer.push(Frame::new(0, &mut data0, 10, false));
+        buffer.push(Frame::new(1, &mut data1, 10, false));
+
+        let drained: Vec<_> = buffer.take_frames().collect();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(buffer.num_frames(), 0);
+        assert_eq!(buffer.free_space(), 5);
+    }
+
+    #[test]
+    fn test_basic_frame_buffer_iter_mut() {
+        let mut buffer = BasicFrameBuffer::new(5);
+        let mut data = [0u8; 10];
+        buffer.push(Frame::new(1, &mut data, 10, false));
+
+        for frame in buffer.iter_frames_mut() {
+            frame.set_fragment(true);
+        }
+
+        assert!(buffer.iter_frames().next().unwrap().is_fragment());
+    }
+
+    #[test]
+    fn test_basic_frame_buffer_from_iter() {
+        let mut data0 = [0u8; 10];
+        let mut data1 = [0u8; 10];
+        let frames = vec![
+            Frame::new(1, &mut data0, 10, false),
+            Frame::new(2, &mut data1, 10, false),
+        ];
+
+        let buffer = BasicFrameBuffer::from_iter(frames);
+        assert_eq!(buffer.num_frames(), 2);
+        assert_eq!(buffer.free_space(), 0);
+    }
+
+    #[test]
+    fn test_basic_frame_buffer_extend() {
+        let mut buffer = BasicFrameBuffer::new(10);
+        let mut data0 = [0u8; 10];
+        let mut data1 = [0u8; 10];
+        let frames = vec![
+            Frame::new(1, &mut data0, 10, false),
+            Frame::new(2, &mut data1, 10, false),
+        ];
+
+        buffer.extend(frames);
+        assert_eq!(buffer.num_frames(), 2);
+        assert_eq!(buffer.free_space(), 8);
     }
 }

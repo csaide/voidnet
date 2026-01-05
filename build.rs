@@ -5,51 +5,23 @@ fn main() {
     println!("cargo::rerun-if-changed=bpf/xdp_kern.c");
     println!("cargo::rerun-if-env-changed=TARGET");
 
-    let kernel_version = Command::new("uname")
-        .arg("-r")
-        .output()
-        .expect("Failed executing uname: unable to determine kernel version");
-    if !kernel_version.status.success() {
-        eprintln!(
-            "Failed to get kernel version: {}",
-            String::from_utf8_lossy(&kernel_version.stderr)
-        );
-        std::process::exit(1);
-    }
-
-    let kernel_version = String::from_utf8(kernel_version.stdout)
-        .expect("Failed to parse kernel version from uname output: invalid UTF-8");
-
     let target = std::env::var("TARGET").unwrap();
-    let (target_arch, target_arch_triplet) = match target.as_str() {
-        "x86_64-unknown-linux-gnu" => ("x86", "x86_64-linux-gnu"),
-        "aarch64-unknown-linux-gnu" => ("aarch64", "aarch64-linux-gnu"),
+    let target_arch_triplet = match target.as_str() {
+        "x86_64-unknown-linux-gnu" => "x86_64-linux-gnu",
+        "aarch64-unknown-linux-gnu" => "aarch64-linux-gnu",
         _ => panic!(
             "Unsupported target: {}, only x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu are currently supported",
             target
         ),
     };
 
-    let args = vec![
-        "-target".to_string(),
-        "bpf".to_string(),
-        "-O2".to_string(),
-        "-g".to_string(),
-        format!(
-            "-I/lib/modules/{}/build/arch/{}/include",
-            kernel_version.trim(),
-            target_arch
-        ),
-        format!(
-            "-I/lib/modules/{}/build/arch/{}/include/uapi",
-            kernel_version.trim(),
-            target_arch
-        ),
-        format!("-I/usr/include/{}", target_arch_triplet),
-    ];
-
-    let output = Command::new("clang")
-        .args(&args)
+    let clang_cmd = std::env::var("CLANG").unwrap_or("clang".to_string());
+    let output = Command::new(clang_cmd)
+        .arg("-target")
+        .arg("bpf")
+        .arg("-O2")
+        .arg("-g")
+        .arg(format!("-I/usr/include/{}", target_arch_triplet))
         .arg("-c")
         .arg("bpf/xdp_kern.c")
         .arg("-o")
@@ -57,11 +29,9 @@ fn main() {
         .output()
         .expect("Failed to compile BPF program");
 
-    if !output.status.success() {
-        eprintln!(
-            "Failed to compile BPF program: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        std::process::exit(1);
-    }
+    assert!(
+        output.status.success(),
+        "Failed to compile BPF program: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

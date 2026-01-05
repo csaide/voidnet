@@ -67,7 +67,7 @@ fn worker_thread<'umem>(
         };
 
         for frame in frames.iter_frames_mut() {
-            unsafe { frame.copy_from(&data) };
+            frame.copy_from(&data);
         }
 
         match socket.send(&mut frames) {

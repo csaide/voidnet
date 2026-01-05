@@ -2,10 +2,7 @@
 # Assumes Linux kernel 6.18+ with BPF support
 
 CLANG ?= clang
-ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/')
 ARCH_TRIPLET := $(shell uname -m | sed 's/x86_64/x86_64-linux-gnu/' | sed 's/aarch64/aarch64-linux-gnu/')
-KERNEL_VERSION := $(shell uname -r)
-KERNEL_SRC := /lib/modules/$(KERNEL_VERSION)/build
 
 # BPF source files
 BPF_SRC := xdp_kern.c
@@ -14,9 +11,8 @@ BPF_OBJ := $(BPF_SRC:.c=.o)
 # Clang flags for BPF compilation
 CLANG_FLAGS := \
 	-target bpf \
-	-O2 -g \
-	-I$(KERNEL_SRC)/arch/$(ARCH)/include \
-	-I$(KERNEL_SRC)/arch/$(ARCH)/include/uapi \
+	-O2 \
+	-g \
 	-I/usr/include/$(ARCH_TRIPLET)
 
 .PHONY: all clean

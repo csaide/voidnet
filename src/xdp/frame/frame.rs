@@ -14,7 +14,7 @@ unsafe impl<'umem> Send for Frame<'umem> {}
 impl<'umem> Frame<'umem> {
     /// Create a new frame with the given address, data pointer, length, and capacity.
     pub(crate) fn new(addr: u64, data: &'umem mut [u8], len: usize, is_fragment: bool) -> Self {
-        debug_assert!(
+        assert!(
             data.len() > 0 && len <= data.len(),
             "len must be less than or equal to capacity, which must be greater than 0"
         );
@@ -68,10 +68,10 @@ impl<'umem> Frame<'umem> {
     /// This function does not check if the incoming slice like thing will fit in the frame, it also
     /// doesn't check if the incoming slice is valid in any way. We blindly copy data into the frame.
     #[inline]
-    pub unsafe fn copy_from<I: AsRef<[u8]>>(&mut self, incoming: I) {
+    pub fn copy_from<I: AsRef<[u8]>>(&mut self, incoming: I) {
         let incoming = incoming.as_ref();
 
-        debug_assert!(
+        assert!(
             self.data.len() >= incoming.len(),
             "incoming data length is greater than the frame capacity"
         );
@@ -94,5 +94,91 @@ impl<'umem> Deref for Frame<'umem> {
 impl<'umem> DerefMut for Frame<'umem> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.data[..self.len]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_frame_new() {
+        let mut data = [0u8; 100];
+        let frame = Frame::new(123, &mut data, 50, false);
+
+        assert_eq!(frame.addr(), 123);
+        assert_eq!(frame.len(), 50);
+        assert_eq!(frame.capacity(), 100);
+        assert!(!frame.is_fragment());
+    }
+
+    #[test]
+    #[should_panic(expected = "len must be less than or equal to capacity")]
+    fn test_frame_new_invalid_len() {
+        let mut data = [0u8; 10];
+        // len (11) > capacity (10)
+        let _ = Frame::new(0, &mut data, 11, false);
+    }
+
+    #[test]
+    #[should_panic(expected = "len must be less than or equal to capacity")]
+    fn test_frame_new_empty_data() {
+        let mut data = [];
+        // capacity is 0
+        let _ = Frame::new(0, &mut data, 0, false);
+    }
+
+    #[test]
+    fn test_frame_set_fragment() {
+        let mut data = [0u8; 10];
+        let mut frame = Frame::new(0, &mut data, 5, false);
+        assert!(!frame.is_fragment());
+        frame.set_fragment(true);
+        assert!(frame.is_fragment());
+    }
+
+    #[test]
+    fn test_frame_copy_from() {
+        let mut data = [0u8; 10];
+        let mut frame = Frame::new(0, &mut data, 0, false);
+
+        let incoming = [1, 2, 3, 4, 5];
+        frame.copy_from(&incoming);
+
+        assert_eq!(frame.len(), 5);
+        assert_eq!(&frame[..], &incoming);
+    }
+
+    #[test]
+    #[should_panic(expected = "incoming data length is greater than the frame capacity")]
+    fn test_frame_copy_from_overflow() {
+        let mut data = [0u8; 5];
+        let mut frame = Frame::new(0, &mut data, 0, false);
+
+        let incoming = [1, 2, 3, 4, 5, 6];
+        frame.copy_from(&incoming);
+    }
+
+    #[test]
+    fn test_frame_deref() {
+        let mut data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let frame = Frame::new(0, &mut data, 5, false);
+
+        // Should only see first 5 bytes
+        assert_eq!(frame.len(), 5);
+        assert_eq!(&*frame, &[1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_frame_deref_mut() {
+        let mut data = [0u8; 10];
+        let mut frame = Frame::new(0, &mut data, 5, false);
+
+        frame[0] = 42;
+        frame[4] = 99;
+
+        assert_eq!(data[0], 42);
+        assert_eq!(data[4], 99);
+        assert_eq!(data[5], 0); // Outside of len
     }
 }

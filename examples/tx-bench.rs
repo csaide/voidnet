@@ -111,7 +111,7 @@ fn main() {
         // here you can just set the frame metadata and avoid the copy if done outside the loop and you are simply re-sending the same
         // data.... But be ware this is where dragons live...
         for frame in write_frames.iter_frames_mut() {
-            unsafe { frame.copy_from(&packet_data) };
+            frame.copy_from(&packet_data);
         }
 
         // Send the prepared frames to the socket.

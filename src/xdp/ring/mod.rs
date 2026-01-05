@@ -4,13 +4,9 @@
 //! the fill and completion queues used in AF_XDP packet processing.
 
 mod consumer;
+mod marker;
 mod producer;
 
-/// A marker type for initialized rings.
-pub struct Init;
-
-/// A marker type for uninitialized rings.
-pub struct Uninit;
-
 pub use consumer::Consumer;
+pub use marker::{Init, Uninit};
 pub use producer::Producer;
