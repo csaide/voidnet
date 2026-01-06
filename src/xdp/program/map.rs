@@ -64,15 +64,6 @@ impl Map {
         K: Sized + Copy,
         V: Sized + Copy,
     {
-        debug_assert!(
-            std::mem::size_of::<K>() == self.info.key_size as usize,
-            "key size does not match map key size"
-        );
-        debug_assert!(
-            std::mem::size_of::<V>() == self.info.value_size as usize,
-            "value size does not match map value size"
-        );
-
         let ret = unsafe {
             bpf_map_update_elem(
                 bpf_map__fd(self.map),

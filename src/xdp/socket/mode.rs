@@ -44,3 +44,61 @@ impl FromStr for CopyMode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bind_mode_default_and_discriminants() {
+        assert_eq!(BindMode::default(), BindMode::Skb);
+
+        // Verify discriminants match kernel ABI flags
+        assert_eq!(BindMode::Skb as u32, XDP_FLAGS_SKB_MODE);
+        assert_eq!(BindMode::Driver as u32, XDP_FLAGS_DRV_MODE);
+        assert_eq!(BindMode::Hw as u32, XDP_FLAGS_HW_MODE);
+    }
+
+    #[test]
+    fn test_bind_mode_from_attach_mode() {
+        let cases = [
+            (AttachMode::Unspec, BindMode::Skb),
+            (AttachMode::Skb, BindMode::Skb),
+            (AttachMode::Native, BindMode::Driver),
+            (AttachMode::Hw, BindMode::Hw),
+        ];
+        for (attach, expected) in cases {
+            assert_eq!(BindMode::from(attach), expected);
+        }
+    }
+
+    #[test]
+    fn test_copy_mode_default_and_discriminants() {
+        assert_eq!(CopyMode::default(), CopyMode::Copy);
+
+        // Verify discriminants match kernel ABI flags
+        assert_eq!(CopyMode::Copy as u32, XDP_COPY);
+        assert_eq!(CopyMode::ZeroCopy as u32, XDP_ZEROCOPY);
+    }
+
+    #[test]
+    fn test_copy_mode_from_str_valid() {
+        assert_eq!("copy".parse::<CopyMode>().unwrap(), CopyMode::Copy);
+        assert_eq!("zero-copy".parse::<CopyMode>().unwrap(), CopyMode::ZeroCopy);
+    }
+
+    #[test]
+    fn test_copy_mode_from_str_invalid() {
+        // Invalid inputs: wrong case, typos, whitespace, empty
+        let invalid = ["Copy", "ZERO-COPY", "zerocopy", " copy", "copy ", ""];
+        for input in invalid {
+            let err = CopyMode::from_str(input).unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidCopyMode(s) if s == input),
+                "Expected InvalidCopyMode({:?}), got {:?}",
+                input,
+                err
+            );
+        }
+    }
+}

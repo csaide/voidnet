@@ -126,7 +126,7 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
             self.copy_mode,
             self.enable_fragmentation,
         )?;
-        self.ctx.register_socket(&socket).map(|_| socket)
+        self.ctx.register_socket(socket.fd()).map(|_| socket)
     }
 }
 
@@ -319,4 +319,464 @@ fn setup_busy_poll(fd: c_int, busy_poll_timeout_us: i32, batch_size: usize) -> R
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use crate::xdp::context::XdpContext;
+    use crate::xdp::frame::{BasicFrameBuffer, FrameBuffer};
+    use crate::xdp::program::AttachMode;
+    use crate::xdp::test_utils::TestVethPair;
+    use crate::xdp::umem::Umem;
+
+    use super::*;
+
+    /// Helper to build a minimal Ethernet frame with a payload.
+    /// Format: [dst MAC (6)] [src MAC (6)] [EtherType (2)] [payload]
+    fn build_ethernet_frame(dst_mac: &[u8; 6], src_mac: &[u8; 6], payload: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(14 + payload.len());
+        frame.extend_from_slice(dst_mac);
+        frame.extend_from_slice(src_mac);
+        // EtherType 0x0800 = IPv4, but we'll use a custom one for testing
+        frame.extend_from_slice(&[0x88, 0xB5]); // Local Experimental EtherType
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    /// Test that sends a packet from one side of a veth pair and receives it on the other.
+    #[test]
+    fn test_socket_send_recv_sync() {
+        // Create veth pair
+        let veth = TestVethPair::new().expect("failed to create veth pair");
+
+        // Create XDP contexts on both ends
+        let mut ctx_outer = XdpContext::new(veth.outer_name(), AttachMode::default(), false)
+            .expect("failed to create outer context");
+        let mut ctx_inner = XdpContext::new(veth.inner_name(), AttachMode::default(), false)
+            .expect("failed to create inner context");
+
+        // Create UMEM for outer socket (sender)
+        let (umem_outer, _fq_outer, mut cq_outer) = Umem::builder()
+            .num_frames(64)
+            .frame_size(4096)
+            .fill_ring_size(32)
+            .completion_ring_size(32)
+            .build()
+            .expect("failed to create outer umem");
+
+        // Create UMEM for inner socket (receiver)
+        let (umem_inner, mut fq_inner, _cq_inner) = Umem::builder()
+            .num_frames(64)
+            .frame_size(4096)
+            .fill_ring_size(32)
+            .completion_ring_size(32)
+            .build()
+            .expect("failed to create inner umem");
+
+        // Initialize frame buffers
+        let mut tx_buffer: BasicFrameBuffer<'_> = umem_outer.init_buffer().unwrap();
+        let mut rx_buffer: BasicFrameBuffer<'_> = umem_inner.init_buffer().unwrap();
+
+        // Create sockets
+        let mut socket_outer = Socket::builder(&mut ctx_outer, veth.outer_name(), 0)
+            .build(umem_outer.clone())
+            .expect("failed to create outer socket");
+
+        let mut socket_inner = Socket::builder(&mut ctx_inner, veth.inner_name(), 0)
+            .build(umem_inner.clone())
+            .expect("failed to create inner socket");
+
+        // Prime the receiver's fill queue so it can receive packets
+        // Take some frames and submit them to the fill queue
+        let rx_prime_count = rx_buffer.num_frames().min(32);
+        let mut prime_buffer = BasicFrameBuffer::new(rx_prime_count);
+        for frame in rx_buffer.drain(..rx_prime_count) {
+            prime_buffer.push(frame);
+        }
+        fq_inner.process_queue(&mut prime_buffer);
+        fq_inner
+            .maybe_wake(socket_inner.fd())
+            .expect("failed to wake fill queue");
+
+        // Build a test packet
+        let payload = b"Hello XDP Socket Test!";
+        let packet_data = build_ethernet_frame(
+            veth.inner_mac().as_bytes(),
+            veth.outer_mac().as_bytes(),
+            payload,
+        );
+
+        // Prepare a frame for sending
+        let mut send_buffer = BasicFrameBuffer::new(1);
+        let mut frame = tx_buffer.drain(..1).next().expect("no frames available");
+        frame.copy_from(&packet_data);
+        send_buffer.push(frame);
+
+        // Send the packet
+        let sent = socket_outer.send(&mut send_buffer).expect("send failed");
+        assert_eq!(sent, 1, "expected to send 1 frame");
+        assert_eq!(send_buffer.num_frames(), 0, "buffer should be drained");
+
+        // Wake the TX queue to actually transmit
+        socket_outer.maybe_wake().expect("failed to wake tx");
+
+        // Poll for received packet with timeout
+        let mut recv_buffer = BasicFrameBuffer::new(16);
+        let start = Instant::now();
+        let timeout = Duration::from_secs(5);
+        let mut received = false;
+
+        while start.elapsed() < timeout {
+            match socket_inner.recv(&mut recv_buffer) {
+                Ok(count) if count > 0 => {
+                    received = true;
+                    break;
+                }
+                _ => {
+                    // Try waking the fill queue periodically
+                    fq_inner.maybe_wake(socket_inner.fd()).ok();
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+
+        assert!(received, "did not receive packet within timeout");
+        assert!(
+            recv_buffer.num_frames() >= 1,
+            "expected at least 1 received frame"
+        );
+
+        // Verify the received packet matches what we sent
+        let recv_frame = recv_buffer.iter_frames().next().unwrap();
+        assert!(
+            recv_frame.len() >= packet_data.len(),
+            "received frame too short"
+        );
+        assert_eq!(
+            &recv_frame[..packet_data.len()],
+            &packet_data[..],
+            "packet data mismatch"
+        );
+
+        // Clean up: process completion queue to reclaim TX frame
+        let mut reclaim_buffer = BasicFrameBuffer::new(1);
+        cq_outer.process_queue(&mut reclaim_buffer);
+    }
+
+    /// Async version of test_socket_send_recv_sync using async methods.
+    #[test]
+    fn test_socket_send_recv_async() {
+        use futures::executor::block_on;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        // Simple timeout future wrapper
+        struct Timeout<F> {
+            future: F,
+            deadline: Instant,
+        }
+
+        impl<F: Future + Unpin> Future for Timeout<F> {
+            type Output = Option<F::Output>;
+
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                // Check timeout first
+                if Instant::now() >= self.deadline {
+                    return Poll::Ready(None);
+                }
+
+                // Poll the inner future
+                match Pin::new(&mut self.future).poll(cx) {
+                    Poll::Ready(result) => Poll::Ready(Some(result)),
+                    Poll::Pending => {
+                        // Schedule a wake-up for timeout check
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                }
+            }
+        }
+
+        fn with_timeout<F: Future + Unpin>(future: F, timeout: Duration) -> Timeout<F> {
+            Timeout {
+                future,
+                deadline: Instant::now() + timeout,
+            }
+        }
+
+        // Create veth pair
+        let veth = TestVethPair::new().expect("failed to create veth pair");
+
+        // Create XDP contexts on both ends
+        let mut ctx_outer = XdpContext::new(veth.outer_name(), AttachMode::default(), false)
+            .expect("failed to create outer context");
+        let mut ctx_inner = XdpContext::new(veth.inner_name(), AttachMode::default(), false)
+            .expect("failed to create inner context");
+
+        // Create UMEM for outer socket (sender)
+        let (umem_outer, _fq_outer, mut cq_outer) = Umem::builder()
+            .num_frames(64)
+            .frame_size(4096)
+            .fill_ring_size(32)
+            .completion_ring_size(32)
+            .build()
+            .expect("failed to create outer umem");
+
+        // Create UMEM for inner socket (receiver)
+        let (umem_inner, mut fq_inner, _cq_inner) = Umem::builder()
+            .num_frames(64)
+            .frame_size(4096)
+            .fill_ring_size(32)
+            .completion_ring_size(32)
+            .build()
+            .expect("failed to create inner umem");
+
+        // Initialize frame buffers
+        let mut tx_buffer: BasicFrameBuffer<'_> = umem_outer.init_buffer().unwrap();
+        let mut rx_buffer: BasicFrameBuffer<'_> = umem_inner.init_buffer().unwrap();
+
+        // Create sockets
+        let mut socket_outer = Socket::builder(&mut ctx_outer, veth.outer_name(), 0)
+            .build(umem_outer.clone())
+            .expect("failed to create outer socket");
+
+        let mut socket_inner = Socket::builder(&mut ctx_inner, veth.inner_name(), 0)
+            .build(umem_inner.clone())
+            .expect("failed to create inner socket");
+
+        // Prime the receiver's fill queue using async method
+        let rx_prime_count = rx_buffer.num_frames().min(32);
+        let mut prime_buffer = BasicFrameBuffer::new(rx_prime_count);
+        for frame in rx_buffer.drain(..rx_prime_count) {
+            prime_buffer.push(frame);
+        }
+
+        // Use async fill queue processing
+        block_on(fq_inner.process_queue_async(&mut prime_buffer))
+            .expect("failed to process fill queue async");
+
+        fq_inner
+            .maybe_wake(socket_inner.fd())
+            .expect("failed to wake fill queue");
+
+        // Build a test packet
+        let payload = b"Hello XDP Socket Test Async!";
+        let packet_data = build_ethernet_frame(
+            veth.inner_mac().as_bytes(),
+            veth.outer_mac().as_bytes(),
+            payload,
+        );
+
+        // Prepare a frame for sending
+        let mut send_buffer = BasicFrameBuffer::new(1);
+        let mut frame = tx_buffer.drain(..1).next().expect("no frames available");
+        frame.copy_from(&packet_data);
+        send_buffer.push(frame);
+
+        // Send the packet using async method
+        let sent = block_on(socket_outer.send_async(&mut send_buffer)).expect("async send failed");
+        assert_eq!(sent, 1, "expected to send 1 frame");
+        assert_eq!(send_buffer.num_frames(), 0, "buffer should be drained");
+
+        // Wake the TX queue to actually transmit
+        socket_outer.maybe_wake().expect("failed to wake tx");
+
+        // Receive the packet using async method with timeout
+        let mut recv_buffer = BasicFrameBuffer::new(16);
+        let timeout = Duration::from_secs(5);
+
+        // We need to poll recv_async with a timeout
+        // Since recv_async will block waiting for packets, we use our timeout wrapper
+        let recv_future = socket_inner.recv_async(&mut recv_buffer);
+        let result = block_on(with_timeout(recv_future, timeout));
+
+        match result {
+            Some(Ok(count)) => {
+                assert!(count > 0, "expected to receive at least 1 frame");
+            }
+            Some(Err(e)) => {
+                panic!("async recv failed with error: {:?}", e);
+            }
+            None => {
+                panic!("async recv timed out after {:?}", timeout);
+            }
+        }
+
+        assert!(
+            recv_buffer.num_frames() >= 1,
+            "expected at least 1 received frame"
+        );
+
+        // Verify the received packet matches what we sent
+        let recv_frame = recv_buffer.iter_frames().next().unwrap();
+        assert!(
+            recv_frame.len() >= packet_data.len(),
+            "received frame too short"
+        );
+        assert_eq!(
+            &recv_frame[..packet_data.len()],
+            &packet_data[..],
+            "packet data mismatch"
+        );
+
+        // Clean up: use async completion queue processing
+        // Split the socket to get access to SocketTx for the CompFuture
+        let (_, _, mut tx) = socket_outer.split();
+        let mut reclaim_buffer = BasicFrameBuffer::new(1);
+        block_on(cq_outer.process_queue_async(&mut reclaim_buffer, 1, &mut tx))
+            .expect("failed to process completion queue async");
+    }
+
+    /// Test socket creation and basic properties.
+    #[test]
+    fn test_socket_creation() {
+        let veth = TestVethPair::new().expect("failed to create veth pair");
+
+        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false)
+            .expect("failed to create context");
+
+        let (umem, _fq, _cq) = Umem::builder()
+            .num_frames(16)
+            .frame_size(4096)
+            .fill_ring_size(8)
+            .completion_ring_size(8)
+            .build()
+            .expect("failed to create umem");
+
+        let socket = Socket::builder(&mut ctx, veth.outer_name(), 0)
+            .rx_ring_size(8)
+            .tx_ring_size(8)
+            .build(umem)
+            .expect("failed to create socket");
+
+        // Socket should have valid fd
+        assert!(socket.fd() >= 0, "socket fd should be valid");
+
+        // Context should now have 1 socket registered
+        assert_eq!(ctx.num_sockets(), 1, "context should have 1 socket");
+    }
+
+    /// Test socket split into owner, rx, tx components.
+    #[test]
+    fn test_socket_split() {
+        let veth = TestVethPair::new().expect("failed to create veth pair");
+
+        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false)
+            .expect("failed to create context");
+
+        let (umem, _fq, _cq) = Umem::builder()
+            .num_frames(16)
+            .frame_size(4096)
+            .fill_ring_size(8)
+            .completion_ring_size(8)
+            .build()
+            .expect("failed to create umem");
+
+        let socket = Socket::builder(&mut ctx, veth.outer_name(), 0)
+            .build(umem)
+            .expect("failed to create socket");
+
+        let original_fd = socket.fd();
+        let (owner, _rx, _tx) = socket.split();
+
+        // Owner should have the same fd
+        assert_eq!(owner.fd(), original_fd, "owner fd should match original");
+    }
+
+    /// Test that recv returns WouldBlock when no packets are available.
+    #[test]
+    fn test_socket_recv_would_block() {
+        let veth = TestVethPair::new().expect("failed to create veth pair");
+
+        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false)
+            .expect("failed to create context");
+
+        let (umem, mut fq, _cq) = Umem::builder()
+            .num_frames(16)
+            .frame_size(4096)
+            .fill_ring_size(8)
+            .completion_ring_size(8)
+            .build()
+            .expect("failed to create umem");
+
+        let mut buffer: BasicFrameBuffer<'_> = umem.init_buffer().unwrap();
+
+        let mut socket = Socket::builder(&mut ctx, veth.outer_name(), 0)
+            .build(umem)
+            .expect("failed to create socket");
+
+        // Prime fill queue
+        let mut prime_buffer = BasicFrameBuffer::new(8);
+        for frame in buffer.drain(..8) {
+            prime_buffer.push(frame);
+        }
+        fq.process_queue(&mut prime_buffer);
+
+        // Try to receive with no packets pending
+        let mut recv_buffer = BasicFrameBuffer::new(8);
+        let result = socket.recv(&mut recv_buffer);
+
+        // Should return WouldBlock (Err)
+        assert!(
+            result.is_err(),
+            "recv should return WouldBlock when no packets"
+        );
+    }
+
+    /// Test that send returns WouldBlock when TX ring is full.
+    #[test]
+    fn test_socket_send_would_block_on_full_ring() {
+        let veth = TestVethPair::new().expect("failed to create veth pair");
+
+        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false)
+            .expect("failed to create context");
+
+        // Create socket with tiny TX ring
+        let (umem, _fq, _cq) = Umem::builder()
+            .num_frames(8)
+            .frame_size(4096)
+            .fill_ring_size(4)
+            .completion_ring_size(4)
+            .build()
+            .expect("failed to create umem");
+
+        let mut buffer: BasicFrameBuffer<'_> = umem.init_buffer().unwrap();
+
+        let mut socket = Socket::builder(&mut ctx, veth.outer_name(), 0)
+            .tx_ring_size(4)
+            .build(umem)
+            .expect("failed to create socket");
+
+        // Fill the TX ring completely
+        let mut send_buffer = BasicFrameBuffer::new(4);
+        for frame in buffer.drain(..4) {
+            let mut f = frame;
+            f.copy_from(&[0u8; 64]);
+            send_buffer.push(f);
+        }
+
+        // First send should succeed
+        let sent = socket
+            .send(&mut send_buffer)
+            .expect("first send should work");
+        assert_eq!(sent, 4, "should send 4 frames");
+
+        // Prepare more frames (remaining 4)
+        let mut more_buffer = BasicFrameBuffer::new(4);
+        for frame in buffer.drain(..) {
+            let mut f = frame;
+            f.copy_from(&[0u8; 64]);
+            more_buffer.push(f);
+        }
+
+        // Second send should return WouldBlock because ring is full
+        let result = socket.send(&mut more_buffer);
+        assert!(
+            result.is_err(),
+            "send should return WouldBlock when ring is full"
+        );
+    }
 }
