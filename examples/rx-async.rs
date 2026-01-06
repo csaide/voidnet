@@ -102,7 +102,9 @@ async fn main() {
     // This is where the first part of the invariant above comes into play because our num_frames is the same as the fill ring size,
     // the initial_frames buffer will be empty at the end of this call.
     let mut frames = umem.init_buffer::<BasicFrameBuffer>().unwrap();
-    fq.process_queue(&mut frames);
+    fq.process_queue_async(&mut frames, &[socket.fd()])
+        .await
+        .unwrap();
 
     while !exit.load(Ordering::Relaxed) {
         // Start by reading some frames from the socket. The result of this call is guaranteed to be between 1 and the batch size.
@@ -132,13 +134,10 @@ async fn main() {
         //   - See the [examples/echo.rs](examples/echo.rs) example for a full end to end zero copy example.
         // - Return the data to the kernel by means of the fill queue. Which is what will be doing here.
 
-        // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
-        //
-        // Note: Errors here are fatal and should cause the program to exit, or reset the XDP state from scratch.
-        fq.maybe_wake(socket.fd()).unwrap();
-
         // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
-        fq.process_queue(&mut frames);
+        fq.process_queue_async(&mut frames, &[socket.fd()])
+            .await
+            .expect("Failed to process fill queue");
 
         // Maybe print the stats for this iteration.
         stats.maybe_print();

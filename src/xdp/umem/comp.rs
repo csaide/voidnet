@@ -4,7 +4,6 @@ use crate::xdp::{
     frame::FrameBuffer,
     futures::CompFuture,
     ring::{Consumer, Init},
-    socket::SocketTx,
 };
 
 use super::UmemOwner;
@@ -49,15 +48,13 @@ impl<'umem> CompletionQueue<'umem> {
 
     /// Processes the completion queue asynchronously, returning a future that will be ready when the completion queue is processed.
     #[inline(always)]
-    pub fn process_queue_async<'que, 'sock, B: FrameBuffer<'umem>>(
+    pub fn process_queue_async<'que, B: FrameBuffer<'umem>>(
         &'que mut self,
         batch: B,
         expected: usize,
-        socket: &'sock mut SocketTx<'umem>,
-    ) -> CompFuture<'que, 'umem, 'sock, B> {
+    ) -> CompFuture<'que, 'umem, B> {
         CompFuture {
             completion_queue: self,
-            socket,
             batch,
             expected,
         }

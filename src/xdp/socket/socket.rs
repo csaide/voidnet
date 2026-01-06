@@ -555,12 +555,8 @@ mod tests {
         }
 
         // Use async fill queue processing
-        block_on(fq_inner.process_queue_async(&mut prime_buffer))
+        block_on(fq_inner.process_queue_async(&mut prime_buffer, &[socket_inner.fd()]))
             .expect("failed to process fill queue async");
-
-        fq_inner
-            .maybe_wake(socket_inner.fd())
-            .expect("failed to wake fill queue");
 
         // Build a test packet
         let payload = b"Hello XDP Socket Test Async!";
@@ -580,9 +576,6 @@ mod tests {
         let sent = block_on(socket_outer.send_async(&mut send_buffer)).expect("async send failed");
         assert_eq!(sent, 1, "expected to send 1 frame");
         assert_eq!(send_buffer.num_frames(), 0, "buffer should be drained");
-
-        // Wake the TX queue to actually transmit
-        socket_outer.maybe_wake().expect("failed to wake tx");
 
         // Receive the packet using async method with timeout
         let mut recv_buffer = BasicFrameBuffer::new(16);
@@ -624,9 +617,11 @@ mod tests {
 
         // Clean up: use async completion queue processing
         // Split the socket to get access to SocketTx for the CompFuture
-        let (_, _, mut tx) = socket_outer.split();
+        let (_, _, tx) = socket_outer.split();
+        tx.maybe_wake().expect("failed to wake tx");
+
         let mut reclaim_buffer = BasicFrameBuffer::new(1);
-        block_on(cq_outer.process_queue_async(&mut reclaim_buffer, 1, &mut tx))
+        block_on(cq_outer.process_queue_async(&mut reclaim_buffer, 1))
             .expect("failed to process completion queue async");
     }
 

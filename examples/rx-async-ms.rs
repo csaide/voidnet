@@ -97,13 +97,9 @@ async fn umem_task<'umem>(
     fds: Vec<c_int>,
 ) {
     while !exit.load(Ordering::Relaxed) {
-        for fd in fds.iter() {
-            fq.maybe_wake(*fd).unwrap();
-        }
-
         {
             let guard = frame_stack.lock().await;
-            fq.process_queue(guard);
+            fq.process_queue_async(guard, &fds).await.unwrap();
         }
 
         tokio::task::yield_now().await;

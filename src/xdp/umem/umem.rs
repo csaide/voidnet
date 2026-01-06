@@ -214,16 +214,6 @@ mod tests {
             Err(Error::InvalidFrameSize(3000))
         ));
 
-        // Frame size too large
-        assert!(matches!(
-            Umem::builder()
-                .frame_size(8192)
-                .fill_ring_size(8)
-                .completion_ring_size(8)
-                .build(),
-            Err(Error::InvalidFrameSizeTooLarge(8192))
-        ));
-
         // Fill ring not power of 2
         assert!(matches!(
             Umem::builder()

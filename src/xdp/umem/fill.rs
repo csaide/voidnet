@@ -15,7 +15,7 @@ use super::UmemOwner;
 /// A fill queue is a ring of descriptors that are used to transfer packets from the user to the kernel. This is a thin wrapper around
 /// the xsk_ring_prod struct, exposing a safe API for interacting with the ring.
 pub struct FillQueue<'umem> {
-    _owner: Arc<UmemOwner<'umem>>,
+    owner: Arc<UmemOwner<'umem>>,
     ring: Producer<Init>,
     busy_poll: bool,
 }
@@ -25,14 +25,14 @@ impl<'umem> FillQueue<'umem> {
     pub(crate) fn new(ring: Producer<Init>, owner: Arc<UmemOwner<'umem>>, busy_poll: bool) -> Self {
         Self {
             ring,
-            _owner: owner,
+            owner,
             busy_poll,
         }
     }
 
     #[inline(always)]
     pub(crate) fn fd(&self) -> i32 {
-        self._owner.fd()
+        self.owner.fd()
     }
 
     /// Returns the size of the fill ring.
@@ -80,13 +80,15 @@ impl<'umem> FillQueue<'umem> {
 
     /// Processes the fill queue asynchronously, returning a future that will be ready when the fill queue is processed.
     #[inline(always)]
-    pub fn process_queue_async<B: FrameBuffer<'umem>>(
+    pub fn process_queue_async<'fd, B: FrameBuffer<'umem>>(
         &mut self,
         batch: B,
-    ) -> ProcessFillQueueFuture<'_, 'umem, B> {
+        fds: &'fd [i32],
+    ) -> ProcessFillQueueFuture<'_, 'umem, 'fd, B> {
         ProcessFillQueueFuture {
             fill_queue: self,
             batch,
+            fds,
         }
     }
 }

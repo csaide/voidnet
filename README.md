@@ -139,6 +139,7 @@ See the [`examples/`](examples/) directory for more:
 | `rx-async` | Async packet reception with Tokio |
 | `rx-bench` | RX throughput benchmarking |
 | `rx-mt` | Multi-threaded RX throughput benchmarking |
+| `tx-async` | Async packet sending with Tokio |
 | `tx-bench` | TX throughput benchmarking |
 | `tx-mt` | Multi-threaded TX throughput benchmarking |
 

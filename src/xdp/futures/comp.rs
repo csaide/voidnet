@@ -3,26 +3,23 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketTx, umem::CompletionQueue};
+use crate::xdp::{error::Result, frame::FrameBuffer, umem::CompletionQueue};
 
 use super::get_poller;
 
-pub struct CompFuture<'que, 'umem, 'sock, B: FrameBuffer<'umem>> {
+pub struct CompFuture<'que, 'umem, B: FrameBuffer<'umem>> {
     pub(crate) completion_queue: &'que mut CompletionQueue<'umem>,
-    pub(crate) socket: &'sock mut SocketTx<'umem>,
     pub(crate) batch: B,
     pub(crate) expected: usize,
 }
 
-impl<'a, 'owner, 'b, B: FrameBuffer<'owner>> Future for CompFuture<'a, 'owner, 'b, B> {
+impl<'que, 'umem, B: FrameBuffer<'umem>> Future for CompFuture<'que, 'umem, B> {
     type Output = Result<()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: We guarantee not to move self, just access its fields.
+        // Those accesses are also guaranteed to not move self or the fields themselves.
         let this = unsafe { self.get_unchecked_mut() };
-
-        if let Err(e) = this.socket.maybe_wake() {
-            return Poll::Ready(Err(e));
-        }
 
         this.completion_queue.process_queue(&mut this.batch);
         if this.batch.num_frames() < this.expected {

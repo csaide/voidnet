@@ -39,7 +39,7 @@ impl<'umem> SocketRx<'umem> {
             let desc = self.ring.rx_desc(idx_rx);
             // SAFETY: The address/length/options are valid because it is from the RX ring and kernel guarantees them.
             batch.push(self.socket.umem().to_frame(
-                xsk_umem_extract_addr(desc.addr),
+                desc.addr & XSK_UNALIGNED_BUF_ADDR_MASK,
                 desc.len as usize,
                 desc.options & XDP_PKT_CONTD == XDP_PKT_CONTD,
             ));
@@ -57,9 +57,4 @@ impl<'umem> SocketRx<'umem> {
             batch,
         }
     }
-}
-
-#[inline(always)]
-pub fn xsk_umem_extract_addr(addr: u64) -> u64 {
-    addr & XSK_UNALIGNED_BUF_ADDR_MASK
 }
