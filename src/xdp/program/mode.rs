@@ -7,7 +7,7 @@ use libxdp_sys::{
 
 use crate::xdp::error::{Error, Result};
 
-/// The mode in which the XDP program should be attached to the network interface. This is a wrapper around the [xdp_attach_mode] enum.
+/// The mode in which the XDP program should be attached to the network interface. This is a wrapper around the XDP attach mode enum.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum AttachMode {

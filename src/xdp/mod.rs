@@ -1,6 +1,6 @@
 pub mod context;
 pub mod error;
-pub mod flags;
+pub(crate) mod flags;
 pub mod frame;
 pub mod futures;
 pub mod program;

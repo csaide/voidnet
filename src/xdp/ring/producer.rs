@@ -54,7 +54,7 @@ impl Producer<Uninit> {
         }
     }
 
-    /// Assume the producer has been initialized by the kernel, returning a wrapped Producer<Init> which can be used to access the ring safely.
+    /// Assume the producer has been initialized by the kernel, returning a wrapped [`Producer<Init>`] which can be used to access the ring safely.
     ///
     /// # Safety
     ///

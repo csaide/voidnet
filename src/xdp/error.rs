@@ -1,9 +1,14 @@
+//! XDP error handling types and helpers.
+
 use errno::Errno;
 use libxdp_sys::libxdp_strerror;
 use thiserror::Error;
 
-/// A simple type alias for the result type of the XDP subsystem, this is used to simplify the error handling code.
+/// A simple [`std::result::Result`] type alias for the result type of the XDP subsystem, this is used to simplify the error handling code.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// A simple [`std::result::Result`] type alias for non-blocking operations to use, that doesn't require any cost in the error case.
+pub type NonBlocking<T> = std::result::Result<T, WouldBlock>;
 
 /// Overall XDP subsystem error type, these errors are generally returned on creation or initialization of the various components in the XDP subsystem.
 #[derive(Error, Debug)]
@@ -34,10 +39,6 @@ pub enum Error {
         "failed to create umem: invalid frame size: {0}: must be a power of 2 or unaligned must be enabled"
     )]
     InvalidFrameSize(usize),
-    #[error(
-        "failed while creating umem: invalid frame size: {0}: must be less than or equal to the page size"
-    )]
-    InvalidFrameSizeTooLarge(usize),
     #[error("failed while creating umem: invalid fill ring size: {0}: must be a power of 2")]
     InvalidFillRingSize(u32),
     #[error("failed while creating umem: invalid completion ring size: {0}: must be a power of 2")]
@@ -75,9 +76,7 @@ pub enum Error {
 #[error("network I/O error: would block")]
 pub struct WouldBlock;
 
-/// A simple type alias for non-blocking operations to use, that doesn't require any cost in the error case.
-pub type NonBlocking<T> = std::result::Result<T, WouldBlock>;
-
+/// A helper function to get the error message from the XDP subsystem, this is used to simplify the error handling code.
 pub fn get_xdp_error_message(err: i32) -> String {
     let mut buf = [0; 1024];
     unsafe { libxdp_strerror(err, buf.as_mut_ptr(), buf.len()) };

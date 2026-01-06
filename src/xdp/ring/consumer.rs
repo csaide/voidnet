@@ -54,7 +54,7 @@ impl Consumer<Uninit> {
         }
     }
 
-    /// Assume the consumer has been initialized by the kernel, returning a wrapped Consumer<Init> which can be used to access the ring safely.
+    /// Assume the consumer has been initialized by the kernel, returning a wrapped [`Consumer<Init>`] which can be used to access the ring safely.
     ///
     /// # Safety
     ///

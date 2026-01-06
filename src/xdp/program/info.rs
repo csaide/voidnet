@@ -6,7 +6,7 @@ pub const NETDEV_XDP_ACT_HW_OFFLOAD: u64 = 16;
 pub const NETDEV_XDP_ACT_RX_SG: u64 = 32;
 pub const NETDEV_XDP_ACT_NDO_XMIT_SG: u64 = 64;
 
-/// A wrapper around the [bpf_xdp_query_info] struct, this exposes a safe API for querying the XDP program information.
+/// A wrapper around the XDP query info struct, this exposes a safe API for querying the XDP program information.
 #[repr(C)]
 pub struct XdpInfo {
     /// The size of the [XdpInfo] struct.

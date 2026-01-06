@@ -3,42 +3,43 @@ use crate::xdp::{
     program::{AttachMode, Map, XdpInfo, XdpProgram},
 };
 
-// We ship our little XDP router directly embedded in this library as raw ELF data.
+/// Embedded XDP BPF program for round-robin packet routing to AF_XDP sockets.
 static XDP_PROG_DATA: &'static [u8] = include_bytes!("../../../bpf/xdp_kern.o");
 
-/// A context wraps up the XDP program and its associated state and maps. This is the primary entrypoint into the XDP subsystem.
+/// Manages the XDP program lifecycle and socket registration.
+///
+/// See the [module documentation](crate::xdp::context) for usage examples.
+///
+/// # Socket Registration
+///
+/// Sockets are registered via [`Socket::builder`](crate::xdp::socket::Socket::builder),
+/// which updates the BPF maps so the kernel can route packets using round-robin
+/// distribution across registered sockets.
 pub struct XdpContext {
+    /// BPF map containing the `num_sockets` counter in the program's `.bss` section.
     data_map: Map,
+    /// BPF map array storing socket file descriptors indexed by socket number.
     xsks_map: Map,
+    /// Current count of registered sockets; used as the next index in `xsks_map`.
     num_sockets: u32,
+    /// The loaded and attached XDP program.
     program: XdpProgram,
 }
 
 impl XdpContext {
-    /// Creates a new XdpContext and attaches the internal XDP program to the given intreface name. Optionally enabling fragmentation.
+    /// Creates a new context and attaches the XDP program to the interface.
     ///
-    /// Note: fragmentation support will silently be ignored if the driver of the given interface does not support it.
+    /// # Arguments
+    ///
+    /// * `if_name` - Network interface name (e.g., `"eth0"`)
+    /// * `attach_mode` - How to attach; use `AttachMode::default()` for auto-selection
+    /// * `enable_fragmentation` - Enable multi-buffer support (requires driver support;
+    ///   silently ignored if unsupported—check [`XdpInfo::fragmentation_support()`])
+    ///
+    /// [`XdpInfo::fragmentation_support()`]: crate::xdp::program::XdpInfo::fragmentation_support
     pub fn new(if_name: &str, attach_mode: AttachMode, enable_fragmentation: bool) -> Result<Self> {
         let program = XdpProgram::new(XDP_PROG_DATA, if_name, attach_mode, enable_fragmentation)?;
 
-        XdpContext::with_compiled_program(program)
-    }
-
-    /// Creates a new XdpContext and attaches the given user supplied pre-compiled XDP program to the given intreface name. Optionally enabling fragmentation.
-    ///
-    /// Note: fragmentation support will silently be ignored if the driver of the given interface does not support it.
-    pub fn with_program(
-        program_data: &[u8],
-        if_name: &str,
-        attach_mode: AttachMode,
-        enable_fragmentation: bool,
-    ) -> Result<Self> {
-        let program = XdpProgram::new(program_data, if_name, attach_mode, enable_fragmentation)?;
-
-        XdpContext::with_compiled_program(program)
-    }
-
-    fn with_compiled_program(program: XdpProgram) -> Result<Self> {
         let data_map = program.find_map(".bss")?;
         let xsks_map = program.find_map("xsks_map")?;
 
@@ -50,32 +51,33 @@ impl XdpContext {
         })
     }
 
-    /// Returns the attach mode of the XDP program.
+    /// Returns the actual attach mode used (may differ from requested if `Unspec` was used).
     pub fn attach_mode(&self) -> AttachMode {
         self.program.attach_mode()
     }
 
-    /// Returns the information about the XDP program and its associated features.
+    /// Returns interface capabilities (MTU, zero-copy support, fragmentation, etc.).
     pub fn info(&self) -> &XdpInfo {
         self.program.info()
     }
 
-    /// Registers a new socket with the XDP program, this will update the xsks_map and the num_sockets counter in the XDP program's .bss map.
-    pub fn register_socket(&mut self, fd: i32) -> Result<()> {
+    pub(crate) fn register_socket(&mut self, fd: i32) -> Result<()> {
         let loc = self.num_sockets;
         self.num_sockets += 1;
 
         // Update our xsks_map with the socket's file descriptor.
+        // SAFETY: The map was created with u32 keys and i32 (fd) values.
+        // The `loc` index is valid as it's derived from our internal counter.
         unsafe { self.xsks_map.update_elem(&loc, &fd)? };
 
         const KEY: u32 = 0;
         // Update our num_sockets counter in the XDP program's .bss map.
+        // SAFETY: The .bss map contains a u32 at key 0 by program design.
         unsafe { self.data_map.update_elem(&KEY, &self.num_sockets)? };
 
         Ok(())
     }
 
-    /// Returns the current socket count registered with this context.
     #[cfg(test)]
     pub(crate) fn num_sockets(&self) -> u32 {
         self.num_sockets
