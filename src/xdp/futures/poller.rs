@@ -29,7 +29,7 @@ pub struct Poller {
     poll_fd: i32,
     timeout_ms: i32,
     max_events: usize,
-    wakers: DashMap<u64, Waker>,
+    wakers: DashMap<u64, Vec<Waker>>,
 }
 
 impl Poller {
@@ -71,11 +71,11 @@ impl Poller {
     pub fn register_waker(&self, fd: i32, waker: &Waker) -> Result<()> {
         match self.wakers.entry(fd as u64) {
             Entry::Occupied(mut entry) => {
-                entry.get_mut().clone_from(&waker);
+                entry.get_mut().push(waker.clone());
             }
             Entry::Vacant(entry) => {
                 self.register_socket(fd)?;
-                entry.insert(waker.clone());
+                entry.insert(vec![waker.clone()]);
             }
         }
         Ok(())
@@ -103,9 +103,11 @@ impl Poller {
             unsafe { events.set_len(n as usize) };
 
             for event in events.drain(..) {
-                if let Some((_, waker)) = self.wakers.remove(&event.u64) {
+                if let Some((_, wakers)) = self.wakers.remove(&event.u64) {
                     self.deregister_socket(event.u64 as i32)?;
-                    waker.wake();
+                    for waker in wakers {
+                        waker.wake();
+                    }
                 }
             }
         }

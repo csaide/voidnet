@@ -4,16 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crossbeam-utils = { version = "0.8" }
-dashmap = { version = "6.1" }
-errno = { version = "0.3" }
-futures = { version = "0.3" }
-libc = { version = "0.2" }
-libxdp-sys = { version = "=0.2.2" }                   # Latest version of this library has a broken build....
-memmap2 = { version = "0.9" }
-neli = { version = "0.7" }
-thiserror = { version = "2" }
-zerocopy = { version = "0.8", features = ["derive"] }
+dashmap = { version = "6.1", default-features = false }
+errno = { version = "0.3", default-features = false }
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+libc = { version = "0.2", default-features = false }
+libxdp-sys = { version = "=0.2.2", default-features = false }                    # Latest version of this library has a broken build....
+memmap2 = { version = "0.9", default-features = false }
+neli = { version = "0.7", default-features = false, features = ["sync"] }
+thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
 clap = { version = "4.5", features = ["derive", "cargo"] }

@@ -87,9 +87,6 @@ impl UmemBuilder {
         if self.frame_size & (self.frame_size - 1) != 0 && !self.unaligned {
             return Err(Error::InvalidFrameSize(self.frame_size));
         }
-        if self.frame_size > XSK_UMEM__DEFAULT_FRAME_SIZE as usize {
-            return Err(Error::InvalidFrameSizeTooLarge(self.frame_size));
-        }
         if self.fill_ring_size & (self.fill_ring_size - 1) != 0 {
             return Err(Error::InvalidFillRingSize(self.fill_ring_size));
         }
