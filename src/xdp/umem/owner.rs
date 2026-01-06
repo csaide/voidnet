@@ -60,8 +60,8 @@ impl<'umem> UmemOwner<'umem> {
     pub(crate) fn to_frame(&self, addr: u64, len: usize, is_fragment: bool) -> Frame<'umem> {
         debug_assert!(len <= self.frame_size, "len is greater than the frame size");
         debug_assert!(
-            addr + len as u64 <= self.mmap.len() as u64,
-            "addr + len is greater than the mmap length"
+            addr + self.frame_size as u64 <= self.mmap.len() as u64,
+            "addr + frame size is greater than the mmap length"
         );
 
         Frame::new(
@@ -103,5 +103,102 @@ impl<'umem> Drop for UmemOwner<'umem> {
         unsafe {
             xsk_umem__delete(self.umem);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xdp::frame::BasicFrameBuffer;
+    use crate::xdp::umem::Umem;
+    use std::thread;
+
+    fn create_umem<'umem>(num_frames: usize, frame_size: usize) -> Arc<UmemOwner<'umem>> {
+        Umem::builder()
+            .num_frames(num_frames)
+            .frame_size(frame_size)
+            .fill_ring_size(num_frames as u32)
+            .completion_ring_size(num_frames as u32)
+            .build()
+            .expect("UMEM creation failed")
+            .0
+    }
+
+    #[test]
+    fn test_accessors() {
+        let owner = create_umem(4, 4096);
+
+        assert!(owner.fd() >= 0);
+        assert!(!owner.as_ptr().is_null());
+    }
+
+    #[test]
+    fn test_init_buffer() {
+        let owner = create_umem(4, 2048);
+
+        // First call succeeds
+        let buffer: BasicFrameBuffer<'_> = owner.init_buffer().unwrap();
+        assert_eq!(buffer.num_frames(), 4);
+
+        // Verify frame properties
+        for (i, frame) in buffer.iter_frames().enumerate() {
+            assert_eq!(frame.addr(), (i as u64) * 2048);
+            assert_eq!(frame.len(), 0);
+            assert_eq!(frame.capacity(), 2048);
+            assert!(!frame.is_fragment());
+        }
+
+        // Subsequent calls return None (one-shot)
+        assert!(owner.init_buffer::<BasicFrameBuffer<'_>>().is_none());
+    }
+
+    #[test]
+    fn test_to_frame() {
+        let owner = create_umem(4, 4096);
+
+        // Test non-zero len and is_fragment=true (not covered by init_buffer)
+        let frame = owner.to_frame(4096, 1500, true);
+
+        assert_eq!(frame.addr(), 4096);
+        assert_eq!(frame.len(), 1500);
+        assert!(frame.is_fragment());
+        assert_eq!(frame.capacity(), 4096);
+    }
+
+    #[test]
+    fn test_frame_memory() {
+        let owner = create_umem(2, 4096);
+        let mut buffer: BasicFrameBuffer<'_> = owner.init_buffer().unwrap();
+
+        // Write different data to each frame
+        for (i, frame) in buffer.iter_frames_mut().enumerate() {
+            frame.copy_from(&[i as u8; 4]);
+        }
+
+        // Verify isolation: each frame retains its own data
+        for (i, frame) in buffer.iter_frames().enumerate() {
+            assert_eq!(&frame[..], &[i as u8; 4]);
+        }
+    }
+
+    #[test]
+    fn test_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<UmemOwner<'static>>();
+    }
+
+    #[test]
+    fn test_concurrent_init_buffer() {
+        let owner = create_umem(4, 4096);
+
+        let results: Vec<bool> = (0..4)
+            .map(|_| {
+                let o = owner.clone();
+                thread::spawn(move || o.init_buffer::<BasicFrameBuffer<'_>>().is_some())
+            })
+            .map(|h| h.join().unwrap())
+            .collect();
+
+        assert_eq!(results.iter().filter(|&&x| x).count(), 1);
     }
 }

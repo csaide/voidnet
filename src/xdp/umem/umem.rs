@@ -188,3 +188,103 @@ impl Umem {
         Ok((owner, fq, cq))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xdp::frame::{BasicFrameBuffer, FrameBuffer};
+
+    #[test]
+    fn test_builder_defaults() {
+        let b = UmemBuilder::new();
+
+        assert_eq!(b.frame_size, XSK_UMEM__DEFAULT_FRAME_SIZE as usize);
+        assert_eq!(b.fill_ring_size, XSK_RING_PROD__DEFAULT_NUM_DESCS);
+        assert_eq!(b.completion_ring_size, XSK_RING_CONS__DEFAULT_NUM_DESCS);
+        assert_eq!(b.num_frames, None);
+        assert!(!b.busy_poll && !b.huge_tables && !b.unaligned);
+    }
+
+    #[test]
+    fn test_validation() {
+        // Frame size not power of 2
+        assert!(matches!(
+            Umem::builder()
+                .frame_size(3000)
+                .fill_ring_size(8)
+                .completion_ring_size(8)
+                .build(),
+            Err(Error::InvalidFrameSize(3000))
+        ));
+
+        // Frame size too large
+        assert!(matches!(
+            Umem::builder()
+                .frame_size(8192)
+                .fill_ring_size(8)
+                .completion_ring_size(8)
+                .build(),
+            Err(Error::InvalidFrameSizeTooLarge(8192))
+        ));
+
+        // Fill ring not power of 2
+        assert!(matches!(
+            Umem::builder()
+                .fill_ring_size(7)
+                .completion_ring_size(8)
+                .build(),
+            Err(Error::InvalidFillRingSize(7))
+        ));
+
+        // Completion ring not power of 2
+        assert!(matches!(
+            Umem::builder()
+                .fill_ring_size(8)
+                .completion_ring_size(5)
+                .build(),
+            Err(Error::InvalidCompletionRingSize(5))
+        ));
+
+        // Unaligned mode bypasses frame_size power-of-2 check
+        assert!(
+            Umem::builder()
+                .frame_size(3000)
+                .fill_ring_size(4)
+                .completion_ring_size(4)
+                .unaligned(true)
+                .build()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_build() {
+        // Test with explicit num_frames
+        let (owner, fq, cq) = Umem::builder()
+            .num_frames(8)
+            .frame_size(2048)
+            .fill_ring_size(8)
+            .completion_ring_size(8)
+            .build()
+            .unwrap();
+
+        assert!(owner.fd() >= 0);
+        assert!(!owner.as_ptr().is_null());
+        assert_eq!(fq.size(), 8);
+        assert_eq!(cq.fd(), owner.fd());
+
+        let buffer: BasicFrameBuffer<'_> = owner.init_buffer().unwrap();
+        assert_eq!(buffer.num_frames(), 8);
+        assert!(buffer.iter_frames().all(|f| f.capacity() == 2048));
+
+        // Test num_frames defaults to fill + completion ring sizes
+        let (owner, _, _) = Umem::builder()
+            .fill_ring_size(8)
+            .completion_ring_size(4)
+            .build()
+            .unwrap();
+
+        let buffer: BasicFrameBuffer<'_> = owner.init_buffer().unwrap();
+        assert_eq!(buffer.num_frames(), 12); // 8 + 4
+    }
+}
