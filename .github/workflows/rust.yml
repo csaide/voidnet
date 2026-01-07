@@ -17,10 +17,18 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y libbpf-dev libelf-dev libpcap-dev libmnl-dev linux-headers-$(uname -r)
-    - uses: actions/checkout@v4
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
+    - uses: actions/checkout@v5
       with:
         submodules: recursive
     - name: Build
       run: cargo build
     - name: Run tests
-      run: cargo test
+      run: cargo llvm-cov --all-features --workspace --codecov --output-path codecov.json
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: codecov.json
+        fail_ci_if_error: true
