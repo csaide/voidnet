@@ -101,21 +101,27 @@ async fn process_packet(data: &mut [u8]) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Create XDP context — loads and attaches the XDP program
     let mut ctx = XdpContext::new("eth0", Default::default(), false)?;
     
+    // 2. Create UMEM — shared memory region for packet buffers
     let (umem, mut fq, _cq) = Umem::builder()
         .build()?;
 
+    // 3. Create socket bound to interface queue 0
     let mut socket = Socket::builder(&mut ctx, "eth0", 0)
         .build(umem.clone())?;
 
+    // 4. Prime the fill queue with buffers for the kernel to write into
     let mut frames = umem.init_buffer::<BasicFrameBuffer>()?;
     fq.process_queue_async(&mut frames, &[socket.fd()])
         .await
         .unwrap();
 
+    // 5. Receive packets
     loop {
-        // Async receive — yields to runtime when no packets available
+        // Async receive — yields to runtime when no packets available, and returns the number
+        // of frames read. Guaranteed to be between 1 and frames.free_space().
         let count = socket.recv_async(&mut frames).await?;
         
         for frame in frames.iter_frames_mut() {
@@ -123,6 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             process_packet(&mut frame[..]).await;
         }
 
+        // Return frames to kernel.
         fq.process_queue_async(&mut frames, &[socket.fd()])
             .await
             .unwrap();
