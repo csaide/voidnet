@@ -150,7 +150,9 @@ async fn main() {
     .expect("Error setting Ctrl-C handler");
 
     let mut frames = umem.init_buffer::<BasicFrameBuffer>().unwrap();
-    fq.process_queue(&mut frames);
+    fq.process_queue_async(&mut frames, &[])
+        .await
+        .expect("Failed to process fill queue");
 
     let frame_stack = Arc::new(Mutex::new(frames));
 
