@@ -77,9 +77,21 @@ pub enum Error {
 pub struct WouldBlock;
 
 /// A helper function to get the error message from the XDP subsystem, this is used to simplify the error handling code.
+#[cfg(target_arch = "aarch64")]
 pub fn get_xdp_error_message(err: i32) -> String {
     let mut buf = [0; 1024];
     unsafe { libxdp_strerror(err, buf.as_mut_ptr(), buf.len()) };
     let nul_pos = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..nul_pos]).to_string()
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn get_xdp_error_message(err: i32) -> String {
+    let mut buf = [0i8; 1024];
+    unsafe { libxdp_strerror(err, buf.as_mut_ptr(), buf.len()) };
+    let nul_pos = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+
+    // So x86_64 decided to make their c_char type an i8, so we have to convert here....
+    let buf = buf[..nul_pos].iter().map(|c| *c as u8).collect::<Vec<u8>>();
+    String::from_utf8_lossy(&buf).to_string()
 }
