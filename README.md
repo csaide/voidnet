@@ -50,14 +50,16 @@ use libvoid::xdp::{
     umem::Umem,
 };
 
+fn process_packet(data: &mut [u8]) {
+    // Do something with the packet data here!
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Create XDP context — loads and attaches the XDP program
     let mut ctx = XdpContext::new("eth0", AttachMode::default(), false)?;
 
     // 2. Create UMEM — shared memory region for packet buffers
     let (umem, mut fill_queue, _completion_queue) = Umem::builder()
-        .num_frames(4096)
-        .frame_size(4096)
         .build()?;
 
     // 3. Create socket bound to interface queue 0
@@ -72,7 +74,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         if let Ok(count) = socket.recv(&mut frames) {
             for frame in frames.iter_frames() {
-                println!("Received {} bytes", frame.len());
+                // Process packet data in-place, frame derefs into a `&[u8]`/`&mut [u8]`
+                process_packet(&mut frame);
             }
             // Return frames to kernel
             fill_queue.maybe_wake(socket.fd())?;
@@ -92,19 +95,24 @@ use libvoid::xdp::{
     umem::Umem,
 };
 
+async fn process_packet(data: &mut [u8]) {
+    // Do something with the packet data here!
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ctx = XdpContext::new("eth0", Default::default(), false)?;
     
     let (umem, mut fq, _cq) = Umem::builder()
-        .num_frames(4096)
         .build()?;
 
     let mut socket = Socket::builder(&mut ctx, "eth0", 0)
         .build(umem.clone())?;
 
     let mut frames = umem.init_buffer::<BasicFrameBuffer>()?;
-    fq.process_queue(&mut frames);
+    fq.process_queue_async(&mut frames, &[socket.fd()])
+        .await
+        .unwrap();
 
     loop {
         // Async receive — yields to runtime when no packets available
@@ -112,16 +120,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         for frame in frames.iter_frames_mut() {
             // Process packet data in-place
-            process_packet(&mut frame[..]);
+            process_packet(&mut frame[..]).await;
         }
 
-        fq.maybe_wake(socket.fd())?;
-        fq.process_queue(&mut frames);
+        fq.process_queue_async(&mut frames, &[socket.fd()])
+            .await
+            .unwrap();
     }
 }
 ```
 
-### Zero-Copy Echo Server
+### Complete examples
 
 For a complete echo server that swaps MAC/IP addresses and reflects packets back:
 
