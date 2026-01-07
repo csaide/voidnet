@@ -1,0 +1,26 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libbpf-dev libelf-dev libpcap-dev libmnl-dev linux-headers-$(uname -r)
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: Build
+      run: cargo build
+    - name: Run tests
+      run: cargo test
