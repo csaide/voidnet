@@ -2,6 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/voidnet.svg)](https://crates.io/crates/voidnet)
 [![Documentation](https://docs.rs/voidnet/badge.svg)](https://docs.rs/voidnet)
+[![Coverage](https://codecov.io/github/csaide/voidnet/graph/badge.svg?token=64963YRVLN)](https://codecov.io/github/csaide/voidnet)
 
 High-performance, zero-copy AF_XDP networking for Rust with full async/await support.
 
