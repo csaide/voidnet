@@ -103,8 +103,9 @@ impl Poller {
             unsafe { events.set_len(n as usize) };
 
             for event in events.drain(..) {
-                if let Some((_, wakers)) = self.wakers.remove(&event.u64) {
-                    self.deregister_socket(event.u64 as i32)?;
+                let fd = event.u64;
+                if let Some((_, wakers)) = self.wakers.remove(&fd) {
+                    self.deregister_socket(fd as i32)?;
                     for waker in wakers {
                         waker.wake();
                     }
