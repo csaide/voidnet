@@ -3,9 +3,11 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketRx};
-
-use super::get_poller;
+use crate::xdp::{
+    error::{Error, Result},
+    frame::FrameBuffer,
+    socket::SocketRx,
+};
 
 pub struct RecvFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
     pub(crate) socket: &'sock mut SocketRx<'umem>,
@@ -23,9 +25,9 @@ impl<'sock, 'umem, B: FrameBuffer<'umem>> Future for RecvFuture<'sock, 'umem, B>
         match this.socket.recv(&mut this.batch) {
             Ok(received) => Poll::Ready(Ok(received)),
             Err(_) => {
-                match get_poller().register_waker(this.socket.fd(), cx.waker()) {
-                    Ok(_) => (),
-                    Err(e) => return Poll::Ready(Err(e)),
+                match this.socket.get_poller() {
+                    Some(poller) => poller.register_waker(this.socket.fd(), cx.waker())?,
+                    None => return Poll::Ready(Err(Error::PollerNotInitialized)),
                 }
                 Poll::Pending
             }

@@ -3,9 +3,11 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::xdp::{error::Result, frame::FrameBuffer, umem::FillQueue};
-
-use super::get_poller;
+use crate::xdp::{
+    error::{Error, Result},
+    frame::FrameBuffer,
+    umem::FillQueue,
+};
 
 pub struct ProcessFillQueueFuture<'que, 'umem, 'fd, B: FrameBuffer<'umem>> {
     pub(crate) fill_queue: &'que mut FillQueue<'umem>,
@@ -31,9 +33,9 @@ impl<'que, 'umem, 'fd, B: FrameBuffer<'umem>> Future
 
         this.fill_queue.process_queue(&mut this.batch);
         if this.batch.num_frames() > 0 {
-            match get_poller().register_waker(this.fill_queue.fd(), cx.waker()) {
-                Ok(_) => (),
-                err => return Poll::Ready(err),
+            match this.fill_queue.get_poller() {
+                Some(poller) => poller.register_waker(this.fill_queue.fd(), cx.waker())?,
+                None => return Poll::Ready(Err(Error::PollerNotInitialized)),
             }
             Poll::Pending
         } else {

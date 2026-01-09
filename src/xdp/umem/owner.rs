@@ -9,7 +9,10 @@ use std::{
 use libxdp_sys::{xsk_umem, xsk_umem__delete, xsk_umem__fd};
 use memmap2::MmapMut;
 
-use crate::xdp::frame::{Frame, FrameBuffer};
+use crate::xdp::{
+    frame::{Frame, FrameBuffer},
+    futures::Poller,
+};
 
 /// The owner of a UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done. It is also the memory
 /// anchor for the frames in the UMEM, all frames are backed by the memory owned by this instance. The embedded lifetime will end up being that of the
@@ -21,6 +24,7 @@ pub struct UmemOwner<'umem> {
     frame_size: usize,
     num_frames: usize,
     init: AtomicBool,
+    poller: Option<Arc<Poller>>,
 
     // Ok so some explanation here, to make sure our Frame's can't outlive the actual memory that is backing them we need some lifetime to use. That said
     // we are going to end up being wrapped in an Arc which will lose all concept of lifetimes for its references as it should. So to get around this
@@ -41,6 +45,7 @@ impl<'umem> UmemOwner<'umem> {
         mmap: Arc<MmapMut>,
         frame_size: usize,
         num_frames: usize,
+        poller: Option<Arc<Poller>>,
     ) -> Self {
         Self {
             umem,
@@ -49,6 +54,7 @@ impl<'umem> UmemOwner<'umem> {
             frame_size,
             num_frames,
             init: AtomicBool::new(false),
+            poller,
             _lifetime: PhantomData,
         }
     }
@@ -82,6 +88,10 @@ impl<'umem> UmemOwner<'umem> {
         self.umem
     }
 
+    pub(crate) fn get_poller(&self) -> Option<&Arc<Poller>> {
+        self.poller.as_ref()
+    }
+
     /// Initialize the frame buffer with the frames from the UMEM, its then up to the caller what to do with these frames, you can push them into the fill queue, use them
     /// for writing packets, or some combination of the two. This can only be called once on the [UmemOwner] instance, and will return None on every subsequent call.
     pub fn init_buffer<B: FrameBuffer<'umem> + FromIterator<Frame<'umem>>>(&self) -> Option<B> {
@@ -109,24 +119,29 @@ impl<'umem> Drop for UmemOwner<'umem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::xdp::context::XdpContext;
     use crate::xdp::frame::BasicFrameBuffer;
     use crate::xdp::umem::Umem;
     use std::thread;
 
-    fn create_umem<'umem>(num_frames: usize, frame_size: usize) -> Arc<UmemOwner<'umem>> {
-        Umem::builder()
+    fn create_umem<'umem>(
+        num_frames: usize,
+        frame_size: usize,
+    ) -> (XdpContext, Arc<UmemOwner<'umem>>) {
+        let mut ctx = XdpContext::new_no_init().unwrap();
+        let (owner, _fq, _cq) = Umem::builder(&mut ctx)
             .num_frames(num_frames)
             .frame_size(frame_size)
             .fill_ring_size(num_frames as u32)
             .completion_ring_size(num_frames as u32)
             .build()
-            .expect("UMEM creation failed")
-            .0
+            .expect("UMEM creation failed");
+        (ctx, owner)
     }
 
     #[test]
     fn test_accessors() {
-        let owner = create_umem(4, 4096);
+        let (_, owner) = create_umem(4, 4096);
 
         assert!(owner.fd() >= 0);
         assert!(!owner.as_ptr().is_null());
@@ -134,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_init_buffer() {
-        let owner = create_umem(4, 2048);
+        let (_, owner) = create_umem(4, 2048);
 
         // First call succeeds
         let buffer: BasicFrameBuffer<'_> = owner.init_buffer().unwrap();
@@ -154,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_to_frame() {
-        let owner = create_umem(4, 4096);
+        let (_, owner) = create_umem(4, 4096);
 
         // Test non-zero len and is_fragment=true (not covered by init_buffer)
         let frame = owner.to_frame(4096, 1500, true);
@@ -167,7 +182,7 @@ mod tests {
 
     #[test]
     fn test_frame_memory() {
-        let owner = create_umem(2, 4096);
+        let (_, owner) = create_umem(2, 4096);
         let mut buffer: BasicFrameBuffer<'_> = owner.init_buffer().unwrap();
 
         // Write different data to each frame
@@ -189,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_concurrent_init_buffer() {
-        let owner = create_umem(4, 4096);
+        let (_, owner) = create_umem(4, 4096);
 
         let results: Vec<bool> = (0..4)
             .map(|_| {

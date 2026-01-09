@@ -1,4 +1,4 @@
-use std::{ptr::null_mut, sync::Arc};
+use std::{ops::Deref, ptr::null_mut, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
@@ -93,21 +93,32 @@ impl<'umem> FillQueue<'umem> {
     }
 }
 
+impl<'umem> Deref for FillQueue<'umem> {
+    type Target = UmemOwner<'umem>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.owner
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::xdp::context::XdpContext;
     use crate::xdp::frame::{BasicFrameBuffer, FrameBuffer};
     use crate::xdp::umem::Umem;
     use std::sync::Arc;
 
     struct TestContext {
+        _ctx: XdpContext,
         fq: FillQueue<'static>,
         buffer: BasicFrameBuffer<'static>,
         _owner: Arc<crate::xdp::umem::UmemOwner<'static>>,
     }
 
     fn create_fq(num_frames: usize, busy_poll: bool) -> TestContext {
-        let (owner, _fq, _cq) = Umem::builder()
+        let mut ctx = XdpContext::new_no_init().unwrap();
+        let (owner, _fq, _cq) = Umem::builder(&mut ctx)
             .num_frames(num_frames)
             .fill_ring_size(num_frames as u32)
             .completion_ring_size(num_frames as u32)
@@ -123,6 +134,7 @@ mod tests {
             unsafe { std::mem::transmute(owner) };
 
         TestContext {
+            _ctx: ctx,
             fq: _fq,
             buffer,
             _owner: owner_static,

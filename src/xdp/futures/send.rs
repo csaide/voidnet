@@ -3,9 +3,11 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketTx};
-
-use super::get_poller;
+use crate::xdp::{
+    error::{Error, Result},
+    frame::FrameBuffer,
+    socket::SocketTx,
+};
 
 pub struct SendFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
     pub(crate) socket: &'sock mut SocketTx<'umem>,
@@ -23,9 +25,9 @@ impl<'sock, 'umem, B: FrameBuffer<'umem>> Future for SendFuture<'sock, 'umem, B>
         let sent = match this.socket.send(&mut this.batch) {
             Ok(sent) => sent,
             Err(_) => {
-                match get_poller().register_waker(this.socket.fd(), cx.waker()) {
-                    Ok(_) => (),
-                    Err(e) => return Poll::Ready(Err(e)),
+                match this.socket.get_poller() {
+                    Some(poller) => poller.register_waker(this.socket.fd(), cx.waker())?,
+                    None => return Poll::Ready(Err(Error::PollerNotInitialized)),
                 }
                 return Poll::Pending;
             }

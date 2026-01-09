@@ -113,7 +113,9 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
         if !info.xsk_zero_copy_support() && self.copy_mode == CopyMode::ZeroCopy {
             return Err(Error::ZeroCopyNotSupported);
         }
-        let socket = Socket::new(
+
+        Socket::new(
+            self.ctx,
             self.if_name,
             self.queue,
             umem,
@@ -125,8 +127,7 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
             self.ctx.attach_mode().into(),
             self.copy_mode,
             self.enable_fragmentation,
-        )?;
-        self.ctx.register_socket(socket.fd()).map(|_| socket)
+        )
     }
 }
 
@@ -149,6 +150,7 @@ impl<'umem> Socket<'umem> {
     }
 
     fn new(
+        xdp_ctx: &mut XdpContext,
         if_name: &str,
         queue: u32,
         umem: Arc<UmemOwner<'umem>>,
@@ -206,7 +208,9 @@ impl<'umem> Socket<'umem> {
         let rx = unsafe { rx.assume_init() };
         let tx = unsafe { tx.assume_init() };
 
-        let owner = Arc::new(SocketOwner::new(umem.clone(), xsk));
+        let mut owner = SocketOwner::new(umem.clone(), xsk, xdp_ctx.get_poller().cloned());
+        xdp_ctx.register_socket(&mut owner)?;
+        let owner = Arc::new(owner);
         let rx = SocketRx::new(owner.clone(), rx);
         let tx = SocketTx::new(owner.clone(), tx, busy_poll);
         let socket = Self { owner, rx, tx };
@@ -352,13 +356,13 @@ mod tests {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
         // Create XDP contexts on both ends
-        let mut ctx_outer = XdpContext::new(veth.outer_name(), AttachMode::default(), false)
+        let mut ctx_outer = XdpContext::new(veth.outer_name(), AttachMode::default(), false, false)
             .expect("failed to create outer context");
-        let mut ctx_inner = XdpContext::new(veth.inner_name(), AttachMode::default(), false)
+        let mut ctx_inner = XdpContext::new(veth.inner_name(), AttachMode::default(), false, false)
             .expect("failed to create inner context");
 
         // Create UMEM for outer socket (sender)
-        let (umem_outer, _fq_outer, mut cq_outer) = Umem::builder()
+        let (umem_outer, _fq_outer, mut cq_outer) = Umem::builder(&mut ctx_outer)
             .num_frames(64)
             .frame_size(4096)
             .fill_ring_size(32)
@@ -367,7 +371,7 @@ mod tests {
             .expect("failed to create outer umem");
 
         // Create UMEM for inner socket (receiver)
-        let (umem_inner, mut fq_inner, _cq_inner) = Umem::builder()
+        let (umem_inner, mut fq_inner, _cq_inner) = Umem::builder(&mut ctx_inner)
             .num_frames(64)
             .frame_size(4096)
             .fill_ring_size(32)
@@ -511,13 +515,13 @@ mod tests {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
         // Create XDP contexts on both ends
-        let mut ctx_outer = XdpContext::new(veth.outer_name(), AttachMode::default(), false)
+        let mut ctx_outer = XdpContext::new(veth.outer_name(), AttachMode::default(), false, true)
             .expect("failed to create outer context");
-        let mut ctx_inner = XdpContext::new(veth.inner_name(), AttachMode::default(), false)
+        let mut ctx_inner = XdpContext::new(veth.inner_name(), AttachMode::default(), false, true)
             .expect("failed to create inner context");
 
         // Create UMEM for outer socket (sender)
-        let (umem_outer, _fq_outer, mut cq_outer) = Umem::builder()
+        let (umem_outer, _fq_outer, mut cq_outer) = Umem::builder(&mut ctx_outer)
             .num_frames(64)
             .frame_size(4096)
             .fill_ring_size(32)
@@ -526,7 +530,7 @@ mod tests {
             .expect("failed to create outer umem");
 
         // Create UMEM for inner socket (receiver)
-        let (umem_inner, mut fq_inner, _cq_inner) = Umem::builder()
+        let (umem_inner, mut fq_inner, _cq_inner) = Umem::builder(&mut ctx_inner)
             .num_frames(64)
             .frame_size(4096)
             .fill_ring_size(32)
@@ -630,10 +634,10 @@ mod tests {
     fn test_socket_creation() {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
-        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false)
+        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false, false)
             .expect("failed to create context");
 
-        let (umem, _fq, _cq) = Umem::builder()
+        let (umem, _fq, _cq) = Umem::builder(&mut ctx)
             .num_frames(16)
             .frame_size(4096)
             .fill_ring_size(8)
@@ -659,10 +663,10 @@ mod tests {
     fn test_socket_split() {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
-        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false)
+        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false, false)
             .expect("failed to create context");
 
-        let (umem, _fq, _cq) = Umem::builder()
+        let (umem, _fq, _cq) = Umem::builder(&mut ctx)
             .num_frames(16)
             .frame_size(4096)
             .fill_ring_size(8)
@@ -686,10 +690,10 @@ mod tests {
     fn test_socket_recv_would_block() {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
-        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false)
+        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false, false)
             .expect("failed to create context");
 
-        let (umem, mut fq, _cq) = Umem::builder()
+        let (umem, mut fq, _cq) = Umem::builder(&mut ctx)
             .num_frames(16)
             .frame_size(4096)
             .fill_ring_size(8)
@@ -726,11 +730,11 @@ mod tests {
     fn test_socket_send_would_block_on_full_ring() {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
-        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false)
+        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false, true)
             .expect("failed to create context");
 
         // Create socket with tiny TX ring
-        let (umem, _fq, _cq) = Umem::builder()
+        let (umem, _fq, _cq) = Umem::builder(&mut ctx)
             .num_frames(8)
             .frame_size(4096)
             .fill_ring_size(4)

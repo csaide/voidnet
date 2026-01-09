@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 use crate::xdp::{
     frame::FrameBuffer,
@@ -61,20 +61,31 @@ impl<'umem> CompletionQueue<'umem> {
     }
 }
 
+impl<'umem> Deref for CompletionQueue<'umem> {
+    type Target = UmemOwner<'umem>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.owner
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::xdp::context::XdpContext;
     use crate::xdp::frame::{BasicFrameBuffer, FrameBuffer};
     use crate::xdp::umem::Umem;
     use std::sync::Arc;
 
     struct TestContext {
+        _ctx: XdpContext,
         cq: CompletionQueue<'static>,
         _owner: Arc<crate::xdp::umem::UmemOwner<'static>>,
     }
 
     fn create_cq(num_frames: usize) -> TestContext {
-        let (owner, _fq, cq) = Umem::builder()
+        let mut ctx = XdpContext::new_no_init().unwrap();
+        let (owner, _fq, cq) = Umem::builder(&mut ctx)
             .num_frames(num_frames)
             .fill_ring_size(num_frames as u32)
             .completion_ring_size(num_frames as u32)
@@ -85,6 +96,7 @@ mod tests {
             unsafe { std::mem::transmute(owner) };
 
         TestContext {
+            _ctx: ctx,
             cq,
             _owner: owner_static,
         }

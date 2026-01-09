@@ -101,8 +101,13 @@ fn main() {
 
     // Every application starts with setting up an XdpContext, this loads the XDP kernel program and attaches it to the named
     // interface.
-    let mut xdp_ctx = XdpContext::new(&args.if_name, args.attach_mode, args.enable_fragmentation)
-        .expect("Failed to create xdp context");
+    let mut xdp_ctx = XdpContext::new(
+        &args.if_name,
+        args.attach_mode,
+        args.enable_fragmentation,
+        false,
+    )
+    .expect("Failed to create xdp context");
 
     // A Umem is created to manage sharing memory buffers between the kernel and user space.
     //
@@ -113,7 +118,7 @@ fn main() {
     // - Owner (umem) > The owner of the UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
-    let (umem, _fq, cq) = Umem::builder()
+    let (umem, _fq, cq) = Umem::builder(&mut xdp_ctx)
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)

@@ -33,8 +33,13 @@ fn main() {
 
     // Every application starts with setting up an XdpContext, this loads the XDP kernel program and attaches it to the named
     // interface.
-    let xdp_ctx = XdpContext::new(&args.if_name, args.attach_mode, args.enable_fragmentation)
-        .expect("Failed to create xdp context");
+    let xdp_ctx = XdpContext::new(
+        &args.if_name,
+        args.attach_mode,
+        args.enable_fragmentation,
+        false,
+    )
+    .expect("Failed to create xdp context");
 
     println!("XDP info: {:?}", xdp_ctx.info());
 }

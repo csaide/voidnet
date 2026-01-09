@@ -6,6 +6,6 @@ mod send;
 
 pub use comp::CompFuture;
 pub use fill::ProcessFillQueueFuture;
-pub(crate) use poller::get_poller;
+pub(crate) use poller::Poller;
 pub use recv::RecvFuture;
 pub use send::SendFuture;

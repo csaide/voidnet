@@ -97,6 +97,16 @@ impl XdpProgram {
         })
     }
 
+    #[cfg(test)]
+    pub fn new_no_init() -> Result<Self> {
+        Ok(Self {
+            program: std::ptr::null_mut(),
+            if_index: 0,
+            attach_mode: AttachMode::default(),
+            info: XdpInfo::default(),
+        })
+    }
+
     /// Returns a mutable pointer to the raw [xdp_program] object.
     pub fn as_mut_ptr(&mut self) -> *mut xdp_program {
         self.program

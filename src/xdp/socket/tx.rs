@@ -1,4 +1,4 @@
-use std::{ptr::null, sync::Arc};
+use std::{ops::Deref, ptr::null, sync::Arc};
 
 use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, XDP_PKT_CONTD, sendto};
@@ -81,5 +81,13 @@ impl<'umem> SocketTx<'umem> {
             socket: self,
             batch,
         }
+    }
+}
+
+impl<'umem> Deref for SocketTx<'umem> {
+    type Target = SocketOwner<'umem>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.socket
     }
 }

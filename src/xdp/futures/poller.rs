@@ -1,4 +1,4 @@
-use std::{ptr::null_mut, sync::Arc, task::Waker};
+use std::{ptr::null_mut, task::Waker};
 
 use dashmap::{DashMap, Entry};
 use errno::errno;
@@ -9,27 +9,42 @@ use libc::{
 
 use crate::xdp::error::{Error, Result};
 
-static POLLER: std::sync::OnceLock<Arc<Poller>> = std::sync::OnceLock::new();
-
-pub(crate) fn get_poller() -> &'static Arc<Poller> {
-    POLLER.get_or_init(|| {
-        let poller = Arc::new(Poller::new(1024, 100).unwrap());
-        std::thread::spawn({
-            let poller = poller.clone();
-            move || match poller.poll() {
-                Ok(_) => (),
-                Err(e) => eprintln!("Poller error: {}", e),
-            }
-        });
-        poller
-    })
+#[derive(Default)]
+enum WakerSlot {
+    #[default]
+    Empty,
+    Waker(Waker),
+    Multi(Vec<Waker>),
 }
 
-pub struct Poller {
+impl WakerSlot {
+    pub fn new(waker: Waker) -> Self {
+        Self::Waker(waker)
+    }
+
+    pub fn append(&mut self, waker: Waker) {
+        match self {
+            Self::Empty => *self = Self::Waker(waker),
+            Self::Waker(current) => *self = Self::Multi(vec![current.clone(), waker]),
+            Self::Multi(current) => current.push(waker),
+        }
+    }
+
+    pub fn wake(&mut self) {
+        let us = std::mem::take(self);
+        match us {
+            Self::Empty => (),
+            Self::Waker(waker) => waker.wake(),
+            Self::Multi(mut wakers) => wakers.drain(..).for_each(|waker| waker.wake()),
+        }
+    }
+}
+
+pub(crate) struct Poller {
     poll_fd: i32,
     timeout_ms: i32,
     max_events: usize,
-    wakers: DashMap<u64, Vec<Waker>>,
+    wakers: DashMap<u64, WakerSlot>,
 }
 
 impl Poller {
@@ -43,7 +58,7 @@ impl Poller {
             poll_fd,
             timeout_ms,
             max_events,
-            wakers: DashMap::new(),
+            wakers: DashMap::with_capacity(max_events),
         })
     }
 
@@ -71,11 +86,10 @@ impl Poller {
     pub fn register_waker(&self, fd: i32, waker: &Waker) -> Result<()> {
         match self.wakers.entry(fd as u64) {
             Entry::Occupied(mut entry) => {
-                entry.get_mut().push(waker.clone());
+                entry.get_mut().append(waker.clone());
             }
             Entry::Vacant(entry) => {
-                self.register_socket(fd)?;
-                entry.insert(vec![waker.clone()]);
+                entry.insert(WakerSlot::new(waker.clone()));
             }
         }
         Ok(())
@@ -104,11 +118,8 @@ impl Poller {
 
             for event in events.drain(..) {
                 let fd = event.u64;
-                if let Some((_, wakers)) = self.wakers.remove(&fd) {
-                    self.deregister_socket(fd as i32)?;
-                    for waker in wakers {
-                        waker.wake();
-                    }
+                if let Some(mut wakers) = self.wakers.get_mut(&fd) {
+                    wakers.wake();
                 }
             }
         }
@@ -117,6 +128,12 @@ impl Poller {
 
 impl Drop for Poller {
     fn drop(&mut self) {
+        // Wake all wakers to avoid leaking them.
+        self.wakers
+            .iter_mut()
+            .for_each(|mut wakers| wakers.value_mut().wake());
+
+        // Close the poll fd to avoid leaking it.
         unsafe { libc::close(self.poll_fd) };
     }
 }

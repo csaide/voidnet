@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
 use crate::xdp::{
     error::Result,
+    futures::Poller,
     program::{AttachMode, Map, XdpInfo, XdpProgram},
+    socket::SocketOwner,
 };
 
 /// Embedded XDP BPF program for round-robin packet routing to AF_XDP sockets.
@@ -24,6 +28,8 @@ pub struct XdpContext {
     num_sockets: u32,
     /// The loaded and attached XDP program.
     program: XdpProgram,
+    /// Enable async mode for the context.
+    poller: Option<Arc<Poller>>,
 }
 
 impl XdpContext {
@@ -37,7 +43,12 @@ impl XdpContext {
     ///   silently ignored if unsupported—check [`XdpInfo::fragmentation_support()`])
     ///
     /// [`XdpInfo::fragmentation_support()`]: crate::xdp::program::XdpInfo::fragmentation_support
-    pub fn new(if_name: &str, attach_mode: AttachMode, enable_fragmentation: bool) -> Result<Self> {
+    pub fn new(
+        if_name: &str,
+        attach_mode: AttachMode,
+        enable_fragmentation: bool,
+        async_mode: bool,
+    ) -> Result<Self> {
         let program = XdpProgram::new(XDP_PROG_DATA, if_name, attach_mode, enable_fragmentation)?;
 
         let data_map = program.find_map(".bss")?;
@@ -48,6 +59,30 @@ impl XdpContext {
             xsks_map,
             num_sockets: 0,
             program,
+            poller: if async_mode {
+                let poller = Arc::new(Poller::new(1024, 100).unwrap());
+                std::thread::spawn({
+                    let poller = poller.clone();
+                    move || match poller.poll() {
+                        Ok(_) => (),
+                        Err(e) => eprintln!("Poller error: {}", e),
+                    }
+                });
+                Some(poller)
+            } else {
+                None
+            },
+        })
+    }
+
+    #[cfg(test)]
+    pub fn new_no_init() -> Result<Self> {
+        Ok(Self {
+            data_map: Map::new(std::ptr::null_mut(), unsafe { std::mem::zeroed() }),
+            xsks_map: Map::new(std::ptr::null_mut(), unsafe { std::mem::zeroed() }),
+            num_sockets: 0,
+            program: XdpProgram::new_no_init()?,
+            poller: None,
         })
     }
 
@@ -61,21 +96,28 @@ impl XdpContext {
         self.program.info()
     }
 
-    pub(crate) fn register_socket(&mut self, fd: i32) -> Result<()> {
+    pub(crate) fn register_socket(&mut self, socket: &mut SocketOwner<'_>) -> Result<()> {
         let loc = self.num_sockets;
         self.num_sockets += 1;
 
         // Update our xsks_map with the socket's file descriptor.
         // SAFETY: The map was created with u32 keys and i32 (fd) values.
         // The `loc` index is valid as it's derived from our internal counter.
-        unsafe { self.xsks_map.update_elem(&loc, &fd)? };
+        unsafe { self.xsks_map.update_elem(&loc, &socket.fd())? };
 
         const KEY: u32 = 0;
         // Update our num_sockets counter in the XDP program's .bss map.
         // SAFETY: The .bss map contains a u32 at key 0 by program design.
         unsafe { self.data_map.update_elem(&KEY, &self.num_sockets)? };
 
+        if let Some(poller) = &self.poller {
+            poller.register_socket(socket.fd())?;
+        }
         Ok(())
+    }
+
+    pub(crate) fn get_poller(&self) -> Option<&Arc<Poller>> {
+        self.poller.as_ref()
     }
 
     #[cfg(test)]
@@ -94,7 +136,7 @@ mod tests {
     fn test_context_creation() {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
-        let ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), true);
+        let ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), true, false);
         assert!(ctx.is_ok(), "failed to create XdpContext: {:?}", ctx.err());
 
         let ctx = ctx.unwrap();
@@ -122,7 +164,12 @@ mod tests {
     /// Tests that creating a context with a non-existent interface fails.
     #[test]
     fn test_context_creation_nonexistent_interface() {
-        let result = XdpContext::new("nonexistent_iface_xyz123", AttachMode::default(), true);
+        let result = XdpContext::new(
+            "nonexistent_iface_xyz123",
+            AttachMode::default(),
+            true,
+            false,
+        );
         assert!(result.is_err(), "expected error for non-existent interface");
     }
 
@@ -132,10 +179,10 @@ mod tests {
         let veth1 = TestVethPair::new().expect("failed to create first veth pair");
         let veth2 = TestVethPair::new().expect("failed to create second veth pair");
 
-        let ctx1 =
-            XdpContext::new(veth1.outer_name(), AttachMode::default(), true).expect("context 1");
-        let ctx2 =
-            XdpContext::new(veth2.outer_name(), AttachMode::default(), true).expect("context 2");
+        let ctx1 = XdpContext::new(veth1.outer_name(), AttachMode::default(), true, false)
+            .expect("context 1");
+        let ctx2 = XdpContext::new(veth2.outer_name(), AttachMode::default(), true, false)
+            .expect("context 2");
 
         // Both contexts should have their own state.
         assert_eq!(ctx1.num_sockets(), 0);
@@ -159,10 +206,10 @@ mod tests {
     fn test_context_on_both_veth_ends() {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
-        let ctx_outer =
-            XdpContext::new(veth.outer_name(), AttachMode::default(), true).expect("outer context");
-        let ctx_inner =
-            XdpContext::new(veth.inner_name(), AttachMode::default(), true).expect("inner context");
+        let ctx_outer = XdpContext::new(veth.outer_name(), AttachMode::default(), true, false)
+            .expect("outer context");
+        let ctx_inner = XdpContext::new(veth.inner_name(), AttachMode::default(), true, false)
+            .expect("inner context");
 
         // Both should be valid with separate state.
         assert_eq!(ctx_outer.num_sockets(), 0);

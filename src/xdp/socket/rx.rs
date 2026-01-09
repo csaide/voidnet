@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 use libc::XDP_PKT_CONTD;
 use libxdp_sys::XSK_UNALIGNED_BUF_ADDR_MASK;
@@ -56,5 +56,13 @@ impl<'umem> SocketRx<'umem> {
             socket: self,
             batch,
         }
+    }
+}
+
+impl<'umem> Deref for SocketRx<'umem> {
+    type Target = SocketOwner<'umem>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.socket
     }
 }

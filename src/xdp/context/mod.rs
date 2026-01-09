@@ -44,10 +44,10 @@
 //! };
 //!
 //! // 1. Attach XDP program to the interface
-//! let mut ctx = XdpContext::new("eth0", AttachMode::default(), false)?;
+//! let mut ctx = XdpContext::new("eth0", AttachMode::default(), false, false)?;
 //!
 //! // 2. Create shared memory
-//! let (umem, fq, cq) = Umem::builder().num_frames(4096).build()?;
+//! let (umem, fq, cq) = Umem::builder(&mut ctx).num_frames(4096).build()?;
 //!
 //! // 3. Create an AF_XDP socket
 //! let socket = Socket::builder(&mut ctx, "eth0", 0).build(umem)?;

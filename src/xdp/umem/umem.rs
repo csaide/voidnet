@@ -9,6 +9,7 @@ use libxdp_sys::{
 use memmap2::MmapOptions;
 
 use crate::xdp::{
+    context::XdpContext,
     error::{Error, Result},
     ring::{Consumer, Producer},
 };
@@ -16,7 +17,8 @@ use crate::xdp::{
 use super::{CompletionQueue, FillQueue, UmemOwner};
 
 /// A builder for creating a new [Umem] instance.
-pub struct UmemBuilder {
+pub struct UmemBuilder<'ctx> {
+    ctx: &'ctx mut XdpContext,
     completion_ring_size: u32,
     fill_ring_size: u32,
     frame_size: usize,
@@ -26,12 +28,13 @@ pub struct UmemBuilder {
     unaligned: bool,
 }
 
-impl UmemBuilder {
-    pub fn new() -> Self {
+impl<'ctx> UmemBuilder<'ctx> {
+    pub fn new(ctx: &'ctx mut XdpContext) -> Self {
         let completion_ring_size = XSK_RING_CONS__DEFAULT_NUM_DESCS;
         let fill_ring_size = XSK_RING_PROD__DEFAULT_NUM_DESCS;
         let frame_size = XSK_UMEM__DEFAULT_FRAME_SIZE as usize;
         Self {
+            ctx,
             completion_ring_size,
             fill_ring_size,
             frame_size,
@@ -99,6 +102,7 @@ impl UmemBuilder {
             .unwrap_or_else(|| (self.completion_ring_size + self.fill_ring_size) as usize);
 
         Umem::new(
+            self.ctx,
             self.completion_ring_size,
             self.fill_ring_size,
             self.busy_poll,
@@ -117,11 +121,12 @@ pub struct Umem;
 
 impl Umem {
     /// Returns a builder for creating a new [Umem] instance.
-    pub fn builder() -> UmemBuilder {
-        UmemBuilder::new()
+    pub fn builder<'ctx>(ctx: &'ctx mut XdpContext) -> UmemBuilder<'ctx> {
+        UmemBuilder::new(ctx)
     }
 
     fn new<'umem>(
+        ctx: &mut XdpContext,
         completion_ring_size: u32,
         fill_ring_size: u32,
         busy_poll: bool,
@@ -178,7 +183,13 @@ impl Umem {
         let fill_ring = unsafe { fill_ring.assume_init() };
         let comp_ring = unsafe { comp_ring.assume_init() };
 
-        let owner = Arc::new(UmemOwner::new(umem, Arc::new(mmap), frame_size, num_frames));
+        let owner = Arc::new(UmemOwner::new(
+            umem,
+            Arc::new(mmap),
+            frame_size,
+            num_frames,
+            ctx.get_poller().cloned(),
+        ));
         let fq = FillQueue::new(fill_ring, owner.clone(), busy_poll);
         let cq = CompletionQueue::new(comp_ring, owner.clone());
 
@@ -193,7 +204,8 @@ mod tests {
 
     #[test]
     fn test_builder_defaults() {
-        let b = UmemBuilder::new();
+        let mut ctx = XdpContext::new_no_init().unwrap();
+        let b = UmemBuilder::new(&mut ctx);
 
         assert_eq!(b.frame_size, XSK_UMEM__DEFAULT_FRAME_SIZE as usize);
         assert_eq!(b.fill_ring_size, XSK_RING_PROD__DEFAULT_NUM_DESCS);
@@ -204,9 +216,10 @@ mod tests {
 
     #[test]
     fn test_validation() {
+        let mut ctx = XdpContext::new_no_init().unwrap();
         // Frame size not power of 2
         assert!(matches!(
-            Umem::builder()
+            Umem::builder(&mut ctx)
                 .frame_size(3000)
                 .fill_ring_size(8)
                 .completion_ring_size(8)
@@ -216,7 +229,7 @@ mod tests {
 
         // Fill ring not power of 2
         assert!(matches!(
-            Umem::builder()
+            Umem::builder(&mut ctx)
                 .fill_ring_size(7)
                 .completion_ring_size(8)
                 .build(),
@@ -225,7 +238,7 @@ mod tests {
 
         // Completion ring not power of 2
         assert!(matches!(
-            Umem::builder()
+            Umem::builder(&mut ctx)
                 .fill_ring_size(8)
                 .completion_ring_size(5)
                 .build(),
@@ -234,7 +247,7 @@ mod tests {
 
         // Unaligned mode bypasses frame_size power-of-2 check
         assert!(
-            Umem::builder()
+            Umem::builder(&mut ctx)
                 .frame_size(3000)
                 .fill_ring_size(4)
                 .completion_ring_size(4)
@@ -247,7 +260,8 @@ mod tests {
     #[test]
     fn test_build() {
         // Test with explicit num_frames
-        let (owner, fq, cq) = Umem::builder()
+        let mut ctx = XdpContext::new_no_init().unwrap();
+        let (owner, fq, cq) = Umem::builder(&mut ctx)
             .num_frames(8)
             .frame_size(2048)
             .fill_ring_size(8)
@@ -265,7 +279,7 @@ mod tests {
         assert!(buffer.iter_frames().all(|f| f.capacity() == 2048));
 
         // Test num_frames defaults to fill + completion ring sizes
-        let (owner, _, _) = Umem::builder()
+        let (owner, _, _) = Umem::builder(&mut ctx)
             .fill_ring_size(8)
             .completion_ring_size(4)
             .build()
