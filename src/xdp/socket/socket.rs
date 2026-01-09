@@ -356,9 +356,21 @@ mod tests {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
         // Create XDP contexts on both ends
-        let mut ctx_outer = XdpContext::new(veth.outer_name(), AttachMode::default(), false, false)
+        let mut ctx_outer = XdpContext::builder(veth.outer_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(false)
+            .async_mode(false)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build()
             .expect("failed to create outer context");
-        let mut ctx_inner = XdpContext::new(veth.inner_name(), AttachMode::default(), false, false)
+        let mut ctx_inner = XdpContext::builder(veth.inner_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(false)
+            .async_mode(false)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build()
             .expect("failed to create inner context");
 
         // Create UMEM for outer socket (sender)
@@ -515,9 +527,21 @@ mod tests {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
         // Create XDP contexts on both ends
-        let mut ctx_outer = XdpContext::new(veth.outer_name(), AttachMode::default(), false, true)
+        let mut ctx_outer = XdpContext::builder(veth.outer_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(false)
+            .async_mode(true)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build()
             .expect("failed to create outer context");
-        let mut ctx_inner = XdpContext::new(veth.inner_name(), AttachMode::default(), false, true)
+        let mut ctx_inner = XdpContext::builder(veth.inner_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(false)
+            .async_mode(true)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build()
             .expect("failed to create inner context");
 
         // Create UMEM for outer socket (sender)
@@ -634,7 +658,13 @@ mod tests {
     fn test_socket_creation() {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
-        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false, false)
+        let mut ctx = XdpContext::builder(veth.outer_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(false)
+            .async_mode(false)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build()
             .expect("failed to create context");
 
         let (umem, _fq, _cq) = Umem::builder(&mut ctx)
@@ -663,7 +693,13 @@ mod tests {
     fn test_socket_split() {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
-        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false, false)
+        let mut ctx = XdpContext::builder(veth.outer_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(false)
+            .async_mode(false)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build()
             .expect("failed to create context");
 
         let (umem, _fq, _cq) = Umem::builder(&mut ctx)
@@ -690,7 +726,13 @@ mod tests {
     fn test_socket_recv_would_block() {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
-        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false, false)
+        let mut ctx = XdpContext::builder(veth.outer_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(false)
+            .async_mode(false)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build()
             .expect("failed to create context");
 
         let (umem, mut fq, _cq) = Umem::builder(&mut ctx)
@@ -730,7 +772,13 @@ mod tests {
     fn test_socket_send_would_block_on_full_ring() {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
-        let mut ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), false, true)
+        let mut ctx = XdpContext::builder(veth.outer_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(false)
+            .async_mode(true)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build()
             .expect("failed to create context");
 
         // Create socket with tiny TX ring

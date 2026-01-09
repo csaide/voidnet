@@ -1327,6 +1327,7 @@ dependencies = [
  "neli",
  "pnet",
  "rand",
+ "smallvec",
  "thiserror",
  "tokio",
 ]

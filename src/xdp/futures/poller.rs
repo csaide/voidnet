@@ -1,4 +1,12 @@
-use std::{ptr::null_mut, task::Waker};
+use std::{
+    mem::MaybeUninit,
+    ptr::null_mut,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::Waker,
+};
 
 use dashmap::{DashMap, Entry};
 use errno::errno;
@@ -6,35 +14,50 @@ use libc::{
     EPOLL_CLOEXEC, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLLET, EPOLLIN, EPOLLOUT, epoll_create1,
     epoll_ctl, epoll_event, epoll_wait,
 };
+use smallvec::{SmallVec, smallvec};
 
 use crate::xdp::error::{Error, Result};
+
+const MAX_EVENTS: usize = 1024;
 
 #[derive(Default)]
 enum WakerSlot {
     #[default]
     Empty,
-    Waker(Waker),
-    Multi(Vec<Waker>),
+    Single(Waker),
+    Multi(SmallVec<[Waker; 4]>),
 }
 
 impl WakerSlot {
     pub fn new(waker: Waker) -> Self {
-        Self::Waker(waker)
+        Self::Single(waker)
     }
 
     pub fn append(&mut self, waker: Waker) {
-        match self {
-            Self::Empty => *self = Self::Waker(waker),
-            Self::Waker(current) => *self = Self::Multi(vec![current.clone(), waker]),
-            Self::Multi(current) => current.push(waker),
+        match std::mem::take(self) {
+            Self::Empty => *self = Self::Single(waker),
+            Self::Single(current) => {
+                if waker.will_wake(&current) {
+                    *self = Self::Single(current);
+                } else {
+                    *self = Self::Multi(smallvec![current, waker]);
+                }
+            }
+            Self::Multi(mut wakers) => {
+                if wakers.iter().any(|waker| waker.will_wake(&waker)) {
+                    *self = Self::Multi(wakers);
+                } else {
+                    wakers.push(waker);
+                    *self = Self::Multi(wakers);
+                }
+            }
         }
     }
 
     pub fn wake(&mut self) {
-        let us = std::mem::take(self);
-        match us {
+        match std::mem::take(self) {
             Self::Empty => (),
-            Self::Waker(waker) => waker.wake(),
+            Self::Single(waker) => waker.wake(),
             Self::Multi(mut wakers) => wakers.drain(..).for_each(|waker| waker.wake()),
         }
     }
@@ -42,6 +65,7 @@ impl WakerSlot {
 
 pub(crate) struct Poller {
     poll_fd: i32,
+    exit: Arc<AtomicBool>,
     timeout_ms: i32,
     max_events: usize,
     wakers: DashMap<u64, WakerSlot>,
@@ -56,6 +80,7 @@ impl Poller {
 
         Ok(Self {
             poll_fd,
+            exit: Arc::new(AtomicBool::new(false)),
             timeout_ms,
             max_events,
             wakers: DashMap::with_capacity(max_events),
@@ -95,13 +120,17 @@ impl Poller {
         Ok(())
     }
 
+    pub fn exit(&self) {
+        self.exit.store(true, Ordering::Relaxed);
+    }
+
     pub fn poll(&self) -> Result<()> {
-        let mut events = Vec::with_capacity(self.max_events);
-        loop {
+        let mut events = [MaybeUninit::<epoll_event>::uninit(); MAX_EVENTS];
+        while !self.exit.load(Ordering::Relaxed) {
             let n = unsafe {
                 epoll_wait(
                     self.poll_fd,
-                    events.as_mut_ptr(),
+                    events.as_mut_ptr() as *mut epoll_event,
                     self.max_events as i32,
                     self.timeout_ms,
                 )
@@ -114,15 +143,15 @@ impl Poller {
                 continue;
             }
 
-            unsafe { events.set_len(n as usize) };
-
-            for event in events.drain(..) {
+            for i in 0..n {
+                let event: &epoll_event = unsafe { events[i as usize].assume_init_ref() };
                 let fd = event.u64;
                 if let Some(mut wakers) = self.wakers.get_mut(&fd) {
                     wakers.wake();
                 }
             }
         }
+        Ok(())
     }
 }
 

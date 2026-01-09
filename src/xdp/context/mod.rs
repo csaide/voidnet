@@ -44,7 +44,10 @@
 //! };
 //!
 //! // 1. Attach XDP program to the interface
-//! let mut ctx = XdpContext::new("eth0", AttachMode::default(), false, false)?;
+//! let mut ctx = XdpContext::builder("eth0")
+//!     .attach_mode(AttachMode::default())
+//!     .enable_fragmentation(false)
+//!     .build()?;
 //!
 //! // 2. Create shared memory
 //! let (umem, fq, cq) = Umem::builder(&mut ctx).num_frames(4096).build()?;

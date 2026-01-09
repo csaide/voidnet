@@ -10,6 +10,64 @@ use crate::xdp::{
 /// Embedded XDP BPF program for round-robin packet routing to AF_XDP sockets.
 static XDP_PROG_DATA: &'static [u8] = include_bytes!("../../../bpf/xdp_kern.o");
 
+pub struct XdpContextBuilder<'name> {
+    if_name: &'name str,
+    attach_mode: AttachMode,
+    enable_fragmentation: bool,
+    async_mode: bool,
+    poller_max_events: usize,
+    poller_timeout_ms: i32,
+}
+
+impl<'name> XdpContextBuilder<'name> {
+    pub fn new(if_name: &'name str) -> Self {
+        Self {
+            if_name,
+            attach_mode: AttachMode::default(),
+            enable_fragmentation: false,
+            async_mode: false,
+            poller_max_events: 1024,
+            poller_timeout_ms: 100,
+        }
+    }
+
+    pub fn attach_mode(mut self, attach_mode: AttachMode) -> Self {
+        self.attach_mode = attach_mode;
+        self
+    }
+
+    pub fn enable_fragmentation(mut self, enable_fragmentation: bool) -> Self {
+        self.enable_fragmentation = enable_fragmentation;
+        self
+    }
+
+    pub fn async_mode(mut self, async_mode: bool) -> Self {
+        self.async_mode = async_mode;
+        self
+    }
+
+    pub fn poller_max_events(mut self, poller_max_events: usize) -> Self {
+        self.poller_max_events = poller_max_events;
+        self
+    }
+
+    pub fn poller_timeout_ms(mut self, poller_timeout_ms: i32) -> Self {
+        self.poller_timeout_ms = poller_timeout_ms;
+        self
+    }
+
+    pub fn build(self) -> Result<XdpContext> {
+        XdpContext::new(
+            &self.if_name,
+            self.attach_mode,
+            self.enable_fragmentation,
+            self.async_mode,
+            self.poller_max_events,
+            self.poller_timeout_ms,
+        )
+    }
+}
+
 /// Manages the XDP program lifecycle and socket registration.
 ///
 /// See the [module documentation](crate::xdp::context) for usage examples.
@@ -33,21 +91,17 @@ pub struct XdpContext {
 }
 
 impl XdpContext {
-    /// Creates a new context and attaches the XDP program to the interface.
-    ///
-    /// # Arguments
-    ///
-    /// * `if_name` - Network interface name (e.g., `"eth0"`)
-    /// * `attach_mode` - How to attach; use `AttachMode::default()` for auto-selection
-    /// * `enable_fragmentation` - Enable multi-buffer support (requires driver support;
-    ///   silently ignored if unsupported—check [`XdpInfo::fragmentation_support()`])
-    ///
-    /// [`XdpInfo::fragmentation_support()`]: crate::xdp::program::XdpInfo::fragmentation_support
-    pub fn new(
+    pub fn builder(if_name: &str) -> XdpContextBuilder<'_> {
+        XdpContextBuilder::new(if_name)
+    }
+
+    fn new(
         if_name: &str,
         attach_mode: AttachMode,
         enable_fragmentation: bool,
         async_mode: bool,
+        poller_max_events: usize,
+        poller_timeout_ms: i32,
     ) -> Result<Self> {
         let program = XdpProgram::new(XDP_PROG_DATA, if_name, attach_mode, enable_fragmentation)?;
 
@@ -60,7 +114,7 @@ impl XdpContext {
             num_sockets: 0,
             program,
             poller: if async_mode {
-                let poller = Arc::new(Poller::new(1024, 100).unwrap());
+                let poller = Arc::new(Poller::new(poller_max_events, poller_timeout_ms).unwrap());
                 std::thread::spawn({
                     let poller = poller.clone();
                     move || match poller.poll() {
@@ -126,6 +180,14 @@ impl XdpContext {
     }
 }
 
+impl Drop for XdpContext {
+    fn drop(&mut self) {
+        if let Some(poller) = self.poller.take() {
+            poller.exit();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,7 +198,13 @@ mod tests {
     fn test_context_creation() {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
-        let ctx = XdpContext::new(veth.outer_name(), AttachMode::default(), true, false);
+        let ctx = XdpContext::builder(veth.outer_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(true)
+            .async_mode(false)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build();
         assert!(ctx.is_ok(), "failed to create XdpContext: {:?}", ctx.err());
 
         let ctx = ctx.unwrap();
@@ -164,12 +232,13 @@ mod tests {
     /// Tests that creating a context with a non-existent interface fails.
     #[test]
     fn test_context_creation_nonexistent_interface() {
-        let result = XdpContext::new(
-            "nonexistent_iface_xyz123",
-            AttachMode::default(),
-            true,
-            false,
-        );
+        let result = XdpContext::builder("nonexistent_iface_xyz123")
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(true)
+            .async_mode(false)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build();
         assert!(result.is_err(), "expected error for non-existent interface");
     }
 
@@ -179,9 +248,21 @@ mod tests {
         let veth1 = TestVethPair::new().expect("failed to create first veth pair");
         let veth2 = TestVethPair::new().expect("failed to create second veth pair");
 
-        let ctx1 = XdpContext::new(veth1.outer_name(), AttachMode::default(), true, false)
+        let ctx1 = XdpContext::builder(veth1.outer_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(true)
+            .async_mode(false)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build()
             .expect("context 1");
-        let ctx2 = XdpContext::new(veth2.outer_name(), AttachMode::default(), true, false)
+        let ctx2 = XdpContext::builder(veth2.outer_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(true)
+            .async_mode(false)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build()
             .expect("context 2");
 
         // Both contexts should have their own state.
@@ -206,9 +287,21 @@ mod tests {
     fn test_context_on_both_veth_ends() {
         let veth = TestVethPair::new().expect("failed to create veth pair");
 
-        let ctx_outer = XdpContext::new(veth.outer_name(), AttachMode::default(), true, false)
+        let ctx_outer = XdpContext::builder(veth.outer_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(true)
+            .async_mode(false)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build()
             .expect("outer context");
-        let ctx_inner = XdpContext::new(veth.inner_name(), AttachMode::default(), true, false)
+        let ctx_inner = XdpContext::builder(veth.inner_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(true)
+            .async_mode(false)
+            .poller_max_events(1024)
+            .poller_timeout_ms(100)
+            .build()
             .expect("inner context");
 
         // Both should be valid with separate state.

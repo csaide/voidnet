@@ -47,13 +47,11 @@ fn main() {
 
     // Every application starts with setting up an XdpContext, this loads the XDP kernel program and attaches it to the named
     // interface.
-    let mut xdp_context = XdpContext::new(
-        &args.if_name,
-        args.attach_mode,
-        args.enable_fragmentation,
-        false,
-    )
-    .expect("Failed to create xdp context");
+    let mut xdp_context = XdpContext::builder(&args.if_name)
+        .attach_mode(args.attach_mode)
+        .enable_fragmentation(args.enable_fragmentation)
+        .build()
+        .expect("Failed to create xdp context");
 
     // A Umem is created to manage sharing memory buffers between the kernel and user space.
     // You will need one of these for each unique device you want to use.
