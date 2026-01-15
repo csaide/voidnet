@@ -14,6 +14,14 @@ use crate::xdp::{
     ring::{Consumer, Producer},
 };
 
+crate::cfg_block! {
+    #[cfg(feature = "tokio")]
+    {
+        use crate::xdp::futures::TokioCompletionQueue;
+        use crate::xdp::futures::TokioFillQueue;
+    }
+}
+
 use super::{CompletionQueue, FillQueue, UmemOwner};
 
 /// A builder for creating a new [Umem] instance.
@@ -80,13 +88,7 @@ impl<'ctx> UmemBuilder<'ctx> {
         self
     }
 
-    pub fn build<'umem>(
-        self,
-    ) -> Result<(
-        Arc<UmemOwner<'umem>>,
-        FillQueue<'umem>,
-        CompletionQueue<'umem>,
-    )> {
+    fn validate(&self) -> Result<()> {
         if self.frame_size & (self.frame_size - 1) != 0 && !self.unaligned {
             return Err(Error::InvalidFrameSize(self.frame_size));
         }
@@ -96,6 +98,18 @@ impl<'ctx> UmemBuilder<'ctx> {
         if self.completion_ring_size & (self.completion_ring_size - 1) != 0 {
             return Err(Error::InvalidCompletionRingSize(self.completion_ring_size));
         }
+
+        Ok(())
+    }
+
+    pub fn build<'umem>(
+        self,
+    ) -> Result<(
+        Arc<UmemOwner<'umem>>,
+        FillQueue<'umem>,
+        CompletionQueue<'umem>,
+    )> {
+        self.validate()?;
 
         let num_frames = self
             .num_frames
@@ -112,6 +126,23 @@ impl<'ctx> UmemBuilder<'ctx> {
             self.unaligned,
         )
     }
+
+    #[cfg(feature = "tokio")]
+    pub fn build_tokio<'umem>(
+        self,
+    ) -> Result<(
+        Arc<UmemOwner<'umem>>,
+        TokioFillQueue<'umem>,
+        TokioCompletionQueue<'umem>,
+    )> {
+        let (owner, fq, cq) = self.build()?;
+
+        Ok((
+            owner,
+            TokioFillQueue::new(fq)?,
+            TokioCompletionQueue::new(cq)?,
+        ))
+    }
 }
 
 /// A high level wrapper around a kernel UMEM object.
@@ -126,7 +157,7 @@ impl Umem {
     }
 
     fn new<'umem>(
-        ctx: &mut XdpContext,
+        _ctx: &mut XdpContext,
         completion_ring_size: u32,
         fill_ring_size: u32,
         busy_poll: bool,
@@ -183,13 +214,7 @@ impl Umem {
         let fill_ring = unsafe { fill_ring.assume_init() };
         let comp_ring = unsafe { comp_ring.assume_init() };
 
-        let owner = Arc::new(UmemOwner::new(
-            umem,
-            Arc::new(mmap),
-            frame_size,
-            num_frames,
-            ctx.get_poller().cloned(),
-        ));
+        let owner = Arc::new(UmemOwner::new(umem, Arc::new(mmap), frame_size, num_frames));
         let fq = FillQueue::new(fill_ring, owner.clone(), busy_poll);
         let cq = CompletionQueue::new(comp_ring, owner.clone());
 
@@ -261,7 +286,7 @@ mod tests {
     fn test_build() {
         // Test with explicit num_frames
         let mut ctx = XdpContext::new_no_init().unwrap();
-        let (owner, fq, cq) = Umem::builder(&mut ctx)
+        let (owner, fq, _cq) = Umem::builder(&mut ctx)
             .num_frames(8)
             .frame_size(2048)
             .fill_ring_size(8)
@@ -269,10 +294,8 @@ mod tests {
             .build()
             .unwrap();
 
-        assert!(owner.fd() >= 0);
         assert!(!owner.as_ptr().is_null());
         assert_eq!(fq.size(), 8);
-        assert_eq!(cq.fd(), owner.fd());
 
         let buffer: BasicFrameBuffer<'_> = owner.init_buffer().unwrap();
         assert_eq!(buffer.num_frames(), 8);

@@ -6,7 +6,6 @@ use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, XDP_PKT_CONTD, sendto
 use crate::xdp::{
     error::{Error, NonBlocking, Result, WouldBlock},
     frame::FrameBuffer,
-    futures::SendFuture,
     ring::{Init, Producer},
 };
 
@@ -73,14 +72,6 @@ impl<'umem> SocketTx<'umem> {
 
         self.ring.submit(ready);
         Ok(ready)
-    }
-
-    #[inline(always)]
-    pub fn send_async<B: FrameBuffer<'umem>>(&mut self, batch: B) -> SendFuture<'_, 'umem, B> {
-        SendFuture {
-            socket: self,
-            batch,
-        }
     }
 }
 

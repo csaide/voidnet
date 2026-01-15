@@ -63,16 +63,8 @@ pub enum Error {
     FragmentationNotSupported,
     #[error("zero copy not supported by the network interface")]
     ZeroCopyNotSupported,
-    #[error("failed to create epoll instance: {0}")]
-    EpollCreate(Errno),
-    #[error("failed to wait on epoll instance: {0}")]
-    EpollWait(Errno),
-    #[error("failed to register file descriptor with epoll instance: {0}")]
-    EpollCtl(Errno),
-    #[error("failed to initialize poller: already initialized")]
-    PollerInit,
-    #[error("poller not initialized")]
-    PollerNotInitialized,
+    #[error("failed to poll poller: {0}")]
+    PollPoller(#[from] std::io::Error),
 }
 
 /// A simple ZST error variant for would block scenarios, this is explicitly a ZST to avoid the allocations and eventual drop calls of the error case.

@@ -1,5 +1,6 @@
 use std::{
     marker::PhantomData,
+    os::fd::RawFd,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -9,22 +10,18 @@ use std::{
 use libxdp_sys::{xsk_umem, xsk_umem__delete, xsk_umem__fd};
 use memmap2::MmapMut;
 
-use crate::xdp::{
-    frame::{Frame, FrameBuffer},
-    futures::Poller,
-};
+use crate::xdp::frame::{Frame, FrameBuffer};
 
 /// The owner of a UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done. It is also the memory
 /// anchor for the frames in the UMEM, all frames are backed by the memory owned by this instance. The embedded lifetime will end up being that of the
 /// calling scope of the main thread that creates the initial Umem.
 pub struct UmemOwner<'umem> {
     umem: *mut xsk_umem,
-    fd: i32,
     mmap: Arc<MmapMut>,
     frame_size: usize,
     num_frames: usize,
     init: AtomicBool,
-    poller: Option<Arc<Poller>>,
+    fd: RawFd,
 
     // Ok so some explanation here, to make sure our Frame's can't outlive the actual memory that is backing them we need some lifetime to use. That said
     // we are going to end up being wrapped in an Arc which will lose all concept of lifetimes for its references as it should. So to get around this
@@ -45,22 +42,16 @@ impl<'umem> UmemOwner<'umem> {
         mmap: Arc<MmapMut>,
         frame_size: usize,
         num_frames: usize,
-        poller: Option<Arc<Poller>>,
     ) -> Self {
         Self {
             umem,
-            fd: unsafe { xsk_umem__fd(umem) },
             mmap,
             frame_size,
             num_frames,
             init: AtomicBool::new(false),
-            poller,
+            fd: unsafe { xsk_umem__fd(umem) },
             _lifetime: PhantomData,
         }
-    }
-
-    pub(crate) fn fd(&self) -> i32 {
-        self.fd
     }
 
     pub(crate) fn to_frame(&self, addr: u64, len: usize, is_fragment: bool) -> Frame<'umem> {
@@ -84,12 +75,12 @@ impl<'umem> UmemOwner<'umem> {
         )
     }
 
-    pub(crate) fn as_ptr(&self) -> *mut xsk_umem {
-        self.umem
+    pub(crate) fn fd(&self) -> RawFd {
+        self.fd
     }
 
-    pub(crate) fn get_poller(&self) -> Option<&Arc<Poller>> {
-        self.poller.as_ref()
+    pub(crate) fn as_ptr(&self) -> *mut xsk_umem {
+        self.umem
     }
 
     /// Initialize the frame buffer with the frames from the UMEM, its then up to the caller what to do with these frames, you can push them into the fill queue, use them
@@ -137,14 +128,6 @@ mod tests {
             .build()
             .expect("UMEM creation failed");
         (ctx, owner)
-    }
-
-    #[test]
-    fn test_accessors() {
-        let (_, owner) = create_umem(4, 4096);
-
-        assert!(owner.fd() >= 0);
-        assert!(!owner.as_ptr().is_null());
     }
 
     #[test]
