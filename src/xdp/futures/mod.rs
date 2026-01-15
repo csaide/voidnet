@@ -1,11 +1,12 @@
-mod comp;
-mod fill;
-mod poller;
-mod recv;
-mod send;
+crate::cfg_block! {
+    #[cfg(feature = "tokio")]
+    {
+        mod tokio;
 
-pub use comp::CompFuture;
-pub use fill::ProcessFillQueueFuture;
-pub(crate) use poller::Poller;
-pub use recv::RecvFuture;
-pub use send::SendFuture;
+        pub use tokio::{TokioCompFuture, TokioCompletionQueue};
+        pub use tokio::{TokioFillFuture, TokioFillQueue};
+        pub use tokio::{TokioRecvFuture, TokioSocketRx};
+        pub use tokio::{TokioSendFuture, TokioSocketTx};
+        pub use tokio::TokioSocket;
+    }
+}

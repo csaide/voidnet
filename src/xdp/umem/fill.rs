@@ -6,7 +6,6 @@ use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
 use crate::xdp::{
     error::{Error, Result},
     frame::FrameBuffer,
-    futures::ProcessFillQueueFuture,
     ring::{Init, Producer},
 };
 
@@ -28,11 +27,6 @@ impl<'umem> FillQueue<'umem> {
             owner,
             busy_poll,
         }
-    }
-
-    #[inline(always)]
-    pub(crate) fn fd(&self) -> i32 {
-        self.owner.fd()
     }
 
     /// Returns the size of the fill ring.
@@ -76,20 +70,6 @@ impl<'umem> FillQueue<'umem> {
         }
 
         self.ring.submit(ready);
-    }
-
-    /// Processes the fill queue asynchronously, returning a future that will be ready when the fill queue is processed.
-    #[inline(always)]
-    pub fn process_queue_async<'fd, B: FrameBuffer<'umem>>(
-        &mut self,
-        batch: B,
-        fds: &'fd [i32],
-    ) -> ProcessFillQueueFuture<'_, 'umem, 'fd, B> {
-        ProcessFillQueueFuture {
-            fill_queue: self,
-            batch,
-            fds,
-        }
     }
 }
 
@@ -139,14 +119,6 @@ mod tests {
             buffer,
             _owner: owner_static,
         }
-    }
-
-    #[test]
-    fn test_accessors() {
-        let ctx = create_fq(8, false);
-
-        assert_eq!(ctx.fq.size(), 8);
-        assert!(ctx.fq.fd() >= 0);
     }
 
     #[test]
@@ -230,17 +202,5 @@ mod tests {
         // but we can verify empty buffer behavior
         ctx.fq.process_queue(&mut new_buffer);
         assert_eq!(new_buffer.num_frames(), 0);
-    }
-
-    #[test]
-    fn test_fd_consistent_with_owner() {
-        let ctx = create_fq(4, false);
-
-        let fd1 = ctx.fq.fd();
-        let fd2 = ctx.fq.fd();
-
-        assert!(fd1 >= 0);
-        assert_eq!(fd1, fd2); // Consistent
-        assert_eq!(fd1, ctx._owner.fd()); // Matches owner
     }
 }

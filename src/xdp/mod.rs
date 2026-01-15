@@ -2,6 +2,7 @@ pub mod context;
 pub mod error;
 pub(crate) mod flags;
 pub mod frame;
+#[cfg(feature = "async")]
 pub mod futures;
 pub mod program;
 pub mod ring;

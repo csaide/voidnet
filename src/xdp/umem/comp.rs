@@ -2,7 +2,6 @@ use std::{ops::Deref, sync::Arc};
 
 use crate::xdp::{
     frame::FrameBuffer,
-    futures::CompFuture,
     ring::{Consumer, Init},
 };
 
@@ -19,12 +18,6 @@ impl<'umem> CompletionQueue<'umem> {
     /// Creates a new completion queue.
     pub(crate) fn new(ring: Consumer<Init>, owner: Arc<UmemOwner<'umem>>) -> Self {
         Self { ring, owner }
-    }
-
-    /// Returns the file descriptor of the completion queue, which is actually the file descriptor of the UMEM.
-    #[inline(always)]
-    pub(crate) fn fd(&self) -> i32 {
-        self.owner.fd()
     }
 
     /// Processes the completion queue, allocating new frames from the frame stack and submitting them to the completion ring up to the size of the completion ring.
@@ -44,20 +37,6 @@ impl<'umem> CompletionQueue<'umem> {
         }
 
         self.ring.release(ready as u32);
-    }
-
-    /// Processes the completion queue asynchronously, returning a future that will be ready when the completion queue is processed.
-    #[inline(always)]
-    pub fn process_queue_async<'que, B: FrameBuffer<'umem>>(
-        &'que mut self,
-        batch: B,
-        expected: usize,
-    ) -> CompFuture<'que, 'umem, B> {
-        CompFuture {
-            completion_queue: self,
-            batch,
-            expected,
-        }
     }
 }
 
@@ -100,16 +79,6 @@ mod tests {
             cq,
             _owner: owner_static,
         }
-    }
-
-    #[test]
-    fn test_fd() {
-        let ctx = create_cq(8);
-
-        let fd = ctx.cq.fd();
-        assert!(fd >= 0);
-        assert_eq!(fd, ctx.cq.fd()); // Consistent
-        assert_eq!(fd, ctx._owner.fd()); // Matches owner
     }
 
     #[test]

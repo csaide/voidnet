@@ -13,11 +13,13 @@ use crate::xdp::{
     error::{Error, NonBlocking, Result},
     flags::{XDP_USE_NEED_WAKEUP, XDP_USE_SG},
     frame::FrameBuffer,
-    futures::{RecvFuture, SendFuture},
     ring::{Consumer, Producer},
     socket::{BindMode, mode::CopyMode},
     umem::UmemOwner,
 };
+
+#[cfg(feature = "tokio")]
+use crate::xdp::futures::TokioSocket;
 
 use super::{SocketOwner, SocketRx, SocketTx};
 
@@ -129,6 +131,12 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
             self.enable_fragmentation,
         )
     }
+
+    #[cfg(feature = "tokio")]
+    pub fn build_tokio<'umem>(self, umem: Arc<UmemOwner<'umem>>) -> Result<TokioSocket<'umem>> {
+        let socket = self.build(umem)?;
+        Ok(TokioSocket::new(socket.owner, socket.rx, socket.tx)?)
+    }
 }
 
 pub struct Socket<'umem> {
@@ -208,7 +216,7 @@ impl<'umem> Socket<'umem> {
         let rx = unsafe { rx.assume_init() };
         let tx = unsafe { tx.assume_init() };
 
-        let mut owner = SocketOwner::new(umem.clone(), xsk, xdp_ctx.get_poller().cloned());
+        let mut owner = SocketOwner::new(umem.clone(), xsk);
         xdp_ctx.register_socket(&mut owner)?;
         let owner = Arc::new(owner);
         let rx = SocketRx::new(owner.clone(), rx);
@@ -249,14 +257,6 @@ impl<'umem> Socket<'umem> {
         self.rx.recv(batch)
     }
 
-    /// Receives a batch of frames from the socket asynchronously.
-    ///
-    /// This function will return a future that will be ready when the frames are received.
-    #[inline(always)]
-    pub fn recv_async<B: FrameBuffer<'umem>>(&mut self, batch: B) -> RecvFuture<'_, 'umem, B> {
-        self.rx.recv_async(batch)
-    }
-
     /// Sends a batch of frames to the socket.
     ///
     /// Note that it is not guaranteed that the resulting Vec of frames will match the batch size supplied.
@@ -268,14 +268,6 @@ impl<'umem> Socket<'umem> {
     #[inline(always)]
     pub fn send<B: FrameBuffer<'umem>>(&mut self, frames: B) -> NonBlocking<u32> {
         self.tx.send(frames)
-    }
-
-    /// Sends a batch of frames to the socket asynchronously.
-    ///
-    /// This function will return a future that will be ready when the frames are sent.
-    #[inline(always)]
-    pub fn send_async<B: FrameBuffer<'umem>>(&mut self, frames: B) -> SendFuture<'_, 'umem, B> {
-        self.tx.send_async(frames)
     }
 }
 
@@ -359,17 +351,11 @@ mod tests {
         let mut ctx_outer = XdpContext::builder(veth.outer_name())
             .attach_mode(AttachMode::default())
             .enable_fragmentation(false)
-            .async_mode(false)
-            .poller_max_events(1024)
-            .poller_timeout_ms(100)
             .build()
             .expect("failed to create outer context");
         let mut ctx_inner = XdpContext::builder(veth.inner_name())
             .attach_mode(AttachMode::default())
             .enable_fragmentation(false)
-            .async_mode(false)
-            .poller_max_events(1024)
-            .poller_timeout_ms(100)
             .build()
             .expect("failed to create inner context");
 
@@ -481,178 +467,6 @@ mod tests {
         cq_outer.process_queue(&mut reclaim_buffer);
     }
 
-    /// Async version of test_socket_send_recv_sync using async methods.
-    #[test]
-    fn test_socket_send_recv_async() {
-        use futures::executor::block_on;
-        use std::future::Future;
-        use std::pin::Pin;
-        use std::task::{Context, Poll};
-
-        // Simple timeout future wrapper
-        struct Timeout<F> {
-            future: F,
-            deadline: Instant,
-        }
-
-        impl<F: Future + Unpin> Future for Timeout<F> {
-            type Output = Option<F::Output>;
-
-            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                // Check timeout first
-                if Instant::now() >= self.deadline {
-                    return Poll::Ready(None);
-                }
-
-                // Poll the inner future
-                match Pin::new(&mut self.future).poll(cx) {
-                    Poll::Ready(result) => Poll::Ready(Some(result)),
-                    Poll::Pending => {
-                        // Schedule a wake-up for timeout check
-                        cx.waker().wake_by_ref();
-                        Poll::Pending
-                    }
-                }
-            }
-        }
-
-        fn with_timeout<F: Future + Unpin>(future: F, timeout: Duration) -> Timeout<F> {
-            Timeout {
-                future,
-                deadline: Instant::now() + timeout,
-            }
-        }
-
-        // Create veth pair
-        let veth = TestVethPair::new().expect("failed to create veth pair");
-
-        // Create XDP contexts on both ends
-        let mut ctx_outer = XdpContext::builder(veth.outer_name())
-            .attach_mode(AttachMode::default())
-            .enable_fragmentation(false)
-            .async_mode(true)
-            .poller_max_events(1024)
-            .poller_timeout_ms(100)
-            .build()
-            .expect("failed to create outer context");
-        let mut ctx_inner = XdpContext::builder(veth.inner_name())
-            .attach_mode(AttachMode::default())
-            .enable_fragmentation(false)
-            .async_mode(true)
-            .poller_max_events(1024)
-            .poller_timeout_ms(100)
-            .build()
-            .expect("failed to create inner context");
-
-        // Create UMEM for outer socket (sender)
-        let (umem_outer, _fq_outer, mut cq_outer) = Umem::builder(&mut ctx_outer)
-            .num_frames(64)
-            .frame_size(4096)
-            .fill_ring_size(32)
-            .completion_ring_size(32)
-            .build()
-            .expect("failed to create outer umem");
-
-        // Create UMEM for inner socket (receiver)
-        let (umem_inner, mut fq_inner, _cq_inner) = Umem::builder(&mut ctx_inner)
-            .num_frames(64)
-            .frame_size(4096)
-            .fill_ring_size(32)
-            .completion_ring_size(32)
-            .build()
-            .expect("failed to create inner umem");
-
-        // Initialize frame buffers
-        let mut tx_buffer: BasicFrameBuffer<'_> = umem_outer.init_buffer().unwrap();
-        let mut rx_buffer: BasicFrameBuffer<'_> = umem_inner.init_buffer().unwrap();
-
-        // Create sockets
-        let mut socket_outer = Socket::builder(&mut ctx_outer, veth.outer_name(), 0)
-            .build(umem_outer.clone())
-            .expect("failed to create outer socket");
-
-        let mut socket_inner = Socket::builder(&mut ctx_inner, veth.inner_name(), 0)
-            .build(umem_inner.clone())
-            .expect("failed to create inner socket");
-
-        // Prime the receiver's fill queue using async method
-        let rx_prime_count = rx_buffer.num_frames().min(32);
-        let mut prime_buffer = BasicFrameBuffer::new(rx_prime_count);
-        for frame in rx_buffer.drain(..rx_prime_count) {
-            prime_buffer.push(frame);
-        }
-
-        // Use async fill queue processing
-        block_on(fq_inner.process_queue_async(&mut prime_buffer, &[socket_inner.fd()]))
-            .expect("failed to process fill queue async");
-
-        // Build a test packet
-        let payload = b"Hello XDP Socket Test Async!";
-        let packet_data = build_ethernet_frame(
-            veth.inner_mac().as_bytes(),
-            veth.outer_mac().as_bytes(),
-            payload,
-        );
-
-        // Prepare a frame for sending
-        let mut send_buffer = BasicFrameBuffer::new(1);
-        let mut frame = tx_buffer.drain(..1).next().expect("no frames available");
-        frame.copy_from(&packet_data);
-        send_buffer.push(frame);
-
-        // Send the packet using async method
-        let sent = block_on(socket_outer.send_async(&mut send_buffer)).expect("async send failed");
-        assert_eq!(sent, 1, "expected to send 1 frame");
-        assert_eq!(send_buffer.num_frames(), 0, "buffer should be drained");
-
-        // Receive the packet using async method with timeout
-        let mut recv_buffer = BasicFrameBuffer::new(16);
-        let timeout = Duration::from_secs(5);
-
-        // We need to poll recv_async with a timeout
-        // Since recv_async will block waiting for packets, we use our timeout wrapper
-        let recv_future = socket_inner.recv_async(&mut recv_buffer);
-        let result = block_on(with_timeout(recv_future, timeout));
-
-        match result {
-            Some(Ok(count)) => {
-                assert!(count > 0, "expected to receive at least 1 frame");
-            }
-            Some(Err(e)) => {
-                panic!("async recv failed with error: {:?}", e);
-            }
-            None => {
-                panic!("async recv timed out after {:?}", timeout);
-            }
-        }
-
-        assert!(
-            recv_buffer.num_frames() >= 1,
-            "expected at least 1 received frame"
-        );
-
-        // Verify the received packet matches what we sent
-        let recv_frame = recv_buffer.iter_frames().next().unwrap();
-        assert!(
-            recv_frame.len() >= packet_data.len(),
-            "received frame too short"
-        );
-        assert_eq!(
-            &recv_frame[..packet_data.len()],
-            &packet_data[..],
-            "packet data mismatch"
-        );
-
-        // Clean up: use async completion queue processing
-        // Split the socket to get access to SocketTx for the CompFuture
-        let (_, _, tx) = socket_outer.split();
-        tx.maybe_wake().expect("failed to wake tx");
-
-        let mut reclaim_buffer = BasicFrameBuffer::new(1);
-        block_on(cq_outer.process_queue_async(&mut reclaim_buffer, 1))
-            .expect("failed to process completion queue async");
-    }
-
     /// Test socket creation and basic properties.
     #[test]
     fn test_socket_creation() {
@@ -661,9 +475,6 @@ mod tests {
         let mut ctx = XdpContext::builder(veth.outer_name())
             .attach_mode(AttachMode::default())
             .enable_fragmentation(false)
-            .async_mode(false)
-            .poller_max_events(1024)
-            .poller_timeout_ms(100)
             .build()
             .expect("failed to create context");
 
@@ -696,9 +507,6 @@ mod tests {
         let mut ctx = XdpContext::builder(veth.outer_name())
             .attach_mode(AttachMode::default())
             .enable_fragmentation(false)
-            .async_mode(false)
-            .poller_max_events(1024)
-            .poller_timeout_ms(100)
             .build()
             .expect("failed to create context");
 
@@ -729,9 +537,6 @@ mod tests {
         let mut ctx = XdpContext::builder(veth.outer_name())
             .attach_mode(AttachMode::default())
             .enable_fragmentation(false)
-            .async_mode(false)
-            .poller_max_events(1024)
-            .poller_timeout_ms(100)
             .build()
             .expect("failed to create context");
 
@@ -775,9 +580,6 @@ mod tests {
         let mut ctx = XdpContext::builder(veth.outer_name())
             .attach_mode(AttachMode::default())
             .enable_fragmentation(false)
-            .async_mode(true)
-            .poller_max_events(1024)
-            .poller_timeout_ms(100)
             .build()
             .expect("failed to create context");
 

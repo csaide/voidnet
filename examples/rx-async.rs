@@ -56,9 +56,6 @@ async fn main() {
     let mut xdp_ctx = XdpContext::builder(&args.if_name)
         .attach_mode(args.attach_mode)
         .enable_fragmentation(args.enable_fragmentation)
-        .async_mode(true)
-        .poller_max_events(1024)
-        .poller_timeout_ms(100)
         .build()
         .expect("Failed to create xdp context");
 
@@ -77,7 +74,7 @@ async fn main() {
         .num_frames(args.fill_ring_size as usize) // We are benching reads so just set the num frames to the fill ring size.
         .huge_tables(args.huge_tables)
         .unaligned(args.unaligned)
-        .build()
+        .build_tokio()
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
@@ -91,7 +88,7 @@ async fn main() {
         .busy_poll_batch_size(args.busy_poll_batch_size)
         .busy_poll_timeout_us(args.busy_poll_timeout_us)
         .copy_mode(args.copy_mode)
-        .build(umem.clone())
+        .build_tokio(umem.clone())
         .expect("Failed to create socket");
 
     let exit = Arc::new(AtomicBool::new(false));
@@ -114,7 +111,7 @@ async fn main() {
 
     while !exit.load(Ordering::Relaxed) {
         // Start by reading some frames from the socket. The result of this call is guaranteed to be between 1 and the batch size.
-        match socket.recv_async(&mut frames).await {
+        match socket.recv(&mut frames).await {
             Ok(received) => {
                 debug_assert!(
                     received > 0 && received <= args.busy_poll_batch_size as u32,

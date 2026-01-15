@@ -6,7 +6,6 @@ use libxdp_sys::XSK_UNALIGNED_BUF_ADDR_MASK;
 use crate::xdp::{
     error::{NonBlocking, WouldBlock},
     frame::FrameBuffer,
-    futures::RecvFuture,
     ring::{Consumer, Init},
 };
 
@@ -48,14 +47,6 @@ impl<'umem> SocketRx<'umem> {
 
         self.ring.release(rcvd);
         Ok(rcvd)
-    }
-
-    #[inline(always)]
-    pub fn recv_async<B: FrameBuffer<'umem>>(&mut self, batch: B) -> RecvFuture<'_, 'umem, B> {
-        RecvFuture {
-            socket: self,
-            batch,
-        }
     }
 }
 
