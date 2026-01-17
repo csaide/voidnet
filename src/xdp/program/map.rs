@@ -18,16 +18,11 @@ pub struct Map {
 
 impl Map {
     /// Wraps a raw [bpf_map] and its corresponding [bpf_map_info] object.
-    #[cfg(target_arch = "aarch64")]
     pub fn new(map: *mut bpf_map, info: bpf_map_info) -> Self {
+        #[cfg(target_arch = "aarch64")]
         let name = String::from_utf8_lossy(&info.name[..]).to_string();
-        Self { map, info, name }
-    }
 
-    /// Wraps a raw [bpf_map] and its corresponding [bpf_map_info] object.
-    #[cfg(target_arch = "x86_64")]
-    pub fn new(map: *mut bpf_map, info: bpf_map_info) -> Self {
-        // So x86_64 decided to make their c_char type an i8, so we have to convert here....
+        #[cfg(target_arch = "x86_64")]
         let name =
             String::from_utf8_lossy(&info.name[..].iter().map(|c| *c as u8).collect::<Vec<u8>>())
                 .to_string();

@@ -38,10 +38,7 @@ pub struct SocketBuilder<'a, 'b> {
 }
 
 impl<'a, 'b> SocketBuilder<'a, 'b> {
-    /// Creates a new socket builder, using the supplied interface name and queue number.
-    ///
-    /// The defaults included are sane values for most use cases.
-    pub fn new(ctx: &'b mut XdpContext, if_name: &'a str, queue: u32) -> Self {
+    fn new(ctx: &'b mut XdpContext, if_name: &'a str, queue: u32) -> Self {
         Self {
             ctx,
             if_name,
@@ -366,7 +363,8 @@ mod tests {
             .fill_ring_size(32)
             .completion_ring_size(32)
             .build()
-            .expect("failed to create outer umem");
+            .expect("failed to create outer umem")
+            .split();
 
         // Create UMEM for inner socket (receiver)
         let (umem_inner, mut fq_inner, _cq_inner) = Umem::builder(&mut ctx_inner)
@@ -375,7 +373,8 @@ mod tests {
             .fill_ring_size(32)
             .completion_ring_size(32)
             .build()
-            .expect("failed to create inner umem");
+            .expect("failed to create inner umem")
+            .split();
 
         // Initialize frame buffers
         let mut tx_buffer: BasicFrameBuffer<'_> = umem_outer.init_buffer().unwrap();
@@ -484,7 +483,8 @@ mod tests {
             .fill_ring_size(8)
             .completion_ring_size(8)
             .build()
-            .expect("failed to create umem");
+            .expect("failed to create umem")
+            .split();
 
         let socket = Socket::builder(&mut ctx, veth.outer_name(), 0)
             .rx_ring_size(8)
@@ -516,7 +516,8 @@ mod tests {
             .fill_ring_size(8)
             .completion_ring_size(8)
             .build()
-            .expect("failed to create umem");
+            .expect("failed to create umem")
+            .split();
 
         let socket = Socket::builder(&mut ctx, veth.outer_name(), 0)
             .build(umem)
@@ -546,7 +547,8 @@ mod tests {
             .fill_ring_size(8)
             .completion_ring_size(8)
             .build()
-            .expect("failed to create umem");
+            .expect("failed to create umem")
+            .split();
 
         let mut buffer: BasicFrameBuffer<'_> = umem.init_buffer().unwrap();
 
@@ -590,7 +592,8 @@ mod tests {
             .fill_ring_size(4)
             .completion_ring_size(4)
             .build()
-            .expect("failed to create umem");
+            .expect("failed to create umem")
+            .split();
 
         let mut buffer: BasicFrameBuffer<'_> = umem.init_buffer().unwrap();
 

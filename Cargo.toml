@@ -6,14 +6,18 @@ edition = "2024"
 [dependencies]
 dashmap = { version = "6.1", default-features = false }
 errno = { version = "0.3", default-features = false }
-futures = { version = "0.3", default-features = false, features = ["executor"] }
+futures-core = { version = "0.3", default-features = false, optional = true }
+futures-util = { version = "0.3", default-features = false, features = [
+    "std",
+], optional = true }
 libc = { version = "0.2", default-features = false }
 libxdp-sys = { version = "=0.2.2", default-features = false } # Latest version of this library has a broken build....
 memmap2 = { version = "0.9", default-features = false }
 neli = { version = "0.7", default-features = false, features = ["sync"] }
 smallvec = { version = "1.15", default-features = false }
+async-io = { version = "2", default-features = false, optional = true }
 thiserror = { version = "2", default-features = false }
-tokio = { version = "1.40", default-features = false, features = [
+tokio = { version = "1", default-features = false, features = [
     "net",
 ], optional = true }
 
@@ -24,10 +28,12 @@ ctrlc = { version = "3.2", features = ["termination"] }
 pnet = { version = "0.35" }
 rand = { version = "0.9" }
 tokio = { version = "1.40", features = ["full"] }
+futures = { version = "0.3" }
 
 [features]
-async = [
-] # Marker feature for async support, used to conditionally compile async specific code, namely generic futures. Effectively useless without tokio/smol enabled.
+default = []
+async = ["dep:futures-core", "dep:futures-util"]
+smol = ["dep:async-io", "async"]
 tokio = ["dep:tokio", "async"]
 
 [profile.profiling]

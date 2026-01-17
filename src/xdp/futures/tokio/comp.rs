@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures::ready;
+use futures_core::ready;
 use tokio::io::{Ready, unix::AsyncFd};
 
 use crate::xdp::{error::Result, frame::FrameBuffer, umem::CompletionQueue};
@@ -22,7 +22,7 @@ impl<'umem> TokioCompletionQueue<'umem> {
     }
 
     #[inline(always)]
-    pub fn process_queue_async<'que, B: FrameBuffer<'umem>>(
+    pub fn process_queue<'que, B: FrameBuffer<'umem>>(
         &'que mut self,
         batch: B,
         expected: usize,
@@ -69,14 +69,17 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for TokioCompFuture<'que, 'umem,
         // Those accesses are also guaranteed to not move self or the fields themselves.
         let this = unsafe { self.get_unchecked_mut() };
 
-        this.completion_queue.process_queue(&mut this.batch);
+        this.completion_queue
+            .inner
+            .get_mut()
+            .process_queue(&mut this.batch);
         if this.batch.num_frames() >= this.expected {
             return Poll::Ready(Ok(()));
         }
 
         let mut guard = ready!(this.completion_queue.inner.poll_read_ready_mut(cx))?;
 
-        guard.get_mut().get_mut().process_queue(&mut this.batch);
+        guard.get_inner_mut().process_queue(&mut this.batch);
         if this.batch.num_frames() >= this.expected {
             guard.clear_ready_matching(Ready::READABLE);
             return Poll::Ready(Ok(()));

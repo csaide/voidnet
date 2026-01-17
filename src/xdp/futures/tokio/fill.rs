@@ -1,11 +1,14 @@
 use std::{
     ops::{Deref, DerefMut},
-    os::fd::{AsRawFd, RawFd},
+    os::{
+        fd::{AsRawFd, RawFd},
+        raw::c_int,
+    },
     pin::Pin,
     task::{Context, Poll},
 };
 
-use futures::ready;
+use futures_core::ready;
 use tokio::io::{Ready, unix::AsyncFd};
 
 use crate::xdp::{error::Result, frame::FrameBuffer, umem::FillQueue};
@@ -22,10 +25,10 @@ impl<'umem> TokioFillQueue<'umem> {
     }
 
     #[inline(always)]
-    pub fn process_queue_async<'fd, B: FrameBuffer<'umem>>(
+    pub fn process_queue<'fd, B: FrameBuffer<'umem>>(
         &mut self,
         batch: B,
-        fds: &'fd [i32],
+        fds: &'fd [c_int],
     ) -> TokioFillFuture<'_, 'umem, 'fd, B> {
         TokioFillFuture {
             fill_queue: self,
@@ -58,7 +61,7 @@ impl<'umem> DerefMut for TokioFillQueue<'umem> {
 pub struct TokioFillFuture<'que, 'umem, 'fd, B: FrameBuffer<'umem>> {
     pub(crate) fill_queue: &'que mut TokioFillQueue<'umem>,
     pub(crate) batch: B,
-    pub(crate) fds: &'fd [i32],
+    pub(crate) fds: &'fd [c_int],
 }
 
 impl<'que, 'umem, 'fd, B: FrameBuffer<'umem>> Future for TokioFillFuture<'que, 'umem, 'fd, B> {
@@ -75,14 +78,17 @@ impl<'que, 'umem, 'fd, B: FrameBuffer<'umem>> Future for TokioFillFuture<'que, '
             }
         }
 
-        this.fill_queue.process_queue(&mut this.batch);
+        this.fill_queue
+            .inner
+            .get_mut()
+            .process_queue(&mut this.batch);
         if this.batch.num_frames() == 0 {
             return Poll::Ready(Ok(()));
         }
 
         let mut guard = ready!(this.fill_queue.inner.poll_write_ready_mut(cx))?;
 
-        guard.get_mut().get_mut().process_queue(&mut this.batch);
+        guard.get_inner_mut().process_queue(&mut this.batch);
         if this.batch.num_frames() == 0 {
             guard.clear_ready_matching(Ready::WRITABLE);
             return Poll::Ready(Ok(()));

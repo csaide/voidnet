@@ -10,21 +10,20 @@ use clap::Parser;
 
 use libvoid::xdp::{
     context::XdpContext,
+    error::WouldBlock,
     frame::{BasicFrameBuffer, FrameBuffer},
     socket::Socket,
     umem::Umem,
 };
 
 mod common;
-use common::{BaseArgs, GeneratorArgs, Stats, build_frame};
+use common::{BaseArgs, Stats, swap_addresses};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[command(flatten)]
     base: BaseArgs,
-    #[command(flatten)]
-    generator: GeneratorArgs,
 }
 
 impl Deref for Args {
@@ -47,7 +46,7 @@ fn main() {
 
     // Every application starts with setting up an XdpContext, this loads the XDP kernel program and attaches it to the named
     // interface.
-    let mut xdp_context = XdpContext::builder(&args.if_name)
+    let mut xdp_ctx = XdpContext::builder(&args.if_name)
         .attach_mode(args.attach_mode)
         .enable_fragmentation(args.enable_fragmentation)
         .build()
@@ -60,7 +59,7 @@ fn main() {
     // - Owner (umem) > The owner of the UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
-    let (umem, _fq, mut cq) = Umem::builder(&mut xdp_context)
+    let mut umem = Umem::builder(&mut xdp_ctx)
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -75,15 +74,15 @@ fn main() {
     //
     // This is the main handle for interacting with the network data, if needed this can be split into its owner, rx, and tx
     // components using the split() function.
-    let mut socket = Socket::builder(&mut xdp_context, &args.if_name, args.queue)
+    let mut socket = Socket::builder(&mut xdp_ctx, &args.if_name, args.queue)
         .rx_ring_size(args.rx_ring_size)
         .tx_ring_size(args.tx_ring_size)
+        .busy_poll(args.busy_poll)
         .busy_poll_batch_size(args.busy_poll_batch_size)
         .busy_poll_timeout_us(args.busy_poll_timeout_us)
-        .busy_poll(args.busy_poll)
         .copy_mode(args.copy_mode)
         .enable_fragmentation(args.enable_fragmentation)
-        .build(umem.clone())
+        .build(umem.owner().clone())
         .expect("Failed to create socket");
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.
@@ -99,56 +98,56 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // Generate our mock UDP packet to send.
-    let packet_data = build_frame(&args.generator);
+    println!("Socket created, listening for packets...");
 
-    println!("Socket created, sending packets...");
-    let mut write_frames = umem.init_buffer::<BasicFrameBuffer>().unwrap();
-    let frames = write_frames.num_frames();
+    // For reads to work we need to hand some buffers to the kernel, so it can start reading data into them.
+
+    // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
+    umem.maybe_wake_fill_queue(socket.fd()).unwrap();
+
+    // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
+    let mut frames = umem.init_buffer::<BasicFrameBuffer>().unwrap();
+    umem.process_fill_queue(&mut frames);
+
+    // Loop forever reading packets from the socket.
     while !exit.load(Ordering::Relaxed) {
-        // Copy the data into the frames, this is intentionally in the loop to show performance of a real world application.
-        // Since generally at some point a copy into the frame is needed from userspace, how this copy is done is up to the caller.
-        //
-        // Note: Technically the frames SHOULD be untouched after each iteration, so in theory if the frame size/fragmentation is known
-        // here you can just set the frame metadata and avoid the copy if done outside the loop and you are simply re-sending the same
-        // data.... But be ware this is where dragons live...
-        for frame in write_frames.iter_frames_mut() {
-            frame.copy_from(&packet_data);
-        }
-
-        // Send the prepared frames to the socket.
-        //
-        // Note this will completely consume the input buffer.
-        let sent = match socket.send(&mut write_frames) {
-            Ok(sent) => {
-                debug_assert!(
-                    sent == frames as u32,
-                    "Sent a different number of frames than the input buffer, this should never happen!"
-                );
-
-                stats.update_batch(sent as usize, packet_data.len());
-                sent
-            }
-            Err(_) => {
-                // We would have blocked.
+        // First read some frames off the socket.
+        let received = match socket.recv(&mut frames) {
+            Ok(received) => received,
+            Err(WouldBlock) => {
+                // There were no frames available to read, wake the fill queue and process any outstanding descriptors.
                 continue;
             }
         };
 
-        // Process any outstanding descriptors on the completion queue retrieving the sent frames.
-        //
-        // This should be a loop because the kernel can only transmit a limited number of frames at a time.
-        while write_frames.num_frames() < sent as usize {
-            // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
-            //
-            // Note: Errors here are fatal and should cause the program to exit, or reset the XDP state from scratch.
-            socket.maybe_wake().unwrap();
+        // Guaranteed by the socket.recv() function, given an empty input buffer.
+        debug_assert_eq!(frames.num_frames(), received as usize);
 
-            // Process the writen frames, this will consume as many frames as possible from the kernel, but it
-            // will be limited to the devices descriptor count.
-            cq.process_queue(&mut write_frames);
+        // For each received frame, attempt to swap the addresses.
+        for mut frame in frames.iter_frames_mut() {
+            stats.update(frame.len(), frame.is_fragment());
+
+            swap_addresses(&mut frame).unwrap();
         }
+
+        // Send the updated frames to the socket.
+        let _ = socket.send(&mut frames);
+
+        // Send will always fully consume the input buffer, so we should have no frames left.
+        debug_assert_eq!(frames.num_frames(), 0);
+
+        // So we "sent" the packets but now we need to actually drive the completion of those sends.
+        while frames.num_frames() < received as usize {
+            socket.maybe_wake().expect("Failed to wake tx queue");
+            umem.process_completion_queue(&mut frames);
+        }
+
+        // Now give back all our frames to the kernel by means of the fill queue.
+        umem.maybe_wake_fill_queue(socket.fd()).unwrap();
+        umem.process_fill_queue(&mut frames);
 
         stats.maybe_print();
     }
+
+    println!("Exiting...");
 }

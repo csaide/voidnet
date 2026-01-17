@@ -54,6 +54,8 @@ impl<'umem> UmemOwner<'umem> {
         }
     }
 
+    /// Creates a new frame from the given address, length, and is fragment flag.
+    #[inline(always)]
     pub(crate) fn to_frame(&self, addr: u64, len: usize, is_fragment: bool) -> Frame<'umem> {
         debug_assert!(len <= self.frame_size, "len is greater than the frame size");
         debug_assert!(
@@ -75,10 +77,14 @@ impl<'umem> UmemOwner<'umem> {
         )
     }
 
+    /// Returns the file descriptor of the umem.
+    #[inline(always)]
     pub(crate) fn fd(&self) -> RawFd {
         self.fd
     }
 
+    /// Returns the pointer to the umem.
+    #[inline(always)]
     pub(crate) fn as_ptr(&self) -> *mut xsk_umem {
         self.umem
     }
@@ -126,7 +132,8 @@ mod tests {
             .fill_ring_size(num_frames as u32)
             .completion_ring_size(num_frames as u32)
             .build()
-            .expect("UMEM creation failed");
+            .expect("UMEM creation failed")
+            .split();
         (ctx, owner)
     }
 

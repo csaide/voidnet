@@ -50,10 +50,10 @@
 //!     .build()?;
 //!
 //! // 2. Create shared memory
-//! let (umem, fq, cq) = Umem::builder(&mut ctx).num_frames(4096).build()?;
+//! let mut umem = Umem::builder(&mut ctx).num_frames(4096).build()?;
 //!
 //! // 3. Create an AF_XDP socket
-//! let socket = Socket::builder(&mut ctx, "eth0", 0).build(umem)?;
+//! let socket = Socket::builder(&mut ctx, "eth0", 0).build(umem.owner().clone())?;
 //!
 //! // 4. Process packets via RX/TX rings...
 //! # Ok::<(), libvoid::xdp::error::Error>(())

@@ -1,8 +1,8 @@
 pub mod context;
 pub mod error;
-pub(crate) mod flags;
+mod flags;
 pub mod frame;
-#[cfg(feature = "async")]
+#[cfg(any(feature = "tokio", feature = "smol"))]
 pub mod futures;
 pub mod program;
 pub mod ring;

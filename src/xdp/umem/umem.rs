@@ -1,4 +1,7 @@
-use std::{os::raw::c_void, sync::Arc};
+use std::{
+    os::raw::{c_int, c_void},
+    sync::Arc,
+};
 
 use errno::errno;
 use libxdp_sys::{
@@ -11,16 +14,12 @@ use memmap2::MmapOptions;
 use crate::xdp::{
     context::XdpContext,
     error::{Error, Result},
+    frame::{Frame, FrameBuffer},
     ring::{Consumer, Producer},
 };
 
-crate::cfg_block! {
-    #[cfg(feature = "tokio")]
-    {
-        use crate::xdp::futures::TokioCompletionQueue;
-        use crate::xdp::futures::TokioFillQueue;
-    }
-}
+#[cfg(feature = "tokio")]
+use crate::xdp::futures::TokioUmem;
 
 use super::{CompletionQueue, FillQueue, UmemOwner};
 
@@ -37,7 +36,7 @@ pub struct UmemBuilder<'ctx> {
 }
 
 impl<'ctx> UmemBuilder<'ctx> {
-    pub fn new(ctx: &'ctx mut XdpContext) -> Self {
+    fn new(ctx: &'ctx mut XdpContext) -> Self {
         let completion_ring_size = XSK_RING_CONS__DEFAULT_NUM_DESCS;
         let fill_ring_size = XSK_RING_PROD__DEFAULT_NUM_DESCS;
         let frame_size = XSK_UMEM__DEFAULT_FRAME_SIZE as usize;
@@ -53,42 +52,58 @@ impl<'ctx> UmemBuilder<'ctx> {
         }
     }
 
+    /// Sets the size of the completion ring, the maximum number of frames that can be outstanding in the completion ring.
+    ///
+    /// Note this value must be a power of two.
     pub fn completion_ring_size(mut self, completion_ring_size: u32) -> Self {
         self.completion_ring_size = completion_ring_size;
         self
     }
 
+    /// Sets the size of the fill ring, the maximum number of frames that can be outstanding in the fill ring.
+    ///
+    /// Note this value must be a power of two.
     pub fn fill_ring_size(mut self, fill_ring_size: u32) -> Self {
         self.fill_ring_size = fill_ring_size;
         self
     }
 
+    /// Sets the size of the frame, the size of each frame in the UMEM.
+    ///
+    /// Note this value must be a power of two.
     pub fn frame_size(mut self, frame_size: usize) -> Self {
         self.frame_size = frame_size;
         self
     }
 
+    /// Sets the total number of frames in the UMEM.
+    ///
+    /// Note this value is optional, if not set it will be calculated as the sum of the completion and fill ring sizes.
     pub fn num_frames(mut self, num_frames: usize) -> Self {
         self.num_frames = Some(num_frames);
         self
     }
 
+    /// Sets whether to use busy polling for the UMEM.
     pub fn busy_poll(mut self, busy_poll: bool) -> Self {
         self.busy_poll = busy_poll;
         self
     }
 
+    /// Sets whether to use huge tables for the UMEM.
     pub fn huge_tables(mut self, huge_tables: bool) -> Self {
         self.huge_tables = huge_tables;
         self
     }
 
+    /// Sets whether to use unaligned chunks for the UMEM.
     pub fn unaligned(mut self, unaligned: bool) -> Self {
         self.unaligned = unaligned;
         self
     }
 
-    fn validate(&self) -> Result<()> {
+    /// Builds the Umem.
+    pub fn build<'umem>(self) -> Result<Umem<'umem>> {
         if self.frame_size & (self.frame_size - 1) != 0 && !self.unaligned {
             return Err(Error::InvalidFrameSize(self.frame_size));
         }
@@ -98,18 +113,6 @@ impl<'ctx> UmemBuilder<'ctx> {
         if self.completion_ring_size & (self.completion_ring_size - 1) != 0 {
             return Err(Error::InvalidCompletionRingSize(self.completion_ring_size));
         }
-
-        Ok(())
-    }
-
-    pub fn build<'umem>(
-        self,
-    ) -> Result<(
-        Arc<UmemOwner<'umem>>,
-        FillQueue<'umem>,
-        CompletionQueue<'umem>,
-    )> {
-        self.validate()?;
 
         let num_frames = self
             .num_frames
@@ -127,36 +130,31 @@ impl<'ctx> UmemBuilder<'ctx> {
         )
     }
 
+    /// Builds the Umem as a Tokio Umem.
     #[cfg(feature = "tokio")]
-    pub fn build_tokio<'umem>(
-        self,
-    ) -> Result<(
-        Arc<UmemOwner<'umem>>,
-        TokioFillQueue<'umem>,
-        TokioCompletionQueue<'umem>,
-    )> {
-        let (owner, fq, cq) = self.build()?;
+    pub fn build_tokio<'umem>(self) -> Result<TokioUmem<'umem>> {
+        let (owner, fq, cq) = self.build()?.split();
 
-        Ok((
-            owner,
-            TokioFillQueue::new(fq)?,
-            TokioCompletionQueue::new(cq)?,
-        ))
+        Ok(TokioUmem::new(owner, fq, cq)?)
     }
 }
 
 /// A high level wrapper around a kernel UMEM object.
 ///
 /// This wraps the UmemOwner, FillQueue, and CompletionQueue objects and provides a safe API for interacting with the UMEM.
-pub struct Umem;
+pub struct Umem<'umem> {
+    owner: Arc<UmemOwner<'umem>>,
+    fill_queue: FillQueue<'umem>,
+    completion_queue: CompletionQueue<'umem>,
+}
 
-impl Umem {
+impl<'umem> Umem<'umem> {
     /// Returns a builder for creating a new [Umem] instance.
     pub fn builder<'ctx>(ctx: &'ctx mut XdpContext) -> UmemBuilder<'ctx> {
         UmemBuilder::new(ctx)
     }
 
-    fn new<'umem>(
+    fn new(
         _ctx: &mut XdpContext,
         completion_ring_size: u32,
         fill_ring_size: u32,
@@ -165,11 +163,7 @@ impl Umem {
         frame_size: usize,
         huge_tables: bool,
         unaligned: bool,
-    ) -> Result<(
-        Arc<UmemOwner<'umem>>,
-        FillQueue<'umem>,
-        CompletionQueue<'umem>,
-    )> {
+    ) -> Result<Self> {
         let size = (num_frames * frame_size) as u64;
 
         let mut opts = xsk_umem_opts {
@@ -218,7 +212,55 @@ impl Umem {
         let fq = FillQueue::new(fill_ring, owner.clone(), busy_poll);
         let cq = CompletionQueue::new(comp_ring, owner.clone());
 
-        Ok((owner, fq, cq))
+        Ok(Self {
+            owner,
+            fill_queue: fq,
+            completion_queue: cq,
+        })
+    }
+
+    /// Splits the umem into its owner, fill queue, and completion queue components.
+    #[inline(always)]
+    pub fn split(
+        self,
+    ) -> (
+        Arc<UmemOwner<'umem>>,
+        FillQueue<'umem>,
+        CompletionQueue<'umem>,
+    ) {
+        (self.owner, self.fill_queue, self.completion_queue)
+    }
+
+    /// Returns the owner of the umem.
+    #[inline(always)]
+    pub fn owner(&self) -> &Arc<UmemOwner<'umem>> {
+        &self.owner
+    }
+
+    /// Initialize the frame buffer with the frames from the UMEM, its then up to the caller what to do with these frames, you can push them into the fill queue, use them
+    /// for writing packets, or some combination of the two. This can only be called once on the [UmemOwner] instance, and will return None on every subsequent call.
+    pub fn init_buffer<B: FrameBuffer<'umem> + FromIterator<Frame<'umem>>>(&self) -> Option<B> {
+        self.owner.init_buffer()
+    }
+
+    /// Possibly wakes the fill queue, so the kernel continues to process incoming packets.
+    ///
+    /// This is done by first checking the needs wakeup flag, given its set we fire a empty recvfrom on the supplied fd.
+    #[inline(always)]
+    pub fn maybe_wake_fill_queue(&self, fd: c_int) -> Result<()> {
+        self.fill_queue.maybe_wake(fd)
+    }
+
+    /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
+    #[inline(always)]
+    pub fn process_fill_queue<B: FrameBuffer<'umem>>(&mut self, batch: B) {
+        self.fill_queue.process_queue(batch)
+    }
+
+    /// Processes the completion queue, allocating new frames from the frame stack and submitting them to the completion ring up to the size of the completion ring.
+    #[inline(always)]
+    pub fn process_completion_queue<B: FrameBuffer<'umem>>(&mut self, batch: B) {
+        self.completion_queue.process_queue(batch)
     }
 }
 
@@ -292,7 +334,8 @@ mod tests {
             .fill_ring_size(8)
             .completion_ring_size(8)
             .build()
-            .unwrap();
+            .unwrap()
+            .split();
 
         assert!(!owner.as_ptr().is_null());
         assert_eq!(fq.size(), 8);
@@ -306,7 +349,8 @@ mod tests {
             .fill_ring_size(8)
             .completion_ring_size(4)
             .build()
-            .unwrap();
+            .unwrap()
+            .split();
 
         let buffer: BasicFrameBuffer<'_> = owner.init_buffer().unwrap();
         assert_eq!(buffer.num_frames(), 12); // 8 + 4

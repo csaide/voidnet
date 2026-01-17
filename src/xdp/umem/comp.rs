@@ -69,7 +69,8 @@ mod tests {
             .fill_ring_size(num_frames as u32)
             .completion_ring_size(num_frames as u32)
             .build()
-            .unwrap();
+            .unwrap()
+            .split();
 
         let owner_static: Arc<crate::xdp::umem::UmemOwner<'static>> =
             unsafe { std::mem::transmute(owner) };

@@ -60,16 +60,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ctx = XdpContext::new("eth0", AttachMode::default(), false)?;
 
     // 2. Create UMEM — shared memory region for packet buffers
-    let (umem, mut fill_queue, _completion_queue) = Umem::builder()
+    let mut umem = Umem::builder()
         .build()?;
 
     // 3. Create socket bound to interface queue 0
     let mut socket = Socket::builder(&mut ctx, "eth0", 0)
-        .build(umem.clone())?;
+        .build(umem.owner().clone())?;
 
     // 4. Prime the fill queue with buffers for the kernel to write into
     let mut frames = umem.init_buffer::<BasicFrameBuffer>()?;
-    fill_queue.process_queue(&mut frames);
+    umem.process_fill_queue(&mut frames);
 
     // 5. Receive packets
     loop {
@@ -79,8 +79,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 process_packet(&mut frame);
             }
             // Return frames to kernel
-            fill_queue.maybe_wake(socket.fd())?;
-            fill_queue.process_queue(&mut frames);
+            umem.maybe_wake_fill_queue(socket.fd())?;
+            umem.process_fill_queue(&mut frames);
         }
     }
 }
@@ -106,16 +106,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ctx = XdpContext::new("eth0", Default::default(), false)?;
     
     // 2. Create UMEM — shared memory region for packet buffers
-    let (umem, mut fq, _cq) = Umem::builder()
+    let mut umem = Umem::builder()
         .build()?;
 
     // 3. Create socket bound to interface queue 0
     let mut socket = Socket::builder(&mut ctx, "eth0", 0)
-        .build(umem.clone())?;
+        .build(umem.owner().clone())?;
 
     // 4. Prime the fill queue with buffers for the kernel to write into
     let mut frames = umem.init_buffer::<BasicFrameBuffer>()?;
-    fq.process_queue_async(&mut frames, &[socket.fd()])
+    umem.process_fill_queue(&mut frames, &[socket.fd()])
         .await
         .unwrap();
 
@@ -131,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Return frames to kernel.
-        fq.process_queue_async(&mut frames, &[socket.fd()])
+        umem.process_fill_queue(&mut frames, &[socket.fd()])
             .await
             .unwrap();
     }
@@ -143,22 +143,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 For a complete echo server that swaps MAC/IP addresses and reflects packets back:
 
 ```sh
-cargo run --example echo -- --if-name eth0 --queue 0
+cargo run --example sync-echo -- --if-name eth0 --queue 0
 ```
 
 See the [`examples/`](examples/) directory for more:
 
 | Example | Description |
 |---------|-------------|
-| `echo` | Zero-copy packet reflection with address swapping |
 | `info` | Example programing dumping XDP capabilities for a given interface |
-| `rx-async-ms` | Async mutli-socket packet reception with Tokio |
-| `rx-async` | Async packet reception with Tokio |
-| `rx-bench` | RX throughput benchmarking |
-| `rx-mt` | Multi-threaded RX throughput benchmarking |
-| `tx-async` | Async packet sending with Tokio |
-| `tx-bench` | TX throughput benchmarking |
-| `tx-mt` | Multi-threaded TX throughput benchmarking |
+| `sync-echo` | Zero-copy packet reflection with address swapping |
+| `sync-rx-ms` | Multi socket RX throughput benchmarking |
+| `sync-rx` | RX throughput benchmarking |
+| `sync-tx-ms` | Multi socket TX throughput benchmarking |
+| `sync-tx` | TX throughput benchmarking |
+| `tokio-rx-ms` | Multi socket Tokio based RX throughput benchmarking |
+| `tokio-rx` | Tokio based RX throughput benchmarking |
+| `tokio-tx` | Tokio based TX throughput benchmarking |
+
 
 
 ## Architecture
