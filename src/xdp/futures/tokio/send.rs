@@ -68,16 +68,17 @@ impl<'sock, 'umem, B: FrameBuffer<'umem>> Future for TokioSendFuture<'sock, 'ume
             return Poll::Ready(Ok(sent));
         }
 
-        let mut guard = ready!(this.socket.inner.poll_write_ready_mut(cx))?;
+        loop {
+            let mut guard = ready!(this.socket.inner.poll_write_ready_mut(cx))?;
 
-        let sock = guard.get_inner_mut();
-        match sock.send(&mut this.batch) {
-            Ok(sent) => {
-                sock.maybe_wake()?;
-                guard.clear_ready_matching(Ready::WRITABLE);
-                Poll::Ready(Ok(sent))
+            let sock = guard.get_inner_mut();
+            match sock.send(&mut this.batch) {
+                Ok(sent) => {
+                    sock.maybe_wake()?;
+                    return Poll::Ready(Ok(sent));
+                }
+                Err(_) => guard.clear_ready_matching(Ready::WRITABLE),
             }
-            Err(_) => Poll::Pending,
         }
     }
 }

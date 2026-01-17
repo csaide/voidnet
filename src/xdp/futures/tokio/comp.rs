@@ -77,14 +77,16 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for TokioCompFuture<'que, 'umem,
             return Poll::Ready(Ok(()));
         }
 
-        let mut guard = ready!(this.completion_queue.inner.poll_read_ready_mut(cx))?;
+        loop {
+            let mut guard = ready!(this.completion_queue.inner.poll_read_ready_mut(cx))?;
 
-        guard.get_inner_mut().process_queue(&mut this.batch);
-        if this.batch.num_frames() >= this.expected {
+            guard.get_inner_mut().process_queue(&mut this.batch);
+            if this.batch.num_frames() >= this.expected {
+                return Poll::Ready(Ok(()));
+            }
+
+            // We aren't actually ready clear our status and loop again.
             guard.clear_ready_matching(Ready::READABLE);
-            return Poll::Ready(Ok(()));
         }
-
-        Poll::Pending
     }
 }
