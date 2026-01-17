@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures::ready;
+use futures_core::ready;
 use tokio::io::{Ready, unix::AsyncFd};
 
 use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketRx};
@@ -69,7 +69,7 @@ impl<'sock, 'umem, B: FrameBuffer<'umem>> Future for TokioRecvFuture<'sock, 'ume
 
         let mut guard = ready!(this.socket.inner.poll_read_ready_mut(cx))?;
 
-        let sock = guard.get_mut().get_mut();
+        let sock = guard.get_inner_mut();
         match sock.recv(&mut this.batch) {
             Ok(received) => {
                 guard.clear_ready_matching(Ready::READABLE);

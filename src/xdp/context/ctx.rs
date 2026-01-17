@@ -14,7 +14,7 @@ pub struct XdpContextBuilder<'name> {
 }
 
 impl<'name> XdpContextBuilder<'name> {
-    pub fn new(if_name: &'name str) -> Self {
+    fn new(if_name: &'name str) -> Self {
         Self {
             if_name,
             attach_mode: AttachMode::default(),
@@ -22,16 +22,19 @@ impl<'name> XdpContextBuilder<'name> {
         }
     }
 
+    /// Sets the attach mode for the XDP program.
     pub fn attach_mode(mut self, attach_mode: AttachMode) -> Self {
         self.attach_mode = attach_mode;
         self
     }
 
+    /// Enables or disables fragmentation for the XDP program.
     pub fn enable_fragmentation(mut self, enable_fragmentation: bool) -> Self {
         self.enable_fragmentation = enable_fragmentation;
         self
     }
 
+    /// Builds the XdpContext.
     pub fn build(self) -> Result<XdpContext> {
         XdpContext::new(&self.if_name, self.attach_mode, self.enable_fragmentation)
     }

@@ -104,7 +104,8 @@ mod tests {
             .completion_ring_size(num_frames as u32)
             .busy_poll(busy_poll)
             .build()
-            .unwrap();
+            .unwrap()
+            .split();
 
         let buffer = owner.init_buffer().unwrap();
 

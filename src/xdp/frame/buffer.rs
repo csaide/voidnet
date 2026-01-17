@@ -139,7 +139,7 @@ impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for std::sync::MutexGuard<
     }
 }
 
-impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for futures::lock::MutexGuard<'_, B> {
+impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for futures_util::lock::MutexGuard<'_, B> {
     type Drain<'a>
         = B::Drain<'a>
     where
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_futures_mutex_wrapper() {
-        let mock = futures::lock::Mutex::new(MockFrameBuffer::new(10));
+        let mock = futures_util::lock::Mutex::new(MockFrameBuffer::new(10));
         let guard = futures::executor::block_on(mock.lock());
         let mut data = vec![0u8; 10];
         test_buffer_logic(guard, &mut data);

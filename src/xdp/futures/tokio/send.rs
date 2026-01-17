@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures::ready;
+use futures_core::ready;
 use tokio::io::{Ready, unix::AsyncFd};
 
 use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketTx};
@@ -70,7 +70,7 @@ impl<'sock, 'umem, B: FrameBuffer<'umem>> Future for TokioSendFuture<'sock, 'ume
 
         let mut guard = ready!(this.socket.inner.poll_write_ready_mut(cx))?;
 
-        let sock = guard.get_mut().get_mut();
+        let sock = guard.get_inner_mut();
         match sock.send(&mut this.batch) {
             Ok(sent) => {
                 sock.maybe_wake()?;

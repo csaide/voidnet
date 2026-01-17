@@ -26,6 +26,8 @@ pub struct XdpInfo {
     /// The maximum number of segments that can be used with the XDP program.
     pub xdp_zc_max_segs: u32,
     /// The MTU of the network interface.
+    ///
+    /// Note this is an additional field that we use in this library, its not part of the original xdp_info struct in libxdp.
     pub mtu: u32,
 }
 
@@ -81,7 +83,8 @@ impl XdpInfo {
 impl Default for XdpInfo {
     fn default() -> Self {
         let mut us: XdpInfo = unsafe { std::mem::zeroed() };
-        us.sz = std::mem::size_of::<XdpInfo>() as u32;
+        // We need to strip the final mtu field off this struct, since its our addition and not part of the original struct.
+        us.sz = std::mem::size_of::<XdpInfo>() as u32 - std::mem::size_of::<u32>() as u32;
         us
     }
 }
@@ -136,7 +139,10 @@ mod tests {
     #[test]
     fn test_xdp_info_default() {
         let info = XdpInfo::default();
-        assert_eq!(info.sz, std::mem::size_of::<XdpInfo>() as u32);
+        assert_eq!(
+            info.sz,
+            std::mem::size_of::<XdpInfo>() as u32 - std::mem::size_of::<u32>() as u32
+        );
         assert_eq!(info.prog_id, 0);
         assert_eq!(info.feature_flags, 0);
         assert_eq!(info.mtu, 0);

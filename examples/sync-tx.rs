@@ -41,8 +41,7 @@ impl DerefMut for Args {
     }
 }
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() {
+fn main() {
     let mut stats = Stats::new();
     let args = Args::parse();
 
@@ -61,7 +60,7 @@ async fn main() {
     // - Owner (umem) > The owner of the UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
-    let (umem, _fq, mut cq) = Umem::builder(&mut xdp_context)
+    let mut umem = Umem::builder(&mut xdp_context)
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -69,7 +68,7 @@ async fn main() {
         .num_frames(args.busy_poll_batch_size)
         .huge_tables(args.huge_tables)
         .unaligned(args.unaligned)
-        .build_tokio()
+        .build()
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
@@ -84,7 +83,7 @@ async fn main() {
         .busy_poll(args.busy_poll)
         .copy_mode(args.copy_mode)
         .enable_fragmentation(args.enable_fragmentation)
-        .build_tokio(umem.clone())
+        .build(umem.owner().clone())
         .expect("Failed to create socket");
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.
@@ -120,7 +119,7 @@ async fn main() {
         // Send the prepared frames to the socket.
         //
         // Note this will completely consume the input buffer.
-        let sent = match socket.send(&mut write_frames).await {
+        let sent = match socket.send(&mut write_frames) {
             Ok(sent) => {
                 debug_assert!(
                     sent == frames as u32,
@@ -136,9 +135,19 @@ async fn main() {
             }
         };
 
-        cq.process_queue_async(&mut write_frames, sent as usize)
-            .await
-            .unwrap();
+        // Process any outstanding descriptors on the completion queue retrieving the sent frames.
+        //
+        // This should be a loop because the kernel can only transmit a limited number of frames at a time.
+        while write_frames.num_frames() < sent as usize {
+            // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
+            //
+            // Note: Errors here are fatal and should cause the program to exit, or reset the XDP state from scratch.
+            socket.maybe_wake().unwrap();
+
+            // Process the writen frames, this will consume as many frames as possible from the kernel, but it
+            // will be limited to the devices descriptor count.
+            umem.process_completion_queue(&mut write_frames);
+        }
 
         stats.maybe_print();
     }

@@ -1,23 +1,72 @@
-use std::os::fd::{AsRawFd, RawFd};
+use std::{os::raw::c_int, sync::Arc};
 
-use tokio::io::unix::AsyncFd;
+use crate::xdp::{
+    error::Result,
+    frame::{Frame, FrameBuffer},
+    futures::{TokioCompFuture, TokioCompletionQueue, TokioFillFuture, TokioFillQueue},
+    umem::{CompletionQueue, FillQueue, UmemOwner},
+};
 
-use crate::xdp::{error::Result, umem::UmemOwner};
-
-pub struct AsyncUmemOwner<'umem> {
-    umem: AsyncFd<UmemOwner<'umem>>,
+pub struct TokioUmem<'umem> {
+    owner: Arc<UmemOwner<'umem>>,
+    fill_queue: TokioFillQueue<'umem>,
+    completion_queue: TokioCompletionQueue<'umem>,
 }
 
-impl<'umem> AsyncUmemOwner<'umem> {
-    pub fn new(umem: UmemOwner<'umem>) -> Result<Self> {
+impl<'umem> TokioUmem<'umem> {
+    pub fn new(
+        owner: Arc<UmemOwner<'umem>>,
+        fill_queue: FillQueue<'umem>,
+        completion_queue: CompletionQueue<'umem>,
+    ) -> Result<Self> {
         Ok(Self {
-            umem: AsyncFd::new(umem)?,
+            owner,
+            fill_queue: TokioFillQueue::new(fill_queue)?,
+            completion_queue: TokioCompletionQueue::new(completion_queue)?,
         })
     }
-}
 
-impl<'umem> AsRawFd for UmemOwner<'umem> {
-    fn as_raw_fd(&self) -> RawFd {
-        self.fd
+    /// Splits the umem into its owner, fill queue, and completion queue components.
+    #[inline(always)]
+    pub fn split(
+        self,
+    ) -> (
+        Arc<UmemOwner<'umem>>,
+        TokioFillQueue<'umem>,
+        TokioCompletionQueue<'umem>,
+    ) {
+        (self.owner, self.fill_queue, self.completion_queue)
+    }
+
+    /// Returns the owner of the umem.
+    #[inline(always)]
+    pub fn owner(&self) -> &Arc<UmemOwner<'umem>> {
+        &self.owner
+    }
+
+    /// Initialize the frame buffer with the frames from the UMEM, its then up to the caller what to do with these frames, you can push them into the fill queue, use them
+    /// for writing packets, or some combination of the two. This can only be called once on the [UmemOwner] instance, and will return None on every subsequent call.
+    pub fn init_buffer<B: FrameBuffer<'umem> + FromIterator<Frame<'umem>>>(&self) -> Option<B> {
+        self.owner.init_buffer()
+    }
+
+    /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
+    #[inline(always)]
+    pub fn process_fill_queue<'fd, B: FrameBuffer<'umem>>(
+        &mut self,
+        batch: B,
+        fds: &'fd [c_int],
+    ) -> TokioFillFuture<'_, 'umem, 'fd, B> {
+        self.fill_queue.process_queue(batch, fds)
+    }
+
+    /// Processes the completion queue, allocating new frames from the frame stack and submitting them to the completion ring up to the size of the completion ring.
+    #[inline(always)]
+    pub fn process_completion_queue<'que, B: FrameBuffer<'umem>>(
+        &'que mut self,
+        batch: B,
+        expected: usize,
+    ) -> TokioCompFuture<'que, 'umem, B> {
+        self.completion_queue.process_queue(batch, expected)
     }
 }

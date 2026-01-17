@@ -14,7 +14,7 @@ use libvoid::xdp::{
     context::XdpContext,
     frame::{BasicFrameBuffer, FrameBuffer},
     socket::Socket,
-    umem::{CompletionQueue, Umem},
+    umem::Umem,
 };
 
 mod common;
@@ -87,12 +87,12 @@ fn worker_thread<'umem>(
 
 fn umem_thread<'umem>(
     exit: Arc<AtomicBool>,
-    mut cq: CompletionQueue<'umem>,
+    mut umem: Umem<'umem>,
     frame_stack: Arc<Mutex<BasicFrameBuffer<'umem>>>,
 ) {
     while !exit.load(Ordering::Relaxed) {
         let guard = frame_stack.lock().unwrap();
-        cq.process_queue(guard);
+        umem.process_completion_queue(guard);
     }
 }
 
@@ -116,7 +116,7 @@ fn main() {
     // - Owner (umem) > The owner of the UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
-    let (umem, _fq, cq) = Umem::builder(&mut xdp_ctx)
+    let umem = Umem::builder(&mut xdp_ctx)
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -162,7 +162,7 @@ fn main() {
             .busy_poll_batch_size(args.busy_poll_batch_size)
             .busy_poll_timeout_us(args.busy_poll_timeout_us)
             .copy_mode(args.copy_mode)
-            .build(umem.clone())
+            .build(umem.owner().clone())
             .expect("Failed to create socket");
 
         // Spawn our worker thread, this will handle sending frames to the socket.
@@ -174,7 +174,7 @@ fn main() {
 
     // Spawn our Umem thread, this will handle actually retrieving handled frames from the completion queue, and repopulating
     // the frame stack with new frames to send.
-    threads.push(thread::spawn(move || umem_thread(exit, cq, frame_stack)));
+    threads.push(thread::spawn(move || umem_thread(exit, umem, frame_stack)));
 
     println!("All threads created, sending packets...");
 

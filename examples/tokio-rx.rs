@@ -66,7 +66,7 @@ async fn main() {
     // - Owner (umem) > The owner of the UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
-    let (umem, mut fq, _cq) = Umem::builder(&mut xdp_ctx)
+    let mut umem = Umem::builder(&mut xdp_ctx)
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -88,7 +88,7 @@ async fn main() {
         .busy_poll_batch_size(args.busy_poll_batch_size)
         .busy_poll_timeout_us(args.busy_poll_timeout_us)
         .copy_mode(args.copy_mode)
-        .build_tokio(umem.clone())
+        .build_tokio(umem.owner().clone())
         .expect("Failed to create socket");
 
     let exit = Arc::new(AtomicBool::new(false));
@@ -105,7 +105,7 @@ async fn main() {
     // This is where the first part of the invariant above comes into play because our num_frames is the same as the fill ring size,
     // the initial_frames buffer will be empty at the end of this call.
     let mut frames = umem.init_buffer::<BasicFrameBuffer>().unwrap();
-    fq.process_queue_async(&mut frames, &[socket.fd()])
+    umem.process_fill_queue(&mut frames, &[socket.fd()])
         .await
         .unwrap();
 
@@ -138,7 +138,7 @@ async fn main() {
         // - Return the data to the kernel by means of the fill queue. Which is what will be doing here.
 
         // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
-        fq.process_queue_async(&mut frames, &[socket.fd()])
+        umem.process_fill_queue(&mut frames, &[socket.fd()])
             .await
             .expect("Failed to process fill queue");
 
