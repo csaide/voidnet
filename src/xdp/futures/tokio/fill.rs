@@ -86,14 +86,15 @@ impl<'que, 'umem, 'fd, B: FrameBuffer<'umem>> Future for TokioFillFuture<'que, '
             return Poll::Ready(Ok(()));
         }
 
-        let mut guard = ready!(this.fill_queue.inner.poll_write_ready_mut(cx))?;
+        loop {
+            let mut guard = ready!(this.fill_queue.inner.poll_write_ready_mut(cx))?;
 
-        guard.get_inner_mut().process_queue(&mut this.batch);
-        if this.batch.num_frames() == 0 {
+            guard.get_inner_mut().process_queue(&mut this.batch);
+            if this.batch.num_frames() == 0 {
+                return Poll::Ready(Ok(()));
+            }
+
             guard.clear_ready_matching(Ready::WRITABLE);
-            return Poll::Ready(Ok(()));
         }
-
-        Poll::Pending
     }
 }

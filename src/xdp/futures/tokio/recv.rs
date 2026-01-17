@@ -67,15 +67,16 @@ impl<'sock, 'umem, B: FrameBuffer<'umem>> Future for TokioRecvFuture<'sock, 'ume
             return Poll::Ready(Ok(received));
         }
 
-        let mut guard = ready!(this.socket.inner.poll_read_ready_mut(cx))?;
+        loop {
+            let mut guard = ready!(this.socket.inner.poll_read_ready_mut(cx))?;
 
-        let sock = guard.get_inner_mut();
-        match sock.recv(&mut this.batch) {
-            Ok(received) => {
-                guard.clear_ready_matching(Ready::READABLE);
-                Poll::Ready(Ok(received))
+            let sock = guard.get_inner_mut();
+            match sock.recv(&mut this.batch) {
+                Ok(received) => {
+                    return Poll::Ready(Ok(received));
+                }
+                Err(_) => guard.clear_ready_matching(Ready::READABLE),
             }
-            Err(_) => Poll::Pending,
         }
     }
 }
