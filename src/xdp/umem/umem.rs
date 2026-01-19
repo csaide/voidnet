@@ -104,8 +104,7 @@ impl<'ctx> UmemBuilder<'ctx> {
         self
     }
 
-    /// Builds the Umem.
-    pub fn build<'umem>(self) -> Result<Umem<'umem>> {
+    fn build_internal<'umem>(&mut self) -> Result<Umem<'umem>> {
         if self.frame_size & (self.frame_size - 1) != 0 && !self.unaligned {
             return Err(Error::InvalidFrameSize(self.frame_size));
         }
@@ -132,16 +131,24 @@ impl<'ctx> UmemBuilder<'ctx> {
         )
     }
 
+    /// Builds the Umem.
+    pub fn build<'umem>(mut self) -> Result<Umem<'umem>> {
+        self.build_internal()
+    }
+
     /// Builds the Umem as a Tokio Umem.
     #[cfg(feature = "tokio")]
-    pub fn build_tokio<'umem>(self) -> Result<TokioUmem<'umem>> {
-        let (owner, fq, cq) = self.build()?.split();
-        Ok(TokioUmem::new(owner, fq, cq)?)
+    pub fn build_tokio<'umem>(mut self) -> Result<TokioUmem<'umem>> {
+        let (owner, fq, cq) = self.build_internal()?.split();
+        let async_fd = self.ctx.get_tokio_fd(owner.fd())?;
+
+        Ok(TokioUmem::new(owner, fq, cq, async_fd))
     }
 
     #[cfg(feature = "local")]
     pub fn build_local<'umem>(self) -> Result<LocalUmem<'umem>> {
         let (owner, fq, cq) = self.build()?.split();
+
         Ok(LocalUmem::new(owner, fq, cq)?)
     }
 }

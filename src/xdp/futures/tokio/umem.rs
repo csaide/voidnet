@@ -1,7 +1,11 @@
-use std::{os::raw::c_int, sync::Arc};
+use std::{
+    os::{fd::RawFd, raw::c_int},
+    sync::Arc,
+};
+
+use tokio::io::unix::AsyncFd;
 
 use crate::xdp::{
-    error::Result,
     frame::{Frame, FrameBuffer},
     futures::{TokioCompFuture, TokioCompletionQueue, TokioFillFuture, TokioFillQueue},
     umem::{CompletionQueue, FillQueue, UmemOwner},
@@ -18,12 +22,13 @@ impl<'umem> TokioUmem<'umem> {
         owner: Arc<UmemOwner<'umem>>,
         fill_queue: FillQueue<'umem>,
         completion_queue: CompletionQueue<'umem>,
-    ) -> Result<Self> {
-        Ok(Self {
+        async_fd: Arc<AsyncFd<RawFd>>,
+    ) -> Self {
+        Self {
             owner,
-            fill_queue: TokioFillQueue::new(fill_queue)?,
-            completion_queue: TokioCompletionQueue::new(completion_queue)?,
-        })
+            fill_queue: TokioFillQueue::new(fill_queue, async_fd.clone()),
+            completion_queue: TokioCompletionQueue::new(completion_queue, async_fd),
+        }
     }
 
     /// Splits the umem into its owner, fill queue, and completion queue components.

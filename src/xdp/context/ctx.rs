@@ -1,3 +1,6 @@
+#[cfg(feature = "tokio")]
+use std::{os::fd::RawFd, sync::Arc};
+
 use crate::xdp::{
     error::Result,
     program::{AttachMode, Map, XdpInfo, XdpProgram},
@@ -58,6 +61,8 @@ pub struct XdpContext {
     num_sockets: u32,
     /// The loaded and attached XDP program.
     program: XdpProgram,
+    #[cfg(feature = "tokio")]
+    tokio_fd_factory: crate::xdp::futures::TokioFdFactory,
 }
 
 impl XdpContext {
@@ -76,6 +81,8 @@ impl XdpContext {
             xsks_map,
             num_sockets: 0,
             program,
+            #[cfg(feature = "tokio")]
+            tokio_fd_factory: crate::xdp::futures::TokioFdFactory::new(),
         })
     }
 
@@ -86,6 +93,8 @@ impl XdpContext {
             xsks_map: Map::new(std::ptr::null_mut(), unsafe { std::mem::zeroed() }),
             num_sockets: 0,
             program: XdpProgram::new_no_init()?,
+            #[cfg(feature = "tokio")]
+            tokio_fd_factory: crate::xdp::futures::TokioFdFactory::new(),
         })
     }
 
@@ -114,6 +123,11 @@ impl XdpContext {
         unsafe { self.data_map.update_elem(&KEY, &self.num_sockets)? };
 
         Ok(())
+    }
+
+    #[cfg(feature = "tokio")]
+    pub(crate) fn get_tokio_fd(&self, fd: RawFd) -> Result<Arc<tokio::io::unix::AsyncFd<RawFd>>> {
+        self.tokio_fd_factory.get_tokio_fd(fd)
     }
 
     #[cfg(test)]

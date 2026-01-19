@@ -2,6 +2,7 @@ use std::{
     ops::{Deref, DerefMut},
     os::fd::{AsRawFd, RawFd},
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -11,14 +12,16 @@ use tokio::io::{Ready, unix::AsyncFd};
 use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketRx};
 
 pub struct TokioSocketRx<'umem> {
-    inner: AsyncFd<SocketRx<'umem>>,
+    inner: SocketRx<'umem>,
+    async_fd: Arc<AsyncFd<RawFd>>,
 }
 
 impl<'umem> TokioSocketRx<'umem> {
-    pub fn new(socket: SocketRx<'umem>) -> Result<Self> {
-        Ok(Self {
-            inner: AsyncFd::new(socket)?,
-        })
+    pub fn new(socket: SocketRx<'umem>, async_fd: Arc<AsyncFd<RawFd>>) -> Self {
+        Self {
+            inner: socket,
+            async_fd,
+        }
     }
 
     #[inline(always)]
@@ -40,13 +43,13 @@ impl<'umem> Deref for TokioSocketRx<'umem> {
     type Target = SocketRx<'umem>;
 
     fn deref(&self) -> &Self::Target {
-        self.inner.get_ref()
+        &self.inner
     }
 }
 
 impl<'umem> DerefMut for TokioSocketRx<'umem> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.inner.get_mut()
+        &mut self.inner
     }
 }
 
@@ -63,15 +66,15 @@ impl<'sock, 'umem, B: FrameBuffer<'umem>> Future for TokioRecvFuture<'sock, 'ume
         // Those accesses are also guaranteed to not move self or the fields themselves.
         let this = unsafe { self.get_unchecked_mut() };
 
-        if let Ok(received) = this.socket.inner.get_mut().recv(&mut this.batch) {
+        if let Ok(received) = this.socket.inner.recv(&mut this.batch) {
             return Poll::Ready(Ok(received));
         }
 
+        let TokioSocketRx { inner, async_fd } = this.socket;
         loop {
-            let mut guard = ready!(this.socket.inner.poll_read_ready_mut(cx))?;
+            let mut guard = ready!(async_fd.poll_read_ready(cx))?;
 
-            let sock = guard.get_inner_mut();
-            match sock.recv(&mut this.batch) {
+            match inner.recv(&mut this.batch) {
                 Ok(received) => {
                     return Poll::Ready(Ok(received));
                 }

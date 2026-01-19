@@ -5,6 +5,7 @@ use std::{
         raw::c_int,
     },
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -14,14 +15,16 @@ use tokio::io::{Ready, unix::AsyncFd};
 use crate::xdp::{error::Result, frame::FrameBuffer, umem::FillQueue};
 
 pub struct TokioFillQueue<'umem> {
-    inner: AsyncFd<FillQueue<'umem>>,
+    inner: FillQueue<'umem>,
+    async_fd: Arc<AsyncFd<RawFd>>,
 }
 
 impl<'umem> TokioFillQueue<'umem> {
-    pub fn new(fill_queue: FillQueue<'umem>) -> Result<Self> {
-        Ok(Self {
-            inner: AsyncFd::new(fill_queue)?,
-        })
+    pub fn new(fill_queue: FillQueue<'umem>, async_fd: Arc<AsyncFd<RawFd>>) -> Self {
+        Self {
+            inner: fill_queue,
+            async_fd,
+        }
     }
 
     #[inline(always)]
@@ -48,13 +51,13 @@ impl<'umem> Deref for TokioFillQueue<'umem> {
     type Target = FillQueue<'umem>;
 
     fn deref(&self) -> &Self::Target {
-        self.inner.get_ref()
+        &self.inner
     }
 }
 
 impl<'umem> DerefMut for TokioFillQueue<'umem> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.inner.get_mut()
+        &mut self.inner
     }
 }
 
@@ -78,18 +81,16 @@ impl<'que, 'umem, 'fd, B: FrameBuffer<'umem>> Future for TokioFillFuture<'que, '
             }
         }
 
-        this.fill_queue
-            .inner
-            .get_mut()
-            .process_queue(&mut this.batch);
+        this.fill_queue.inner.process_queue(&mut this.batch);
         if this.batch.num_frames() == 0 {
             return Poll::Ready(Ok(()));
         }
 
+        let TokioFillQueue { inner, async_fd } = this.fill_queue;
         loop {
-            let mut guard = ready!(this.fill_queue.inner.poll_write_ready_mut(cx))?;
+            let mut guard = ready!(async_fd.poll_write_ready(cx))?;
 
-            guard.get_inner_mut().process_queue(&mut this.batch);
+            inner.process_queue(&mut this.batch);
             if this.batch.num_frames() == 0 {
                 return Poll::Ready(Ok(()));
             }

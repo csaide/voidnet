@@ -2,6 +2,7 @@ use std::{
     ops::{Deref, DerefMut},
     os::fd::{AsRawFd, RawFd},
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -11,14 +12,16 @@ use tokio::io::{Ready, unix::AsyncFd};
 use crate::xdp::{error::Result, frame::FrameBuffer, umem::CompletionQueue};
 
 pub struct TokioCompletionQueue<'umem> {
-    inner: AsyncFd<CompletionQueue<'umem>>,
+    inner: CompletionQueue<'umem>,
+    async_fd: Arc<AsyncFd<RawFd>>,
 }
 
 impl<'umem> TokioCompletionQueue<'umem> {
-    pub fn new(completion_queue: CompletionQueue<'umem>) -> Result<Self> {
-        Ok(Self {
-            inner: AsyncFd::new(completion_queue)?,
-        })
+    pub fn new(completion_queue: CompletionQueue<'umem>, async_fd: Arc<AsyncFd<RawFd>>) -> Self {
+        Self {
+            inner: completion_queue,
+            async_fd,
+        }
     }
 
     #[inline(always)]
@@ -45,13 +48,13 @@ impl<'umem> Deref for TokioCompletionQueue<'umem> {
     type Target = CompletionQueue<'umem>;
 
     fn deref(&self) -> &Self::Target {
-        self.inner.get_ref()
+        &self.inner
     }
 }
 
 impl<'umem> DerefMut for TokioCompletionQueue<'umem> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.inner.get_mut()
+        &mut self.inner
     }
 }
 
@@ -69,18 +72,16 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for TokioCompFuture<'que, 'umem,
         // Those accesses are also guaranteed to not move self or the fields themselves.
         let this = unsafe { self.get_unchecked_mut() };
 
-        this.completion_queue
-            .inner
-            .get_mut()
-            .process_queue(&mut this.batch);
+        this.completion_queue.inner.process_queue(&mut this.batch);
         if this.batch.num_frames() >= this.expected {
             return Poll::Ready(Ok(()));
         }
 
+        let TokioCompletionQueue { inner, async_fd } = this.completion_queue;
         loop {
-            let mut guard = ready!(this.completion_queue.inner.poll_read_ready_mut(cx))?;
+            let mut guard = ready!(async_fd.poll_read_ready(cx))?;
 
-            guard.get_inner_mut().process_queue(&mut this.batch);
+            inner.process_queue(&mut this.batch);
             if this.batch.num_frames() >= this.expected {
                 return Poll::Ready(Ok(()));
             }
