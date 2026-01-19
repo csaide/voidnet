@@ -1,6 +1,6 @@
 use std::{
     ops::{Deref, DerefMut},
-    os::fd::{AsRawFd, RawFd},
+    os::fd::RawFd,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -33,12 +33,6 @@ impl<'umem> TokioSocketTx<'umem> {
     }
 }
 
-impl<'umem> AsRawFd for SocketTx<'umem> {
-    fn as_raw_fd(&self) -> RawFd {
-        self.fd()
-    }
-}
-
 impl<'umem> Deref for TokioSocketTx<'umem> {
     type Target = SocketTx<'umem>;
 
@@ -54,8 +48,8 @@ impl<'umem> DerefMut for TokioSocketTx<'umem> {
 }
 
 pub struct TokioSendFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
-    pub(crate) socket: &'sock mut TokioSocketTx<'umem>,
-    pub(crate) batch: B,
+    socket: &'sock mut TokioSocketTx<'umem>,
+    batch: B,
 }
 
 impl<'sock, 'umem, B: FrameBuffer<'umem>> Future for TokioSendFuture<'sock, 'umem, B> {

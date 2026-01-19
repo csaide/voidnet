@@ -1,6 +1,6 @@
 use std::{
     ops::{Deref, DerefMut},
-    os::fd::{AsRawFd, RawFd},
+    os::fd::RawFd,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -38,12 +38,6 @@ impl<'umem> TokioCompletionQueue<'umem> {
     }
 }
 
-impl<'umem> AsRawFd for CompletionQueue<'umem> {
-    fn as_raw_fd(&self) -> RawFd {
-        self.fd()
-    }
-}
-
 impl<'umem> Deref for TokioCompletionQueue<'umem> {
     type Target = CompletionQueue<'umem>;
 
@@ -59,9 +53,9 @@ impl<'umem> DerefMut for TokioCompletionQueue<'umem> {
 }
 
 pub struct TokioCompFuture<'que, 'umem, B: FrameBuffer<'umem>> {
-    pub(crate) completion_queue: &'que mut TokioCompletionQueue<'umem>,
-    pub(crate) batch: B,
-    pub(crate) expected: usize,
+    completion_queue: &'que mut TokioCompletionQueue<'umem>,
+    batch: B,
+    expected: usize,
 }
 
 impl<'que, 'umem, B: FrameBuffer<'umem>> Future for TokioCompFuture<'que, 'umem, B> {

@@ -1602,7 +1602,6 @@ dependencies = [
  "neli",
  "pnet",
  "rand",
- "smallvec",
  "smol",
  "thiserror",
  "tokio",

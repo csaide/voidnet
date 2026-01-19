@@ -55,9 +55,9 @@ impl<'umem> DerefMut for SmolFillQueue<'umem> {
 }
 
 pub struct SmolFillFuture<'que, 'umem, 'fd, B: FrameBuffer<'umem>> {
-    pub(crate) fill_queue: &'que mut SmolFillQueue<'umem>,
-    pub(crate) batch: B,
-    pub(crate) fds: &'fd [c_int],
+    fill_queue: &'que mut SmolFillQueue<'umem>,
+    batch: B,
+    fds: &'fd [c_int],
 }
 
 impl<'que, 'umem, 'fd, B: FrameBuffer<'umem>> Future for SmolFillFuture<'que, 'umem, 'fd, B> {

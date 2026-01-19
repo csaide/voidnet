@@ -49,8 +49,8 @@ impl<'umem> DerefMut for SmolSocketTx<'umem> {
 }
 
 pub struct SmolSendFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
-    pub(crate) socket: &'sock mut SmolSocketTx<'umem>,
-    pub(crate) batch: B,
+    socket: &'sock mut SmolSocketTx<'umem>,
+    batch: B,
 }
 
 impl<'sock, 'umem, B: FrameBuffer<'umem>> Future for SmolSendFuture<'sock, 'umem, B> {

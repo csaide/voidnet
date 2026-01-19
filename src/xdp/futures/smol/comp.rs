@@ -54,9 +54,9 @@ impl<'umem> DerefMut for SmolCompletionQueue<'umem> {
 }
 
 pub struct SmolCompFuture<'que, 'umem, B: FrameBuffer<'umem>> {
-    pub(crate) completion_queue: &'que mut SmolCompletionQueue<'umem>,
-    pub(crate) batch: B,
-    pub(crate) expected: usize,
+    completion_queue: &'que mut SmolCompletionQueue<'umem>,
+    batch: B,
+    expected: usize,
 }
 
 impl<'que, 'umem, B: FrameBuffer<'umem>> Future for SmolCompFuture<'que, 'umem, B> {

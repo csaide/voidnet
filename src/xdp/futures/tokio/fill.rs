@@ -1,9 +1,6 @@
 use std::{
     ops::{Deref, DerefMut},
-    os::{
-        fd::{AsRawFd, RawFd},
-        raw::c_int,
-    },
+    os::{fd::RawFd, raw::c_int},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -41,12 +38,6 @@ impl<'umem> TokioFillQueue<'umem> {
     }
 }
 
-impl<'umem> AsRawFd for FillQueue<'umem> {
-    fn as_raw_fd(&self) -> RawFd {
-        self.fd()
-    }
-}
-
 impl<'umem> Deref for TokioFillQueue<'umem> {
     type Target = FillQueue<'umem>;
 
@@ -62,9 +53,9 @@ impl<'umem> DerefMut for TokioFillQueue<'umem> {
 }
 
 pub struct TokioFillFuture<'que, 'umem, 'fd, B: FrameBuffer<'umem>> {
-    pub(crate) fill_queue: &'que mut TokioFillQueue<'umem>,
-    pub(crate) batch: B,
-    pub(crate) fds: &'fd [c_int],
+    fill_queue: &'que mut TokioFillQueue<'umem>,
+    batch: B,
+    fds: &'fd [c_int],
 }
 
 impl<'que, 'umem, 'fd, B: FrameBuffer<'umem>> Future for TokioFillFuture<'que, 'umem, 'fd, B> {
