@@ -20,6 +20,8 @@ use crate::xdp::{
 
 #[cfg(feature = "local")]
 use crate::xdp::futures::LocalSocket;
+#[cfg(feature = "smol")]
+use crate::xdp::futures::SmolSocket;
 #[cfg(feature = "tokio")]
 use crate::xdp::futures::TokioSocket;
 
@@ -148,6 +150,14 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
         let (owner, rx, tx) = self.build_internal(umem)?.split();
 
         Ok(LocalSocket::new(owner, rx, tx)?)
+    }
+
+    #[cfg(feature = "smol")]
+    pub fn build_smol<'umem>(mut self, umem: Arc<UmemOwner<'umem>>) -> Result<SmolSocket<'umem>> {
+        let (owner, rx, tx) = self.build_internal(umem)?.split();
+        let async_fd = self.ctx.get_smol_fd(owner.fd())?;
+
+        Ok(SmolSocket::new(owner, rx, tx, async_fd))
     }
 }
 

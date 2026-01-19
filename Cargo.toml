@@ -29,6 +29,7 @@ pnet = { version = "0.35" }
 rand = { version = "0.9" }
 tokio = { version = "1.40", features = ["full"] }
 futures = { version = "0.3" }
+smol = { version = "2" }
 
 [features]
 default = []
