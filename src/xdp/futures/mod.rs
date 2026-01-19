@@ -27,3 +27,17 @@ cfg_block! {
         mod smol;
     }
 }
+
+cfg_block! {
+    #[cfg(feature = "local")]
+    {
+        mod local;
+        pub use local::{LocalCompFuture, LocalCompletionQueue};
+        pub use local::{LocalFillFuture, LocalFillQueue};
+        pub use local::{LocalRecvFuture, LocalSocketRx};
+        pub use local::{LocalSendFuture, LocalSocketTx};
+        pub use local::LocalSocket;
+        pub use local::LocalUmem;
+        pub use local::LocalExecutor;
+    }
+}

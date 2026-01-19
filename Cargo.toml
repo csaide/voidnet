@@ -33,6 +33,7 @@ futures = { version = "0.3" }
 [features]
 default = []
 async = ["dep:futures-core", "dep:futures-util"]
+local = ["async"]
 smol = ["dep:async-io", "async"]
 tokio = ["dep:tokio", "async"]
 
