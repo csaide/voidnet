@@ -13,7 +13,7 @@ use memmap2::MmapOptions;
 
 use crate::xdp::{
     context::XdpContext,
-    error::{Error, Result},
+    error::{Error, NonBlocking, Result},
     frame::{Frame, FrameBuffer},
     ring::{Consumer, Producer},
 };
@@ -283,7 +283,10 @@ impl<'umem> Umem<'umem> {
 
     /// Processes the completion queue, allocating new frames from the frame stack and submitting them to the completion ring up to the size of the completion ring.
     #[inline(always)]
-    pub fn process_completion_queue<B: FrameBuffer<'umem>>(&mut self, batch: B) {
+    pub fn process_completion_queue<B: FrameBuffer<'umem>>(
+        &mut self,
+        batch: B,
+    ) -> NonBlocking<u32> {
         self.completion_queue.process_queue(batch)
     }
 }
@@ -291,7 +294,10 @@ impl<'umem> Umem<'umem> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xdp::frame::{BasicFrameBuffer, FrameBuffer};
+    use crate::xdp::{
+        flags::AF_XDP_RESERVED,
+        frame::{BasicFrameBuffer, FrameBuffer},
+    };
 
     #[test]
     fn test_builder_defaults() {
@@ -366,7 +372,11 @@ mod tests {
 
         let buffer: BasicFrameBuffer<'_> = owner.init_buffer().unwrap();
         assert_eq!(buffer.num_frames(), 8);
-        assert!(buffer.iter_frames().all(|f| f.capacity() == 2048));
+        assert!(
+            buffer
+                .iter_frames()
+                .all(|f| f.capacity() == 2048 - AF_XDP_RESERVED as usize)
+        );
 
         // Test num_frames defaults to fill + completion ring sizes
         let (owner, _, _) = Umem::builder(&mut ctx)

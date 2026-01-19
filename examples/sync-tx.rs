@@ -119,7 +119,7 @@ fn main() {
         // Send the prepared frames to the socket.
         //
         // Note this will completely consume the input buffer.
-        let sent = match socket.send(&mut write_frames) {
+        match socket.send(&mut write_frames) {
             Ok(sent) => {
                 debug_assert!(
                     sent == frames as u32,
@@ -127,7 +127,6 @@ fn main() {
                 );
 
                 stats.update_batch(sent as usize, packet_data.len());
-                sent
             }
             Err(_) => {
                 // We would have blocked.
@@ -138,15 +137,8 @@ fn main() {
         // Process any outstanding descriptors on the completion queue retrieving the sent frames.
         //
         // This should be a loop because the kernel can only transmit a limited number of frames at a time.
-        while write_frames.num_frames() < sent as usize {
-            // First wake up the kernel, it may skip the wake syscall if it can, but it must always be checked.
-            //
-            // Note: Errors here are fatal and should cause the program to exit, or reset the XDP state from scratch.
-            socket.maybe_wake().unwrap();
-
-            // Process the writen frames, this will consume as many frames as possible from the kernel, but it
-            // will be limited to the devices descriptor count.
-            umem.process_completion_queue(&mut write_frames);
+        while let Err(_) = umem.process_completion_queue(&mut write_frames) {
+            socket.maybe_wake().expect("Failed to wake tx queue");
         }
 
         stats.maybe_print();

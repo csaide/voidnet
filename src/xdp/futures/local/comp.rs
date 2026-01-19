@@ -21,12 +21,10 @@ impl<'umem> LocalCompletionQueue<'umem> {
     pub fn process_queue<'que, B: FrameBuffer<'umem>>(
         &'que mut self,
         batch: B,
-        expected: usize,
     ) -> LocalCompFuture<'que, 'umem, B> {
         LocalCompFuture {
             completion_queue: self,
             batch,
-            expected,
         }
     }
 }
@@ -48,7 +46,6 @@ impl<'umem> DerefMut for LocalCompletionQueue<'umem> {
 pub struct LocalCompFuture<'que, 'umem, B: FrameBuffer<'umem>> {
     pub(crate) completion_queue: &'que mut LocalCompletionQueue<'umem>,
     pub(crate) batch: B,
-    pub(crate) expected: usize,
 }
 
 impl<'que, 'umem, B: FrameBuffer<'umem>> Future for LocalCompFuture<'que, 'umem, B> {
@@ -59,8 +56,7 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for LocalCompFuture<'que, 'umem,
         // Those accesses are also guaranteed to not move self or the fields themselves.
         let this = unsafe { self.get_unchecked_mut() };
 
-        this.completion_queue.inner.process_queue(&mut this.batch);
-        if this.batch.num_frames() >= this.expected {
+        if let Ok(_) = this.completion_queue.inner.process_queue(&mut this.batch) {
             return Poll::Ready(Ok(()));
         }
 

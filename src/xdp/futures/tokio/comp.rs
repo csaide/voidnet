@@ -28,12 +28,10 @@ impl<'umem> TokioCompletionQueue<'umem> {
     pub fn process_queue<'que, B: FrameBuffer<'umem>>(
         &'que mut self,
         batch: B,
-        expected: usize,
     ) -> TokioCompFuture<'que, 'umem, B> {
         TokioCompFuture {
             completion_queue: self,
             batch,
-            expected,
         }
     }
 }
@@ -55,7 +53,6 @@ impl<'umem> DerefMut for TokioCompletionQueue<'umem> {
 pub struct TokioCompFuture<'que, 'umem, B: FrameBuffer<'umem>> {
     completion_queue: &'que mut TokioCompletionQueue<'umem>,
     batch: B,
-    expected: usize,
 }
 
 impl<'que, 'umem, B: FrameBuffer<'umem>> Future for TokioCompFuture<'que, 'umem, B> {
@@ -66,8 +63,7 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for TokioCompFuture<'que, 'umem,
         // Those accesses are also guaranteed to not move self or the fields themselves.
         let this = unsafe { self.get_unchecked_mut() };
 
-        this.completion_queue.inner.process_queue(&mut this.batch);
-        if this.batch.num_frames() >= this.expected {
+        if let Ok(_) = this.completion_queue.inner.process_queue(&mut this.batch) {
             return Poll::Ready(Ok(()));
         }
 
@@ -75,8 +71,7 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for TokioCompFuture<'que, 'umem,
         loop {
             let mut guard = ready!(async_fd.poll_read_ready(cx))?;
 
-            inner.process_queue(&mut this.batch);
-            if this.batch.num_frames() >= this.expected {
+            if let Ok(_) = inner.process_queue(&mut this.batch) {
                 return Poll::Ready(Ok(()));
             }
 

@@ -74,7 +74,7 @@ pub enum Error {
 }
 
 /// A simple ZST error variant for would block scenarios, this is explicitly a ZST to avoid the allocations and eventual drop calls of the error case.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 #[error("network I/O error: would block")]
 pub struct WouldBlock;
 

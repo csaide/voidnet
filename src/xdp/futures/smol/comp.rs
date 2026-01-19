@@ -29,12 +29,10 @@ impl<'umem> SmolCompletionQueue<'umem> {
     pub fn process_queue<'que, B: FrameBuffer<'umem>>(
         &'que mut self,
         batch: B,
-        expected: usize,
     ) -> SmolCompFuture<'que, 'umem, B> {
         SmolCompFuture {
             completion_queue: self,
             batch,
-            expected,
         }
     }
 }
@@ -56,7 +54,6 @@ impl<'umem> DerefMut for SmolCompletionQueue<'umem> {
 pub struct SmolCompFuture<'que, 'umem, B: FrameBuffer<'umem>> {
     completion_queue: &'que mut SmolCompletionQueue<'umem>,
     batch: B,
-    expected: usize,
 }
 
 impl<'que, 'umem, B: FrameBuffer<'umem>> Future for SmolCompFuture<'que, 'umem, B> {
@@ -67,8 +64,7 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for SmolCompFuture<'que, 'umem, 
         // Those accesses are also guaranteed to not move self or the fields themselves.
         let this = unsafe { self.get_unchecked_mut() };
 
-        this.completion_queue.inner.process_queue(&mut this.batch);
-        if this.batch.num_frames() >= this.expected {
+        if let Ok(_) = this.completion_queue.inner.process_queue(&mut this.batch) {
             return Poll::Ready(Ok(()));
         }
 
@@ -76,8 +72,7 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for SmolCompFuture<'que, 'umem, 
         loop {
             ready!(async_fd.poll_readable(cx))?;
 
-            inner.process_queue(&mut this.batch);
-            if this.batch.num_frames() >= this.expected {
+            if let Ok(_) = inner.process_queue(&mut this.batch) {
                 return Poll::Ready(Ok(()));
             }
         }

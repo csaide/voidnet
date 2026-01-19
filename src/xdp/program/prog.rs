@@ -32,6 +32,8 @@ pub struct XdpProgram {
     info: XdpInfo,
 }
 
+unsafe impl Send for XdpProgram {}
+
 impl XdpProgram {
     /// Creates a new [XdpProgram] object from the given data, and then attaches that program to the given network interface with the given attach mode.
     pub fn new(

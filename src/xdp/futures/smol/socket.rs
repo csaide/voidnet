@@ -218,7 +218,7 @@ mod tests {
             // Clean up: process completion queue to reclaim TX frame
             let mut reclaim_buffer = BasicFrameBuffer::new(1);
             cq_outer
-                .process_queue(&mut reclaim_buffer, 1)
+                .process_queue(&mut reclaim_buffer)
                 .await
                 .expect("failed to process completion queue");
         });

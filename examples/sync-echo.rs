@@ -137,9 +137,8 @@ fn main() {
         debug_assert_eq!(frames.num_frames(), 0);
 
         // So we "sent" the packets but now we need to actually drive the completion of those sends.
-        while frames.num_frames() < received as usize {
+        while let Err(_) = umem.process_completion_queue(&mut frames) {
             socket.maybe_wake().expect("Failed to wake tx queue");
-            umem.process_completion_queue(&mut frames);
         }
 
         // Now give back all our frames to the kernel by means of the fill queue.
