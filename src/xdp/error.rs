@@ -65,6 +65,12 @@ pub enum Error {
     ZeroCopyNotSupported,
     #[error("failed to poll poller: {0}")]
     PollPoller(#[from] std::io::Error),
+    #[error("failed to create epoll instance: {0}")]
+    EpollCreate(Errno),
+    #[error("failed to wait on epoll instance: {0}")]
+    EpollWait(Errno),
+    #[error("failed to register file descriptor with epoll instance: {0}")]
+    EpollCtl(Errno),
 }
 
 /// A simple ZST error variant for would block scenarios, this is explicitly a ZST to avoid the allocations and eventual drop calls of the error case.

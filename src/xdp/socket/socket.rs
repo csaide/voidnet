@@ -18,6 +18,8 @@ use crate::xdp::{
     umem::UmemOwner,
 };
 
+#[cfg(feature = "local")]
+use crate::xdp::futures::LocalSocket;
 #[cfg(feature = "tokio")]
 use crate::xdp::futures::TokioSocket;
 
@@ -134,6 +136,12 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
         let socket = self.build(umem)?;
         Ok(TokioSocket::new(socket.owner, socket.rx, socket.tx)?)
     }
+
+    #[cfg(feature = "local")]
+    pub fn build_local<'umem>(self, umem: Arc<UmemOwner<'umem>>) -> Result<LocalSocket<'umem>> {
+        let socket = self.build(umem)?;
+        Ok(LocalSocket::new(socket.owner, socket.rx, socket.tx)?)
+    }
 }
 
 pub struct Socket<'umem> {
@@ -210,6 +218,8 @@ impl<'umem> Socket<'umem> {
         if ret != 0 {
             return Err(Error::CreateSocket(errno()));
         }
+
+        // SAFETY: We know the ring buffers are initialized and we have a valid socket pointer.
         let rx = unsafe { rx.assume_init() };
         let tx = unsafe { tx.assume_init() };
 

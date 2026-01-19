@@ -18,6 +18,8 @@ use crate::xdp::{
     ring::{Consumer, Producer},
 };
 
+#[cfg(feature = "local")]
+use crate::xdp::futures::LocalUmem;
 #[cfg(feature = "tokio")]
 use crate::xdp::futures::TokioUmem;
 
@@ -134,8 +136,13 @@ impl<'ctx> UmemBuilder<'ctx> {
     #[cfg(feature = "tokio")]
     pub fn build_tokio<'umem>(self) -> Result<TokioUmem<'umem>> {
         let (owner, fq, cq) = self.build()?.split();
-
         Ok(TokioUmem::new(owner, fq, cq)?)
+    }
+
+    #[cfg(feature = "local")]
+    pub fn build_local<'umem>(self) -> Result<LocalUmem<'umem>> {
+        let (owner, fq, cq) = self.build()?.split();
+        Ok(LocalUmem::new(owner, fq, cq)?)
     }
 }
 
