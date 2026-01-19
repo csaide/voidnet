@@ -92,7 +92,7 @@ fn umem_thread<'umem>(
 ) {
     while !exit.load(Ordering::Relaxed) {
         let guard = frame_stack.lock().unwrap();
-        umem.process_completion_queue(guard);
+        let _ = umem.process_completion_queue(guard);
     }
 }
 

@@ -6,7 +6,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```no_run
 //! use libvoid::xdp::test_utils::TestVethPair;
 //!
 //! let veth = TestVethPair::new().expect("failed to create veth pair");
@@ -155,15 +155,20 @@ impl VethAddresses {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```no_run
+/// # fn main() -> Result<(), libvoid::xdp::test_utils::TestEnvError> {
+/// # use libvoid::xdp::test_utils::TestVethPair;
 /// let veth = TestVethPair::new()?;
 ///
-/// // Use outer_name() to bind XDP sockets
-/// let socket = XdpSocket::new(veth.outer_name())?;
+/// // Use outer_ifindex() and inner_ifindex() to bind XDP sockets
+/// let outer_interface_name = veth.outer_name();
+/// let inner_interface_name = veth.inner_name();
 ///
 /// // Send packets through inner interface for testing
 /// // ...
-/// ``` // veth pair cleaned up here
+/// // veth pair cleaned up here
+/// # Ok(()) }
+/// ```
 pub struct TestVethPair {
     pair_id: u32,
     outer_name: String,
@@ -184,6 +189,8 @@ impl TestVethPair {
         let outer_name = format!("{}{}o", VETH_PREFIX, pair_id);
         let inner_name = format!("{}{}i", VETH_PREFIX, pair_id);
         let addresses = VethAddresses::for_pair(pair_id);
+
+        let _ = run_cmd(&["/usr/sbin/ip", "link", "del", "dev", &outer_name]);
 
         // Create the veth pair
         run_cmd(&[

@@ -7,7 +7,5 @@ pub mod futures;
 pub mod program;
 pub mod ring;
 pub mod socket;
+pub mod test_utils;
 pub mod umem;
-
-#[cfg(test)]
-mod test_utils;

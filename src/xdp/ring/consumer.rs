@@ -96,7 +96,12 @@ impl Consumer<Init> {
     pub fn nb_avail(&mut self, batch_size: u32) -> u32 {
         let mut entries = self.ring.cached_prod - self.ring.cached_cons;
 
-        if entries == 0 {
+        // TODO(csaide): This feels like a bug, but I'm not sure if its a bug or just my misunderstanding here.
+        // without this change i.e. checking if entries < batch_size, we end up with _very_ small numbers per batch, generally 1-2.
+        // This feels completely wrong and this works just fine, but I am reaching out to the libxdp authors to confirm.
+        //
+        // if entries == 0 {
+        if entries < batch_size {
             self.ring.cached_prod =
                 unsafe { AtomicU32::from_ptr(self.ring.producer) }.load(Ordering::Acquire);
             entries = self.ring.cached_prod - self.ring.cached_cons;
@@ -306,9 +311,10 @@ mod tests {
     #[test]
     fn test_nb_avail() {
         let mut h = Harness::<u64>::new(16);
+        *h.producer = 8;
 
         // Returns min(entries, batch)
-        assert_eq!(h.init(7, 5).nb_avail(10), 2); // entries < batch
+        assert_eq!(h.init(7, 5).nb_avail(10), 3); // entries < batch
         assert_eq!(h.init(20, 5).nb_avail(8), 8); // entries > batch
         assert_eq!(h.init(15, 5).nb_avail(10), 10); // entries == batch
 
@@ -343,6 +349,7 @@ mod tests {
         unsafe { assert_eq!((*c.as_ptr()).cached_cons, 5) };
 
         // Sequential calls advance correctly
+        *h.producer = 20;
         let mut c = h.init(20, 0);
         assert_eq!(c.peek(5), (0, 5));
         assert_eq!(c.peek(5), (5, 5));

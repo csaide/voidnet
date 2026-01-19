@@ -85,6 +85,7 @@ impl<'umem> Deref for FillQueue<'umem> {
 mod tests {
     use super::*;
     use crate::xdp::context::XdpContext;
+    use crate::xdp::flags::AF_XDP_RESERVED;
     use crate::xdp::frame::{BasicFrameBuffer, FrameBuffer};
     use crate::xdp::umem::Umem;
     use std::sync::Arc;
@@ -138,7 +139,15 @@ mod tests {
         // Capture addresses before processing
         let original_addrs: Vec<u64> = ctx.buffer.iter_frames().map(|f| f.addr()).collect();
         assert_eq!(original_addrs.len(), 4);
-        assert_eq!(original_addrs, vec![0, 4096, 8192, 12288]); // Sequential addresses
+        assert_eq!(
+            original_addrs,
+            vec![
+                AF_XDP_RESERVED,
+                AF_XDP_RESERVED + 4096,
+                AF_XDP_RESERVED + 8192,
+                AF_XDP_RESERVED + 12288
+            ]
+        ); // Sequential addresses
 
         // Process drains buffer completely
         ctx.fq.process_queue(&mut ctx.buffer);
@@ -178,8 +187,24 @@ mod tests {
         // Verify batch contents
         let addrs1: Vec<u64> = batch1.iter_frames().map(|f| f.addr()).collect();
         let addrs2: Vec<u64> = batch2.iter_frames().map(|f| f.addr()).collect();
-        assert_eq!(addrs1, vec![0, 4096, 8192, 12288]);
-        assert_eq!(addrs2, vec![16384, 20480, 24576, 28672]);
+        assert_eq!(
+            addrs1,
+            vec![
+                AF_XDP_RESERVED,
+                AF_XDP_RESERVED + 4096,
+                AF_XDP_RESERVED + 8192,
+                AF_XDP_RESERVED + 12288
+            ]
+        );
+        assert_eq!(
+            addrs2,
+            vec![
+                AF_XDP_RESERVED + 16384,
+                AF_XDP_RESERVED + 20480,
+                AF_XDP_RESERVED + 24576,
+                AF_XDP_RESERVED + 28672
+            ]
+        );
 
         // Process sequentially
         ctx.fq.process_queue(&mut batch1);

@@ -120,7 +120,7 @@ async fn main() {
         // Send the prepared frames to the socket.
         //
         // Note this will completely consume the input buffer.
-        let sent = match socket.send(&mut write_frames).await {
+        match socket.send(&mut write_frames).await {
             Ok(sent) => {
                 debug_assert!(
                     sent == frames as u32,
@@ -128,7 +128,6 @@ async fn main() {
                 );
 
                 stats.update_batch(sent as usize, packet_data.len());
-                sent
             }
             Err(_) => {
                 // We would have blocked.
@@ -136,7 +135,7 @@ async fn main() {
             }
         };
 
-        umem.process_completion_queue(&mut write_frames, sent as usize)
+        umem.process_completion_queue(&mut write_frames)
             .await
             .unwrap();
 

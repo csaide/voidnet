@@ -10,7 +10,10 @@ use std::{
 use libxdp_sys::{xsk_umem, xsk_umem__delete, xsk_umem__fd};
 use memmap2::MmapMut;
 
-use crate::xdp::frame::{Frame, FrameBuffer};
+use crate::xdp::{
+    flags::AF_XDP_RESERVED,
+    frame::{Frame, FrameBuffer},
+};
 
 /// The owner of a UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done. It is also the memory
 /// anchor for the frames in the UMEM, all frames are backed by the memory owned by this instance. The embedded lifetime will end up being that of the
@@ -59,8 +62,11 @@ impl<'umem> UmemOwner<'umem> {
     pub(crate) fn to_frame(&self, addr: u64, len: usize, is_fragment: bool) -> Frame<'umem> {
         debug_assert!(len <= self.frame_size, "len is greater than the frame size");
         debug_assert!(
-            addr + self.frame_size as u64 <= self.mmap.len() as u64,
-            "addr + frame size is greater than the mmap length"
+            addr + self.frame_size as u64 - AF_XDP_RESERVED <= self.mmap.len() as u64,
+            "addr + frame size is greater than the mmap length: {} + {} > {}",
+            addr,
+            self.frame_size,
+            self.mmap.len()
         );
 
         Frame::new(
@@ -69,7 +75,7 @@ impl<'umem> UmemOwner<'umem> {
             unsafe {
                 std::slice::from_raw_parts_mut(
                     self.mmap.as_ptr().add(addr as usize) as *mut u8,
-                    self.frame_size,
+                    self.frame_size - AF_XDP_RESERVED as usize,
                 )
             },
             len,
@@ -98,7 +104,13 @@ impl<'umem> UmemOwner<'umem> {
 
         Some(
             (0..self.num_frames)
-                .map(|i| self.to_frame(i as u64 * self.frame_size as u64, 0, false))
+                .map(|i| {
+                    self.to_frame(
+                        i as u64 * self.frame_size as u64 + AF_XDP_RESERVED,
+                        0,
+                        false,
+                    )
+                })
                 .collect(),
         )
     }
@@ -147,9 +159,9 @@ mod tests {
 
         // Verify frame properties
         for (i, frame) in buffer.iter_frames().enumerate() {
-            assert_eq!(frame.addr(), (i as u64) * 2048);
+            assert_eq!(frame.addr(), (i as u64) * 2048 + AF_XDP_RESERVED);
             assert_eq!(frame.len(), 0);
-            assert_eq!(frame.capacity(), 2048);
+            assert_eq!(frame.capacity(), 2048 - AF_XDP_RESERVED as usize);
             assert!(!frame.is_fragment());
         }
 
@@ -167,7 +179,7 @@ mod tests {
         assert_eq!(frame.addr(), 4096);
         assert_eq!(frame.len(), 1500);
         assert!(frame.is_fragment());
-        assert_eq!(frame.capacity(), 4096);
+        assert_eq!(frame.capacity(), 4096 - AF_XDP_RESERVED as usize);
     }
 
     #[test]

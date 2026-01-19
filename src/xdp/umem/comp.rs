@@ -1,6 +1,7 @@
 use std::{ops::Deref, sync::Arc};
 
 use crate::xdp::{
+    error::{NonBlocking, WouldBlock},
     frame::FrameBuffer,
     ring::{Consumer, Init},
 };
@@ -22,10 +23,11 @@ impl<'umem> CompletionQueue<'umem> {
 
     /// Processes the completion queue, allocating new frames from the frame stack and submitting them to the completion ring up to the size of the completion ring.
     #[inline(always)]
-    pub fn process_queue<B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
+    pub fn process_queue<B: FrameBuffer<'umem>>(&mut self, mut batch: B) -> NonBlocking<u32> {
         let (mut idx, ready) = self.ring.peek(batch.free_space() as u32);
-        if ready == 0 {
-            return;
+        if ready != batch.free_space() as u32 {
+            self.ring.cancel(ready);
+            return Err(WouldBlock);
         }
 
         for _ in 0..ready {
@@ -37,6 +39,7 @@ impl<'umem> CompletionQueue<'umem> {
         }
 
         self.ring.release(ready as u32);
+        Ok(ready)
     }
 }
 
@@ -91,7 +94,8 @@ mod tests {
         assert_eq!(buffer.num_frames(), 0);
         assert_eq!(buffer.free_space(), 8);
 
-        ctx.cq.process_queue(&mut buffer);
+        let e = ctx.cq.process_queue(&mut buffer).unwrap_err();
+        assert_eq!(e, WouldBlock);
 
         // Still empty — no frames to complete
         assert_eq!(buffer.num_frames(), 0);
@@ -107,7 +111,7 @@ mod tests {
         assert_eq!(buffer.free_space(), 0);
 
         // Should be no-op even if ring had completions
-        ctx.cq.process_queue(&mut buffer);
+        ctx.cq.process_queue(&mut buffer).unwrap();
         assert_eq!(buffer.num_frames(), 0);
     }
 
@@ -122,7 +126,8 @@ mod tests {
 
         // Process queue respects free_space limit
         // (Ring is empty, so no frames added, but tests the path)
-        ctx.cq.process_queue(&mut buffer);
+        let e = ctx.cq.process_queue(&mut buffer).unwrap_err();
+        assert_eq!(e, WouldBlock);
         assert_eq!(buffer.num_frames(), 0);
     }
 
@@ -133,7 +138,8 @@ mod tests {
 
         // Multiple calls on empty ring are safe
         for _ in 0..5 {
-            ctx.cq.process_queue(&mut buffer);
+            let e = ctx.cq.process_queue(&mut buffer).unwrap_err();
+            assert_eq!(e, WouldBlock);
             assert_eq!(buffer.num_frames(), 0);
         }
     }
@@ -145,7 +151,8 @@ mod tests {
             let mut ctx = create_cq(size);
             let mut buffer = BasicFrameBuffer::new(size);
 
-            ctx.cq.process_queue(&mut buffer);
+            let e = ctx.cq.process_queue(&mut buffer).unwrap_err();
+            assert_eq!(e, WouldBlock);
             assert_eq!(buffer.num_frames(), 0);
         }
     }

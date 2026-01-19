@@ -16,6 +16,8 @@ pub struct Map {
     name: String,
 }
 
+unsafe impl Send for Map {}
+
 impl Map {
     /// Wraps a raw [bpf_map] and its corresponding [bpf_map_info] object.
     pub fn new(map: *mut bpf_map, info: bpf_map_info) -> Self {

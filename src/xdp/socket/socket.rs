@@ -490,7 +490,7 @@ mod tests {
 
         // Clean up: process completion queue to reclaim TX frame
         let mut reclaim_buffer = BasicFrameBuffer::new(1);
-        cq_outer.process_queue(&mut reclaim_buffer);
+        cq_outer.process_queue(&mut reclaim_buffer).unwrap();
     }
 
     /// Test socket creation and basic properties.

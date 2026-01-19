@@ -68,8 +68,7 @@ impl<'umem> SmolUmem<'umem> {
     pub fn process_completion_queue<'que, B: FrameBuffer<'umem>>(
         &'que mut self,
         batch: B,
-        expected: usize,
     ) -> SmolCompFuture<'que, 'umem, B> {
-        self.completion_queue.process_queue(batch, expected)
+        self.completion_queue.process_queue(batch)
     }
 }
