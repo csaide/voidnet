@@ -26,6 +26,14 @@ cfg_block! {
     #[cfg(feature = "smol")]
     {
         mod smol;
+
+        pub use smol::{SmolFd, SmolFdFactory};
+        pub use smol::{SmolCompFuture, SmolCompletionQueue};
+        pub use smol::{SmolFillFuture, SmolFillQueue};
+        pub use smol::{SmolRecvFuture, SmolSocketRx};
+        pub use smol::{SmolSendFuture, SmolSocketTx};
+        pub use smol::SmolSocket;
+        pub use smol::SmolUmem;
     }
 }
 

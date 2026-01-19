@@ -20,6 +20,8 @@ use crate::xdp::{
 
 #[cfg(feature = "local")]
 use crate::xdp::futures::LocalUmem;
+#[cfg(feature = "smol")]
+use crate::xdp::futures::SmolUmem;
 #[cfg(feature = "tokio")]
 use crate::xdp::futures::TokioUmem;
 
@@ -150,6 +152,14 @@ impl<'ctx> UmemBuilder<'ctx> {
         let (owner, fq, cq) = self.build()?.split();
 
         Ok(LocalUmem::new(owner, fq, cq)?)
+    }
+
+    #[cfg(feature = "smol")]
+    pub fn build_smol<'umem>(mut self) -> Result<SmolUmem<'umem>> {
+        let (owner, fq, cq) = self.build_internal()?.split();
+        let async_fd = self.ctx.get_smol_fd(owner.fd())?;
+
+        Ok(SmolUmem::new(owner, fq, cq, async_fd))
     }
 }
 

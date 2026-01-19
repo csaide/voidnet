@@ -63,6 +63,8 @@ pub struct XdpContext {
     program: XdpProgram,
     #[cfg(feature = "tokio")]
     tokio_fd_factory: crate::xdp::futures::TokioFdFactory,
+    #[cfg(feature = "smol")]
+    smol_fd_factory: crate::xdp::futures::SmolFdFactory,
 }
 
 impl XdpContext {
@@ -83,6 +85,8 @@ impl XdpContext {
             program,
             #[cfg(feature = "tokio")]
             tokio_fd_factory: crate::xdp::futures::TokioFdFactory::new(),
+            #[cfg(feature = "smol")]
+            smol_fd_factory: crate::xdp::futures::SmolFdFactory::new(),
         })
     }
 
@@ -95,6 +99,8 @@ impl XdpContext {
             program: XdpProgram::new_no_init()?,
             #[cfg(feature = "tokio")]
             tokio_fd_factory: crate::xdp::futures::TokioFdFactory::new(),
+            #[cfg(feature = "smol")]
+            smol_fd_factory: crate::xdp::futures::SmolFdFactory::new(),
         })
     }
 
@@ -128,6 +134,14 @@ impl XdpContext {
     #[cfg(feature = "tokio")]
     pub(crate) fn get_tokio_fd(&self, fd: RawFd) -> Result<Arc<tokio::io::unix::AsyncFd<RawFd>>> {
         self.tokio_fd_factory.get_tokio_fd(fd)
+    }
+
+    #[cfg(feature = "smol")]
+    pub(crate) fn get_smol_fd(
+        &self,
+        fd: RawFd,
+    ) -> Result<Arc<async_io::Async<crate::xdp::futures::SmolFd>>> {
+        self.smol_fd_factory.get_smol_fd(fd)
     }
 
     #[cfg(test)]
