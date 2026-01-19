@@ -69,14 +69,14 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for TokioCompFuture<'que, 'umem,
 
         let TokioCompletionQueue { inner, async_fd } = this.completion_queue;
         loop {
-            let mut guard = ready!(async_fd.poll_read_ready(cx))?;
+            let mut guard = ready!(async_fd.poll_write_ready(cx))?;
 
             if let Ok(_) = inner.process_queue(&mut this.batch) {
                 return Poll::Ready(Ok(()));
             }
 
             // We aren't actually ready clear our status and loop again.
-            guard.clear_ready_matching(Ready::READABLE);
+            guard.clear_ready_matching(Ready::WRITABLE);
         }
     }
 }

@@ -25,8 +25,7 @@ impl<'umem> CompletionQueue<'umem> {
     #[inline(always)]
     pub fn process_queue<B: FrameBuffer<'umem>>(&mut self, mut batch: B) -> NonBlocking<u32> {
         let (mut idx, ready) = self.ring.peek(batch.free_space() as u32);
-        if ready != batch.free_space() as u32 {
-            self.ring.cancel(ready);
+        if ready == 0 {
             return Err(WouldBlock);
         }
 
@@ -111,7 +110,8 @@ mod tests {
         assert_eq!(buffer.free_space(), 0);
 
         // Should be no-op even if ring had completions
-        ctx.cq.process_queue(&mut buffer).unwrap();
+        let e = ctx.cq.process_queue(&mut buffer).unwrap_err();
+        assert_eq!(e, WouldBlock);
         assert_eq!(buffer.num_frames(), 0);
     }
 

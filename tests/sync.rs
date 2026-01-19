@@ -1,4 +1,11 @@
-use std::{thread, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 
 use libvoid::xdp::{
     context::XdpContext,
@@ -23,9 +30,11 @@ fn test_sync() {
     // Create veth pair
     let veth = TestVethPair::new().expect("failed to create veth pair");
 
-    let target_count = 100_000;
+    let done_sending = Arc::new(AtomicBool::new(false));
+    let target_count = 1_000_000;
 
     let inner_name = veth.inner_name().to_string();
+    let inner_done_sending = done_sending.clone();
     let inner_handle = thread::spawn(move || {
         let mut ctx_inner = XdpContext::builder(&inner_name)
             .build()
@@ -53,6 +62,7 @@ fn test_sync() {
                 Ok(n) => {
                     count += n;
                 }
+                Err(_) if inner_done_sending.load(Ordering::Relaxed) => break,
                 Err(_) => {
                     umem_inner.maybe_wake_fill_queue(socket_inner.fd()).unwrap();
                     continue;
@@ -62,6 +72,7 @@ fn test_sync() {
             umem_inner.maybe_wake_fill_queue(socket_inner.fd()).unwrap();
             umem_inner.process_fill_queue(&mut rx_buffer);
         }
+        assert!(count >= target_count, "did not receive enough packets");
     });
 
     thread::sleep(Duration::from_millis(100));
@@ -97,7 +108,6 @@ fn test_sync() {
         }
 
         while count < target_count {
-            std::thread::sleep(Duration::from_micros(1));
             match socket_outer.send(&mut tx_buffer) {
                 Ok(sent) => {
                     count += sent;
@@ -115,6 +125,9 @@ fn test_sync() {
                 frame.copy_from(&packet_data);
             }
         }
+
+        assert!(count >= target_count, "did not send enough packets");
+        done_sending.store(true, Ordering::Relaxed);
     });
 
     inner_handle.join().expect("inner thread panicked");
