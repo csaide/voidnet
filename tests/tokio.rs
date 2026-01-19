@@ -142,6 +142,8 @@ async fn test_tokio() {
                     for frame in tx_buffer.iter_frames_mut() {
                         frame.copy_from(&packet_data);
                     }
+                    // CI is flaky so lets punt writes for tokio.
+                    tokio::task::yield_now().await;
                 }
                 assert!(count >= target_count, "did not send enough packets");
                 done_sending.store(true, Ordering::Relaxed);
