@@ -1,4 +1,11 @@
-use std::{thread, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 
 use libvoid::xdp::{
     context::XdpContext,
@@ -26,9 +33,11 @@ async fn test_smol(exec: &Executor<'_>) {
     // Create veth pair
     let veth = TestVethPair::new().expect("failed to create veth pair");
 
-    let target_count = 4_000;
+    let done_sending = Arc::new(AtomicBool::new(false));
+    let target_count = 1_000_000;
 
     let inner_name = veth.inner_name().to_string();
+    let inner_done_sending = done_sending.clone();
     let inner_task = exec.spawn(async move {
         let mut ctx_inner = XdpContext::builder(&inner_name)
             .build()
@@ -57,8 +66,8 @@ async fn test_smol(exec: &Executor<'_>) {
             match socket_inner.recv(&mut rx_buffer).await {
                 Ok(n) => {
                     count += n;
-                    println!("Received {} (total: {})", n, count);
                 }
+                Err(_) if inner_done_sending.load(Ordering::Relaxed) => break,
                 Err(_) => {
                     continue;
                 }
@@ -69,6 +78,7 @@ async fn test_smol(exec: &Executor<'_>) {
                 .await
                 .unwrap();
         }
+        assert!(count >= target_count, "did not receive enough packets");
     });
 
     thread::sleep(Duration::from_millis(100));
@@ -107,7 +117,6 @@ async fn test_smol(exec: &Executor<'_>) {
             match socket_outer.send(&mut tx_buffer).await {
                 Ok(sent) => {
                     count += sent;
-                    println!("Sent {} (total: {})", sent, count);
                 }
                 Err(_) => {
                     continue;
@@ -123,6 +132,8 @@ async fn test_smol(exec: &Executor<'_>) {
                 frame.copy_from(&packet_data);
             }
         }
+        assert!(count >= target_count, "did not send enough packets");
+        done_sending.store(true, Ordering::Relaxed);
     });
 
     smol::future::zip(inner_task, outer_task).await;

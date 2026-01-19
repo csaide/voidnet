@@ -70,7 +70,7 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for SmolCompFuture<'que, 'umem, 
 
         let SmolCompletionQueue { inner, async_fd } = this.completion_queue;
         loop {
-            ready!(async_fd.poll_readable(cx))?;
+            ready!(async_fd.poll_writable(cx))?;
 
             if let Ok(_) = inner.process_queue(&mut this.batch) {
                 return Poll::Ready(Ok(()));
