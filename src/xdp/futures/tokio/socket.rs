@@ -1,5 +1,7 @@
 use std::{os::fd::RawFd, sync::Arc};
 
+use tokio::io::unix::AsyncFd;
+
 use crate::xdp::{
     error::Result,
     frame::FrameBuffer,
@@ -19,12 +21,13 @@ impl<'umem> TokioSocket<'umem> {
         owner: Arc<SocketOwner<'umem>>,
         rx: SocketRx<'umem>,
         tx: SocketTx<'umem>,
-    ) -> Result<Self> {
-        Ok(Self {
+        async_fd: Arc<AsyncFd<RawFd>>,
+    ) -> Self {
+        Self {
             owner,
-            rx: TokioSocketRx::new(rx)?,
-            tx: TokioSocketTx::new(tx)?,
-        })
+            rx: TokioSocketRx::new(rx, async_fd.clone()),
+            tx: TokioSocketTx::new(tx, async_fd),
+        }
     }
 
     /// Splits the socket into its owner, rx, and tx components.

@@ -103,10 +103,7 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
         self
     }
 
-    /// Builds the socket taking shared ownership of the Umem, allowing for multiple sockets on a single Device/Queue pair.
-    ///
-    /// Note: This will likely not get you more throughput or lower latency than a single socket, but it is useful for certain heavy loads where you need to offload packet processing onto different threads. Almost always prefer a single socket to a single Umem.
-    pub fn build<'umem>(self, umem: Arc<UmemOwner<'umem>>) -> Result<Socket<'umem>> {
+    fn build_internal<'umem>(&mut self, umem: Arc<UmemOwner<'umem>>) -> Result<Socket<'umem>> {
         let info = self.ctx.info();
         if !info.fragmentation_support() && self.enable_fragmentation {
             return Err(Error::FragmentationNotSupported);
@@ -131,15 +128,25 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
         )
     }
 
+    /// Builds the socket taking shared ownership of the Umem, allowing for multiple sockets on a single Device/Queue pair.
+    ///
+    /// Note: This will likely not get you more throughput or lower latency than a single socket, but it is useful for certain heavy loads where you need to offload packet processing onto different threads. Almost always prefer a single socket to a single Umem.
+    pub fn build<'umem>(mut self, umem: Arc<UmemOwner<'umem>>) -> Result<Socket<'umem>> {
+        self.build_internal(umem)
+    }
+
     #[cfg(feature = "tokio")]
-    pub fn build_tokio<'umem>(self, umem: Arc<UmemOwner<'umem>>) -> Result<TokioSocket<'umem>> {
-        let (owner, rx, tx) = self.build(umem)?.split();
-        Ok(TokioSocket::new(owner, rx, tx)?)
+    pub fn build_tokio<'umem>(mut self, umem: Arc<UmemOwner<'umem>>) -> Result<TokioSocket<'umem>> {
+        let (owner, rx, tx) = self.build_internal(umem)?.split();
+        let async_fd = self.ctx.get_tokio_fd(owner.fd())?;
+
+        Ok(TokioSocket::new(owner, rx, tx, async_fd))
     }
 
     #[cfg(feature = "local")]
-    pub fn build_local<'umem>(self, umem: Arc<UmemOwner<'umem>>) -> Result<LocalSocket<'umem>> {
-        let (owner, rx, tx) = self.build(umem)?.split();
+    pub fn build_local<'umem>(mut self, umem: Arc<UmemOwner<'umem>>) -> Result<LocalSocket<'umem>> {
+        let (owner, rx, tx) = self.build_internal(umem)?.split();
+
         Ok(LocalSocket::new(owner, rx, tx)?)
     }
 }

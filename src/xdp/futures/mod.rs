@@ -18,6 +18,7 @@ cfg_block! {
         pub use tokio::{TokioSendFuture, TokioSocketTx};
         pub use tokio::TokioSocket;
         pub use tokio::TokioUmem;
+        pub use tokio::TokioFdFactory;
     }
 }
 
