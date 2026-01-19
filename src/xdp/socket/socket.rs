@@ -133,14 +133,14 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
 
     #[cfg(feature = "tokio")]
     pub fn build_tokio<'umem>(self, umem: Arc<UmemOwner<'umem>>) -> Result<TokioSocket<'umem>> {
-        let socket = self.build(umem)?;
-        Ok(TokioSocket::new(socket.owner, socket.rx, socket.tx)?)
+        let (owner, rx, tx) = self.build(umem)?.split();
+        Ok(TokioSocket::new(owner, rx, tx)?)
     }
 
     #[cfg(feature = "local")]
     pub fn build_local<'umem>(self, umem: Arc<UmemOwner<'umem>>) -> Result<LocalSocket<'umem>> {
-        let socket = self.build(umem)?;
-        Ok(LocalSocket::new(socket.owner, socket.rx, socket.tx)?)
+        let (owner, rx, tx) = self.build(umem)?.split();
+        Ok(LocalSocket::new(owner, rx, tx)?)
     }
 }
 
