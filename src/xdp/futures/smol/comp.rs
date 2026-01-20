@@ -12,9 +12,7 @@ use crate::xdp::{error::Result, frame::FrameBuffer, umem::CompletionQueue};
 
 use super::SmolFd;
 
-/// A completion queue designed to work on the [Smol] runtime.
-///
-/// [Smol]: smol
+/// A completion queue designed to work on the [Smol](https://docs.rs/smol/latest/smol/) runtime.
 pub struct SmolCompletionQueue<'umem> {
     inner: CompletionQueue<'umem>,
     async_fd: Arc<Async<SmolFd>>,

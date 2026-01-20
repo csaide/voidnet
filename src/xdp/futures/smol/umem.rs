@@ -9,9 +9,7 @@ use crate::xdp::{
 
 use super::{SmolCompFuture, SmolCompletionQueue, SmolFd, SmolFillFuture, SmolFillQueue};
 
-/// A UMEM designed to work on the [Smol] runtime.
-///
-/// [Smol]: smol
+/// A UMEM designed to work on the [Smol](https://docs.rs/smol/latest/smol/) runtime.
 pub struct SmolUmem<'umem> {
     owner: Arc<UmemOwner<'umem>>,
     fill_queue: SmolFillQueue<'umem>,

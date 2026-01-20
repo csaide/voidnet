@@ -12,9 +12,7 @@ use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketRx};
 
 use super::SmolFd;
 
-/// A socket receiver designed to work on the [Smol] runtime.
-///
-/// [Smol]: smol
+/// A socket receiver designed to work on the [Smol](https://docs.rs/smol/latest/smol/) runtime.
 pub struct SmolSocketRx<'umem> {
     inner: SocketRx<'umem>,
     async_fd: Arc<Async<SmolFd>>,

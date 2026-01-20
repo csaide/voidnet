@@ -10,9 +10,7 @@ use crate::xdp::{
 
 use super::{SmolFd, SmolRecvFuture, SmolSendFuture, SmolSocketRx, SmolSocketTx};
 
-/// A socket designed to work on the [Smol] runtime.
-///
-/// [Smol]: smol
+/// A socket designed to work on the [Smol](https://docs.rs/smol/latest/smol/) runtime.
 pub struct SmolSocket<'umem> {
     owner: Arc<SocketOwner<'umem>>,
     rx: SmolSocketRx<'umem>,

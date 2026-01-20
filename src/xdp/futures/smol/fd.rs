@@ -23,7 +23,7 @@ impl AsFd for SmolFd {
 ///
 /// The purpose of this is to cache [Async] file descriptors for the lifetime of the program, this is important
 /// because [Async] file descriptors must be unique and we have multiple components that all need a copy. So we
-/// store a [Arc<Async<SmolFd>>] in a [DashMap] for the lifetime of the program to share across components with t
+/// store a [`Arc<Async<SmolFd>>`] in a [DashMap] for the lifetime of the program to share across components with t
 /// he same fd.
 pub struct SmolFdFactory {
     inner: DashMap<RawFd, Arc<Async<SmolFd>>>,

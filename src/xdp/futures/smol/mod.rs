@@ -1,8 +1,6 @@
 //! Smol executor futures for AF_XDP.
 //!
-//! This module provides futures for the [Smol] runtime, and associated types for working with the XDP subsystem.
-//!
-//! [Smol]: smol
+//! This module provides futures for the [Smol](https://docs.rs/smol/latest/smol/) runtime, and associated types for working with the XDP subsystem.
 
 mod comp;
 mod fd;

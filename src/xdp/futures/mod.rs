@@ -18,7 +18,7 @@ macro_rules! cfg_block {
 cfg_block! {
     #[cfg(feature = "tokio")]
     {
-        mod tokio;
+        pub mod tokio;
 
         pub use tokio::{TokioCompFuture, TokioCompletionQueue};
         pub use tokio::{TokioFillFuture, TokioFillQueue};
@@ -33,7 +33,7 @@ cfg_block! {
 cfg_block! {
     #[cfg(feature = "smol")]
     {
-        mod smol;
+        pub mod smol;
 
         pub use smol::{SmolFd, SmolFdFactory};
         pub use smol::{SmolCompFuture, SmolCompletionQueue};
@@ -48,7 +48,8 @@ cfg_block! {
 cfg_block! {
     #[cfg(feature = "local")]
     {
-        mod local;
+        pub mod local;
+
         pub use local::{LocalCompFuture, LocalCompletionQueue};
         pub use local::{LocalFillFuture, LocalFillQueue};
         pub use local::{LocalRecvFuture, LocalSocketRx};
@@ -56,5 +57,6 @@ cfg_block! {
         pub use local::LocalSocket;
         pub use local::LocalUmem;
         pub use local::LocalExecutor;
+        pub use local::Poller;
     }
 }

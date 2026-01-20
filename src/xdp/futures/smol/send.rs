@@ -12,9 +12,7 @@ use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketTx};
 
 use super::SmolFd;
 
-/// A socket transmitter designed to work on the [Smol] runtime.
-///
-/// [Smol]: smol
+/// A socket transmitter designed to work on the [Smol](https://docs.rs/smol/latest/smol/) runtime.
 pub struct SmolSocketTx<'umem> {
     inner: SocketTx<'umem>,
     async_fd: Arc<Async<SmolFd>>,

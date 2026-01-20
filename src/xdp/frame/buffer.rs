@@ -140,6 +140,7 @@ impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for std::sync::MutexGuard<
     }
 }
 
+#[cfg(feature = "async")]
 impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for futures_util::lock::MutexGuard<'_, B> {
     type Drain<'a>
         = B::Drain<'a>
