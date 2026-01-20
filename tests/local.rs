@@ -46,12 +46,12 @@ fn test_local() {
     // Create UMEM for inner socket (receiver)
     let mut umem_inner = Umem::builder(&mut ctx_inner)
         .num_frames(2048)
-        .build_smol()
+        .build_local()
         .expect("failed to create inner umem");
 
     // Create inner socket and initialize frame buffer
     let mut socket_inner = Socket::builder(&mut ctx_inner, &inner_name, 0)
-        .build_smol(umem_inner.owner().clone())
+        .build_local(umem_inner.owner().clone())
         .expect("failed to create inner socket");
     let mut rx_buffer: BasicFrameBuffer<'_> = umem_inner.init_buffer().unwrap();
     let inner_fd = socket_inner.fd();
@@ -92,7 +92,7 @@ fn test_local() {
     // Create UMEM for outer socket (sender)
     let mut umem_outer = Umem::builder(&mut ctx_outer)
         .num_frames(10)
-        .build_smol()
+        .build_local()
         .expect("failed to create outer umem");
 
     // Initialize frame buffers
@@ -100,7 +100,7 @@ fn test_local() {
 
     // Create sockets
     let mut socket_outer = Socket::builder(&mut ctx_outer, &outer_name, 0)
-        .build_smol(umem_outer.owner().clone())
+        .build_local(umem_outer.owner().clone())
         .expect("failed to create outer socket");
     let outer_fd = socket_outer.fd();
     let outer_task = async move {

@@ -45,18 +45,14 @@ impl LocalExecutor {
 
         pin_mut!(fut);
         loop {
-            let ready = match self.poller.poll(-1) {
-                Ok(events) => events,
-                Err(e) => panic!("Poller poll failed: {}", e),
-            };
-
-            if !ready {
-                continue;
-            }
-
             if let Poll::Ready(output) = fut.as_mut().poll(&mut cx) {
                 return output;
             }
+
+            match self.poller.poll(-1) {
+                Ok(events) => events,
+                Err(e) => panic!("Poller poll failed: {}", e),
+            };
         }
     }
 }
