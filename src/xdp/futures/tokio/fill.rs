@@ -11,19 +11,23 @@ use tokio::io::{Ready, unix::AsyncFd};
 
 use crate::xdp::{error::Result, frame::FrameBuffer, umem::FillQueue};
 
+/// A fill queue designed to work on the [Tokio] runtime.
+///
+/// [Tokio]: tokio
 pub struct TokioFillQueue<'umem> {
     inner: FillQueue<'umem>,
     async_fd: Arc<AsyncFd<RawFd>>,
 }
 
 impl<'umem> TokioFillQueue<'umem> {
-    pub fn new(fill_queue: FillQueue<'umem>, async_fd: Arc<AsyncFd<RawFd>>) -> Self {
+    pub(crate) fn new(fill_queue: FillQueue<'umem>, async_fd: Arc<AsyncFd<RawFd>>) -> Self {
         Self {
             inner: fill_queue,
             async_fd,
         }
     }
 
+    /// Asynchronously processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
     pub fn process_queue<'fd, B: FrameBuffer<'umem>>(
         &mut self,
@@ -52,6 +56,7 @@ impl<'umem> DerefMut for TokioFillQueue<'umem> {
     }
 }
 
+/// A future that asynchronously processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
 pub struct TokioFillFuture<'que, 'umem, 'fd, B: FrameBuffer<'umem>> {
     fill_queue: &'que mut TokioFillQueue<'umem>,
     batch: B,

@@ -32,6 +32,8 @@ pub struct XdpProgram {
     info: XdpInfo,
 }
 
+// SAFETY: Send safe because the only reason its not is because of the included `*mut xdp_program` however this is managed by the kernel, and guaranteed to
+// live until we are dropped.
 unsafe impl Send for XdpProgram {}
 
 impl XdpProgram {

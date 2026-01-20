@@ -16,6 +16,8 @@ pub struct Map {
     name: String,
 }
 
+// SAFETY: Send safe because the only reason its not is because of the included `*mut bpf_map` however this is managed by the kernel
+// and guaranteed to not move until we are dropped by our parent [XdpProgram] which is the true owner of the map.
 unsafe impl Send for Map {}
 
 impl Map {

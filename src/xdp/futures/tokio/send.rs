@@ -11,19 +11,23 @@ use tokio::io::{Ready, unix::AsyncFd};
 
 use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketTx};
 
+/// A socket transmitter designed to work on the [Tokio] runtime.
+///
+/// [Tokio]: tokio
 pub struct TokioSocketTx<'umem> {
     inner: SocketTx<'umem>,
     async_fd: Arc<AsyncFd<RawFd>>,
 }
 
 impl<'umem> TokioSocketTx<'umem> {
-    pub fn new(socket: SocketTx<'umem>, async_fd: Arc<AsyncFd<RawFd>>) -> Self {
+    pub(crate) fn new(socket: SocketTx<'umem>, async_fd: Arc<AsyncFd<RawFd>>) -> Self {
         Self {
             inner: socket,
             async_fd,
         }
     }
 
+    /// Asynchronously sends a batch of frames to the socket.
     #[inline(always)]
     pub fn send<B: FrameBuffer<'umem>>(&mut self, batch: B) -> TokioSendFuture<'_, 'umem, B> {
         TokioSendFuture {
@@ -47,6 +51,7 @@ impl<'umem> DerefMut for TokioSocketTx<'umem> {
     }
 }
 
+/// A future that asynchronously sends a batch of frames to the socket.
 pub struct TokioSendFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
     socket: &'sock mut TokioSocketTx<'umem>,
     batch: B,

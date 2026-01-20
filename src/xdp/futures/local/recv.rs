@@ -6,15 +6,19 @@ use std::{
 
 use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketRx};
 
+/// A socket receiver designed to work on the [LocalExecutor] executor.
+///
+/// [LocalExecutor]: crate::xdp::futures::local::LocalExecutor
 pub struct LocalSocketRx<'umem> {
     inner: SocketRx<'umem>,
 }
 
 impl<'umem> LocalSocketRx<'umem> {
-    pub fn new(socket: SocketRx<'umem>) -> Result<Self> {
+    pub(crate) fn new(socket: SocketRx<'umem>) -> Result<Self> {
         Ok(Self { inner: socket })
     }
 
+    /// Asynchronously receives a batch of frames from the socket.
     #[inline(always)]
     pub fn recv<B: FrameBuffer<'umem>>(&mut self, batch: B) -> LocalRecvFuture<'_, 'umem, B> {
         LocalRecvFuture {
@@ -38,6 +42,7 @@ impl<'umem> DerefMut for LocalSocketRx<'umem> {
     }
 }
 
+/// A future that asynchronously receives a batch of frames from the socket.
 pub struct LocalRecvFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
     pub(crate) socket: &'sock mut LocalSocketRx<'umem>,
     pub(crate) batch: B,

@@ -8,6 +8,9 @@ use crate::xdp::{
 
 use super::{LocalRecvFuture, LocalSendFuture, LocalSocketRx, LocalSocketTx};
 
+/// A socket designed to work on the [LocalExecutor] executor.
+///
+/// [LocalExecutor]: crate::xdp::futures::local::LocalExecutor
 pub struct LocalSocket<'umem> {
     owner: Arc<SocketOwner<'umem>>,
     rx: LocalSocketRx<'umem>,
@@ -15,7 +18,7 @@ pub struct LocalSocket<'umem> {
 }
 
 impl<'umem> LocalSocket<'umem> {
-    pub fn new(
+    pub(crate) fn new(
         owner: Arc<SocketOwner<'umem>>,
         rx: SocketRx<'umem>,
         tx: SocketTx<'umem>,

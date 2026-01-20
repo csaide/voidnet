@@ -1,3 +1,7 @@
+//! XDP program management for AF_XDP.
+//!
+//! This module provides a safe API for managing XDP programs, including creating and attaching them to network interfaces.
+
 mod info;
 mod map;
 mod mode;

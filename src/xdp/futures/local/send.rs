@@ -6,15 +6,19 @@ use std::{
 
 use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketTx};
 
+/// A socket transmitter designed to work on the [LocalExecutor] executor.
+///
+/// [LocalExecutor]: crate::xdp::futures::local::LocalExecutor
 pub struct LocalSocketTx<'umem> {
     inner: SocketTx<'umem>,
 }
 
 impl<'umem> LocalSocketTx<'umem> {
-    pub fn new(socket: SocketTx<'umem>) -> Result<Self> {
+    pub(crate) fn new(socket: SocketTx<'umem>) -> Result<Self> {
         Ok(Self { inner: socket })
     }
 
+    /// Asynchronously sends a batch of frames to the socket.
     #[inline(always)]
     pub fn send<B: FrameBuffer<'umem>>(&mut self, batch: B) -> LocalSendFuture<'_, 'umem, B> {
         LocalSendFuture {
@@ -38,6 +42,7 @@ impl<'umem> DerefMut for LocalSocketTx<'umem> {
     }
 }
 
+/// A future that asynchronously sends a batch of frames to the socket.
 pub struct LocalSendFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
     pub(crate) socket: &'sock mut LocalSocketTx<'umem>,
     pub(crate) batch: B,

@@ -6,12 +6,16 @@ use crate::xdp::{
     program::AttachMode,
 };
 
+/// The mode in which the socket should be bound to the network interface. This is a wrapper around the XDP bind mode enum.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum BindMode {
+    /// The skb mode. This is the mode that is used when the socket is bound to the network interface using the skb API.
     #[default]
     Skb = XDP_FLAGS_SKB_MODE,
+    /// The driver mode. This is the mode that is used when the socket is bound to the network interface using the driver API.
     Driver = XDP_FLAGS_DRV_MODE,
+    /// The hw mode. This is the mode that is used when the socket is bound to the network interface using the hw API.
     Hw = XDP_FLAGS_HW_MODE,
 }
 
@@ -25,11 +29,14 @@ impl From<AttachMode> for BindMode {
     }
 }
 
+/// The mode in which the socket should copy packets to/from the network interface. This is a wrapper around the XDP copy mode enum.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum CopyMode {
+    /// The copy mode. This is the mode that is used when the socket should copy packets to/from the network interface.
     #[default]
     Copy = XDP_COPY,
+    /// The zero copy mode. This is the mode that is used when the socket should use zero copy to share memory with the network interface.
     ZeroCopy = XDP_ZEROCOPY,
 }
 

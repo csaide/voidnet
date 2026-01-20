@@ -1,3 +1,13 @@
+//! AF_XDP bindings for the VoidNet project.
+//!
+//! This module provides a safe API for working with AF_XDP, including creating and managing XDP programs, sockets, and umem.
+//!
+//! This also includes a full set of async runtime integrations:
+//! - [Tokio](https://tokio.rs/) (requires the `tokio` feature)
+//! - [Smol](https://docs.rs/smol/latest/smol/) (requires the `smol` feature)
+//!
+//! As well as purpose built Local runtime integration (requires the `local` feature).
+
 pub mod context;
 pub mod error;
 mod flags;

@@ -6,17 +6,21 @@ use std::{
 
 use crate::xdp::{error::Result, frame::FrameBuffer, umem::CompletionQueue};
 
+/// A completion queue designed to work on the [LocalExecutor] executor.
+///
+/// [LocalExecutor]: crate::xdp::futures::local::LocalExecutor
 pub struct LocalCompletionQueue<'umem> {
     inner: CompletionQueue<'umem>,
 }
 
 impl<'umem> LocalCompletionQueue<'umem> {
-    pub fn new(completion_queue: CompletionQueue<'umem>) -> Result<Self> {
+    pub(crate) fn new(completion_queue: CompletionQueue<'umem>) -> Result<Self> {
         Ok(Self {
             inner: completion_queue,
         })
     }
 
+    /// Asynchronously processes the completion queue, pushing new frames from the frame stack into the completion ring up to the size of the completion ring.
     #[inline(always)]
     pub fn process_queue<'que, B: FrameBuffer<'umem>>(
         &'que mut self,
@@ -43,6 +47,7 @@ impl<'umem> DerefMut for LocalCompletionQueue<'umem> {
     }
 }
 
+/// A future that asynchronously processes the completion queue, pushing new frames from the frame stack into the completion ring up to the size of the completion ring.
 pub struct LocalCompFuture<'que, 'umem, B: FrameBuffer<'umem>> {
     pub(crate) completion_queue: &'que mut LocalCompletionQueue<'umem>,
     pub(crate) batch: B,

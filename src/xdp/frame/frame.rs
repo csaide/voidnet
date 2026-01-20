@@ -9,6 +9,7 @@ pub struct Frame<'umem> {
     is_fragment: bool,
 }
 
+/// SAFETY: Frame is thread safe because it is pointing to a MMAP'd memory region that is guaranteed to be valid for the lifetime of the supplied 'umem lifetime.
 unsafe impl<'umem> Send for Frame<'umem> {}
 
 impl<'umem> Frame<'umem> {

@@ -20,7 +20,6 @@ pub struct FillQueue<'umem> {
 }
 
 impl<'umem> FillQueue<'umem> {
-    /// Creates a new fill queue.
     pub(crate) fn new(ring: Producer<Init>, owner: Arc<UmemOwner<'umem>>, busy_poll: bool) -> Self {
         Self {
             ring,

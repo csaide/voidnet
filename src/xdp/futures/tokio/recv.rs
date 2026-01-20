@@ -11,19 +11,23 @@ use tokio::io::{Ready, unix::AsyncFd};
 
 use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketRx};
 
+/// A socket receiver designed to work on the [Tokio] runtime.
+///
+/// [Tokio]: tokio
 pub struct TokioSocketRx<'umem> {
     inner: SocketRx<'umem>,
     async_fd: Arc<AsyncFd<RawFd>>,
 }
 
 impl<'umem> TokioSocketRx<'umem> {
-    pub fn new(socket: SocketRx<'umem>, async_fd: Arc<AsyncFd<RawFd>>) -> Self {
+    pub(crate) fn new(socket: SocketRx<'umem>, async_fd: Arc<AsyncFd<RawFd>>) -> Self {
         Self {
             inner: socket,
             async_fd,
         }
     }
 
+    /// Asynchronously receives a batch of frames from the socket.
     #[inline(always)]
     pub fn recv<B: FrameBuffer<'umem>>(&mut self, batch: B) -> TokioRecvFuture<'_, 'umem, B> {
         TokioRecvFuture {
@@ -47,6 +51,7 @@ impl<'umem> DerefMut for TokioSocketRx<'umem> {
     }
 }
 
+/// A future that asynchronously receives a batch of frames from the socket.
 pub struct TokioRecvFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
     socket: &'sock mut TokioSocketRx<'umem>,
     batch: B,

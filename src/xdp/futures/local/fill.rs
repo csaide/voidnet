@@ -7,15 +7,19 @@ use std::{
 
 use crate::xdp::{error::Result, frame::FrameBuffer, umem::FillQueue};
 
+/// A fill queue designed to work on the [LocalExecutor] executor.
+///
+/// [LocalExecutor]: crate::xdp::futures::local::LocalExecutor
 pub struct LocalFillQueue<'umem> {
     inner: FillQueue<'umem>,
 }
 
 impl<'umem> LocalFillQueue<'umem> {
-    pub fn new(fill_queue: FillQueue<'umem>) -> Result<Self> {
+    pub(crate) fn new(fill_queue: FillQueue<'umem>) -> Result<Self> {
         Ok(Self { inner: fill_queue })
     }
 
+    /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
     pub fn process_queue<'fd, B: FrameBuffer<'umem>>(
         &mut self,
@@ -44,6 +48,7 @@ impl<'umem> DerefMut for LocalFillQueue<'umem> {
     }
 }
 
+/// A future that asynchronously processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
 pub struct LocalFillFuture<'que, 'umem, 'fd, B: FrameBuffer<'umem>> {
     pub(crate) fill_queue: &'que mut LocalFillQueue<'umem>,
     pub(crate) batch: B,

@@ -1,3 +1,7 @@
+//! Socket management for AF_XDP.
+//!
+//! This module provides a safe API for managing XDP sockets, including creating and binding them to network interfaces.
+
 mod mode;
 mod owner;
 mod rx;

@@ -6,6 +6,16 @@ use crate::xdp::error::Result;
 
 use super::{Poller, waker};
 
+/// A local executor designed to work with XDP sockets specifically, this is NOT a full async runtime, but a purpose built executor to allow for async ergonomics
+/// when the throughput/latency requirements are loose enough.
+///
+/// The idea here is that the executor does not use normal waker semanitcs as these semantics cause significant performance overhead when dealing with cross thread synchronization.
+///
+/// So this polls the given future on the local thread, sleeping on a custom epoll implementation to await for new IO events. These then drive the future to completion. Removing a
+/// significant amount of overhead from the future.
+///
+/// When to use this? You want the lowest possible latency but want to use async/await semantics, and _critically_ you either are bringing your own full async runtime or you don't have other
+/// async work to do.
 pub struct LocalExecutor {
     poller: Poller,
 }

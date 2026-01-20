@@ -13,19 +13,23 @@ use crate::xdp::{error::Result, frame::FrameBuffer, umem::FillQueue};
 
 use super::SmolFd;
 
+/// A fill queue designed to work on the [Smol] runtime.
+///
+/// [Smol]: smol
 pub struct SmolFillQueue<'umem> {
     inner: FillQueue<'umem>,
     async_fd: Arc<Async<SmolFd>>,
 }
 
 impl<'umem> SmolFillQueue<'umem> {
-    pub fn new(fill_queue: FillQueue<'umem>, async_fd: Arc<Async<SmolFd>>) -> Self {
+    pub(crate) fn new(fill_queue: FillQueue<'umem>, async_fd: Arc<Async<SmolFd>>) -> Self {
         Self {
             inner: fill_queue,
             async_fd,
         }
     }
 
+    /// Asynchronously processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
     pub fn process_queue<'fd, B: FrameBuffer<'umem>>(
         &mut self,
@@ -54,6 +58,7 @@ impl<'umem> DerefMut for SmolFillQueue<'umem> {
     }
 }
 
+/// A future that asynchronously processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
 pub struct SmolFillFuture<'que, 'umem, 'fd, B: FrameBuffer<'umem>> {
     fill_queue: &'que mut SmolFillQueue<'umem>,
     batch: B,

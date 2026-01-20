@@ -7,6 +7,9 @@ use crate::xdp::{
     umem::{CompletionQueue, FillQueue, UmemOwner},
 };
 
+/// A UMEM designed to work on the [LocalExecutor] executor.
+///
+/// [LocalExecutor]: crate::xdp::futures::local::LocalExecutor
 pub struct LocalUmem<'umem> {
     owner: Arc<UmemOwner<'umem>>,
     fill_queue: LocalFillQueue<'umem>,
@@ -14,7 +17,7 @@ pub struct LocalUmem<'umem> {
 }
 
 impl<'umem> LocalUmem<'umem> {
-    pub fn new(
+    pub(crate) fn new(
         owner: Arc<UmemOwner<'umem>>,
         fill_queue: FillQueue<'umem>,
         completion_queue: CompletionQueue<'umem>,

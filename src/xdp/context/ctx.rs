@@ -10,6 +10,13 @@ use crate::xdp::{
 /// Embedded XDP BPF program for round-robin packet routing to AF_XDP sockets.
 static XDP_PROG_DATA: &'static [u8] = include_bytes!("../../../bpf/xdp_kern.o");
 
+/// Builder for creating an XdpContext.
+///
+/// # Examples
+///
+/// ```no_run
+/// let ctx = XdpContext::builder("eth0").build();
+/// ```
 pub struct XdpContextBuilder<'name> {
     if_name: &'name str,
     attach_mode: AttachMode,
@@ -68,6 +75,7 @@ pub struct XdpContext {
 }
 
 impl XdpContext {
+    /// Returns a builder for creating an XdpContext.
     pub fn builder(if_name: &str) -> XdpContextBuilder<'_> {
         XdpContextBuilder::new(if_name)
     }

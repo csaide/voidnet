@@ -11,6 +11,9 @@ use crate::xdp::{
     umem::{CompletionQueue, FillQueue, UmemOwner},
 };
 
+/// A UMEM designed to work on the [Tokio] runtime.
+///
+/// [Tokio]: tokio
 pub struct TokioUmem<'umem> {
     owner: Arc<UmemOwner<'umem>>,
     fill_queue: TokioFillQueue<'umem>,
@@ -18,7 +21,7 @@ pub struct TokioUmem<'umem> {
 }
 
 impl<'umem> TokioUmem<'umem> {
-    pub fn new(
+    pub(crate) fn new(
         owner: Arc<UmemOwner<'umem>>,
         fill_queue: FillQueue<'umem>,
         completion_queue: CompletionQueue<'umem>,

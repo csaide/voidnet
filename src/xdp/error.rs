@@ -87,6 +87,7 @@ pub fn get_xdp_error_message(err: i32) -> String {
     String::from_utf8_lossy(&buf[..nul_pos]).to_string()
 }
 
+/// A helper function to get the error message from the XDP subsystem, this is used to simplify the error handling code.
 #[cfg(target_arch = "x86_64")]
 pub fn get_xdp_error_message(err: i32) -> String {
     let mut buf = [0i8; 1024];

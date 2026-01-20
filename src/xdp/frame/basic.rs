@@ -8,6 +8,7 @@ use std::{
 
 use super::{Frame, FrameBuffer};
 
+/// A basic frame buffer implementation that uses a `VecDeque` to store frames.
 pub struct BasicFrameBuffer<'umem> {
     frames: VecDeque<Frame<'umem>>,
     free_space: usize,
@@ -15,6 +16,7 @@ pub struct BasicFrameBuffer<'umem> {
 }
 
 impl<'umem> BasicFrameBuffer<'umem> {
+    /// Creates a new `BasicFrameBuffer` with the given number of frames.
     pub fn new(num_frames: usize) -> Self {
         Self {
             frames: VecDeque::with_capacity(num_frames),
@@ -23,6 +25,7 @@ impl<'umem> BasicFrameBuffer<'umem> {
         }
     }
 
+    /// Drains a range of frames from the buffer and returns them as an iterator.
     pub fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> Drain<'_, Frame<'umem>> {
         let drained = self.frames.drain(range);
         self.free_space += drained.len();

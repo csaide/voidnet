@@ -12,19 +12,26 @@ use crate::xdp::{error::Result, frame::FrameBuffer, umem::CompletionQueue};
 
 use super::SmolFd;
 
+/// A completion queue designed to work on the [Smol] runtime.
+///
+/// [Smol]: smol
 pub struct SmolCompletionQueue<'umem> {
     inner: CompletionQueue<'umem>,
     async_fd: Arc<Async<SmolFd>>,
 }
 
 impl<'umem> SmolCompletionQueue<'umem> {
-    pub fn new(completion_queue: CompletionQueue<'umem>, async_fd: Arc<Async<SmolFd>>) -> Self {
+    pub(crate) fn new(
+        completion_queue: CompletionQueue<'umem>,
+        async_fd: Arc<Async<SmolFd>>,
+    ) -> Self {
         Self {
             inner: completion_queue,
             async_fd,
         }
     }
 
+    /// Asynchronously processes the completion queue, pushing new frames from the frame stack into the completion ring up to the size of the completion ring.
     #[inline(always)]
     pub fn process_queue<'que, B: FrameBuffer<'umem>>(
         &'que mut self,
@@ -51,6 +58,7 @@ impl<'umem> DerefMut for SmolCompletionQueue<'umem> {
     }
 }
 
+/// A future that asynchronously processes the completion queue, pushing new frames from the frame stack into the completion ring up to the size of the completion ring.
 pub struct SmolCompFuture<'que, 'umem, B: FrameBuffer<'umem>> {
     completion_queue: &'que mut SmolCompletionQueue<'umem>,
     batch: B,

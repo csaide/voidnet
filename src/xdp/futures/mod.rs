@@ -1,3 +1,11 @@
+//! Futures for AF_XDP.
+//!
+//! This module provides futures for the [Tokio] (feature: `tokio`), [Smol] (feature: `smol`), and [Local] (feature: `local`) runtimes, and associated types for working with the XDP subsystem.
+//!
+//! [Tokio]: tokio
+//! [Smol]: smol
+//! [Local]: local
+
 macro_rules! cfg_block {
     (#[$meta:meta] { $($item:item)* }) => {
         $(

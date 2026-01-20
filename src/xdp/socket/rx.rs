@@ -11,21 +11,24 @@ use crate::xdp::{
 
 use super::SocketOwner;
 
+/// A socket receiver for reading packets from an XDP socket.
 pub struct SocketRx<'umem> {
     socket: Arc<SocketOwner<'umem>>,
     ring: Consumer<Init>,
 }
 
 impl<'umem> SocketRx<'umem> {
-    pub fn new(socket: Arc<SocketOwner<'umem>>, ring: Consumer<Init>) -> Self {
+    pub(crate) fn new(socket: Arc<SocketOwner<'umem>>, ring: Consumer<Init>) -> Self {
         Self { socket, ring }
     }
 
+    /// Returns the file descriptor of the socket.
     #[inline(always)]
     pub fn fd(&self) -> i32 {
         self.socket.fd()
     }
 
+    /// Receives a batch of frames from the socket.
     #[inline(always)]
     pub fn recv<B: FrameBuffer<'umem>>(&mut self, mut batch: B) -> NonBlocking<u32> {
         // Take at least 1 frame up to the number of free slots in the batch.

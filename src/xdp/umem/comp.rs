@@ -16,7 +16,6 @@ pub struct CompletionQueue<'umem> {
 }
 
 impl<'umem> CompletionQueue<'umem> {
-    /// Creates a new completion queue.
     pub(crate) fn new(ring: Consumer<Init>, owner: Arc<UmemOwner<'umem>>) -> Self {
         Self { ring, owner }
     }

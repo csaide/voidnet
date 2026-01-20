@@ -10,6 +10,9 @@ use crate::xdp::{
 
 use super::{SmolFd, SmolRecvFuture, SmolSendFuture, SmolSocketRx, SmolSocketTx};
 
+/// A socket designed to work on the [Smol] runtime.
+///
+/// [Smol]: smol
 pub struct SmolSocket<'umem> {
     owner: Arc<SocketOwner<'umem>>,
     rx: SmolSocketRx<'umem>,
@@ -19,7 +22,7 @@ pub struct SmolSocket<'umem> {
 unsafe impl<'umem> Send for SmolSocket<'umem> {}
 
 impl<'umem> SmolSocket<'umem> {
-    pub fn new(
+    pub(crate) fn new(
         owner: Arc<SocketOwner<'umem>>,
         rx: SocketRx<'umem>,
         tx: SocketTx<'umem>,

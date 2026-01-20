@@ -11,19 +11,26 @@ use tokio::io::{Ready, unix::AsyncFd};
 
 use crate::xdp::{error::Result, frame::FrameBuffer, umem::CompletionQueue};
 
+/// A completion queue designed to work on the [Tokio] runtime.
+///
+/// [Tokio]: tokio
 pub struct TokioCompletionQueue<'umem> {
     inner: CompletionQueue<'umem>,
     async_fd: Arc<AsyncFd<RawFd>>,
 }
 
 impl<'umem> TokioCompletionQueue<'umem> {
-    pub fn new(completion_queue: CompletionQueue<'umem>, async_fd: Arc<AsyncFd<RawFd>>) -> Self {
+    pub(crate) fn new(
+        completion_queue: CompletionQueue<'umem>,
+        async_fd: Arc<AsyncFd<RawFd>>,
+    ) -> Self {
         Self {
             inner: completion_queue,
             async_fd,
         }
     }
 
+    /// Asynchronously processes the completion queue, pushing new frames from the frame stack into the completion ring up to the size of the completion ring.
     #[inline(always)]
     pub fn process_queue<'que, B: FrameBuffer<'umem>>(
         &'que mut self,
@@ -50,6 +57,7 @@ impl<'umem> DerefMut for TokioCompletionQueue<'umem> {
     }
 }
 
+/// A future that asynchronously processes the completion queue, pushing new frames from the frame stack into the completion ring up to the size of the completion ring.
 pub struct TokioCompFuture<'que, 'umem, B: FrameBuffer<'umem>> {
     completion_queue: &'que mut TokioCompletionQueue<'umem>,
     batch: B,

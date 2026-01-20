@@ -1,3 +1,9 @@
+//! Tokio executor futures for AF_XDP.
+//!
+//! This module provides futures for the [Tokio] runtime, and associated types for working with the XDP subsystem.
+//!
+//! [Tokio]: tokio
+
 mod comp;
 mod fd;
 mod fill;

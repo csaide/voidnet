@@ -137,6 +137,7 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
         self.build_internal(umem)
     }
 
+    /// Builds the socket as a [TokioSocket].
     #[cfg(feature = "tokio")]
     pub fn build_tokio<'umem>(mut self, umem: Arc<UmemOwner<'umem>>) -> Result<TokioSocket<'umem>> {
         let (owner, rx, tx) = self.build_internal(umem)?.split();
@@ -145,6 +146,7 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
         Ok(TokioSocket::new(owner, rx, tx, async_fd))
     }
 
+    /// Builds the socket as a [LocalSocket].
     #[cfg(feature = "local")]
     pub fn build_local<'umem>(mut self, umem: Arc<UmemOwner<'umem>>) -> Result<LocalSocket<'umem>> {
         let (owner, rx, tx) = self.build_internal(umem)?.split();
@@ -152,6 +154,7 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
         Ok(LocalSocket::new(owner, rx, tx)?)
     }
 
+    /// Builds the socket as a [SmolSocket].
     #[cfg(feature = "smol")]
     pub fn build_smol<'umem>(mut self, umem: Arc<UmemOwner<'umem>>) -> Result<SmolSocket<'umem>> {
         let (owner, rx, tx) = self.build_internal(umem)?.split();
@@ -161,13 +164,12 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
     }
 }
 
+/// A socket for reading and writing packets to an XDP network interface.
 pub struct Socket<'umem> {
     owner: Arc<SocketOwner<'umem>>,
     rx: SocketRx<'umem>,
     tx: SocketTx<'umem>,
 }
-
-// unsafe impl<'umem> Send for Socket<'umem> {}
 
 impl<'umem> Socket<'umem> {
     /// Returns a builder for creating a new socket.

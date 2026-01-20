@@ -10,6 +10,9 @@ use crate::xdp::{
 
 use super::{TokioRecvFuture, TokioSendFuture, TokioSocketRx, TokioSocketTx};
 
+/// A socket designed to work on the [Tokio] runtime.
+///
+/// [Tokio]: tokio
 pub struct TokioSocket<'umem> {
     owner: Arc<SocketOwner<'umem>>,
     rx: TokioSocketRx<'umem>,
@@ -19,7 +22,7 @@ pub struct TokioSocket<'umem> {
 unsafe impl<'umem> Send for TokioSocket<'umem> {}
 
 impl<'umem> TokioSocket<'umem> {
-    pub fn new(
+    pub(crate) fn new(
         owner: Arc<SocketOwner<'umem>>,
         rx: SocketRx<'umem>,
         tx: SocketTx<'umem>,

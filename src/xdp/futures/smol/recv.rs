@@ -12,19 +12,23 @@ use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketRx};
 
 use super::SmolFd;
 
+/// A socket receiver designed to work on the [Smol] runtime.
+///
+/// [Smol]: smol
 pub struct SmolSocketRx<'umem> {
     inner: SocketRx<'umem>,
     async_fd: Arc<Async<SmolFd>>,
 }
 
 impl<'umem> SmolSocketRx<'umem> {
-    pub fn new(socket: SocketRx<'umem>, async_fd: Arc<Async<SmolFd>>) -> Self {
+    pub(crate) fn new(socket: SocketRx<'umem>, async_fd: Arc<Async<SmolFd>>) -> Self {
         Self {
             inner: socket,
             async_fd,
         }
     }
 
+    /// Asynchronously receives a batch of frames from the socket.
     #[inline(always)]
     pub fn recv<B: FrameBuffer<'umem>>(&mut self, batch: B) -> SmolRecvFuture<'_, 'umem, B> {
         SmolRecvFuture {
@@ -48,6 +52,7 @@ impl<'umem> DerefMut for SmolSocketRx<'umem> {
     }
 }
 
+/// A future that asynchronously receives a batch of frames from the socket.
 pub struct SmolRecvFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
     socket: &'sock mut SmolSocketRx<'umem>,
     batch: B,

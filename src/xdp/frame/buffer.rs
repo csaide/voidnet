@@ -1,5 +1,6 @@
 use super::Frame;
 
+/// A trait that defines the interface for a frame buffer, this is the main mechanism for sharing and managing frame's between the kernel and userspace.
 pub trait FrameBuffer<'umem> {
     /// A consuming iterator that yields frames, it should remove the frames from the buffer and pass ownership of them to the caller.
     type Drain<'a>: Iterator<Item = Frame<'umem>> + ExactSizeIterator

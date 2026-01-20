@@ -11,6 +11,7 @@ use crate::xdp::{
 
 use super::SocketOwner;
 
+/// A socket transmitter for writing packets to an XDP socket.
 pub struct SocketTx<'umem> {
     socket: Arc<SocketOwner<'umem>>,
     ring: Producer<Init>,
@@ -18,7 +19,11 @@ pub struct SocketTx<'umem> {
 }
 
 impl<'umem> SocketTx<'umem> {
-    pub fn new(socket: Arc<SocketOwner<'umem>>, ring: Producer<Init>, busy_poll: bool) -> Self {
+    pub(crate) fn new(
+        socket: Arc<SocketOwner<'umem>>,
+        ring: Producer<Init>,
+        busy_poll: bool,
+    ) -> Self {
         Self {
             socket,
             ring,
@@ -26,11 +31,14 @@ impl<'umem> SocketTx<'umem> {
         }
     }
 
+    /// Returns the file descriptor of the socket.
     #[inline(always)]
     pub fn fd(&self) -> i32 {
         self.socket.fd()
     }
 
+    /// Possibly wakes the tx queue, so the kernel continues to process outgoing packets. This first checks if either busy poll is enabled or the ring needs a wakeup, before
+    /// executing a sendto system call. This will kick the TX processing in the kernel to activate.
     #[inline(always)]
     pub fn maybe_wake(&self) -> Result<()> {
         if self.busy_poll || self.ring.needs_wakeup() {
@@ -48,6 +56,7 @@ impl<'umem> SocketTx<'umem> {
         Ok(())
     }
 
+    /// Sends a batch of frames to the socket.
     #[inline(always)]
     pub fn send<B: FrameBuffer<'umem>>(&mut self, mut frames: B) -> NonBlocking<u32> {
         // Take exactly the number of frames we need to send.

@@ -12,19 +12,23 @@ use crate::xdp::{error::Result, frame::FrameBuffer, socket::SocketTx};
 
 use super::SmolFd;
 
+/// A socket transmitter designed to work on the [Smol] runtime.
+///
+/// [Smol]: smol
 pub struct SmolSocketTx<'umem> {
     inner: SocketTx<'umem>,
     async_fd: Arc<Async<SmolFd>>,
 }
 
 impl<'umem> SmolSocketTx<'umem> {
-    pub fn new(socket: SocketTx<'umem>, async_fd: Arc<Async<SmolFd>>) -> Self {
+    pub(crate) fn new(socket: SocketTx<'umem>, async_fd: Arc<Async<SmolFd>>) -> Self {
         Self {
             inner: socket,
             async_fd,
         }
     }
 
+    /// Asynchronously sends a batch of frames to the socket.
     #[inline(always)]
     pub fn send<B: FrameBuffer<'umem>>(&mut self, batch: B) -> SmolSendFuture<'_, 'umem, B> {
         SmolSendFuture {
@@ -48,6 +52,7 @@ impl<'umem> DerefMut for SmolSocketTx<'umem> {
     }
 }
 
+/// A future that asynchronously sends a batch of frames to the socket.
 pub struct SmolSendFuture<'sock, 'umem, B: FrameBuffer<'umem>> {
     socket: &'sock mut SmolSocketTx<'umem>,
     batch: B,
