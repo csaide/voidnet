@@ -15,6 +15,7 @@ static XDP_PROG_DATA: &'static [u8] = include_bytes!("../../../bpf/xdp_kern.o");
 /// # Examples
 ///
 /// ```no_run
+/// use libvoid::xdp::context::XdpContext;
 /// let ctx = XdpContext::builder("eth0").build();
 /// ```
 pub struct XdpContextBuilder<'name> {

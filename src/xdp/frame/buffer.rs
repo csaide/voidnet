@@ -293,6 +293,7 @@ mod tests {
         test_buffer_logic(guard, &mut data);
     }
 
+    #[cfg(feature = "async")]
     #[test]
     fn test_futures_mutex_wrapper() {
         let mock = futures_util::lock::Mutex::new(MockFrameBuffer::new(10));

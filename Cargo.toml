@@ -49,3 +49,67 @@ path = "src/lib.rs"
 test = true
 bench = true
 doctest = true
+
+[[test]]
+name = "sync"
+path = "tests/sync.rs"
+
+[[test]]
+name = "local"
+path = "tests/local.rs"
+required-features = ["local"]
+
+[[test]]
+name = "smol"
+path = "tests/smol.rs"
+required-features = ["smol"]
+
+[[test]]
+name = "tokio"
+path = "tests/tokio.rs"
+required-features = ["tokio"]
+
+[[example]]
+name = "info"
+path = "examples/info.rs"
+
+[[example]]
+name = "local-rx"
+path = "examples/local-rx.rs"
+required-features = ["local"]
+
+[[example]]
+name = "smol-rx"
+path = "examples/smol-rx.rs"
+required-features = ["smol"]
+
+[[example]]
+name = "sync-rx-ms"
+path = "examples/sync-rx-ms.rs"
+
+[[example]]
+name = "sync-rx"
+path = "examples/sync-rx.rs"
+
+[[example]]
+name = "sync-tx-ms"
+path = "examples/sync-tx-ms.rs"
+
+[[example]]
+name = "sync-tx"
+path = "examples/sync-tx.rs"
+
+[[example]]
+name = "tokio-rx-ms"
+path = "examples/tokio-rx-ms.rs"
+required-features = ["tokio"]
+
+[[example]]
+name = "tokio-rx"
+path = "examples/tokio-rx.rs"
+required-features = ["tokio"]
+
+[[example]]
+name = "tokio-tx"
+path = "examples/tokio-tx.rs"
+required-features = ["tokio"]
