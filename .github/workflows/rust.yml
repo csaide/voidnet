@@ -10,7 +10,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  coverage:
+    name: Coverage
     runs-on: ubuntu-24.04
     steps:
     - name: Cache
@@ -40,3 +41,53 @@ jobs:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: codecov.json
         fail_ci_if_error: true
+  test:
+    name: Units
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libbpf-dev libelf-dev libpcap-dev libmnl-dev linux-headers-$(uname -r)
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
+    - uses: actions/checkout@v5
+      with:
+        submodules: recursive
+    - name: Compile
+      run: cargo test --all-features --workspace
+  build:
+    name: Build/Compile
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libbpf-dev libelf-dev libpcap-dev libmnl-dev linux-headers-$(uname -r)
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
+    - uses: actions/checkout@v5
+      with:
+        submodules: recursive
+    - name: Compile
+      run: cargo build --all-features --workspace
