@@ -23,7 +23,7 @@ jobs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
           target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
     - name: Install dependencies
       run: |
         sudo apt-get update
@@ -41,31 +41,6 @@ jobs:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: codecov.json
         fail_ci_if_error: true
-  test:
-    name: Units
-    runs-on: ubuntu-24.04
-    steps:
-    - name: Cache
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libbpf-dev libelf-dev libpcap-dev libmnl-dev linux-headers-$(uname -r)
-    - name: Install cargo-llvm-cov
-      uses: taiki-e/install-action@cargo-llvm-cov
-    - uses: actions/checkout@v5
-      with:
-        submodules: recursive
-    - name: Run tests
-      run: cargo test --all-features --workspace
   build:
     name: Build/Compile
     runs-on: ubuntu-24.04
@@ -79,7 +54,7 @@ jobs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
           target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-compile-${{ hashFiles('**/Cargo.lock') }}
     - name: Install dependencies
       run: |
         sudo apt-get update
