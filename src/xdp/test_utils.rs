@@ -20,6 +20,7 @@
 use std::{
     io,
     net::{Ipv4Addr, Ipv6Addr},
+    path::Path,
     process::{Command, Output},
     sync::atomic::{AtomicU32, Ordering},
 };
@@ -190,6 +191,23 @@ impl TestVethPair {
         let inner_name = format!("{}{}i", VETH_PREFIX, pair_id);
         let addresses = VethAddresses::for_pair(pair_id);
 
+        // Check if /usr/sbin/ip is available.
+        if !Path::new("/usr/sbin/ip").exists() {
+            return Err(TestEnvError::CommandExecution {
+                cmd: "/usr/sbin/ip".to_string(),
+                source: io::Error::new(io::ErrorKind::NotFound, "command not found"),
+            });
+        }
+
+        // Check if /usr/sbin/ethtool is available.
+        if !Path::new("/usr/sbin/ethtool").exists() {
+            return Err(TestEnvError::CommandExecution {
+                cmd: "/usr/sbin/ethtool".to_string(),
+                source: io::Error::new(io::ErrorKind::NotFound, "command not found"),
+            });
+        }
+
+        // Delete the existing veth pair if it exists, ignore errors.
         let _ = run_cmd(&["/usr/sbin/ip", "link", "del", "dev", &outer_name]);
 
         // Create the veth pair
@@ -293,6 +311,39 @@ impl TestVethPair {
             cleanup(&outer_name);
             return Err(TestEnvError::ConfigureInterface(format!(
                 "failed to add IPv4 to {}: {}",
+                inner_name, e
+            )));
+        }
+
+        // Disable VLAN offloading
+        if let Err(e) = run_cmd(&[
+            "/usr/sbin/ethtool",
+            "-K",
+            &outer_name,
+            "rxvlan",
+            "off",
+            "txvlan",
+            "off",
+        ]) {
+            cleanup(&outer_name);
+            return Err(TestEnvError::ConfigureInterface(format!(
+                "failed to disable VLAN offloading on {}: {}",
+                outer_name, e
+            )));
+        }
+
+        if let Err(e) = run_cmd(&[
+            "/usr/sbin/ethtool",
+            "-K",
+            &inner_name,
+            "rxvlan",
+            "off",
+            "txvlan",
+            "off",
+        ]) {
+            cleanup(&outer_name);
+            return Err(TestEnvError::ConfigureInterface(format!(
+                "failed to disable VLAN offloading on {}: {}",
                 inner_name, e
             )));
         }
