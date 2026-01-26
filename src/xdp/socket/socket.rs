@@ -28,9 +28,8 @@ use crate::xdp::futures::TokioSocket;
 use super::{SocketOwner, SocketRx, SocketTx};
 
 /// Builder for creating a new socket.
-pub struct SocketBuilder<'a, 'b> {
-    ctx: &'b mut XdpContext,
-    if_name: &'a str,
+pub struct SocketBuilder<'if_name> {
+    if_name: &'if_name str,
     queue: u32,
     rx_ring_size: u32,
     tx_ring_size: u32,
@@ -41,10 +40,9 @@ pub struct SocketBuilder<'a, 'b> {
     enable_fragmentation: bool,
 }
 
-impl<'a, 'b> SocketBuilder<'a, 'b> {
-    fn new(ctx: &'b mut XdpContext, if_name: &'a str, queue: u32) -> Self {
+impl<'if_name> SocketBuilder<'if_name> {
+    pub(crate) fn new(if_name: &'if_name str, queue: u32) -> Self {
         Self {
-            ctx,
             if_name,
             queue,
             rx_ring_size: XSK_RING_CONS__DEFAULT_NUM_DESCS,
@@ -105,17 +103,22 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
         self
     }
 
-    fn build_internal<'umem>(&mut self, umem: Arc<UmemOwner<'umem>>) -> Result<Socket<'umem>> {
-        let info = self.ctx.info();
+    fn build_internal<'umem>(
+        &mut self,
+        ctx: &mut XdpContext,
+        umem: Arc<UmemOwner<'umem>>,
+    ) -> Result<Socket<'umem>> {
+        let info = ctx.info();
         if !info.fragmentation_support() && self.enable_fragmentation {
             return Err(Error::FragmentationNotSupported);
         }
         if !info.xsk_zero_copy_support() && self.copy_mode == CopyMode::ZeroCopy {
             return Err(Error::ZeroCopyNotSupported);
         }
+        let attach_mode = ctx.attach_mode().into();
 
         Socket::new(
-            self.ctx,
+            ctx,
             self.if_name,
             self.queue,
             umem,
@@ -124,7 +127,7 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
             self.busy_poll,
             self.busy_poll_batch_size,
             self.busy_poll_timeout_us,
-            self.ctx.attach_mode().into(),
+            attach_mode,
             self.copy_mode,
             self.enable_fragmentation,
         )
@@ -133,32 +136,48 @@ impl<'a, 'b> SocketBuilder<'a, 'b> {
     /// Builds the socket taking shared ownership of the Umem, allowing for multiple sockets on a single Device/Queue pair.
     ///
     /// Note: This will likely not get you more throughput or lower latency than a single socket, but it is useful for certain heavy loads where you need to offload packet processing onto different threads. Almost always prefer a single socket to a single Umem.
-    pub fn build<'umem>(mut self, umem: Arc<UmemOwner<'umem>>) -> Result<Socket<'umem>> {
-        self.build_internal(umem)
+    pub fn build<'umem>(
+        mut self,
+        ctx: &mut XdpContext,
+        umem: Arc<UmemOwner<'umem>>,
+    ) -> Result<Socket<'umem>> {
+        self.build_internal(ctx, umem)
     }
 
     /// Builds the socket as a [TokioSocket].
     #[cfg(feature = "tokio")]
-    pub fn build_tokio<'umem>(mut self, umem: Arc<UmemOwner<'umem>>) -> Result<TokioSocket<'umem>> {
-        let (owner, rx, tx) = self.build_internal(umem)?.split();
-        let async_fd = self.ctx.get_tokio_fd(owner.fd())?;
+    pub fn build_tokio<'umem>(
+        mut self,
+        ctx: &mut XdpContext,
+        umem: Arc<UmemOwner<'umem>>,
+    ) -> Result<TokioSocket<'umem>> {
+        let (owner, rx, tx) = self.build_internal(ctx, umem)?.split();
+        let async_fd = ctx.get_tokio_fd(owner.fd())?;
 
         Ok(TokioSocket::new(owner, rx, tx, async_fd))
     }
 
     /// Builds the socket as a [LocalSocket].
     #[cfg(feature = "local")]
-    pub fn build_local<'umem>(mut self, umem: Arc<UmemOwner<'umem>>) -> Result<LocalSocket<'umem>> {
-        let (owner, rx, tx) = self.build_internal(umem)?.split();
+    pub fn build_local<'umem>(
+        mut self,
+        ctx: &mut XdpContext,
+        umem: Arc<UmemOwner<'umem>>,
+    ) -> Result<LocalSocket<'umem>> {
+        let (owner, rx, tx) = self.build_internal(ctx, umem)?.split();
 
         Ok(LocalSocket::new(owner, rx, tx)?)
     }
 
     /// Builds the socket as a [SmolSocket].
     #[cfg(feature = "smol")]
-    pub fn build_smol<'umem>(mut self, umem: Arc<UmemOwner<'umem>>) -> Result<SmolSocket<'umem>> {
-        let (owner, rx, tx) = self.build_internal(umem)?.split();
-        let async_fd = self.ctx.get_smol_fd(owner.fd())?;
+    pub fn build_smol<'umem>(
+        mut self,
+        ctx: &mut XdpContext,
+        umem: Arc<UmemOwner<'umem>>,
+    ) -> Result<SmolSocket<'umem>> {
+        let (owner, rx, tx) = self.build_internal(ctx, umem)?.split();
+        let async_fd = ctx.get_smol_fd(owner.fd())?;
 
         Ok(SmolSocket::new(owner, rx, tx, async_fd))
     }
@@ -173,12 +192,8 @@ pub struct Socket<'umem> {
 
 impl<'umem> Socket<'umem> {
     /// Returns a builder for creating a new socket.
-    pub fn builder<'a, 'b>(
-        xdp_ctx: &'b mut XdpContext,
-        if_name: &'a str,
-        queue: u32,
-    ) -> SocketBuilder<'a, 'b> {
-        SocketBuilder::new(xdp_ctx, if_name, queue)
+    pub fn builder<'if_name>(if_name: &'if_name str, queue: u32) -> SocketBuilder<'if_name> {
+        SocketBuilder::new(if_name, queue)
     }
 
     fn new(
@@ -386,7 +401,7 @@ mod tests {
             .expect("failed to create inner context");
 
         // Create UMEM for outer socket (sender)
-        let (umem_outer, _fq_outer, mut cq_outer) = Umem::builder(&mut ctx_outer)
+        let (umem_outer, _fq_outer, mut cq_outer) = Umem::builder()
             .num_frames(64)
             .frame_size(4096)
             .fill_ring_size(32)
@@ -396,7 +411,7 @@ mod tests {
             .split();
 
         // Create UMEM for inner socket (receiver)
-        let (umem_inner, mut fq_inner, _cq_inner) = Umem::builder(&mut ctx_inner)
+        let (umem_inner, mut fq_inner, _cq_inner) = Umem::builder()
             .num_frames(64)
             .frame_size(4096)
             .fill_ring_size(32)
@@ -410,12 +425,12 @@ mod tests {
         let mut rx_buffer: BasicFrameBuffer<'_> = umem_inner.init_buffer().unwrap();
 
         // Create sockets
-        let mut socket_outer = Socket::builder(&mut ctx_outer, veth.outer_name(), 0)
-            .build(umem_outer.clone())
+        let mut socket_outer = Socket::builder(veth.outer_name(), 0)
+            .build(&mut ctx_outer, umem_outer.clone())
             .expect("failed to create outer socket");
 
-        let mut socket_inner = Socket::builder(&mut ctx_inner, veth.inner_name(), 0)
-            .build(umem_inner.clone())
+        let mut socket_inner = Socket::builder(veth.inner_name(), 0)
+            .build(&mut ctx_inner, umem_inner.clone())
             .expect("failed to create inner socket");
 
         // Prime the receiver's fill queue so it can receive packets
@@ -506,7 +521,7 @@ mod tests {
             .build()
             .expect("failed to create context");
 
-        let (umem, _fq, _cq) = Umem::builder(&mut ctx)
+        let (umem, _fq, _cq) = Umem::builder()
             .num_frames(16)
             .frame_size(4096)
             .fill_ring_size(8)
@@ -515,10 +530,10 @@ mod tests {
             .expect("failed to create umem")
             .split();
 
-        let socket = Socket::builder(&mut ctx, veth.outer_name(), 0)
+        let socket = Socket::builder(veth.outer_name(), 0)
             .rx_ring_size(8)
             .tx_ring_size(8)
-            .build(umem)
+            .build(&mut ctx, umem)
             .expect("failed to create socket");
 
         // Socket should have valid fd
@@ -539,7 +554,7 @@ mod tests {
             .build()
             .expect("failed to create context");
 
-        let (umem, _fq, _cq) = Umem::builder(&mut ctx)
+        let (umem, _fq, _cq) = Umem::builder()
             .num_frames(16)
             .frame_size(4096)
             .fill_ring_size(8)
@@ -548,8 +563,8 @@ mod tests {
             .expect("failed to create umem")
             .split();
 
-        let socket = Socket::builder(&mut ctx, veth.outer_name(), 0)
-            .build(umem)
+        let socket = Socket::builder(veth.outer_name(), 0)
+            .build(&mut ctx, umem)
             .expect("failed to create socket");
 
         let original_fd = socket.fd();
@@ -570,7 +585,7 @@ mod tests {
             .build()
             .expect("failed to create context");
 
-        let (umem, mut fq, _cq) = Umem::builder(&mut ctx)
+        let (umem, mut fq, _cq) = Umem::builder()
             .num_frames(16)
             .frame_size(4096)
             .fill_ring_size(8)
@@ -581,8 +596,8 @@ mod tests {
 
         let mut buffer: BasicFrameBuffer<'_> = umem.init_buffer().unwrap();
 
-        let mut socket = Socket::builder(&mut ctx, veth.outer_name(), 0)
-            .build(umem)
+        let mut socket = Socket::builder(veth.outer_name(), 0)
+            .build(&mut ctx, umem)
             .expect("failed to create socket");
 
         // Prime fill queue
@@ -615,7 +630,7 @@ mod tests {
             .expect("failed to create context");
 
         // Create socket with tiny TX ring
-        let (umem, _fq, _cq) = Umem::builder(&mut ctx)
+        let (umem, _fq, _cq) = Umem::builder()
             .num_frames(8)
             .frame_size(4096)
             .fill_ring_size(4)
@@ -626,9 +641,9 @@ mod tests {
 
         let mut buffer: BasicFrameBuffer<'_> = umem.init_buffer().unwrap();
 
-        let mut socket = Socket::builder(&mut ctx, veth.outer_name(), 0)
+        let mut socket = Socket::builder(veth.outer_name(), 0)
             .tx_ring_size(4)
-            .build(umem)
+            .build(&mut ctx, umem)
             .expect("failed to create socket");
 
         // Fill the TX ring completely

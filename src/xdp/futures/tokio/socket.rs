@@ -114,22 +114,22 @@ mod tests {
             .expect("failed to create inner context");
 
         // Create UMEM for outer socket (sender)
-        let (umem_outer, _fq_outer, mut cq_outer) = Umem::builder(&mut ctx_outer)
+        let (umem_outer, _fq_outer, mut cq_outer) = Umem::builder()
             .num_frames(64)
             .frame_size(4096)
             .fill_ring_size(32)
             .completion_ring_size(32)
-            .build_tokio()
+            .build_tokio(&mut ctx_outer)
             .expect("failed to create outer umem")
             .split();
 
         // Create UMEM for inner socket (receiver)
-        let (umem_inner, mut fq_inner, _cq_inner) = Umem::builder(&mut ctx_inner)
+        let (umem_inner, mut fq_inner, _cq_inner) = Umem::builder()
             .num_frames(64)
             .frame_size(4096)
             .fill_ring_size(32)
             .completion_ring_size(32)
-            .build_tokio()
+            .build_tokio(&mut ctx_inner)
             .expect("failed to create inner umem")
             .split();
 
@@ -138,12 +138,12 @@ mod tests {
         let mut rx_buffer: BasicFrameBuffer<'_> = umem_inner.init_buffer().unwrap();
 
         // Create tokio sockets
-        let mut socket_outer = Socket::builder(&mut ctx_outer, veth.outer_name(), 0)
-            .build_tokio(umem_outer.clone())
+        let mut socket_outer = Socket::builder(veth.outer_name(), 0)
+            .build_tokio(&mut ctx_outer, umem_outer.clone())
             .expect("failed to create outer tokio socket");
 
-        let mut socket_inner = Socket::builder(&mut ctx_inner, veth.inner_name(), 0)
-            .build_tokio(umem_inner.clone())
+        let mut socket_inner = Socket::builder(veth.inner_name(), 0)
+            .build_tokio(&mut ctx_inner, umem_inner.clone())
             .expect("failed to create inner tokio socket");
 
         // Prime the receiver's fill queue so it can receive packets
@@ -223,19 +223,19 @@ mod tests {
             .build()
             .expect("failed to create context");
 
-        let (umem, _fq, _cq) = Umem::builder(&mut ctx)
+        let (umem, _fq, _cq) = Umem::builder()
             .num_frames(16)
             .frame_size(4096)
             .fill_ring_size(8)
             .completion_ring_size(8)
-            .build()
+            .build_tokio(&mut ctx)
             .expect("failed to create umem")
             .split();
 
-        let socket = Socket::builder(&mut ctx, veth.outer_name(), 0)
+        let socket = Socket::builder(veth.outer_name(), 0)
             .rx_ring_size(8)
             .tx_ring_size(8)
-            .build_tokio(umem)
+            .build_tokio(&mut ctx, umem)
             .expect("failed to create tokio socket");
 
         // Socket should have valid fd
@@ -256,17 +256,17 @@ mod tests {
             .build()
             .expect("failed to create context");
 
-        let (umem, _fq, _cq) = Umem::builder(&mut ctx)
+        let (umem, _fq, _cq) = Umem::builder()
             .num_frames(16)
             .frame_size(4096)
             .fill_ring_size(8)
             .completion_ring_size(8)
-            .build()
+            .build_tokio(&mut ctx)
             .expect("failed to create umem")
             .split();
 
-        let socket = Socket::builder(&mut ctx, veth.outer_name(), 0)
-            .build_tokio(umem)
+        let socket = Socket::builder(veth.outer_name(), 0)
+            .build_tokio(&mut ctx, umem)
             .expect("failed to create tokio socket");
 
         let original_fd = socket.fd();

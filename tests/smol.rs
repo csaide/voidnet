@@ -44,14 +44,14 @@ async fn test_smol(exec: &Executor<'_>) {
             .expect("failed to create inner context");
 
         // Create UMEM for inner socket (receiver)
-        let mut umem_inner = Umem::builder(&mut ctx_inner)
+        let mut umem_inner = Umem::builder()
             .num_frames(2048)
-            .build_smol()
+            .build_smol(&mut ctx_inner)
             .expect("failed to create inner umem");
 
         // Create inner socket and initialize frame buffer
-        let mut socket_inner = Socket::builder(&mut ctx_inner, &inner_name, 0)
-            .build_smol(umem_inner.owner().clone())
+        let mut socket_inner = Socket::builder(&inner_name, 0)
+            .build_smol(&mut ctx_inner, umem_inner.owner().clone())
             .expect("failed to create inner socket");
         let mut rx_buffer: BasicFrameBuffer<'_> = umem_inner.init_buffer().unwrap();
 
@@ -92,17 +92,17 @@ async fn test_smol(exec: &Executor<'_>) {
             .expect("failed to create outer context");
 
         // Create UMEM for outer socket (sender)
-        let mut umem_outer = Umem::builder(&mut ctx_outer)
+        let mut umem_outer = Umem::builder()
             .num_frames(10)
-            .build_smol()
+            .build_smol(&mut ctx_outer)
             .expect("failed to create outer umem");
 
         // Initialize frame buffers
         let mut tx_buffer: BasicFrameBuffer<'_> = umem_outer.init_buffer().unwrap();
 
         // Create sockets
-        let mut socket_outer = Socket::builder(&mut ctx_outer, &outer_name, 0)
-            .build_smol(umem_outer.owner().clone())
+        let mut socket_outer = Socket::builder(&outer_name, 0)
+            .build_smol(&mut ctx_outer, umem_outer.owner().clone())
             .expect("failed to create outer socket");
 
         let mut count = 0;

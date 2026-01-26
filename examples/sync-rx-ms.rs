@@ -126,7 +126,7 @@ fn main() {
     // - Owner (umem) > The owner of the UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
-    let mut umem = Umem::builder(&mut xdp_ctx)
+    let mut umem = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -170,14 +170,14 @@ fn main() {
         let batch_size = args.busy_poll_batch_size;
 
         // Create a new socket for each thread, in this case passing in the already created umem instance.
-        let socket = Socket::builder(&mut xdp_ctx, &args.if_name, args.queue)
+        let socket = Socket::builder(&args.if_name, args.queue)
             .rx_ring_size(args.rx_ring_size)
             .tx_ring_size(args.tx_ring_size)
             .busy_poll(args.busy_poll)
             .busy_poll_batch_size(args.busy_poll_batch_size)
             .busy_poll_timeout_us(args.busy_poll_timeout_us)
             .copy_mode(args.copy_mode)
-            .build(umem.owner().clone())
+            .build(&mut xdp_ctx, umem.owner().clone())
             .expect("Failed to create socket");
         socket_fds.push(socket.fd());
 

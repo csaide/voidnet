@@ -11,5 +11,5 @@ mod tx;
 pub use mode::{BindMode, CopyMode};
 pub use owner::SocketOwner;
 pub use rx::SocketRx;
-pub use socket::Socket;
+pub use socket::{Socket, SocketBuilder};
 pub use tx::SocketTx;

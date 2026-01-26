@@ -64,8 +64,8 @@ mod tests {
     }
 
     fn create_cq(num_frames: usize) -> TestContext {
-        let mut ctx = XdpContext::new_no_init().unwrap();
-        let (owner, _fq, cq) = Umem::builder(&mut ctx)
+        let ctx = XdpContext::new_no_init().unwrap();
+        let (owner, _fq, cq) = Umem::builder()
             .num_frames(num_frames)
             .fill_ring_size(num_frames as u32)
             .completion_ring_size(num_frames as u32)

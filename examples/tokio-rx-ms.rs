@@ -133,7 +133,7 @@ async fn main() {
     // - Owner (umem) > The owner of the UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
-    let mut umem = Umem::builder(&mut xdp_ctx)
+    let mut umem = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -141,7 +141,7 @@ async fn main() {
         .num_frames(args.fill_ring_size as usize) // We are benching reads so just set the num frames to the fill ring size.
         .huge_tables(args.huge_tables)
         .unaligned(args.unaligned)
-        .build_tokio()
+        .build_tokio(&mut xdp_ctx)
         .expect("Failed to create umem");
 
     let exit = Arc::new(AtomicBool::new(false));
@@ -173,14 +173,14 @@ async fn main() {
         //
         // This is the main handle for interacting with the network data, if needed this can be split into its owner, rx, and tx
         // components using the split() function.
-        let socket = Socket::builder(&mut xdp_ctx, &args.if_name, args.queue)
+        let socket = Socket::builder(&args.if_name, args.queue)
             .rx_ring_size(args.rx_ring_size)
             .tx_ring_size(args.tx_ring_size)
             .busy_poll(args.busy_poll)
             .busy_poll_batch_size(args.busy_poll_batch_size)
             .busy_poll_timeout_us(args.busy_poll_timeout_us)
             .copy_mode(args.copy_mode)
-            .build_tokio(umem.owner().clone())
+            .build_tokio(&mut xdp_ctx, umem.owner().clone())
             .expect("Failed to create socket");
         socket_fds.push(socket.fd());
 

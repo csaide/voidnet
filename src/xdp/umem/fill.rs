@@ -97,8 +97,8 @@ mod tests {
     }
 
     fn create_fq(num_frames: usize, busy_poll: bool) -> TestContext {
-        let mut ctx = XdpContext::new_no_init().unwrap();
-        let (owner, _fq, _cq) = Umem::builder(&mut ctx)
+        let ctx = XdpContext::new_no_init().unwrap();
+        let (owner, _fq, _cq) = Umem::builder()
             .num_frames(num_frames)
             .fill_ring_size(num_frames as u32)
             .completion_ring_size(num_frames as u32)

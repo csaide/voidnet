@@ -61,7 +61,7 @@ async fn main() {
     // - Owner (umem) > The owner of the UMEM, this is used to create frames and is responsible for cleaning up the UMEM once all is said and done.
     // - Fill Queue (fq) > Used to pass frames from user space to the kernel for reading packet data into.
     // - Completion Queue (cq) > Used to retrieve frames from the kernel after transmission finishes.
-    let mut umem = Umem::builder(&mut xdp_context)
+    let mut umem = Umem::builder()
         .completion_ring_size(args.completion_ring_size)
         .fill_ring_size(args.fill_ring_size)
         .frame_size(args.frame_size)
@@ -69,14 +69,14 @@ async fn main() {
         .num_frames(args.busy_poll_batch_size)
         .huge_tables(args.huge_tables)
         .unaligned(args.unaligned)
-        .build_tokio()
+        .build_tokio(&mut xdp_context)
         .expect("Failed to create umem");
 
     // A socket represents a standard means of reading/writing packets from/to a network interface.
     //
     // This is the main handle for interacting with the network data, if needed this can be split into its owner, rx, and tx
     // components using the split() function.
-    let mut socket = Socket::builder(&mut xdp_context, &args.if_name, args.queue)
+    let mut socket = Socket::builder(&args.if_name, args.queue)
         .rx_ring_size(args.rx_ring_size)
         .tx_ring_size(args.tx_ring_size)
         .busy_poll_batch_size(args.busy_poll_batch_size)
@@ -84,7 +84,7 @@ async fn main() {
         .busy_poll(args.busy_poll)
         .copy_mode(args.copy_mode)
         .enable_fragmentation(args.enable_fragmentation)
-        .build_tokio(umem.owner().clone())
+        .build_tokio(&mut xdp_context, umem.owner().clone())
         .expect("Failed to create socket");
 
     // Always catch SIGINT/SIGTERM to ensure we clean up properly, we have a running XDP program attached to the interface.

@@ -62,6 +62,12 @@ impl<'umem> Frame<'umem> {
         self.is_fragment = is_fragment;
     }
 
+    /// Sets the length of the frame.
+    #[inline]
+    pub unsafe fn set_len(&mut self, len: usize) {
+        self.len = len;
+    }
+
     /// Copies the data from the incoming slice into the frame.
     ///
     /// # Safety

@@ -143,8 +143,8 @@ mod tests {
         num_frames: usize,
         frame_size: usize,
     ) -> (XdpContext, Arc<UmemOwner<'umem>>) {
-        let mut ctx = XdpContext::new_no_init().unwrap();
-        let (owner, _fq, _cq) = Umem::builder(&mut ctx)
+        let ctx = XdpContext::new_no_init().unwrap();
+        let (owner, _fq, _cq) = Umem::builder()
             .num_frames(num_frames)
             .frame_size(frame_size)
             .fill_ring_size(num_frames as u32)
