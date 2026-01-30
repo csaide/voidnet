@@ -97,18 +97,31 @@ impl Stats {
         self.last_bytes_received = bytes_received;
         self.last_time = now;
 
-        println!(
-            "{}Packets: {}M | Fragments: {}M | Bytes: {:.2}GiB | Packet rate: {:.2} Mpps | Fragment rate: {:.2} Mfps | Byte rate: {:.2} Gbps",
-            self.id
-                .map(|id| format!("Worker {} | ", id))
-                .unwrap_or_default(),
-            packets_received / 1_000_000,
-            fragments_received / 1_000_000,
-            bytes_received as f64 / 1024.0 / 1024.0 / 1024.0,
-            packets_per_second / 1_000_000.0,
-            fragments_per_second / 1_000_000.0,
-            bytes_per_second * 8.0 / 1_000_000_000.0
-        );
+        if fragments_received > 0 {
+            println!(
+                "{}Packets: {}M | Fragments: {}M | Bytes: {:.2}GiB | Packet rate: {:.2} Mpps | Fragment rate: {:.2} Mfps | Byte rate: {:.2} Gbps",
+                self.id
+                    .map(|id| format!("Worker {} | ", id))
+                    .unwrap_or_default(),
+                packets_received / 1_000_000,
+                fragments_received / 1_000_000,
+                bytes_received as f64 / 1024.0 / 1024.0 / 1024.0,
+                packets_per_second / 1_000_000.0,
+                fragments_per_second / 1_000_000.0,
+                (bytes_per_second / 1024.0 / 1024.0 / 1024.0) * 8.0
+            );
+        } else {
+            println!(
+                "{}Packets: {}M | Bytes: {:.2}GiB | Packet rate: {:.2} Mpps | Byte rate: {:.2} Gbps",
+                self.id
+                    .map(|id| format!("Worker {} | ", id))
+                    .unwrap_or_default(),
+                packets_received / 1_000_000,
+                bytes_received as f64 / 1024.0 / 1024.0 / 1024.0,
+                packets_per_second / 1_000_000.0,
+                (bytes_per_second / 1024.0 / 1024.0 / 1024.0) * 8.0
+            );
+        }
     }
 }
 
