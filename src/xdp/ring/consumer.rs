@@ -96,12 +96,7 @@ impl Consumer<Init> {
     pub fn nb_avail(&mut self, batch_size: u32) -> u32 {
         let mut entries = self.ring.cached_prod - self.ring.cached_cons;
 
-        // TODO(csaide): This feels like a bug, but I'm not sure if its a bug or just my misunderstanding here.
-        // without this change i.e. checking if entries < batch_size, we end up with _very_ small numbers per batch, generally 1-2.
-        // This feels completely wrong and this works just fine, but I am reaching out to the libxdp authors to confirm.
-        //
-        // if entries == 0 {
-        if entries < batch_size {
+        if entries == 0 {
             self.ring.cached_prod =
                 unsafe { AtomicU32::from_ptr(self.ring.producer) }.load(Ordering::Acquire);
             entries = self.ring.cached_prod - self.ring.cached_cons;
