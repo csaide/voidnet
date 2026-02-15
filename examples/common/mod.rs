@@ -18,7 +18,7 @@ use pnet::{
     },
     util::MacAddr,
 };
-use rand::RngCore;
+use rand::Rng;
 
 pub struct Stats {
     pub id: Option<usize>,
@@ -125,6 +125,7 @@ impl Stats {
     }
 }
 
+#[inline(always)]
 pub fn swap_addresses(frame: &mut [u8]) -> Option<()> {
     let mut ether = MutableEthernetPacket::new(frame)?;
 

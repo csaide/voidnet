@@ -25,7 +25,15 @@ pub struct XdpContextBuilder<'name> {
 }
 
 impl<'name> XdpContextBuilder<'name> {
-    fn new(if_name: &'name str) -> Self {
+    /// Creates a new XdpContextBuilder.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use libvoid::xdp::context::XdpContextBuilder;
+    /// let builder = XdpContextBuilder::new("eth0");
+    /// ```
+    pub fn new(if_name: &'name str) -> Self {
         Self {
             if_name,
             attach_mode: AttachMode::default(),

@@ -30,6 +30,9 @@ pub trait FrameBuffer<'umem> {
     /// Pushes a frame into the buffer, note again that the XDP subsystem will use free_space above to determine how many frames to push this should be infalible in every way.
     fn push(&mut self, frame: Frame<'umem>);
 
+    /// Pops a frame from the buffer.
+    fn pop(&mut self) -> Option<Frame<'umem>>;
+
     /// Drain all frames from the buffer and pass off ownership to the caller, this is used to take the frames and pass them off to the kernel.
     fn take_frames(&mut self) -> Self::Drain<'_>;
 
@@ -72,6 +75,11 @@ impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for &mut B {
     #[inline(always)]
     fn push(&mut self, frame: Frame<'umem>) {
         B::push(self, frame)
+    }
+
+    #[inline(always)]
+    fn pop(&mut self) -> Option<Frame<'umem>> {
+        B::pop(self)
     }
 
     #[inline(always)]
@@ -125,6 +133,11 @@ impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for std::sync::MutexGuard<
     }
 
     #[inline(always)]
+    fn pop(&mut self) -> Option<Frame<'umem>> {
+        B::pop(&mut *self)
+    }
+
+    #[inline(always)]
     fn take_frames(&mut self) -> Self::Drain<'_> {
         B::take_frames(&mut *self)
     }
@@ -173,6 +186,11 @@ impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for futures_util::lock::Mu
     #[inline(always)]
     fn push(&mut self, frame: Frame<'umem>) {
         B::push(&mut *self, frame)
+    }
+
+    #[inline(always)]
+    fn pop(&mut self) -> Option<Frame<'umem>> {
+        B::pop(&mut *self)
     }
 
     #[inline(always)]
@@ -238,6 +256,10 @@ mod tests {
 
         fn push(&mut self, frame: Frame<'umem>) {
             self.frames.push_back(frame);
+        }
+
+        fn pop(&mut self) -> Option<Frame<'umem>> {
+            self.frames.pop_front()
         }
 
         fn take_frames(&mut self) -> Self::Drain<'_> {

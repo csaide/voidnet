@@ -82,7 +82,12 @@ fn worker_thread<'umem>(
 
         // Now we need to give back the frames to the kernel so hand them back to the main umem frame stack,
         // the Umem thread will handle the heavy lifting of submitting them to the fill queue.
-        frame_stack.lock().unwrap().extend(frames.drain(..));
+        {
+            let mut guard = frame_stack.lock().unwrap();
+            for frame in frames.drain(..) {
+                guard.push(frame);
+            }
+        }
 
         stats.maybe_print();
     }
