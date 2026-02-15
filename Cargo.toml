@@ -4,17 +4,22 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-io = { version = "2", default-features = false, optional = true }
+core_affinity = { version = "0.8", default-features = false }
+crossbeam-queue = { version = "0.3", default-features = true }
+crossbeam-utils = { version = "0.8", default-features = true }
 dashmap = { version = "6.1", default-features = false }
 errno = { version = "0.3", default-features = false }
 futures-core = { version = "0.3", default-features = false, optional = true }
 futures-util = { version = "0.3", default-features = false, features = [
     "std",
 ], optional = true }
+getifaddrs = { version = "0.6", default-features = false }
 libc = { version = "0.2", default-features = false }
 libxdp-sys = { version = "=0.2.2", default-features = false } # Latest version of this library has a broken build....
 memmap2 = { version = "0.9", default-features = false }
 neli = { version = "0.7", default-features = false, features = ["sync"] }
-async-io = { version = "2", default-features = false, optional = true }
+smallvec = { version = "1.15", default-features = false }
 thiserror = { version = "2", default-features = false }
 tokio = { version = "1", default-features = false, features = [
     "net",
