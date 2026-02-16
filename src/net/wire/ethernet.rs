@@ -97,3 +97,49 @@ impl EthernetFrame {
         unsafe { &mut *(frame.as_mut_ptr() as *mut Self) }
     }
 }
+
+#[inline]
+pub fn write_ethernet_header(
+    frame: &mut Frame<'_>,
+    dst_mac: MacAddress,
+    src_mac: MacAddress,
+    ether_type: EtherType,
+) {
+    let eth = EthernetFrame::from_frame_mut(frame);
+    eth.dst_mac = dst_mac;
+    eth.src_mac = src_mac;
+    eth.ether_type = ether_type;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mac_address_constructors() {
+        let mac = MacAddress::new([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        assert_eq!(mac.octets, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        assert_eq!(MacAddress::broadcast().octets, [0xFF; 6]);
+        assert_eq!(MacAddress::zero().octets, [0x00; 6]);
+    }
+
+    #[test]
+    fn mac_address_from_conversions() {
+        let mac = MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        assert_eq!(mac.octets, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        let arr: [u8; 6] = mac.into();
+        assert_eq!(arr, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    }
+
+    #[test]
+    fn ether_type_constants() {
+        assert_eq!(EtherTypes::IPv4.octets, [0x08, 0x00]);
+        assert_eq!(EtherTypes::IPv6.octets, [0x86, 0xDD]);
+        assert_eq!(EtherTypes::Arp.octets, [0x08, 0x06]);
+    }
+
+    #[test]
+    fn ethernet_frame_layout() {
+        assert_eq!(size_of::<EthernetFrame>(), 14);
+    }
+}

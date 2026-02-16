@@ -1,13 +1,3 @@
-/// IP protocols.
-#[allow(non_snake_case)]
-#[allow(non_upper_case_globals)]
-pub mod IpProtocols {
-    pub const Icmp: u8 = 1;
-    pub const IcmpV6: u8 = 58;
-    pub const Udp: u8 = 17;
-    pub const Tcp: u8 = 6;
-}
-
 /// An IPv4 address representation.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 #[repr(C, packed)]
@@ -228,6 +218,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ipv4_special_addresses() {
+        assert_eq!(Ipv4Address::loopback().octets, [127, 0, 0, 1]);
+        assert_eq!(Ipv4Address::unspecified().octets, [0; 4]);
+        assert_eq!(Ipv4Address::broadcast().octets, [255; 4]);
+    }
+
+    #[test]
+    fn ipv4_classifiers() {
+        assert!(Ipv4Address::loopback().is_loopback());
+        assert!(Ipv4Address::new([127, 255, 0, 0]).is_loopback());
+        assert!(!Ipv4Address::new([128, 0, 0, 1]).is_loopback());
+
+        assert!(Ipv4Address::unspecified().is_unspecified());
+        assert!(!Ipv4Address::new([0, 0, 0, 1]).is_unspecified());
+
+        assert!(Ipv4Address::broadcast().is_broadcast());
+        assert!(!Ipv4Address::new([255, 255, 255, 0]).is_broadcast());
+
+        // Multicast: 224.0.0.0/4 (first nibble 0xE)
+        assert!(Ipv4Address::new([224, 0, 0, 1]).is_multicast());
+        assert!(Ipv4Address::new([239, 255, 255, 255]).is_multicast());
+        assert!(!Ipv4Address::new([240, 0, 0, 1]).is_multicast());
+        assert!(!Ipv4Address::new([223, 255, 255, 255]).is_multicast());
+    }
+
+    #[test]
+    fn ipv4_from_conversions() {
+        let addr = Ipv4Address::from([10, 0, 0, 1]);
+        assert_eq!(addr.octets, [10, 0, 0, 1]);
+        let arr: [u8; 4] = addr.into();
+        assert_eq!(arr, [10, 0, 0, 1]);
+    }
+
+    #[test]
+    fn ipv6_special_addresses() {
+        let loopback = Ipv6Address::loopback();
+        assert_eq!(loopback.octets[15], 1);
+        assert!(loopback.octets[..15].iter().all(|&b| b == 0));
+
+        let unspec = Ipv6Address::unspecified();
+        assert!(unspec.octets.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn ipv6_classifiers() {
+        assert!(Ipv6Address::loopback().is_loopback());
+        assert!(!Ipv6Address::loopback().is_unspecified());
+        assert!(Ipv6Address::unspecified().is_unspecified());
+        assert!(!Ipv6Address::unspecified().is_loopback());
+
+        // Multicast ff00::/8
+        assert!(
+            Ipv6Address::new([0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]).is_multicast()
+        );
+        assert!(
+            !Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+                .is_multicast()
+        );
+
+        // Link-local fe80::/10
+        assert!(
+            Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+                .is_link_local()
+        );
+        assert!(
+            Ipv6Address::new([0xFE, 0xBF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+                .is_link_local()
+        );
+        // fe_c0 is outside /10
+        assert!(
+            !Ipv6Address::new([0xFE, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+                .is_link_local()
+        );
+        assert!(
+            !Ipv6Address::new([0xFE, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+                .is_link_local()
+        );
+    }
+
+    #[test]
+    fn ipv6_from_conversions() {
+        let octets = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let addr = Ipv6Address::from(octets);
+        assert_eq!(addr.octets, octets);
+        let arr: [u8; 16] = addr.into();
+        assert_eq!(arr, octets);
+    }
+
+    #[test]
     fn solicited_node_multicast_correctness() {
         let addr = Ipv6Address::new([
             0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x12, 0x34, 0x56,
@@ -248,5 +327,16 @@ mod tests {
         let expected =
             super::super::ethernet::MacAddress::new([0x33, 0x33, 0xFF, 0x12, 0x34, 0x56]);
         assert_eq!(mac, expected);
+    }
+
+    #[test]
+    fn ip_address_from_conversions() {
+        let v4 = Ipv4Address::loopback();
+        let ip: IpAddress = v4.into();
+        assert_eq!(ip, IpAddress::V4(Ipv4Address::loopback()));
+
+        let v6 = Ipv6Address::loopback();
+        let ip: IpAddress = v6.into();
+        assert_eq!(ip, IpAddress::V6(Ipv6Address::loopback()));
     }
 }

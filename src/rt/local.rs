@@ -5,8 +5,16 @@ use std::sync::{
 use std::time::Duration;
 
 use crate::net::{
-    EtherTypes, EthernetFrame, IpAddress, Ipv4Handler, Ipv6Handler, MacAddress, NeighborHandler,
-    PmtuCache, UdpHandler, UdpSocket,
+    NeighborHandler, PmtuCache,
+    handler::{
+        ipv4::Ipv4Handler,
+        ipv6::Ipv6Handler,
+        udp::{UdpHandler, UdpSocket},
+    },
+    wire::{
+        ethernet::{EtherTypes, EthernetFrame, MacAddress},
+        ip::IpAddress,
+    },
 };
 use crate::xdp::{
     context::{XdpContext, XdpContextBuilder},

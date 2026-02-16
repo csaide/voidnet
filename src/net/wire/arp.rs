@@ -102,3 +102,21 @@ impl ArpPacket {
         unsafe { &mut *(frame.as_mut_ptr().add(size_of::<EthernetFrame>()) as *mut Self) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arp_constants() {
+        assert_eq!(ArpHardwareTypes::Ethernet.octets, [0x00, 0x01]);
+        assert_eq!(ArpOperations::Request.octets, [0x00, 0x01]);
+        assert_eq!(ArpOperations::Reply.octets, [0x00, 0x02]);
+    }
+
+    #[test]
+    fn arp_packet_layout() {
+        assert_eq!(size_of::<ArpPacket>(), 28);
+        assert_eq!(ARP_FRAME_LEN, 42);
+    }
+}

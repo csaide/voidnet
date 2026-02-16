@@ -1,136 +1,18 @@
 use std::mem::size_of;
 
 use crate::{
-    net::NeighborHandler,
+    net::{NeighborHandler, PmtuCache},
     xdp::frame::{Frame, FrameBuffer},
 };
 
-use super::{
+use super::wire::{
     ethernet::EthernetFrame,
-    ip::{IpProtocols, Ipv6Address},
-    ipv6::{IPV6_HEADER_LEN, Ipv6Header},
-    pmtu::PmtuCache,
+    icmpv6::{
+        ICMPV6_HEADER_LEN, Icmpv6Codes, Icmpv6Types, MAX_ERROR_PAYLOAD, compute_icmpv6_checksum,
+        is_icmpv6_error,
+    },
+    ip::{IPV6_HEADER_LEN, IpProtocols, Ipv6Address, Ipv6Header},
 };
-
-/// ICMPv6 header length in bytes (type + code + checksum + body).
-pub const ICMPV6_HEADER_LEN: usize = 8;
-
-const _: () = assert!(size_of::<Icmpv6Header>() == ICMPV6_HEADER_LEN);
-
-/// Minimum IPv6 MTU per RFC 2460.
-const IPV6_MIN_MTU: usize = 1280;
-
-/// Maximum bytes of the original packet that can be included in an
-/// ICMPv6 error payload without exceeding the minimum IPv6 MTU.
-/// 1280 (min MTU) - 40 (IPv6 header) - 8 (ICMPv6 header) = 1232.
-const MAX_ERROR_PAYLOAD: usize = IPV6_MIN_MTU - IPV6_HEADER_LEN - ICMPV6_HEADER_LEN;
-
-/// ICMPv6 header wire format (8 bytes).
-///
-/// The `body` field is type-dependent:
-/// * Echo Request/Reply: identifier (2 bytes) + sequence number (2 bytes)
-/// * Destination Unreachable: unused (4 bytes)
-/// * Packet Too Big: MTU (4 bytes, network byte order)
-/// * Time Exceeded: unused (4 bytes)
-/// * Parameter Problem: pointer (4 bytes, network byte order)
-#[repr(C, packed)]
-pub struct Icmpv6Header {
-    pub icmp_type: u8,
-    pub code: u8,
-    pub checksum: [u8; 2],
-    pub body: [u8; 4],
-}
-
-#[allow(non_snake_case)]
-#[allow(non_upper_case_globals)]
-pub mod Icmpv6Types {
-    pub const DestinationUnreachable: u8 = 1;
-    pub const PacketTooBig: u8 = 2;
-    pub const TimeExceeded: u8 = 3;
-    pub const ParameterProblem: u8 = 4;
-    pub const EchoRequest: u8 = 128;
-    pub const EchoReply: u8 = 129;
-    pub const RouterSolicitation: u8 = 133;
-    pub const RouterAdvertisement: u8 = 134;
-    pub const NeighborSolicitation: u8 = 135;
-    pub const NeighborAdvertisement: u8 = 136;
-    pub const Redirect: u8 = 137;
-}
-
-#[allow(non_snake_case)]
-#[allow(non_upper_case_globals)]
-pub mod Icmpv6Codes {
-    pub const NoRouteToDestination: u8 = 0;
-    pub const AdminProhibited: u8 = 1;
-    pub const BeyondScope: u8 = 2;
-    pub const AddressUnreachable: u8 = 3;
-    pub const PortUnreachable: u8 = 4;
-    pub const ErroneousHeaderField: u8 = 0;
-    pub const UnrecognizedNextHeader: u8 = 1;
-    pub const UnrecognizedOption: u8 = 2;
-}
-
-/// Returns `true` if the ICMPv6 type is an error message.
-///
-/// Per RFC 4443 §2.4, ICMPv6 error messages have types in the range
-/// 0--127. Informational messages occupy 128--255.
-#[inline]
-fn is_icmpv6_error(icmpv6_type: u8) -> bool {
-    icmpv6_type < 128
-}
-
-/// Computes the ICMPv6 checksum per RFC 4443 §2.3.
-///
-/// The checksum covers an IPv6 pseudo-header (source address,
-/// destination address, upper-layer packet length, next header = 58)
-/// followed by the ICMPv6 message data.
-///
-/// When computing a fresh checksum, zero the checksum field in
-/// `icmpv6_data` first. When verifying, pass the data as-is and
-/// check for a `[0x00, 0x00]` result.
-pub(super) fn compute_icmpv6_checksum(
-    src_addr: &Ipv6Address,
-    dst_addr: &Ipv6Address,
-    icmpv6_data: &[u8],
-) -> [u8; 2] {
-    let mut sum: u32 = 0;
-
-    let src: [u8; 16] = (*src_addr).into();
-    let mut i = 0;
-    while i < 16 {
-        sum += ((src[i] as u32) << 8) | (src[i + 1] as u32);
-        i += 2;
-    }
-
-    let dst: [u8; 16] = (*dst_addr).into();
-    i = 0;
-    while i < 16 {
-        sum += ((dst[i] as u32) << 8) | (dst[i + 1] as u32);
-        i += 2;
-    }
-
-    let len = icmpv6_data.len() as u32;
-    sum += (len >> 16) & 0xFFFF;
-    sum += len & 0xFFFF;
-
-    sum += IpProtocols::IcmpV6 as u32;
-
-    i = 0;
-    while i + 1 < icmpv6_data.len() {
-        sum += ((icmpv6_data[i] as u32) << 8) | (icmpv6_data[i + 1] as u32);
-        i += 2;
-    }
-    if i < icmpv6_data.len() {
-        sum += (icmpv6_data[i] as u32) << 8;
-    }
-
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    let checksum = !(sum as u16);
-    checksum.to_be_bytes()
-}
 
 /// Processes an incoming ICMPv6 packet.
 ///
@@ -178,6 +60,7 @@ pub fn handle_icmpv6<'umem>(
 
     match icmpv6_type {
         Icmpv6Types::EchoRequest => {
+            println!("icmpv6: echo request");
             // Silently discard echo requests to multicast destinations.
             // We cannot form a correct reply (source must be unicast, and
             // we do not track our own unicast address here).
@@ -381,7 +264,8 @@ pub fn send_icmpv6_error<'umem>(
 mod tests {
     use std::time::Duration;
 
-    use super::super::ethernet::MacAddress;
+    use super::super::wire::ethernet::MacAddress;
+    use super::super::wire::ip::IpAddress;
     use super::*;
     use crate::net::pmtu::PmtuCache;
     use crate::xdp::frame::BasicFrameBuffer;
@@ -392,6 +276,8 @@ mod tests {
         Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     const LOCAL_IP: Ipv6Address =
         Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    const MCAST: Ipv6Address =
+        Ipv6Address::new([0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
     /// Builds a complete Ethernet + IPv6 + ICMPv6 Echo Request frame.
     fn build_echo_request(
@@ -408,13 +294,11 @@ mod tests {
         let frame_len = eth_len + IPV6_HEADER_LEN + icmpv6_len;
         let mut buf = vec![0u8; frame_len];
 
-        // Ethernet
         buf[0..6].copy_from_slice(&dst_mac);
         buf[6..12].copy_from_slice(&src_mac);
         buf[12] = 0x86;
         buf[13] = 0xDD;
 
-        // IPv6
         buf[14] = 0x60;
         buf[18..20].copy_from_slice(&(icmpv6_len as u16).to_be_bytes());
         buf[20] = IpProtocols::IcmpV6;
@@ -424,7 +308,6 @@ mod tests {
         let dst_bytes: [u8; 16] = dst_ip.into();
         buf[38..54].copy_from_slice(&dst_bytes);
 
-        // ICMPv6 Echo Request
         let icmp_off = eth_len + IPV6_HEADER_LEN;
         buf[icmp_off] = Icmpv6Types::EchoRequest;
         buf[icmp_off + 1] = 0;
@@ -434,7 +317,6 @@ mod tests {
         buf[icmp_off + 7] = seq as u8;
         buf[icmp_off + 8..].copy_from_slice(data);
 
-        // ICMPv6 checksum
         buf[icmp_off + 2] = 0;
         buf[icmp_off + 3] = 0;
         let cksum = compute_icmpv6_checksum(&src_ip, &dst_ip, &buf[icmp_off..]);
@@ -444,7 +326,7 @@ mod tests {
         buf
     }
 
-    /// Builds a generic Ethernet + IPv6 frame (for error-response tests).
+    /// Builds a generic Ethernet + IPv6 frame.
     fn build_ipv6_frame(
         src_mac: [u8; 6],
         dst_mac: [u8; 6],
@@ -475,102 +357,16 @@ mod tests {
         buf
     }
 
-    #[test]
-    fn echo_reply_goes_to_tx() {
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0xAB; 32]);
-        let mut buf = vec![0u8; 512];
-        buf[..echo.len()].copy_from_slice(&echo);
-        let frame = Frame::new(0, &mut buf, echo.len(), false);
-
-        let icmpv6_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-        let icmpv6_len = echo.len() - icmpv6_offset;
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler =
-            NeighborHandler::new("test", MacAddress::from(SRC_MAC), Duration::from_secs(60))
-                .unwrap();
-        handle_icmpv6(
-            frame,
-            icmpv6_offset,
-            icmpv6_len,
-            &mut neighbor_handler,
-            &mut PmtuCache::new(),
-            &mut rx,
-            &mut tx,
-        );
-
-        assert_eq!(rx.num_frames(), 0);
-        assert_eq!(tx.num_frames(), 1);
+    /// Helper: asserts frame was rejected (goes to rx, not tx).
+    fn assert_rejected(rx: &BasicFrameBuffer, tx: &BasicFrameBuffer) {
+        assert_eq!(rx.num_frames(), 1, "expected frame in rx_return");
+        assert_eq!(tx.num_frames(), 0, "expected nothing in tx_return");
     }
 
-    #[test]
-    fn echo_reply_has_correct_type() {
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0; 8]);
-        let mut buf = vec![0u8; 512];
-        buf[..echo.len()].copy_from_slice(&echo);
-        let frame = Frame::new(0, &mut buf, echo.len(), false);
-
-        let icmpv6_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-        let icmpv6_len = echo.len() - icmpv6_offset;
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler =
-            NeighborHandler::new("test", MacAddress::from(SRC_MAC), Duration::from_secs(60))
-                .unwrap();
-        handle_icmpv6(
-            frame,
-            icmpv6_offset,
-            icmpv6_len,
-            &mut neighbor_handler,
-            &mut PmtuCache::new(),
-            &mut rx,
-            &mut tx,
-        );
-
-        let reply = tx.pop().unwrap();
-        assert_eq!(reply[icmpv6_offset], Icmpv6Types::EchoReply);
-        assert_eq!(reply[icmpv6_offset + 1], 0);
-    }
+    // -- Echo Reply tests --
 
     #[test]
-    fn echo_reply_swaps_addresses() {
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0; 8]);
-        let mut buf = vec![0u8; 512];
-        buf[..echo.len()].copy_from_slice(&echo);
-        let frame = Frame::new(0, &mut buf, echo.len(), false);
-
-        let icmpv6_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-        let icmpv6_len = echo.len() - icmpv6_offset;
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler =
-            NeighborHandler::new("test", MacAddress::from(SRC_MAC), Duration::from_secs(60))
-                .unwrap();
-        handle_icmpv6(
-            frame,
-            icmpv6_offset,
-            icmpv6_len,
-            &mut neighbor_handler,
-            &mut PmtuCache::new(),
-            &mut rx,
-            &mut tx,
-        );
-
-        let reply = tx.pop().unwrap();
-        let eth = EthernetFrame::from_frame(&reply);
-        assert_eq!(eth.src_mac, MacAddress::from(DST_MAC));
-        assert_eq!(eth.dst_mac, MacAddress::from(SRC_MAC));
-
-        let ip = Ipv6Header::from_frame(&reply);
-        assert_eq!(ip.src_addr, LOCAL_IP);
-        assert_eq!(ip.dst_addr, REMOTE_IP);
-    }
-
-    #[test]
-    fn echo_reply_preserves_id_seq_data() {
+    fn echo_reply_complete_response() {
         let data = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
         let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 0x1234, 0x0005, &data);
         let mut buf = vec![0u8; 512];
@@ -595,41 +391,34 @@ mod tests {
             &mut tx,
         );
 
+        assert_eq!(rx.num_frames(), 0);
+        assert_eq!(tx.num_frames(), 1);
+
         let reply = tx.pop().unwrap();
+
+        // Type and code
+        assert_eq!(reply[icmpv6_offset], Icmpv6Types::EchoReply);
+        assert_eq!(reply[icmpv6_offset + 1], 0);
+
+        // Ethernet MACs swapped
+        let eth = EthernetFrame::from_frame(&reply);
+        assert_eq!(eth.src_mac, MacAddress::from(DST_MAC));
+        assert_eq!(eth.dst_mac, MacAddress::from(SRC_MAC));
+
+        // IPv6 addresses swapped, hop limit reset
+        let ip = Ipv6Header::from_frame(&reply);
+        assert_eq!(ip.src_addr, LOCAL_IP);
+        assert_eq!(ip.dst_addr, REMOTE_IP);
+        assert_eq!(ip.hop_limit, 64);
+
+        // Identifier, sequence, and data preserved
         assert_eq!(reply[icmpv6_offset + 4], 0x12);
         assert_eq!(reply[icmpv6_offset + 5], 0x34);
         assert_eq!(reply[icmpv6_offset + 6], 0x00);
         assert_eq!(reply[icmpv6_offset + 7], 0x05);
         assert_eq!(&reply[icmpv6_offset + 8..icmpv6_offset + 16], &data);
-    }
 
-    #[test]
-    fn echo_reply_has_valid_checksum() {
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0xFF; 56]);
-        let mut buf = vec![0u8; 512];
-        buf[..echo.len()].copy_from_slice(&echo);
-        let frame = Frame::new(0, &mut buf, echo.len(), false);
-
-        let icmpv6_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-        let icmpv6_len = echo.len() - icmpv6_offset;
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler =
-            NeighborHandler::new("test", MacAddress::from(SRC_MAC), Duration::from_secs(60))
-                .unwrap();
-        handle_icmpv6(
-            frame,
-            icmpv6_offset,
-            icmpv6_len,
-            &mut neighbor_handler,
-            &mut PmtuCache::new(),
-            &mut rx,
-            &mut tx,
-        );
-
-        let reply = tx.pop().unwrap();
-        let ip = Ipv6Header::from_frame(&reply);
+        // Valid ICMPv6 checksum
         let cksum = compute_icmpv6_checksum(
             &ip.src_addr,
             &ip.dst_addr,
@@ -639,37 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn echo_reply_sets_hop_limit_64() {
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0; 8]);
-        let mut buf = vec![0u8; 512];
-        buf[..echo.len()].copy_from_slice(&echo);
-        let frame = Frame::new(0, &mut buf, echo.len(), false);
-
-        let icmpv6_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-        let icmpv6_len = echo.len() - icmpv6_offset;
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler =
-            NeighborHandler::new("test", MacAddress::from(SRC_MAC), Duration::from_secs(60))
-                .unwrap();
-        handle_icmpv6(
-            frame,
-            icmpv6_offset,
-            icmpv6_len,
-            &mut neighbor_handler,
-            &mut PmtuCache::new(),
-            &mut rx,
-            &mut tx,
-        );
-
-        let reply = tx.pop().unwrap();
-        let ip = Ipv6Header::from_frame(&reply);
-        assert_eq!(ip.hop_limit, 64);
-    }
-
-    #[test]
-    fn echo_request_bad_checksum_goes_to_rx() {
+    fn echo_request_bad_checksum_rejected() {
         let mut echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0; 8]);
         let icmpv6_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
         echo[icmpv6_offset + 2] ^= 0xFF;
@@ -693,13 +452,11 @@ mod tests {
             &mut rx,
             &mut tx,
         );
-
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
+        assert_rejected(&rx, &tx);
     }
 
     #[test]
-    fn echo_request_too_short_goes_to_rx() {
+    fn echo_request_too_short_rejected() {
         let data = build_ipv6_frame(
             SRC_MAC,
             DST_MAC,
@@ -728,15 +485,12 @@ mod tests {
             &mut rx,
             &mut tx,
         );
-
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
+        assert_rejected(&rx, &tx);
     }
 
     #[test]
-    fn echo_request_to_multicast_goes_to_rx() {
-        let mcast = Ipv6Address::new([0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, mcast, 1, 1, &[0; 8]);
+    fn echo_request_to_multicast_rejected() {
+        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, MCAST, 1, 1, &[0; 8]);
         let mut buf = vec![0u8; 512];
         buf[..echo.len()].copy_from_slice(&echo);
         let frame = Frame::new(0, &mut buf, echo.len(), false);
@@ -758,17 +512,13 @@ mod tests {
             &mut rx,
             &mut tx,
         );
-
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
+        assert_rejected(&rx, &tx);
     }
 
     #[test]
     fn non_echo_request_goes_to_rx() {
-        // Build an ICMPv6 Destination Unreachable (type 1).
-        let mut icmpv6_payload = [0u8; 48]; // 8 hdr + 40 orig ipv6 hdr
+        let mut icmpv6_payload = [0u8; 48];
         icmpv6_payload[0] = Icmpv6Types::DestinationUnreachable;
-        // Compute checksum.
         let cksum = compute_icmpv6_checksum(&REMOTE_IP, &LOCAL_IP, &icmpv6_payload);
         icmpv6_payload[2] = cksum[0];
         icmpv6_payload[3] = cksum[1];
@@ -786,7 +536,6 @@ mod tests {
         let frame = Frame::new(0, &mut buf, data.len(), false);
 
         let icmpv6_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-        let icmpv6_len = icmpv6_payload.len();
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
@@ -796,115 +545,90 @@ mod tests {
         handle_icmpv6(
             frame,
             icmpv6_offset,
-            icmpv6_len,
+            icmpv6_payload.len(),
             &mut neighbor_handler,
             &mut PmtuCache::new(),
             &mut rx,
             &mut tx,
         );
+        assert_rejected(&rx, &tx);
+    }
 
+    #[test]
+    fn packet_too_big_updates_pmtu() {
+        let dest_ip = Ipv6Address::new([
+            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x99,
+        ]);
+        let eth_len = size_of::<EthernetFrame>();
+
+        // Build an ICMPv6 Packet Too Big message with embedded IPv6 header.
+        // ICMPv6 header (8 bytes): type=2, code=0, checksum=0, MTU=1280
+        // Embedded IPv6 header (40 bytes): src=REMOTE_IP, dst=dest_ip
+        let mut icmpv6_msg = vec![0u8; ICMPV6_HEADER_LEN + IPV6_HEADER_LEN];
+        icmpv6_msg[0] = Icmpv6Types::PacketTooBig;
+        icmpv6_msg[1] = 0;
+        // MTU = 1280 in body bytes [4..8]
+        icmpv6_msg[4..8].copy_from_slice(&1280u32.to_be_bytes());
+        // Embedded IPv6 header at offset 8
+        icmpv6_msg[8] = 0x60; // version
+        icmpv6_msg[8 + 6] = IpProtocols::Udp; // next header
+        icmpv6_msg[8 + 7] = 64; // hop limit
+        let remote_bytes: [u8; 16] = REMOTE_IP.into();
+        icmpv6_msg[8 + 8..8 + 24].copy_from_slice(&remote_bytes); // src
+        let dest_bytes: [u8; 16] = dest_ip.into();
+        icmpv6_msg[8 + 24..8 + 40].copy_from_slice(&dest_bytes); // dst
+
+        // Compute ICMPv6 checksum over the whole message
+        let cksum = compute_icmpv6_checksum(&REMOTE_IP, &LOCAL_IP, &icmpv6_msg);
+        icmpv6_msg[2] = cksum[0];
+        icmpv6_msg[3] = cksum[1];
+
+        let data = build_ipv6_frame(
+            SRC_MAC,
+            DST_MAC,
+            REMOTE_IP,
+            LOCAL_IP,
+            IpProtocols::IcmpV6,
+            &icmpv6_msg,
+        );
+        let mut buf = vec![0u8; 512];
+        buf[..data.len()].copy_from_slice(&data);
+        let frame = Frame::new(0, &mut buf, data.len(), false);
+
+        let icmpv6_offset = eth_len + IPV6_HEADER_LEN;
+
+        let mut pmtu = PmtuCache::new();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        let mut neighbor_handler =
+            NeighborHandler::new("test", MacAddress::from(SRC_MAC), Duration::from_secs(60))
+                .unwrap();
+        handle_icmpv6(
+            frame,
+            icmpv6_offset,
+            icmpv6_msg.len(),
+            &mut neighbor_handler,
+            &mut pmtu,
+            &mut rx,
+            &mut tx,
+        );
+
+        // Frame goes to rx (informational, not echo)
         assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
+        // PMTU cache should be updated for the embedded destination IP
+        assert_eq!(pmtu.get(&IpAddress::V6(dest_ip)), 1280);
     }
 
-    // -- send_icmpv6_error tests ---------------------------------------------
+    // -- send_icmpv6_error tests --
 
     #[test]
-    fn error_goes_to_tx() {
-        let data = build_ipv6_frame(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 99, &[0xAA; 32]);
-        let mut buf = vec![0u8; 2048];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
-
-        let upper_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_icmpv6_error(
-            frame,
-            Icmpv6Types::ParameterProblem,
-            Icmpv6Codes::UnrecognizedNextHeader,
-            6u32.to_be_bytes(),
-            99,
-            upper_offset,
-            &mut rx,
-            &mut tx,
-        );
-
-        assert_eq!(rx.num_frames(), 0);
-        assert_eq!(tx.num_frames(), 1);
-    }
-
-    #[test]
-    fn error_has_correct_type_and_code() {
-        let data = build_ipv6_frame(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 99, &[0; 32]);
-        let mut buf = vec![0u8; 2048];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
-
-        let upper_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_icmpv6_error(
-            frame,
-            Icmpv6Types::DestinationUnreachable,
-            Icmpv6Codes::PortUnreachable,
-            [0; 4],
-            99,
-            upper_offset,
-            &mut rx,
-            &mut tx,
-        );
-
-        let reply = tx.pop().unwrap();
-        let icmp_start = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-        assert_eq!(reply[icmp_start], Icmpv6Types::DestinationUnreachable);
-        assert_eq!(reply[icmp_start + 1], Icmpv6Codes::PortUnreachable);
-    }
-
-    #[test]
-    fn error_swaps_addresses() {
-        let data = build_ipv6_frame(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 99, &[0; 32]);
-        let mut buf = vec![0u8; 2048];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
-
-        let upper_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_icmpv6_error(
-            frame,
-            Icmpv6Types::DestinationUnreachable,
-            Icmpv6Codes::NoRouteToDestination,
-            [0; 4],
-            99,
-            upper_offset,
-            &mut rx,
-            &mut tx,
-        );
-
-        let reply = tx.pop().unwrap();
-        let eth = EthernetFrame::from_frame(&reply);
-        assert_eq!(eth.src_mac, MacAddress::from(DST_MAC));
-        assert_eq!(eth.dst_mac, MacAddress::from(SRC_MAC));
-
-        let ip = Ipv6Header::from_frame(&reply);
-        assert_eq!(ip.src_addr, LOCAL_IP);
-        assert_eq!(ip.dst_addr, REMOTE_IP);
-        assert_eq!(ip.next_header, IpProtocols::IcmpV6);
-    }
-
-    #[test]
-    fn error_contains_original_ipv6_header() {
+    fn error_complete_response() {
         let payload = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
         let data = build_ipv6_frame(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 99, &payload);
         let mut buf = vec![0u8; 2048];
         buf[..data.len()].copy_from_slice(&data);
 
         let eth_len = size_of::<EthernetFrame>();
-        // Save the original IPv6 header + payload for comparison.
         let orig_ipv6_packet: Vec<u8> = data[eth_len..].to_vec();
 
         let frame = Frame::new(0, &mut buf, data.len(), false);
@@ -915,36 +639,6 @@ mod tests {
         send_icmpv6_error(
             frame,
             Icmpv6Types::DestinationUnreachable,
-            Icmpv6Codes::NoRouteToDestination,
-            [0; 4],
-            99,
-            upper_offset,
-            &mut rx,
-            &mut tx,
-        );
-
-        let reply = tx.pop().unwrap();
-        let icmp_payload_start = eth_len + IPV6_HEADER_LEN + ICMPV6_HEADER_LEN;
-        let icmp_payload_end = icmp_payload_start + orig_ipv6_packet.len();
-        assert_eq!(
-            &reply[icmp_payload_start..icmp_payload_end],
-            &orig_ipv6_packet[..]
-        );
-    }
-
-    #[test]
-    fn error_has_valid_checksum() {
-        let data = build_ipv6_frame(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 99, &[0; 32]);
-        let mut buf = vec![0u8; 2048];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
-        let upper_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_icmpv6_error(
-            frame,
-            Icmpv6Types::DestinationUnreachable,
             Icmpv6Codes::PortUnreachable,
             [0; 4],
             99,
@@ -953,9 +647,34 @@ mod tests {
             &mut tx,
         );
 
+        assert_eq!(rx.num_frames(), 0);
+        assert_eq!(tx.num_frames(), 1);
+
         let reply = tx.pop().unwrap();
+        let icmp_start = eth_len + IPV6_HEADER_LEN;
+
+        // Type and code
+        assert_eq!(reply[icmp_start], Icmpv6Types::DestinationUnreachable);
+        assert_eq!(reply[icmp_start + 1], Icmpv6Codes::PortUnreachable);
+
+        // Addresses swapped
+        let eth = EthernetFrame::from_frame(&reply);
+        assert_eq!(eth.src_mac, MacAddress::from(DST_MAC));
+        assert_eq!(eth.dst_mac, MacAddress::from(SRC_MAC));
         let ip = Ipv6Header::from_frame(&reply);
-        let icmp_start = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
+        assert_eq!(ip.src_addr, LOCAL_IP);
+        assert_eq!(ip.dst_addr, REMOTE_IP);
+        assert_eq!(ip.next_header, IpProtocols::IcmpV6);
+
+        // Original IPv6 header + payload preserved in ICMP payload
+        let icmp_payload_start = icmp_start + ICMPV6_HEADER_LEN;
+        let icmp_payload_end = icmp_payload_start + orig_ipv6_packet.len();
+        assert_eq!(
+            &reply[icmp_payload_start..icmp_payload_end],
+            &orig_ipv6_packet[..]
+        );
+
+        // Valid ICMPv6 checksum
         let icmp_end = icmp_start + ip.payload_length() as usize;
         let cksum =
             compute_icmpv6_checksum(&ip.src_addr, &ip.dst_addr, &reply[icmp_start..icmp_end]);
@@ -970,14 +689,13 @@ mod tests {
         let frame = Frame::new(0, &mut buf, data.len(), false);
         let upper_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
 
-        let mtu: u32 = 1280;
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         send_icmpv6_error(
             frame,
             Icmpv6Types::PacketTooBig,
             0,
-            mtu.to_be_bytes(),
+            1280u32.to_be_bytes(),
             17,
             upper_offset,
             &mut rx,
@@ -1003,14 +721,13 @@ mod tests {
         let frame = Frame::new(0, &mut buf, data.len(), false);
         let upper_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
 
-        let pointer: u32 = 6;
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         send_icmpv6_error(
             frame,
             Icmpv6Types::ParameterProblem,
             Icmpv6Codes::UnrecognizedNextHeader,
-            pointer.to_be_bytes(),
+            6u32.to_be_bytes(),
             99,
             upper_offset,
             &mut rx,
@@ -1029,35 +746,72 @@ mod tests {
     }
 
     #[test]
-    fn error_not_sent_for_multicast_dst() {
-        let mcast = Ipv6Address::new([0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let data = build_ipv6_frame(SRC_MAC, DST_MAC, REMOTE_IP, mcast, 99, &[0; 32]);
-        let mut buf = vec![0u8; 2048];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
+    fn error_rfc4443_restrictions() {
         let upper_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
 
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_icmpv6_error(
-            frame,
-            Icmpv6Types::DestinationUnreachable,
-            Icmpv6Codes::NoRouteToDestination,
-            [0; 4],
-            99,
-            upper_offset,
-            &mut rx,
-            &mut tx,
-        );
+        let assert_not_sent = |data: Vec<u8>, proto: u8| {
+            let mut buf = vec![0u8; 2048];
+            buf[..data.len()].copy_from_slice(&data);
+            let frame = Frame::new(0, &mut buf, data.len(), false);
+            let mut rx = BasicFrameBuffer::new(4);
+            let mut tx = BasicFrameBuffer::new(4);
+            send_icmpv6_error(
+                frame,
+                Icmpv6Types::DestinationUnreachable,
+                Icmpv6Codes::NoRouteToDestination,
+                [0; 4],
+                proto,
+                upper_offset,
+                &mut rx,
+                &mut tx,
+            );
+            assert_rejected(&rx, &tx);
+        };
 
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
+        // Multicast destination
+        assert_not_sent(
+            build_ipv6_frame(SRC_MAC, DST_MAC, REMOTE_IP, MCAST, 99, &[0; 32]),
+            99,
+        );
+        // Multicast source
+        assert_not_sent(
+            build_ipv6_frame(SRC_MAC, DST_MAC, MCAST, LOCAL_IP, 99, &[0; 32]),
+            99,
+        );
+        // Unspecified source
+        assert_not_sent(
+            build_ipv6_frame(
+                SRC_MAC,
+                DST_MAC,
+                Ipv6Address::unspecified(),
+                LOCAL_IP,
+                99,
+                &[0; 32],
+            ),
+            99,
+        );
+        // ICMPv6 error as trigger
+        let mut icmpv6_err = [0u8; 48];
+        icmpv6_err[0] = Icmpv6Types::DestinationUnreachable;
+        let cksum = compute_icmpv6_checksum(&REMOTE_IP, &LOCAL_IP, &icmpv6_err);
+        icmpv6_err[2] = cksum[0];
+        icmpv6_err[3] = cksum[1];
+        assert_not_sent(
+            build_ipv6_frame(
+                SRC_MAC,
+                DST_MAC,
+                REMOTE_IP,
+                LOCAL_IP,
+                IpProtocols::IcmpV6,
+                &icmpv6_err,
+            ),
+            IpProtocols::IcmpV6,
+        );
     }
 
     #[test]
     fn error_packet_too_big_allowed_for_multicast_dst() {
-        let mcast = Ipv6Address::new([0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let data = build_ipv6_frame(SRC_MAC, DST_MAC, REMOTE_IP, mcast, 17, &[0; 32]);
+        let data = build_ipv6_frame(SRC_MAC, DST_MAC, REMOTE_IP, MCAST, 17, &[0; 32]);
         let mut buf = vec![0u8; 2048];
         buf[..data.len()].copy_from_slice(&data);
         let frame = Frame::new(0, &mut buf, data.len(), false);
@@ -1081,9 +835,8 @@ mod tests {
     }
 
     #[test]
-    fn error_not_sent_for_multicast_src() {
-        let mcast_src = Ipv6Address::new([0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let data = build_ipv6_frame(SRC_MAC, DST_MAC, mcast_src, LOCAL_IP, 99, &[0; 32]);
+    fn error_parameter_problem_code2_allowed_for_multicast_dst() {
+        let data = build_ipv6_frame(SRC_MAC, DST_MAC, REMOTE_IP, MCAST, 99, &[0; 32]);
         let mut buf = vec![0u8; 2048];
         buf[..data.len()].copy_from_slice(&data);
         let frame = Frame::new(0, &mut buf, data.len(), false);
@@ -1093,87 +846,21 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         send_icmpv6_error(
             frame,
-            Icmpv6Types::DestinationUnreachable,
-            Icmpv6Codes::NoRouteToDestination,
-            [0; 4],
+            Icmpv6Types::ParameterProblem,
+            Icmpv6Codes::BeyondScope,
+            6u32.to_be_bytes(),
             99,
             upper_offset,
             &mut rx,
             &mut tx,
         );
 
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
+        assert_eq!(rx.num_frames(), 0);
+        assert_eq!(tx.num_frames(), 1);
     }
 
     #[test]
-    fn error_not_sent_for_unspecified_src() {
-        let unspec = Ipv6Address::unspecified();
-        let data = build_ipv6_frame(SRC_MAC, DST_MAC, unspec, LOCAL_IP, 99, &[0; 32]);
-        let mut buf = vec![0u8; 2048];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
-        let upper_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_icmpv6_error(
-            frame,
-            Icmpv6Types::DestinationUnreachable,
-            Icmpv6Codes::NoRouteToDestination,
-            [0; 4],
-            99,
-            upper_offset,
-            &mut rx,
-            &mut tx,
-        );
-
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
-    }
-
-    #[test]
-    fn error_not_sent_for_icmpv6_error() {
-        // Build a frame carrying an ICMPv6 Destination Unreachable (type 1).
-        let mut icmpv6_payload = [0u8; 48];
-        icmpv6_payload[0] = Icmpv6Types::DestinationUnreachable;
-        let cksum = compute_icmpv6_checksum(&REMOTE_IP, &LOCAL_IP, &icmpv6_payload);
-        icmpv6_payload[2] = cksum[0];
-        icmpv6_payload[3] = cksum[1];
-
-        let data = build_ipv6_frame(
-            SRC_MAC,
-            DST_MAC,
-            REMOTE_IP,
-            LOCAL_IP,
-            IpProtocols::IcmpV6,
-            &icmpv6_payload,
-        );
-        let mut buf = vec![0u8; 2048];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
-        let upper_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_icmpv6_error(
-            frame,
-            Icmpv6Types::DestinationUnreachable,
-            Icmpv6Codes::PortUnreachable,
-            [0; 4],
-            IpProtocols::IcmpV6,
-            upper_offset,
-            &mut rx,
-            &mut tx,
-        );
-
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
-    }
-
-    #[test]
-    fn error_allowed_for_icmpv6_echo() {
-        // An ICMPv6 Echo Request (type 128) is NOT an error.
+    fn error_allowed_for_icmpv6_non_error() {
         let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0; 8]);
         let mut buf = vec![0u8; 2048];
         buf[..echo.len()].copy_from_slice(&echo);
@@ -1195,24 +882,5 @@ mod tests {
 
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
-    }
-
-    #[test]
-    fn checksum_roundtrip() {
-        let src = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let dst = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-        let mut msg = [0u8; 16];
-        msg[0] = Icmpv6Types::EchoRequest;
-        msg[4] = 0x00;
-        msg[5] = 0x01;
-        msg[6] = 0x00;
-        msg[7] = 0x01;
-
-        let cksum = compute_icmpv6_checksum(&src, &dst, &msg);
-        msg[2] = cksum[0];
-        msg[3] = cksum[1];
-
-        let verify = compute_icmpv6_checksum(&src, &dst, &msg);
-        assert_eq!(verify, [0x00, 0x00]);
     }
 }

@@ -12,12 +12,11 @@ use crate::xdp::{
     frame::{Frame, FrameBuffer},
 };
 
-use super::{
+use super::wire::{
     arp::{ARP_FRAME_LEN, ArpHardwareTypes, ArpOperations, ArpPacket},
     ethernet::{EtherTypes, EthernetFrame, MacAddress},
     icmpv6::{Icmpv6Types, compute_icmpv6_checksum},
-    ip::{IpAddress, IpProtocols, Ipv4Address, Ipv6Address},
-    ipv6::{IPV6_HEADER_LEN, Ipv6Header},
+    ip::{IPV6_HEADER_LEN, IpAddress, IpProtocols, Ipv4Address, Ipv6Address, Ipv6Header},
 };
 
 /// ARP Ethernet frame representation.
@@ -671,8 +670,8 @@ fn parse_ndp_link_layer_option(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::icmpv6::compute_icmpv6_checksum;
-    use crate::net::ipv6::{IPV6_HEADER_LEN, Ipv6Header};
+    use crate::net::wire::icmpv6::compute_icmpv6_checksum;
+    use crate::net::wire::ip::{IPV6_HEADER_LEN, Ipv6Header};
     use crate::xdp::frame::BasicFrameBuffer;
 
     const TEST_LOCAL_MAC: MacAddress = MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);

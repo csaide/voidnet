@@ -1,68 +1,13 @@
-use std::mem::size_of;
-
-use crate::xdp::frame::{Frame, FrameBuffer};
-
-use super::{
-    ethernet::EthernetFrame,
-    ip::{IpProtocols, Ipv4Address},
-    ipv4::{IPV4_MIN_HEADER_LEN, Ipv4Header, compute_ipv4_checksum},
-    pmtu::PmtuCache,
+use crate::{
+    net::PmtuCache,
+    xdp::frame::{Frame, FrameBuffer},
 };
 
-/// ICMPv4 header length in bytes (type + code + checksum + rest-of-header).
-pub const ICMPV4_HEADER_LEN: usize = 8;
-
-const _: () = assert!(size_of::<Icmpv4Header>() == ICMPV4_HEADER_LEN);
-
-/// ICMPv4 header wire format (8 bytes).
-///
-/// The `rest_of_header` field is type-dependent:
-/// * Echo Request/Reply: identifier (2 bytes) + sequence number (2 bytes)
-/// * Destination Unreachable: unused (2 bytes) + next-hop MTU (2 bytes, code 4 only)
-/// * Time Exceeded / Parameter Problem: unused (4 bytes)
-#[repr(C, packed)]
-pub struct Icmpv4Header {
-    pub icmp_type: u8,
-    pub code: u8,
-    pub checksum: [u8; 2],
-    pub rest_of_header: [u8; 4],
-}
-
-#[allow(non_snake_case)]
-#[allow(non_upper_case_globals)]
-pub mod Icmpv4Types {
-    pub const EchoReply: u8 = 0;
-    pub const DestinationUnreachable: u8 = 3;
-    pub const SourceQuench: u8 = 4;
-    pub const Redirect: u8 = 5;
-    pub const EchoRequest: u8 = 8;
-    pub const TimeExceeded: u8 = 11;
-    pub const ParameterProblem: u8 = 12;
-}
-
-#[allow(non_snake_case)]
-#[allow(non_upper_case_globals)]
-pub mod Icmpv4Codes {
-    pub const ProtocolUnreachable: u8 = 2;
-    pub const PortUnreachable: u8 = 3;
-    pub const FragmentationNeeded: u8 = 4;
-}
-
-/// Returns `true` if the given ICMPv4 type is an error message.
-///
-/// Per RFC 1122, ICMP error messages MUST NOT be sent in response to
-/// other ICMP error messages.
-#[inline]
-fn is_icmp_error(icmp_type: u8) -> bool {
-    matches!(
-        icmp_type,
-        Icmpv4Types::DestinationUnreachable
-            | Icmpv4Types::SourceQuench
-            | Icmpv4Types::Redirect
-            | Icmpv4Types::TimeExceeded
-            | Icmpv4Types::ParameterProblem
-    )
-}
+use super::wire::{
+    ethernet::EthernetFrame,
+    icmpv4::{ICMPV4_HEADER_LEN, Icmpv4Codes, Icmpv4Types, is_icmp_error},
+    ip::{IPV4_MIN_HEADER_LEN, IpProtocols, Ipv4Address, Ipv4Header, compute_ipv4_checksum},
+};
 
 /// Processes an incoming ICMPv4 packet.
 ///
@@ -136,10 +81,8 @@ pub fn handle_icmpv4<'umem>(
             if frame[payload_offset + 1] == Icmpv4Codes::FragmentationNeeded =>
         {
             // Extract next-hop MTU from rest-of-header bytes 6-7 (u16 big-endian).
-            let mtu = u16::from_be_bytes([
-                frame[payload_offset + 6],
-                frame[payload_offset + 7],
-            ]) as u32;
+            let mtu =
+                u16::from_be_bytes([frame[payload_offset + 6], frame[payload_offset + 7]]) as u32;
 
             // Extract original destination IP from embedded IP header.
             // The embedded IP header starts at payload_offset + ICMPV4_HEADER_LEN.
@@ -286,8 +229,8 @@ pub fn send_destination_unreachable<'umem>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::ethernet::MacAddress;
-    use super::super::ip::Ipv4Address;
+    use super::super::wire::ethernet::MacAddress;
+    use super::super::wire::ip::{IpAddress, Ipv4Address};
     use super::*;
     use crate::net::pmtu::PmtuCache;
     use crate::xdp::frame::BasicFrameBuffer;
@@ -313,17 +256,15 @@ mod tests {
         let frame_len = eth_len + IPV4_MIN_HEADER_LEN + icmp_len;
         let mut buf = vec![0u8; frame_len];
 
-        // Ethernet header
         buf[0..6].copy_from_slice(&dst_mac);
         buf[6..12].copy_from_slice(&src_mac);
         buf[12] = 0x08;
         buf[13] = 0x00;
 
-        // IPv4 header
         let ip = &mut buf[14..];
         ip[0] = 0x45;
         ip[2..4].copy_from_slice(&ip_total_len.to_be_bytes());
-        ip[6] = 0x40; // DF
+        ip[6] = 0x40;
         ip[8] = 64;
         ip[9] = IpProtocols::Icmp;
         let src_bytes: [u8; 4] = src_ip.into();
@@ -334,17 +275,14 @@ mod tests {
         ip[10] = cksum[0];
         ip[11] = cksum[1];
 
-        // ICMP Echo Request
         let icmp_start = eth_len + IPV4_MIN_HEADER_LEN;
         buf[icmp_start] = Icmpv4Types::EchoRequest;
-        buf[icmp_start + 1] = 0;
         buf[icmp_start + 4] = (id >> 8) as u8;
         buf[icmp_start + 5] = id as u8;
         buf[icmp_start + 6] = (seq >> 8) as u8;
         buf[icmp_start + 7] = seq as u8;
         buf[icmp_start + 8..].copy_from_slice(data);
 
-        // ICMP checksum
         let icmp_end = icmp_start + icmp_len;
         let cksum = compute_ipv4_checksum(&buf[icmp_start..icmp_end]);
         buf[icmp_start + 2] = cksum[0];
@@ -353,7 +291,7 @@ mod tests {
         buf
     }
 
-    /// Builds a generic Ethernet + IPv4 frame (for destination unreachable tests).
+    /// Builds a generic Ethernet + IPv4 frame.
     fn build_ipv4_frame(
         src_mac: [u8; 6],
         dst_mac: [u8; 6],
@@ -390,67 +328,16 @@ mod tests {
         buf
     }
 
-    #[test]
-    fn echo_reply_goes_to_tx() {
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0xAB; 32]);
-        // Allocate extra capacity so frame buffer can handle potential resizing.
-        let mut buf = vec![0u8; 256];
-        buf[..echo.len()].copy_from_slice(&echo);
-        let frame = Frame::new(0, &mut buf, echo.len(), false);
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-
-        handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
-
-        assert_eq!(rx.num_frames(), 0);
-        assert_eq!(tx.num_frames(), 1);
+    /// Helper: asserts frame was rejected (goes to rx, not tx).
+    fn assert_rejected(rx: &BasicFrameBuffer, tx: &BasicFrameBuffer) {
+        assert_eq!(rx.num_frames(), 1, "expected frame in rx_return");
+        assert_eq!(tx.num_frames(), 0, "expected nothing in tx_return");
     }
 
-    #[test]
-    fn echo_reply_has_correct_type() {
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0xAB; 8]);
-        let mut buf = vec![0u8; 256];
-        buf[..echo.len()].copy_from_slice(&echo);
-        let frame = Frame::new(0, &mut buf, echo.len(), false);
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
-
-        let reply = tx.pop().unwrap();
-        let eth_len = size_of::<EthernetFrame>();
-        let icmp_offset = eth_len + IPV4_MIN_HEADER_LEN;
-        assert_eq!(reply[icmp_offset], Icmpv4Types::EchoReply);
-        assert_eq!(reply[icmp_offset + 1], 0); // code
-    }
+    // -- Echo Reply tests --
 
     #[test]
-    fn echo_reply_swaps_addresses() {
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0; 8]);
-        let mut buf = vec![0u8; 256];
-        buf[..echo.len()].copy_from_slice(&echo);
-        let frame = Frame::new(0, &mut buf, echo.len(), false);
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
-
-        let reply = tx.pop().unwrap();
-        let eth = EthernetFrame::from_frame(&reply);
-
-        // Ethernet MACs swapped
-        assert_eq!(eth.src_mac, MacAddress::from(DST_MAC));
-        assert_eq!(eth.dst_mac, MacAddress::from(SRC_MAC));
-
-        // IPv4 addresses swapped
-        let ip = Ipv4Header::from_frame(&reply);
-        assert_eq!(ip.src_addr, LOCAL_IP);
-        assert_eq!(ip.dst_addr, REMOTE_IP);
-    }
-
-    #[test]
-    fn echo_reply_preserves_id_seq_data() {
+    fn echo_reply_complete_response() {
         let data = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
         let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 0x1234, 0x0005, &data);
         let mut buf = vec![0u8; 256];
@@ -461,67 +348,52 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
 
-        let reply = tx.pop().unwrap();
-        let icmp_offset = size_of::<EthernetFrame>() + IPV4_MIN_HEADER_LEN;
-
-        // Identifier
-        assert_eq!(reply[icmp_offset + 4], 0x12);
-        assert_eq!(reply[icmp_offset + 5], 0x34);
-        // Sequence
-        assert_eq!(reply[icmp_offset + 6], 0x00);
-        assert_eq!(reply[icmp_offset + 7], 0x05);
-        // Data
-        assert_eq!(&reply[icmp_offset + 8..icmp_offset + 16], &data);
-    }
-
-    #[test]
-    fn echo_reply_has_valid_checksums() {
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0xFF; 56]);
-        let mut buf = vec![0u8; 256];
-        buf[..echo.len()].copy_from_slice(&echo);
-        let frame = Frame::new(0, &mut buf, echo.len(), false);
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
+        assert_eq!(rx.num_frames(), 0);
+        assert_eq!(tx.num_frames(), 1);
 
         let reply = tx.pop().unwrap();
         let eth_len = size_of::<EthernetFrame>();
+        let icmp_offset = eth_len + IPV4_MIN_HEADER_LEN;
 
-        // Verify IPv4 header checksum
+        // Type and code
+        assert_eq!(reply[icmp_offset], Icmpv4Types::EchoReply);
+        assert_eq!(reply[icmp_offset + 1], 0);
+
+        // Ethernet MACs swapped
+        let eth = EthernetFrame::from_frame(&reply);
+        assert_eq!(eth.src_mac, MacAddress::from(DST_MAC));
+        assert_eq!(eth.dst_mac, MacAddress::from(SRC_MAC));
+
+        // IPv4 addresses swapped, TTL reset
+        let ip = Ipv4Header::from_frame(&reply);
+        assert_eq!(ip.src_addr, LOCAL_IP);
+        assert_eq!(ip.dst_addr, REMOTE_IP);
+        assert_eq!(ip.ttl, 64);
+
+        // Identifier and sequence preserved
+        assert_eq!(reply[icmp_offset + 4], 0x12);
+        assert_eq!(reply[icmp_offset + 5], 0x34);
+        assert_eq!(reply[icmp_offset + 6], 0x00);
+        assert_eq!(reply[icmp_offset + 7], 0x05);
+        assert_eq!(&reply[icmp_offset + 8..icmp_offset + 16], &data);
+
+        // Valid IPv4 header checksum
         assert_eq!(
             compute_ipv4_checksum(&reply[eth_len..eth_len + IPV4_MIN_HEADER_LEN]),
             [0, 0]
         );
 
-        // Verify ICMP checksum
-        let ip = Ipv4Header::from_frame(&reply);
+        // Valid ICMP checksum
         let icmp_start = ip.payload_offset();
         let icmp_end = icmp_start + ip.payload_len();
         assert_eq!(compute_ipv4_checksum(&reply[icmp_start..icmp_end]), [0, 0]);
     }
 
     #[test]
-    fn echo_reply_sets_ttl_64() {
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0; 8]);
-        let mut buf = vec![0u8; 256];
-        buf[..echo.len()].copy_from_slice(&echo);
-        let frame = Frame::new(0, &mut buf, echo.len(), false);
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
-
-        let reply = tx.pop().unwrap();
-        let ip = Ipv4Header::from_frame(&reply);
-        assert_eq!(ip.ttl, 64);
-    }
-
-    #[test]
-    fn echo_request_bad_checksum_goes_to_rx() {
+    fn echo_request_bad_checksum_rejected() {
         let mut echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0; 8]);
         let icmp_start = size_of::<EthernetFrame>() + IPV4_MIN_HEADER_LEN;
-        echo[icmp_start + 2] ^= 0xFF; // corrupt checksum
+        echo[icmp_start + 2] ^= 0xFF;
         let mut buf = vec![0u8; 256];
         buf[..echo.len()].copy_from_slice(&echo);
         let frame = Frame::new(0, &mut buf, echo.len(), false);
@@ -529,14 +401,11 @@ mod tests {
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
-
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
+        assert_rejected(&rx, &tx);
     }
 
     #[test]
-    fn echo_request_too_short_goes_to_rx() {
-        // Build a frame with ICMP payload shorter than 8 bytes.
+    fn echo_request_too_short_rejected() {
         let data = build_ipv4_frame(
             SRC_MAC,
             DST_MAC,
@@ -552,50 +421,52 @@ mod tests {
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
-
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
+        assert_rejected(&rx, &tx);
     }
 
     #[test]
-    fn echo_request_to_broadcast_goes_to_rx() {
-        let bcast = Ipv4Address::broadcast();
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, bcast, 1, 1, &[0; 8]);
+    fn echo_request_broadcast_multicast_rejected() {
+        // Broadcast destination
+        let echo = build_echo_request(
+            SRC_MAC,
+            DST_MAC,
+            REMOTE_IP,
+            Ipv4Address::broadcast(),
+            1,
+            1,
+            &[0; 8],
+        );
         let mut buf = vec![0u8; 256];
         buf[..echo.len()].copy_from_slice(&echo);
         let frame = Frame::new(0, &mut buf, echo.len(), false);
-
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
+        assert_rejected(&rx, &tx);
 
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
-    }
-
-    #[test]
-    fn echo_request_to_multicast_goes_to_rx() {
-        let mcast = Ipv4Address::new([224, 0, 0, 1]);
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, mcast, 1, 1, &[0; 8]);
+        // Multicast destination
+        let echo = build_echo_request(
+            SRC_MAC,
+            DST_MAC,
+            REMOTE_IP,
+            Ipv4Address::new([224, 0, 0, 1]),
+            1,
+            1,
+            &[0; 8],
+        );
         let mut buf = vec![0u8; 256];
         buf[..echo.len()].copy_from_slice(&echo);
         let frame = Frame::new(0, &mut buf, echo.len(), false);
-
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
-
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
+        assert_rejected(&rx, &tx);
     }
 
     #[test]
-    fn non_echo_request_goes_to_rx() {
-        // Build an ICMP Destination Unreachable (type 3) - should go to rx.
-        let mut icmp_payload = [0u8; 36]; // 8 icmp hdr + 20 orig ip + 8 orig data
+    fn non_echo_goes_to_rx() {
+        let mut icmp_payload = [0u8; 36];
         icmp_payload[0] = Icmpv4Types::DestinationUnreachable;
-        icmp_payload[1] = 0; // code
-        // Leave checksum as 0 for now, recompute below
         let cksum = compute_ipv4_checksum(&icmp_payload);
         icmp_payload[2] = cksum[0];
         icmp_payload[3] = cksum[1];
@@ -615,73 +486,18 @@ mod tests {
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
-
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
+        assert_rejected(&rx, &tx);
     }
 
-    #[test]
-    fn dest_unreachable_goes_to_tx() {
-        let data = build_ipv4_frame(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 99, &[0xAA; 32]);
-        let mut buf = vec![0u8; 256];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
-
-        assert_eq!(rx.num_frames(), 0);
-        assert_eq!(tx.num_frames(), 1);
-    }
+    // -- Destination Unreachable tests --
 
     #[test]
-    fn dest_unreachable_has_correct_type_and_code() {
-        let data = build_ipv4_frame(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 99, &[0; 32]);
-        let mut buf = vec![0u8; 256];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
-
-        let reply = tx.pop().unwrap();
-        let icmp_start = size_of::<EthernetFrame>() + IPV4_MIN_HEADER_LEN;
-        assert_eq!(reply[icmp_start], Icmpv4Types::DestinationUnreachable);
-        assert_eq!(reply[icmp_start + 1], Icmpv4Codes::ProtocolUnreachable);
-    }
-
-    #[test]
-    fn dest_unreachable_swaps_addresses() {
-        let data = build_ipv4_frame(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 99, &[0; 32]);
-        let mut buf = vec![0u8; 256];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
-
-        let reply = tx.pop().unwrap();
-        let eth = EthernetFrame::from_frame(&reply);
-        assert_eq!(eth.src_mac, MacAddress::from(DST_MAC));
-        assert_eq!(eth.dst_mac, MacAddress::from(SRC_MAC));
-
-        let ip = Ipv4Header::from_frame(&reply);
-        assert_eq!(ip.src_addr, LOCAL_IP);
-        assert_eq!(ip.dst_addr, REMOTE_IP);
-        assert_eq!(ip.protocol, IpProtocols::Icmp);
-    }
-
-    #[test]
-    fn dest_unreachable_contains_original_header() {
+    fn dest_unreachable_complete_response() {
         let payload = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA];
         let data = build_ipv4_frame(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 99, &payload);
         let mut buf = vec![0u8; 256];
         buf[..data.len()].copy_from_slice(&data);
 
-        // Save the original IPv4 header bytes for comparison.
         let eth_len = size_of::<EthernetFrame>();
         let orig_ip_hdr: Vec<u8> = data[eth_len..eth_len + IPV4_MIN_HEADER_LEN].to_vec();
         let orig_first8: Vec<u8> = payload[..8].to_vec();
@@ -691,43 +507,42 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
 
-        let reply = tx.pop().unwrap();
-        let icmp_payload_start = eth_len + IPV4_MIN_HEADER_LEN + ICMPV4_HEADER_LEN;
+        assert_eq!(rx.num_frames(), 0);
+        assert_eq!(tx.num_frames(), 1);
 
-        // Original IPv4 header preserved in ICMP payload
+        let reply = tx.pop().unwrap();
+        let icmp_start = eth_len + IPV4_MIN_HEADER_LEN;
+
+        // Type and code
+        assert_eq!(reply[icmp_start], Icmpv4Types::DestinationUnreachable);
+        assert_eq!(reply[icmp_start + 1], Icmpv4Codes::ProtocolUnreachable);
+
+        // Addresses swapped
+        let eth = EthernetFrame::from_frame(&reply);
+        assert_eq!(eth.src_mac, MacAddress::from(DST_MAC));
+        assert_eq!(eth.dst_mac, MacAddress::from(SRC_MAC));
+        let ip = Ipv4Header::from_frame(&reply);
+        assert_eq!(ip.src_addr, LOCAL_IP);
+        assert_eq!(ip.dst_addr, REMOTE_IP);
+        assert_eq!(ip.protocol, IpProtocols::Icmp);
+
+        // Original header + first 8 bytes preserved
+        let icmp_payload_start = icmp_start + ICMPV4_HEADER_LEN;
         assert_eq!(
             &reply[icmp_payload_start..icmp_payload_start + IPV4_MIN_HEADER_LEN],
             &orig_ip_hdr[..]
         );
-        // First 8 bytes of original data preserved
         let data_start = icmp_payload_start + IPV4_MIN_HEADER_LEN;
         assert_eq!(&reply[data_start..data_start + 8], &orig_first8[..]);
-    }
 
-    #[test]
-    fn dest_unreachable_has_valid_checksums() {
-        let data = build_ipv4_frame(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 99, &[0; 32]);
-        let mut buf = vec![0u8; 256];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
-
-        let reply = tx.pop().unwrap();
-        let eth_len = size_of::<EthernetFrame>();
-
-        // Verify IPv4 header checksum
+        // Valid IPv4 header checksum
         assert_eq!(
             compute_ipv4_checksum(&reply[eth_len..eth_len + IPV4_MIN_HEADER_LEN]),
             [0, 0]
         );
 
-        // Verify ICMP checksum
-        let ip = Ipv4Header::from_frame(&reply);
-        let icmp_start = ip.payload_offset();
-        let icmp_end = icmp_start + ip.payload_len();
+        // Valid ICMP checksum
+        let icmp_end = ip.payload_offset() + ip.payload_len();
         assert_eq!(compute_ipv4_checksum(&reply[icmp_start..icmp_end]), [0, 0]);
     }
 
@@ -750,81 +565,128 @@ mod tests {
 
         let reply = tx.pop().unwrap();
         let icmp_start = size_of::<EthernetFrame>() + IPV4_MIN_HEADER_LEN;
-        // rest_of_header bytes 2-3 should contain the next-hop MTU (1280 = 0x0500)
         let mtu = u16::from_be_bytes([reply[icmp_start + 6], reply[icmp_start + 7]]);
         assert_eq!(mtu, 1280);
     }
 
     #[test]
-    fn dest_unreachable_not_sent_for_broadcast_dst() {
-        let bcast = Ipv4Address::broadcast();
-        let data = build_ipv4_frame(SRC_MAC, DST_MAC, REMOTE_IP, bcast, 99, &[0; 32]);
+    fn dest_unreachable_rfc1122_restrictions() {
+        // Helper to test that send_destination_unreachable rejects a frame.
+        let assert_not_sent = |data: Vec<u8>| {
+            let mut buf = vec![0u8; 256];
+            buf[..data.len()].copy_from_slice(&data);
+            let frame = Frame::new(0, &mut buf, data.len(), false);
+            let mut rx = BasicFrameBuffer::new(4);
+            let mut tx = BasicFrameBuffer::new(4);
+            send_destination_unreachable(
+                frame,
+                Icmpv4Codes::ProtocolUnreachable,
+                0,
+                &mut rx,
+                &mut tx,
+            );
+            assert_eq!(rx.num_frames(), 1, "expected rejection");
+            assert_eq!(tx.num_frames(), 0, "expected no response");
+        };
+
+        // Broadcast destination
+        assert_not_sent(build_ipv4_frame(
+            SRC_MAC,
+            DST_MAC,
+            REMOTE_IP,
+            Ipv4Address::broadcast(),
+            99,
+            &[0; 32],
+        ));
+        // Multicast destination
+        assert_not_sent(build_ipv4_frame(
+            SRC_MAC,
+            DST_MAC,
+            REMOTE_IP,
+            Ipv4Address::new([224, 0, 0, 1]),
+            99,
+            &[0; 32],
+        ));
+        // Broadcast source
+        assert_not_sent(build_ipv4_frame(
+            SRC_MAC,
+            DST_MAC,
+            Ipv4Address::broadcast(),
+            LOCAL_IP,
+            99,
+            &[0; 32],
+        ));
+        // Multicast source
+        assert_not_sent(build_ipv4_frame(
+            SRC_MAC,
+            DST_MAC,
+            Ipv4Address::new([224, 0, 0, 1]),
+            LOCAL_IP,
+            99,
+            &[0; 32],
+        ));
+        // Unspecified source
+        assert_not_sent(build_ipv4_frame(
+            SRC_MAC,
+            DST_MAC,
+            Ipv4Address::unspecified(),
+            LOCAL_IP,
+            99,
+            &[0; 32],
+        ));
+        // ICMP error as trigger
+        let mut icmp_err = [0u8; 36];
+        icmp_err[0] = Icmpv4Types::DestinationUnreachable;
+        let cksum = compute_ipv4_checksum(&icmp_err);
+        icmp_err[2] = cksum[0];
+        icmp_err[3] = cksum[1];
+        assert_not_sent(build_ipv4_frame(
+            SRC_MAC,
+            DST_MAC,
+            REMOTE_IP,
+            LOCAL_IP,
+            IpProtocols::Icmp,
+            &icmp_err,
+        ));
+    }
+
+    #[test]
+    fn dest_unreachable_allowed_for_non_error() {
+        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0; 8]);
         let mut buf = vec![0u8; 256];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
+        buf[..echo.len()].copy_from_slice(&echo);
+        let frame = Frame::new(0, &mut buf, echo.len(), false);
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
-
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
+        assert_eq!(rx.num_frames(), 0);
+        assert_eq!(tx.num_frames(), 1);
     }
 
-    #[test]
-    fn dest_unreachable_not_sent_for_multicast_dst() {
-        let mcast = Ipv4Address::new([224, 0, 0, 1]);
-        let data = build_ipv4_frame(SRC_MAC, DST_MAC, REMOTE_IP, mcast, 99, &[0; 32]);
-        let mut buf = vec![0u8; 256];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
-
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
-    }
+    // -- PMTU update test --
 
     #[test]
-    fn dest_unreachable_not_sent_for_broadcast_src() {
-        let bcast_src = Ipv4Address::broadcast();
-        let data = build_ipv4_frame(SRC_MAC, DST_MAC, bcast_src, LOCAL_IP, 99, &[0; 32]);
-        let mut buf = vec![0u8; 256];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
+    fn fragmentation_needed_updates_pmtu() {
+        // Build a Fragmentation Needed ICMP message carrying an embedded IPv4 header.
+        let dest_ip = Ipv4Address::new([172, 16, 0, 1]);
 
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
+        // Build embedded original IPv4 header (20 bytes) + 8 bytes data.
+        let mut embedded = [0u8; 28];
+        embedded[0] = 0x45;
+        embedded[9] = IpProtocols::Udp;
+        let src_bytes: [u8; 4] = REMOTE_IP.into();
+        embedded[12..16].copy_from_slice(&src_bytes);
+        let dst_bytes: [u8; 4] = dest_ip.into();
+        embedded[16..20].copy_from_slice(&dst_bytes);
 
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
-    }
-
-    #[test]
-    fn dest_unreachable_not_sent_for_unspecified_src() {
-        let zero_src = Ipv4Address::unspecified();
-        let data = build_ipv4_frame(SRC_MAC, DST_MAC, zero_src, LOCAL_IP, 99, &[0; 32]);
-        let mut buf = vec![0u8; 256];
-        buf[..data.len()].copy_from_slice(&data);
-        let frame = Frame::new(0, &mut buf, data.len(), false);
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
-
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
-    }
-
-    #[test]
-    fn dest_unreachable_not_sent_for_icmp_error() {
-        // Build a frame carrying an ICMP Destination Unreachable (type 3).
-        let mut icmp_payload = [0u8; 36];
+        // Build ICMP Dest Unreachable / Fragmentation Needed with MTU=1280.
+        let mut icmp_payload = vec![0u8; ICMPV4_HEADER_LEN + embedded.len()];
         icmp_payload[0] = Icmpv4Types::DestinationUnreachable;
-        icmp_payload[1] = 0;
+        icmp_payload[1] = Icmpv4Codes::FragmentationNeeded;
+        icmp_payload[6] = (1280u16 >> 8) as u8;
+        icmp_payload[7] = 1280u16 as u8;
+        icmp_payload[ICMPV4_HEADER_LEN..].copy_from_slice(&embedded);
         let cksum = compute_ipv4_checksum(&icmp_payload);
         icmp_payload[2] = cksum[0];
         icmp_payload[3] = cksum[1];
@@ -841,28 +703,14 @@ mod tests {
         buf[..data.len()].copy_from_slice(&data);
         let frame = Frame::new(0, &mut buf, data.len(), false);
 
+        let mut pmtu = PmtuCache::new();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut pmtu, &mut rx, &mut tx);
 
+        // Frame goes to rx (not an echo request)
         assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
-    }
-
-    #[test]
-    fn dest_unreachable_allowed_for_icmp_echo() {
-        // An ICMP Echo Request is NOT an error, so we CAN send an error in
-        // response to it (though unusual, it's not prohibited).
-        let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0; 8]);
-        let mut buf = vec![0u8; 256];
-        buf[..echo.len()].copy_from_slice(&echo);
-        let frame = Frame::new(0, &mut buf, echo.len(), false);
-
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
-
-        assert_eq!(rx.num_frames(), 0);
-        assert_eq!(tx.num_frames(), 1);
+        // PMTU cache should be updated for the embedded destination IP
+        assert_eq!(pmtu.get(&IpAddress::V4(dest_ip)), 1280);
     }
 }

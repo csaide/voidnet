@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::ip::IpAddress;
+use super::wire::ip::IpAddress;
 
 /// Minimum MTU for IPv4 per RFC 791.
 pub const IPV4_MIN_MTU: u32 = 68;
@@ -54,7 +54,7 @@ impl PmtuCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::ip::{Ipv4Address, Ipv6Address};
+    use crate::net::wire::ip::{Ipv4Address, Ipv6Address};
 
     #[test]
     fn insert_and_get_ipv4() {

@@ -31,6 +31,7 @@ sudo /tmp/aws-cli/aws/install
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 rustup component add rust-analyzer
+cargo +stable install cargo-llvm-cov --locked
 
 curl -fsSL https://claude.ai/install.sh | bash
 
