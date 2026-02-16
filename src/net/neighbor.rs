@@ -133,6 +133,11 @@ impl NeighborHandler {
         self.lookup(&IpAddress::V6(*ip))
     }
 
+    /// Returns the local MAC address.
+    pub fn local_mac(&self) -> MacAddress {
+        self.local_mac
+    }
+
     /// Constructs a broadcast ARP request for `target_ip` and enqueues it on
     /// `tx_return`.
     ///

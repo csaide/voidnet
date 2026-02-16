@@ -8,6 +8,7 @@ use super::{
     ip::{IpProtocols, Ipv6Address},
     neighbor::NeighborHandler,
     pmtu::PmtuCache,
+    udp::UdpHandler,
 };
 
 /// Fixed IPv6 header length in bytes (always 40, no variable-length header).
@@ -24,7 +25,7 @@ const EXT_HOP_BY_HOP: u8 = 0;
 /// Routing extension header.
 const EXT_ROUTING: u8 = 43;
 /// Fragment extension header.
-const EXT_FRAGMENT: u8 = 44;
+pub(crate) const EXT_FRAGMENT: u8 = 44;
 /// Authentication Header.
 const EXT_AH: u8 = 51;
 /// Destination Options extension header.
@@ -33,7 +34,7 @@ const EXT_DESTINATION: u8 = 60;
 const NO_NEXT_HEADER: u8 = 59;
 
 /// Fragment extension header length (always 8 bytes).
-const FRAGMENT_EXT_LEN: usize = 8;
+pub(crate) const FRAGMENT_EXT_LEN: usize = 8;
 
 /// IPv6 fixed header wire format (40 bytes).
 ///
@@ -109,8 +110,7 @@ impl Ipv6Header {
 }
 
 /// Result of walking IPv6 extension headers.
-#[allow(dead_code)] // payload_offset will be used by transport handlers.
-enum NextHeaderResult {
+pub(crate) enum NextHeaderResult {
     /// Upper-layer protocol found. `protocol` is the protocol number,
     /// `payload_offset` is the byte offset from the start of the frame
     /// to the upper-layer payload, and `next_header_offset` is the byte
@@ -122,8 +122,9 @@ enum NextHeaderResult {
         next_header_offset: usize,
     },
     /// A Fragment extension header was found, indicating this packet
-    /// is fragmented. We do not reassemble fragments.
-    Fragment,
+    /// is fragmented. `offset` is the byte offset of the fragment
+    /// extension header from the start of the frame.
+    Fragment { offset: usize },
     /// The extension header chain is malformed (frame too short, etc.).
     Malformed,
     /// Reached `No Next Header` (protocol 59). The packet has no
@@ -148,7 +149,7 @@ enum NextHeaderResult {
 /// - ESP (50) -> returned as a protocol (cannot see past encryption)
 /// - No Next Header (59) -> [`NextHeaderResult::NoPayload`]
 /// - Any other value -> returned as an upper-layer protocol
-fn walk_extension_headers(
+pub(crate) fn walk_extension_headers(
     frame: &[u8],
     mut next_header: u8,
     mut offset: usize,
@@ -193,7 +194,7 @@ fn walk_extension_headers(
                 if offset + FRAGMENT_EXT_LEN > frame.len() {
                     return NextHeaderResult::Malformed;
                 }
-                return NextHeaderResult::Fragment;
+                return NextHeaderResult::Fragment { offset };
             }
 
             NO_NEXT_HEADER => {
@@ -242,6 +243,7 @@ impl Ipv6Handler {
         &mut self,
         frame: Frame<'umem>,
         neighbor_handler: &mut NeighborHandler,
+        udp_handler: &mut UdpHandler<'umem>,
         pmtu: &mut PmtuCache,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
@@ -306,7 +308,7 @@ impl Ipv6Handler {
                     );
                 }
                 IpProtocols::Tcp => rx_return.push(frame),
-                IpProtocols::Udp => rx_return.push(frame),
+                IpProtocols::Udp => udp_handler.process_ipv6(frame, None, payload_offset, rx_return),
                 _ => {
                     // RFC 4443 §3.4: send Parameter Problem (code 1) with
                     // pointer to the unrecognized Next Header field.
@@ -323,9 +325,8 @@ impl Ipv6Handler {
                     );
                 }
             },
-            NextHeaderResult::Fragment => {
-                eprintln!("ipv6: dropping fragmented packet");
-                rx_return.push(frame);
+            NextHeaderResult::Fragment { offset } => {
+                udp_handler.process_ipv6(frame, Some(offset), 0, rx_return);
             }
             NextHeaderResult::Malformed => {
                 eprintln!("ipv6: malformed extension header chain");
@@ -341,6 +342,7 @@ impl Ipv6Handler {
 #[cfg(test)]
 mod tests {
     use super::super::ethernet::MacAddress;
+    use super::super::ip::IpAddress;
     use super::*;
     use crate::net::pmtu::PmtuCache;
     use crate::xdp::frame::BasicFrameBuffer;
@@ -358,6 +360,16 @@ mod tests {
 
     fn new_neighbor_handler() -> NeighborHandler {
         NeighborHandler::new("test0", TEST_MAC, Duration::from_secs(60)).unwrap()
+    }
+
+    fn new_udp_handler<'umem>() -> UdpHandler<'umem> {
+        UdpHandler::new(256)
+    }
+
+    fn new_udp_handler_with_socket<'umem>(port: u16) -> (UdpHandler<'umem>, u32) {
+        let mut udp = UdpHandler::new(256);
+        let id = udp.bind(IpAddress::V6(LOCAL_IP), port, 256).unwrap();
+        (udp, id)
     }
 
     /// Builds a valid Ethernet + IPv6 frame with no extension headers.
@@ -575,7 +587,9 @@ mod tests {
         let start = eth_len + IPV6_HEADER_LEN;
 
         match walk_extension_headers(&buf, EXT_FRAGMENT, start, eth_len + 6) {
-            NextHeaderResult::Fragment => {}
+            NextHeaderResult::Fragment { offset } => {
+                assert_eq!(offset, start);
+            }
             _ => panic!("expected Fragment"),
         }
     }
@@ -618,13 +632,14 @@ mod tests {
     fn frame_too_short_goes_to_rx() {
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
+        let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let mut data = [0u8; 50];
         let frame = Frame::new(0, &mut data, 50, false);
 
-        handler.handle(frame, &mut nh, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
@@ -633,6 +648,7 @@ mod tests {
     fn wrong_version_goes_to_rx() {
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
+        let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -642,15 +658,16 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
 
     #[test]
-    fn fragment_dropped() {
+    fn fragment_goes_to_udp_handler() {
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
+        let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -659,9 +676,11 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut PmtuCache::new(), &mut rx, &mut tx);
-        assert_eq!(rx.num_frames(), 1);
+        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        // UDP fragment goes to udp_handler reassembly, not rx_return.
+        assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 0);
+        assert_eq!(udp.pending_reassembly(), 1);
     }
 
     #[test]
@@ -670,6 +689,7 @@ mod tests {
 
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
+        let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -704,7 +724,7 @@ mod tests {
         data[icmp_off + 3] = cksum[1];
 
         let frame = Frame::new(0, &mut data, frame_len, false);
-        handler.handle(frame, &mut nh, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
 
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
@@ -714,6 +734,7 @@ mod tests {
     fn valid_tcp_accepted() {
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
+        let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -721,15 +742,17 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
 
     #[test]
-    fn valid_udp_accepted() {
+    fn valid_udp_routed_to_socket() {
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
+        // UDP header in build_ipv6_frame is all zeros, so dst_port=0.
+        let (mut udp, id) = new_udp_handler_with_socket(0);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -737,15 +760,18 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut PmtuCache::new(), &mut rx, &mut tx);
-        assert_eq!(rx.num_frames(), 1);
+        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        // UDP routed to bound socket.
+        assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 0);
+        assert_eq!(udp.socket(id).unwrap().pending(), 1);
     }
 
     #[test]
     fn unknown_protocol_sends_parameter_problem() {
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
+        let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -754,15 +780,16 @@ mod tests {
         data[..raw.len()].copy_from_slice(&raw);
         let frame = Frame::new(0, &mut data, raw.len(), false);
 
-        handler.handle(frame, &mut nh, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
     }
 
     #[test]
-    fn extension_header_then_udp() {
+    fn extension_header_then_udp_routed_to_socket() {
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
+        let (mut udp, id) = new_udp_handler_with_socket(0);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -771,15 +798,18 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut PmtuCache::new(), &mut rx, &mut tx);
-        assert_eq!(rx.num_frames(), 1);
+        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        // UDP routed to bound socket.
+        assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 0);
+        assert_eq!(udp.socket(id).unwrap().pending(), 1);
     }
 
     #[test]
     fn no_next_header_goes_to_rx() {
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
+        let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -787,7 +817,7 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }

@@ -71,6 +71,8 @@ pub enum Error {
     EpollWait(Errno),
     #[error("failed to register file descriptor with epoll instance: {0}")]
     EpollCtl(Errno),
+    #[error("{0}")]
+    Other(String),
 }
 
 /// A simple ZST error variant for would block scenarios, this is explicitly a ZST to avoid the allocations and eventual drop calls of the error case.

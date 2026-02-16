@@ -5,7 +5,8 @@ use std::sync::{
 use std::time::Duration;
 
 use crate::net::{
-    EtherTypes, EthernetFrame, Ipv4Handler, Ipv6Handler, MacAddress, NeighborHandler, PmtuCache,
+    EtherTypes, EthernetFrame, IpAddress, Ipv4Handler, Ipv6Handler, MacAddress, NeighborHandler,
+    PmtuCache, UdpHandler, UdpSocket,
 };
 use crate::xdp::{
     context::{XdpContext, XdpContextBuilder},
@@ -131,6 +132,8 @@ impl<'name> LocalRuntimeBuilder<'name> {
     }
 }
 
+const DEFAULT_SOCKET_RX_CAPACITY: usize = 256;
+
 pub struct LocalRuntime<'umem> {
     _ctx: XdpContext,
     umem: Umem<'umem>,
@@ -139,6 +142,7 @@ pub struct LocalRuntime<'umem> {
     ipv4_handler: Ipv4Handler,
     ipv6_handler: Ipv6Handler,
     pmtu: PmtuCache,
+    udp_handler: UdpHandler<'umem>,
 }
 
 impl<'umem> LocalRuntime<'umem> {
@@ -169,7 +173,25 @@ impl<'umem> LocalRuntime<'umem> {
             ipv4_handler: Ipv4Handler::new(),
             ipv6_handler: Ipv6Handler::new(),
             pmtu: PmtuCache::with_mtu(mtu),
+            udp_handler: UdpHandler::new(256),
         })
+    }
+
+    /// Bind a UDP socket to the given address and port.
+    pub fn bind_udp(&mut self, addr: IpAddress, port: u16) -> Result<u32> {
+        self.udp_handler
+            .bind(addr, port, DEFAULT_SOCKET_RX_CAPACITY)
+            .map_err(|e| crate::xdp::error::Error::Other(e.to_string()))
+    }
+
+    /// Access a bound socket by ID.
+    pub fn udp_socket(&self, id: u32) -> Option<&UdpSocket<'umem>> {
+        self.udp_handler.socket(id)
+    }
+
+    /// Mutably access a bound socket by ID (for recv).
+    pub fn udp_socket_mut(&mut self, id: u32) -> Option<&mut UdpSocket<'umem>> {
+        self.udp_handler.socket_mut(id)
     }
 
     pub fn run(&mut self, exit: Arc<AtomicBool>) -> Result<()> {
@@ -191,6 +213,7 @@ impl<'umem> LocalRuntime<'umem> {
                 ipv4_handler,
                 ipv6_handler,
                 pmtu,
+                udp_handler,
                 ..
             } = self;
 
@@ -198,12 +221,19 @@ impl<'umem> LocalRuntime<'umem> {
                 let ethernet_frame = EthernetFrame::from_frame(&frame);
                 match ethernet_frame.ether_type {
                     EtherTypes::IPv4 => {
-                        ipv4_handler.handle(frame, pmtu, &mut rx_return, &mut tx_return);
+                        ipv4_handler.handle(
+                            frame,
+                            udp_handler,
+                            pmtu,
+                            &mut rx_return,
+                            &mut tx_return,
+                        );
                     }
                     EtherTypes::IPv6 => {
                         ipv6_handler.handle(
                             frame,
                             neighbor_handler,
+                            udp_handler,
                             pmtu,
                             &mut rx_return,
                             &mut tx_return,
@@ -218,6 +248,10 @@ impl<'umem> LocalRuntime<'umem> {
                     }
                 }
             }
+
+            // Periodically evict stale reassembly entries.
+            self.udp_handler
+                .evict_stale(Duration::from_secs(30), &mut rx_return);
 
             if tx_return.num_frames() > 0 {
                 while let Err(_) = self.socket.send(&mut tx_return) {
