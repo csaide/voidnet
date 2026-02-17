@@ -55,13 +55,15 @@ cargo llvm-cov --all-features --workspace --codecov  # Coverage report
 - `wire/` — Wire format parsing (ethernet, ARP, IPv4/IPv6, ICMPv4/v6, UDP)
 - `packet/` — Packet composition (`PacketReader`, `PacketWriter`)
 - `handler/` — Protocol handlers (IPv4, IPv6, ICMPv4, ICMPv6, UDP)
+- `socket/` — High-level socket abstractions (`UdpSocket`, `SharedQueue`)
 - `neighbor.rs` — ARP neighbor resolution cache
 - `pmtu.rs` — Path MTU discovery cache
 
 **`rt/`** — High-level runtime utilities:
-- `local.rs` — `LocalRuntimeBuilder` pre-configured packet processing pipeline
+- `local.rs` — `LocalRuntimeBuilder` pre-configured packet processing pipeline with integrated protocol handlers
 - `affinity.rs` — CPU affinity management
 - `thread.rs` — Thread utilities
+- `waker.rs` — No-op waker for the local executor
 
 ### Key Data Flow
 
@@ -81,4 +83,12 @@ Packets flow: NIC → XDP BPF program → XSKMAP → AF_XDP socket → shared UM
 
 ### Testing Infrastructure
 
-Integration tests use `xdp::test_utils::TestVethPair` to create virtual ethernet pairs. Tests spawn cross-thread packet exchange targeting 1M packets for throughput validation. Tests require root privileges.
+Integration tests use `xdp::test_utils::TestVethPair` to create virtual ethernet pairs. Tests spawn cross-thread packet exchange targeting 1M packets for throughput validation. Tests require root privileges — `.cargo/config.toml` configures `sudo -E` as the test runner for both x86_64 and aarch64 targets.
+
+### Running Examples
+
+```bash
+cargo run --example sync-echo -- --if-name eth0 --queue 0
+cargo run --example sync-rx -- --if-name eth0 --queue 0
+cargo run --example tokio-rx --features tokio -- --if-name eth0 --queue 0
+```

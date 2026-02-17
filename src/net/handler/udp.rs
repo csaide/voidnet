@@ -1,7 +1,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use dashmap::DashMap;
+use std::collections::HashMap;
 
 use crate::net::packet::{PacketReader, ReceivedPacket};
 use crate::net::socket::SharedQueue;
@@ -35,14 +35,14 @@ pub(crate) struct UdpBinding<'umem> {
 /// handlers instead of `PacketReader` directly.
 pub struct UdpHandler<'umem> {
     packet_reader: PacketReader<'umem>,
-    bindings: DashMap<(IpAddress, u16), UdpBinding<'umem>>,
+    bindings: HashMap<(IpAddress, u16), UdpBinding<'umem>>,
 }
 
 impl<'umem> UdpHandler<'umem> {
     pub fn new(max_reassembly_entries: usize) -> Self {
         Self {
             packet_reader: PacketReader::new(max_reassembly_entries),
-            bindings: DashMap::new(),
+            bindings: HashMap::new(),
         }
     }
 
@@ -51,7 +51,7 @@ impl<'umem> UdpHandler<'umem> {
     /// Returns `(id, rx_queue, tx_queue)` so the caller can build a
     /// user-facing `UdpSocket` that shares the same queues.
     pub fn bind(
-        &self,
+        &mut self,
         addr: IpAddress,
         port: u16,
         rx_capacity: usize,
@@ -222,14 +222,14 @@ mod tests {
 
     #[test]
     fn bind_returns_shared_queues() {
-        let handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256);
         let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 5000, 128).unwrap();
         assert!(rx_queue.is_empty());
     }
 
     #[test]
     fn duplicate_bind_returns_address_in_use() {
-        let handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256);
         handler.bind(IpAddress::V4(LOCAL_IPV4), 5000, 128).unwrap();
         let err = handler
             .bind(IpAddress::V4(LOCAL_IPV4), 5000, 128)

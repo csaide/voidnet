@@ -137,7 +137,7 @@ mod tests {
         UdpHandler<'umem>,
         crate::net::socket::SharedQueue<crate::net::packet::ReceivedPacket<'umem>>,
     ) {
-        let udp = UdpHandler::new(256);
+        let mut udp = UdpHandler::new(256);
         let rx_queue = udp.bind(IpAddress::V4(LOCAL_IP), port, 256).unwrap();
         (udp, rx_queue)
     }

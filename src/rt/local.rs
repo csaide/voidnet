@@ -156,9 +156,9 @@ pub struct LocalRuntime<'umem> {
     umem: Umem<'umem>,
     socket: Socket<'umem>,
     neighbor_handler: Rc<NeighborHandler>,
+    pmtu: Rc<PmtuCache>,
     ipv4_handler: Ipv4Handler,
     ipv6_handler: Ipv6Handler,
-    pmtu: Rc<PmtuCache>,
     udp_handler: UdpHandler<'umem>,
     // Buffers
     free_frames: SharedFrameBuffer<'umem>,
@@ -189,6 +189,7 @@ impl<'umem> LocalRuntime<'umem> {
             MacAddress::from(local_mac),
             arp_ttl,
         )?);
+        let pmtu = Rc::new(PmtuCache::with_mtu(mtu));
 
         let tx_return = BasicFrameBuffer::new(umem.num_frames()).into();
         let rx_return = BasicFrameBuffer::new(umem.num_frames()).into();
@@ -199,9 +200,9 @@ impl<'umem> LocalRuntime<'umem> {
             umem,
             socket,
             neighbor_handler,
+            pmtu,
             ipv4_handler: Ipv4Handler::new(),
             ipv6_handler: Ipv6Handler::new(),
-            pmtu: Rc::new(PmtuCache::with_mtu(mtu)),
             udp_handler: UdpHandler::new(256),
             free_frames,
             tx_return,

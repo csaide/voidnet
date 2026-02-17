@@ -60,6 +60,7 @@ impl<'umem> UdpSocket<'umem> {
         }
     }
 
+    #[inline(always)]
     pub fn send_to<'buf>(
         &mut self,
         dst_addr: IpAddress,
@@ -82,6 +83,7 @@ impl<'umem> UdpSocket<'umem> {
         }
     }
 
+    #[inline(always)]
     pub fn recv_from(&self) -> UdpRecvFromFuture<'_, 'umem> {
         UdpRecvFromFuture {
             rx_queue: &self.rx_queue,

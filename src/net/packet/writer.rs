@@ -27,7 +27,7 @@ pub struct PacketWriter<'parent, 'umem> {
     tx_return: &'parent mut SharedFrameBuffer<'umem>,
     pmtu: &'parent PmtuCache,
     neighbor_handler: &'parent NeighborHandler,
-    pkt: Option<Packet<'umem>>,
+    pkt: Packet<'umem>,
 }
 
 impl<'parent, 'umem> PacketWriter<'parent, 'umem> {
@@ -44,7 +44,7 @@ impl<'parent, 'umem> PacketWriter<'parent, 'umem> {
             tx_return,
             pmtu,
             neighbor_handler,
-            pkt: None,
+            pkt: Packet::Empty,
         }
     }
 
@@ -56,9 +56,8 @@ impl<'parent, 'umem> PacketWriter<'parent, 'umem> {
         dst_port: u16,
         payload: &[u8],
     ) -> NonBlocking<u32> {
-        let pkt = match self.pkt.take() {
-            Some(pkt) => pkt,
-            None => {
+        let pkt = match std::mem::take(&mut self.pkt) {
+            Packet::Empty => {
                 let pkt = match self
                     .prepare_udp_packet(src_addr, dst_addr, src_port, dst_port, payload)
                 {
@@ -67,10 +66,11 @@ impl<'parent, 'umem> PacketWriter<'parent, 'umem> {
                 };
                 pkt
             }
+            pkt => pkt,
         };
 
         if self.tx_return.num_frames() < pkt.num_frames() {
-            self.pkt = Some(pkt);
+            self.pkt = pkt;
             return Err(WouldBlock);
         }
 
