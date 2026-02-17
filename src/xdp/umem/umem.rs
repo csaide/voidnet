@@ -258,6 +258,18 @@ impl<'umem> Umem<'umem> {
         &self.owner
     }
 
+    /// Returns the number of frames in the UMEM.
+    #[inline(always)]
+    pub fn num_frames(&self) -> usize {
+        self.owner.num_frames()
+    }
+
+    /// Returns the size of the frames in the UMEM.
+    #[inline(always)]
+    pub fn frame_size(&self) -> usize {
+        self.owner.frame_size()
+    }
+
     /// Initialize the frame buffer with the frames from the UMEM, its then up to the caller what to do with these frames, you can push them into the fill queue, use them
     /// for writing packets, or some combination of the two. This can only be called once on the [UmemOwner] instance, and will return None on every subsequent call.
     pub fn init_buffer<B: FrameBuffer<'umem> + FromIterator<Frame<'umem>>>(&self) -> Option<B> {

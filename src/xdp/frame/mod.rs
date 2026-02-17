@@ -6,7 +6,9 @@
 mod basic;
 mod buffer;
 mod frame;
+mod shared;
 
 pub use basic::BasicFrameBuffer;
 pub use buffer::FrameBuffer;
 pub use frame::Frame;
+pub use shared::SharedFrameBuffer;

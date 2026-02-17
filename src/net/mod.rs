@@ -3,6 +3,7 @@ mod packet;
 mod pmtu;
 
 pub mod handler;
+pub mod socket;
 pub mod wire;
 
 pub use neighbor::NeighborHandler;

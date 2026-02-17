@@ -15,27 +15,28 @@ use crate::{
     },
     xdp::{
         error::{NonBlocking, WouldBlock},
-        frame::{BasicFrameBuffer, FrameBuffer},
+        frame::{FrameBuffer, SharedFrameBuffer},
     },
 };
 
 use super::{DEFAULT_MTU, IPV4_ID, IPV6_ID};
 
 pub struct PacketWriter<'parent, 'umem> {
-    free_frames: &'parent mut BasicFrameBuffer<'umem>,
-    rx_return: &'parent mut BasicFrameBuffer<'umem>,
-    tx_return: &'parent mut BasicFrameBuffer<'umem>,
-    pmtu: &'parent mut PmtuCache,
-    neighbor_handler: &'parent mut NeighborHandler,
+    free_frames: &'parent mut SharedFrameBuffer<'umem>,
+    rx_return: &'parent mut SharedFrameBuffer<'umem>,
+    tx_return: &'parent mut SharedFrameBuffer<'umem>,
+    pmtu: &'parent PmtuCache,
+    neighbor_handler: &'parent NeighborHandler,
+    pkt: Option<Packet<'umem>>,
 }
 
 impl<'parent, 'umem> PacketWriter<'parent, 'umem> {
     pub fn new(
-        free_frames: &'parent mut BasicFrameBuffer<'umem>,
-        rx_return: &'parent mut BasicFrameBuffer<'umem>,
-        tx_return: &'parent mut BasicFrameBuffer<'umem>,
-        pmtu: &'parent mut PmtuCache,
-        neighbor_handler: &'parent mut NeighborHandler,
+        free_frames: &'parent mut SharedFrameBuffer<'umem>,
+        rx_return: &'parent mut SharedFrameBuffer<'umem>,
+        tx_return: &'parent mut SharedFrameBuffer<'umem>,
+        pmtu: &'parent PmtuCache,
+        neighbor_handler: &'parent NeighborHandler,
     ) -> Self {
         Self {
             free_frames,
@@ -43,9 +44,43 @@ impl<'parent, 'umem> PacketWriter<'parent, 'umem> {
             tx_return,
             pmtu,
             neighbor_handler,
+            pkt: None,
         }
     }
-    pub fn udp_packet(
+
+    pub fn send_udp_packet(
+        &mut self,
+        src_addr: IpAddress,
+        dst_addr: IpAddress,
+        src_port: u16,
+        dst_port: u16,
+        payload: &[u8],
+    ) -> NonBlocking<u32> {
+        let pkt = match self.pkt.take() {
+            Some(pkt) => pkt,
+            None => {
+                let pkt = match self
+                    .prepare_udp_packet(src_addr, dst_addr, src_port, dst_port, payload)
+                {
+                    Ok(pkt) => pkt,
+                    Err(_) => return Err(WouldBlock),
+                };
+                pkt
+            }
+        };
+
+        if self.tx_return.num_frames() < pkt.num_frames() {
+            self.pkt = Some(pkt);
+            return Err(WouldBlock);
+        }
+
+        for frame in pkt.into_frames() {
+            self.tx_return.push(frame);
+        }
+        Ok(payload.len() as u32)
+    }
+
+    fn prepare_udp_packet(
         &mut self,
         src_addr: IpAddress,
         dst_addr: IpAddress,
@@ -64,8 +99,8 @@ impl<'parent, 'umem> PacketWriter<'parent, 'umem> {
                             src,
                             dst,
                             frame,
-                            self.rx_return,
-                            self.tx_return,
+                            &mut self.rx_return,
+                            &mut self.tx_return,
                         );
                     }
                     (IpAddress::V6(src), IpAddress::V6(dst)) => {
@@ -73,8 +108,8 @@ impl<'parent, 'umem> PacketWriter<'parent, 'umem> {
                             src,
                             dst,
                             frame,
-                            self.rx_return,
-                            self.tx_return,
+                            &mut self.rx_return,
+                            &mut self.tx_return,
                         );
                     }
                     _ => {
@@ -442,7 +477,7 @@ mod tests {
     use crate::net::wire::ethernet::EthernetFrame;
     use crate::net::wire::ip::compute_ipv4_checksum;
     use crate::net::wire::udp::{verify_udp_checksum, verify_udp_checksum_v6};
-    use crate::xdp::frame::Frame;
+    use crate::xdp::frame::{BasicFrameBuffer, Frame};
     use std::time::Duration;
 
     const TEST_LOCAL_MAC: MacAddress = MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
@@ -500,8 +535,8 @@ mod tests {
         let mut buf = [0u8; 64];
         buf[..bytes.len()].copy_from_slice(bytes);
         let frame = Frame::new(0, &mut buf, ARP_FRAME_LEN, false);
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
+        let mut rx: SharedFrameBuffer<'_> = BasicFrameBuffer::new(4).into();
+        let mut tx: SharedFrameBuffer<'_> = BasicFrameBuffer::new(4).into();
         nh.handle_arp(frame, &mut rx, &mut tx);
     }
 
@@ -569,18 +604,23 @@ mod tests {
         ($nh:ident, $free:ident, $bufs:ident, $rx:ident, $tx:ident, $pmtu:ident, $seed:ident, $n:expr) => {
             let mut $nh = new_handler_with_cache();
             $seed(&mut $nh);
-            let mut $free = BasicFrameBuffer::new($n * 2);
+            let mut $free: SharedFrameBuffer<'_> = BasicFrameBuffer::new($n * 2).into();
             let mut $bufs: Vec<Vec<u8>> = (0..$n).map(|_| vec![0u8; 2048]).collect();
             for (i, buf) in $bufs.iter_mut().enumerate() {
                 $free.push(Frame::new(i as u64, buf.as_mut_slice(), 1, false));
             }
-            let mut $rx = BasicFrameBuffer::new(16);
-            let mut $tx = BasicFrameBuffer::new(16);
+            let mut $rx: SharedFrameBuffer<'_> = BasicFrameBuffer::new(16).into();
+            let mut $tx: SharedFrameBuffer<'_> = BasicFrameBuffer::new(16).into();
             let mut $pmtu = PmtuCache::new();
         };
     }
 
-    fn assert_ethernet_header(frame: &Frame, dst_mac: MacAddress, src_mac: MacAddress, ether_type: crate::net::wire::ethernet::EtherType) {
+    fn assert_ethernet_header(
+        frame: &Frame,
+        dst_mac: MacAddress,
+        src_mac: MacAddress,
+        ether_type: crate::net::wire::ethernet::EtherType,
+    ) {
         let eth = EthernetFrame::from_frame(frame);
         assert_eq!(eth.dst_mac, dst_mac);
         assert_eq!(eth.src_mac, src_mac);
@@ -597,7 +637,7 @@ mod tests {
         let mut writer = PacketWriter::new(&mut free, &mut rx, &mut tx, &mut pmtu, &mut nh);
 
         let payload = b"Hello, World!";
-        let result = writer.udp_packet(
+        let result = writer.prepare_udp_packet(
             IpAddress::V4(TEST_LOCAL_IPV4),
             IpAddress::V4(TEST_REMOTE_IPV4),
             12345,
@@ -634,7 +674,7 @@ mod tests {
 
                 assert_payload_eq(&frame, udp_offset + UDP_HEADER_LEN, payload);
             }
-            Packet::Multi(_) => panic!("expected Single packet"),
+            Packet::Empty | Packet::Multi(_) => panic!("expected Single packet"),
         }
     }
 
@@ -644,7 +684,7 @@ mod tests {
         let mut builder = PacketWriter::new(&mut free, &mut rx, &mut tx, &mut pmtu, &mut nh);
 
         let payload = b"Hello, IPv6!";
-        let result = builder.udp_packet(
+        let result = builder.prepare_udp_packet(
             IpAddress::V6(TEST_LOCAL_IPV6),
             IpAddress::V6(TEST_REMOTE_IPV6),
             12345,
@@ -677,7 +717,7 @@ mod tests {
 
                 assert_payload_eq(&frame, udp_offset + UDP_HEADER_LEN, payload);
             }
-            Packet::Multi(_) => panic!("expected Single packet"),
+            Packet::Empty | Packet::Multi(_) => panic!("expected Single packet"),
         }
     }
 
@@ -685,18 +725,18 @@ mod tests {
     fn mac_miss_returns_would_block_and_sends_arp() {
         let mut nh = new_handler_with_cache();
         // Don't seed neighbor — MAC is unknown.
-        let mut free = BasicFrameBuffer::new(16);
+        let mut free: SharedFrameBuffer<'_> = BasicFrameBuffer::new(16).into();
         let mut bufs: Vec<Vec<u8>> = (0..8).map(|_| vec![0u8; 2048]).collect();
         for (i, buf) in bufs.iter_mut().enumerate() {
             free.push(Frame::new(i as u64, buf.as_mut_slice(), 1, false));
         }
-        let mut rx = BasicFrameBuffer::new(16);
-        let mut tx = BasicFrameBuffer::new(16);
+        let mut rx: SharedFrameBuffer<'_> = BasicFrameBuffer::new(16).into();
+        let mut tx: SharedFrameBuffer<'_> = BasicFrameBuffer::new(16).into();
         let mut pmtu = PmtuCache::new();
 
         let mut builder = PacketWriter::new(&mut free, &mut rx, &mut tx, &mut pmtu, &mut nh);
 
-        let result = builder.udp_packet(
+        let result = builder.prepare_udp_packet(
             IpAddress::V4(TEST_LOCAL_IPV4),
             IpAddress::V4(TEST_REMOTE_IPV4),
             1234,
@@ -714,14 +754,14 @@ mod tests {
         let mut nh = new_handler_with_cache();
         seed_neighbor_v4(&mut nh);
 
-        let mut free = BasicFrameBuffer::new(16);
-        let mut rx = BasicFrameBuffer::new(16);
-        let mut tx = BasicFrameBuffer::new(16);
+        let mut free: SharedFrameBuffer<'_> = BasicFrameBuffer::new(16).into();
+        let mut rx: SharedFrameBuffer<'_> = BasicFrameBuffer::new(16).into();
+        let mut tx: SharedFrameBuffer<'_> = BasicFrameBuffer::new(16).into();
         let mut pmtu = PmtuCache::new();
 
         let mut builder = PacketWriter::new(&mut free, &mut rx, &mut tx, &mut pmtu, &mut nh);
 
-        let result = builder.udp_packet(
+        let result = builder.prepare_udp_packet(
             IpAddress::V4(TEST_LOCAL_IPV4),
             IpAddress::V4(TEST_REMOTE_IPV4),
             1234,
@@ -739,7 +779,7 @@ mod tests {
 
         // max_payload for single = 1500 - 20 - 8 = 1472
         let payload = vec![0xAB; 3000];
-        let result = builder.udp_packet(
+        let result = builder.prepare_udp_packet(
             IpAddress::V4(TEST_LOCAL_IPV4),
             IpAddress::V4(TEST_REMOTE_IPV4),
             12345,
@@ -794,7 +834,7 @@ mod tests {
                 }
                 assert_eq!(reassembled, payload);
             }
-            Packet::Single(_) => panic!("expected Multi packet for large payload"),
+            Packet::Empty | Packet::Single(_) => panic!("expected Multi packet for large payload"),
         }
     }
 
@@ -805,7 +845,7 @@ mod tests {
 
         // max_payload for single = 1500 - 40 - 8 = 1452
         let payload = vec![0xCD; 3000];
-        let result = builder.udp_packet(
+        let result = builder.prepare_udp_packet(
             IpAddress::V6(TEST_LOCAL_IPV6),
             IpAddress::V6(TEST_REMOTE_IPV6),
             12345,
@@ -866,7 +906,7 @@ mod tests {
                 }
                 assert_eq!(reassembled, payload);
             }
-            Packet::Single(_) => panic!("expected Multi packet for large payload"),
+            Packet::Empty | Packet::Single(_) => panic!("expected Multi packet for large payload"),
         }
     }
 
@@ -875,7 +915,7 @@ mod tests {
         // IPv4
         setup_writer!(nh4, free4, bufs4, rx4, tx4, pmtu4, seed_neighbor_v4, 4);
         let mut w4 = PacketWriter::new(&mut free4, &mut rx4, &mut tx4, &mut pmtu4, &mut nh4);
-        let r4 = w4.udp_packet(
+        let r4 = w4.prepare_udp_packet(
             IpAddress::V4(TEST_LOCAL_IPV4),
             IpAddress::V4(TEST_REMOTE_IPV4),
             1234,
@@ -884,15 +924,18 @@ mod tests {
         );
         match r4.expect("should succeed") {
             Packet::Single(frame) => {
-                assert_eq!(frame.len(), ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + UDP_HEADER_LEN);
+                assert_eq!(
+                    frame.len(),
+                    ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + UDP_HEADER_LEN
+                );
             }
-            Packet::Multi(_) => panic!("expected Single"),
+            Packet::Empty | Packet::Multi(_) => panic!("expected Single"),
         }
 
         // IPv6
         setup_writer!(nh6, free6, bufs6, rx6, tx6, pmtu6, seed_neighbor_v6, 4);
         let mut w6 = PacketWriter::new(&mut free6, &mut rx6, &mut tx6, &mut pmtu6, &mut nh6);
-        let r6 = w6.udp_packet(
+        let r6 = w6.prepare_udp_packet(
             IpAddress::V6(TEST_LOCAL_IPV6),
             IpAddress::V6(TEST_REMOTE_IPV6),
             1234,
@@ -901,9 +944,12 @@ mod tests {
         );
         match r6.expect("should succeed") {
             Packet::Single(frame) => {
-                assert_eq!(frame.len(), ETH_HEADER_LEN + IPV6_HEADER_LEN + UDP_HEADER_LEN);
+                assert_eq!(
+                    frame.len(),
+                    ETH_HEADER_LEN + IPV6_HEADER_LEN + UDP_HEADER_LEN
+                );
             }
-            Packet::Multi(_) => panic!("expected Single"),
+            Packet::Empty | Packet::Multi(_) => panic!("expected Single"),
         }
     }
 }

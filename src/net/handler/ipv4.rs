@@ -37,7 +37,7 @@ impl Ipv4Handler {
         &mut self,
         frame: Frame<'umem>,
         udp_handler: &mut UdpHandler<'umem>,
-        pmtu: &mut PmtuCache,
+        pmtu: &PmtuCache,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
@@ -131,10 +131,15 @@ mod tests {
         UdpHandler::new(256)
     }
 
-    fn new_udp_handler_with_socket<'umem>(port: u16) -> (UdpHandler<'umem>, u32) {
-        let mut udp = UdpHandler::new(256);
-        let id = udp.bind(IpAddress::V4(LOCAL_IP), port, 256).unwrap();
-        (udp, id)
+    fn new_udp_handler_with_socket<'umem>(
+        port: u16,
+    ) -> (
+        UdpHandler<'umem>,
+        crate::net::socket::SharedQueue<crate::net::packet::ReceivedPacket<'umem>>,
+    ) {
+        let udp = UdpHandler::new(256);
+        let rx_queue = udp.bind(IpAddress::V4(LOCAL_IP), port, 256).unwrap();
+        (udp, rx_queue)
     }
 
     /// Builds a valid Ethernet + IPv4 frame.
@@ -216,12 +221,12 @@ mod tests {
 
     #[test]
     fn frame_too_short_goes_to_rx() {
+        let mut data = [0u8; 30];
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let mut data = [0u8; 30];
         let frame = Frame::new(0, &mut data, 30, false);
 
         handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
@@ -231,16 +236,16 @@ mod tests {
 
     #[test]
     fn wrong_version_goes_to_rx() {
-        let mut handler = new_handler();
-        let mut udp = new_udp_handler();
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-
         let mut data = build_ipv4_frame(REMOTE_IP, LOCAL_IP, 17, 64, &[0; 8]);
         data[14] = 0x65; // version 6 instead of 4
         let cksum = compute_ipv4_checksum(&data[14..34]);
         data[24] = cksum[0];
         data[25] = cksum[1];
+
+        let mut handler = new_handler();
+        let mut udp = new_udp_handler();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -252,13 +257,14 @@ mod tests {
 
     #[test]
     fn ihl_too_small_goes_to_rx() {
+        let mut data = build_ipv4_frame(REMOTE_IP, LOCAL_IP, 17, 64, &[0; 8]);
+        data[14] = 0x44; // IHL = 4 (< 5)
+
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let mut data = build_ipv4_frame(REMOTE_IP, LOCAL_IP, 17, 64, &[0; 8]);
-        data[14] = 0x44; // IHL = 4 (< 5)
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
@@ -269,13 +275,13 @@ mod tests {
 
     #[test]
     fn bad_checksum_goes_to_rx() {
+        let mut data = build_ipv4_frame(REMOTE_IP, LOCAL_IP, 17, 64, &[0; 8]);
+        data[24] ^= 0xFF; // corrupt checksum
+
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-
-        let mut data = build_ipv4_frame(REMOTE_IP, LOCAL_IP, 17, 64, &[0; 8]);
-        data[24] ^= 0xFF; // corrupt checksum
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -287,11 +293,6 @@ mod tests {
 
     #[test]
     fn total_length_shorter_than_header_goes_to_rx() {
-        let mut handler = new_handler();
-        let mut udp = new_udp_handler();
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-
         let mut data = build_ipv4_frame(REMOTE_IP, LOCAL_IP, 17, 64, &[0; 8]);
         // Set total_length to 10 (less than 20-byte header)
         data[16] = 0x00;
@@ -302,6 +303,11 @@ mod tests {
         let cksum = compute_ipv4_checksum(&data[14..34]);
         data[24] = cksum[0];
         data[25] = cksum[1];
+
+        let mut handler = new_handler();
+        let mut udp = new_udp_handler();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -315,13 +321,14 @@ mod tests {
 
     #[test]
     fn udp_fragment_goes_to_udp_handler() {
+        let mut data =
+            build_fragment_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 0, true, &[0; 8]);
+
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let mut data =
-            build_fragment_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 0, true, &[0; 8]);
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
@@ -333,14 +340,15 @@ mod tests {
 
     #[test]
     fn non_udp_fragment_goes_to_rx() {
+        // TCP fragment should go to rx_return, not UDP handler
+        let mut data =
+            build_fragment_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Tcp, 0, true, &[0; 20]);
+
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        // TCP fragment should go to rx_return, not UDP handler
-        let mut data =
-            build_fragment_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Tcp, 0, true, &[0; 20]);
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
@@ -352,11 +360,6 @@ mod tests {
 
     #[test]
     fn icmp_echo_request_generates_reply() {
-        let mut handler = new_handler();
-        let mut udp = new_udp_handler();
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-
         let eth_len = size_of::<EthernetFrame>();
         let icmp_len = 8 + 8;
         let ip_total = IPV4_MIN_HEADER_LEN + icmp_len;
@@ -384,6 +387,11 @@ mod tests {
         data[icmp_off + 2] = cksum[0];
         data[icmp_off + 3] = cksum[1];
 
+        let mut handler = new_handler();
+        let mut udp = new_udp_handler();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+
         let frame = Frame::new(0, &mut data, frame_len, false);
         handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
 
@@ -393,12 +401,13 @@ mod tests {
 
     #[test]
     fn valid_tcp_accepted() {
+        let mut data = build_ipv4_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Tcp, 64, &[0; 20]);
+
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let mut data = build_ipv4_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Tcp, 64, &[0; 20]);
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
@@ -409,31 +418,33 @@ mod tests {
 
     #[test]
     fn valid_udp_routed_to_socket() {
+        let mut data = build_ipv4_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
+
         let mut handler = new_handler();
-        let (mut udp, id) = new_udp_handler_with_socket(0);
+        let (mut udp, rx_queue) = new_udp_handler_with_socket(0);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let mut data = build_ipv4_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
         handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 0);
-        assert_eq!(udp.socket(id).unwrap().pending(), 1);
+        assert_eq!(rx_queue.len(), 1);
     }
 
     #[test]
     fn unknown_protocol_sends_dest_unreachable() {
+        let raw = build_ipv4_frame(REMOTE_IP, LOCAL_IP, 255, 64, &[0; 8]);
+        let mut data = vec![0u8; 256];
+        data[..raw.len()].copy_from_slice(&raw);
+
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let raw = build_ipv4_frame(REMOTE_IP, LOCAL_IP, 255, 64, &[0; 8]);
-        let mut data = vec![0u8; 256];
-        data[..raw.len()].copy_from_slice(&raw);
         let frame = Frame::new(0, &mut data, raw.len(), false);
 
         handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);

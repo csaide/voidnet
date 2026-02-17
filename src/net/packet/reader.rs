@@ -19,6 +19,7 @@ use crate::{
 };
 
 /// A completed received UDP packet, ready for delivery to user space.
+#[derive(Debug)]
 pub struct ReceivedPacket<'umem> {
     pub src_addr: IpAddress,
     pub dst_addr: IpAddress,
@@ -229,9 +230,13 @@ impl<'umem> PacketReader<'umem> {
             .entry(key)
             .or_insert_with(ReassemblyEntry::new);
 
-        if let Some(dup_frame) =
-            entry.accept_fragment(frag_offset_bytes, more_fragments, payload_len, payload_offset, frame)
-        {
+        if let Some(dup_frame) = entry.accept_fragment(
+            frag_offset_bytes,
+            more_fragments,
+            payload_len,
+            payload_offset,
+            frame,
+        ) {
             rx_return.push(dup_frame);
             return None;
         }
@@ -338,9 +343,13 @@ impl<'umem> PacketReader<'umem> {
                     .entry(key)
                     .or_insert_with(ReassemblyEntry::new);
 
-                if let Some(dup_frame) =
-                    entry.accept_fragment(frag_offset_bytes, more_fragments, data_len, data_start, frame)
-                {
+                if let Some(dup_frame) = entry.accept_fragment(
+                    frag_offset_bytes,
+                    more_fragments,
+                    data_len,
+                    data_start,
+                    frame,
+                ) {
                     rx_return.push(dup_frame);
                     return None;
                 }
@@ -424,7 +433,11 @@ mod tests {
         buf[14] = 0x45;
         buf[16..18].copy_from_slice(&(ip_total as u16).to_be_bytes());
         buf[18..20].copy_from_slice(&id.to_be_bytes());
-        let flags = if more { 0x2000 | frag_offset_8 } else { frag_offset_8 };
+        let flags = if more {
+            0x2000 | frag_offset_8
+        } else {
+            frag_offset_8
+        };
         buf[20..22].copy_from_slice(&flags.to_be_bytes());
         buf[23] = IpProtocols::Udp;
         buf[26..30].copy_from_slice(&SRC_V4);
@@ -500,7 +513,9 @@ mod tests {
         let len = build_ipv4_udp(&mut buf, 1234, 5678, b"hello");
         let frame = Frame::new(0, &mut buf, len, false);
 
-        let pkt = reader.process_ipv4(frame, &mut rx).expect("should return packet");
+        let pkt = reader
+            .process_ipv4(frame, &mut rx)
+            .expect("should return packet");
         assert_eq!(pkt.src_port, 1234);
         assert_eq!(pkt.dst_port, 5678);
         assert_eq!(pkt.src_addr, IpAddress::V4(Ipv4Address::new(SRC_V4)));
@@ -648,9 +663,11 @@ mod tests {
         // Frame only covers the IPv6 header, no room for UDP
         let frame = Frame::new(0, &mut buf, ETH_LEN + IPV6_HEADER_LEN, false);
 
-        assert!(reader
-            .process_ipv6(frame, None, ETH_LEN + IPV6_HEADER_LEN, &mut rx)
-            .is_none());
+        assert!(
+            reader
+                .process_ipv6(frame, None, ETH_LEN + IPV6_HEADER_LEN, &mut rx)
+                .is_none()
+        );
         assert_eq!(rx.num_frames(), 1);
     }
 
@@ -666,15 +683,16 @@ mod tests {
         let first = udp_first_frag(3000, 4000, &[1, 2, 3, 4, 5, 6, 7, 8]);
         let len1 = build_ipv6_fragment(&mut buf1, 100, 0, true, IpProtocols::Udp, &first);
         let f1 = Frame::new(0, &mut buf1, len1, false);
-        assert!(reader
-            .process_ipv6(f1, Some(FRAG_OFF), FRAG_OFF + FRAGMENT_EXT_LEN, &mut rx)
-            .is_none());
+        assert!(
+            reader
+                .process_ipv6(f1, Some(FRAG_OFF), FRAG_OFF + FRAGMENT_EXT_LEN, &mut rx)
+                .is_none()
+        );
         assert_eq!(reader.pending_entries(), 1);
 
         // Last fragment: 8 bytes, MF=0, offset=2
         let mut buf2 = [0u8; 256];
-        let len2 =
-            build_ipv6_fragment(&mut buf2, 100, 2, false, IpProtocols::Udp, &[9; 8]);
+        let len2 = build_ipv6_fragment(&mut buf2, 100, 2, false, IpProtocols::Udp, &[9; 8]);
         let f2 = Frame::new(1, &mut buf2, len2, false);
         let pkt = reader
             .process_ipv6(f2, Some(FRAG_OFF), FRAG_OFF + FRAGMENT_EXT_LEN, &mut rx)
@@ -693,9 +711,11 @@ mod tests {
         let len = build_ipv6_fragment(&mut buf, 1, 0, true, IpProtocols::Tcp, &[0u8; 16]);
         let frame = Frame::new(0, &mut buf, len, false);
 
-        assert!(reader
-            .process_ipv6(frame, Some(FRAG_OFF), FRAG_OFF + FRAGMENT_EXT_LEN, &mut rx)
-            .is_none());
+        assert!(
+            reader
+                .process_ipv6(frame, Some(FRAG_OFF), FRAG_OFF + FRAGMENT_EXT_LEN, &mut rx)
+                .is_none()
+        );
         assert_eq!(rx.num_frames(), 1);
     }
 
@@ -711,9 +731,11 @@ mod tests {
         // Frame only 56 bytes — needs 62 (54 + 8) for fragment ext header
         let frame = Frame::new(0, &mut buf, FRAG_OFF + 2, false);
 
-        assert!(reader
-            .process_ipv6(frame, Some(FRAG_OFF), FRAG_OFF, &mut rx)
-            .is_none());
+        assert!(
+            reader
+                .process_ipv6(frame, Some(FRAG_OFF), FRAG_OFF, &mut rx)
+                .is_none()
+        );
         assert_eq!(rx.num_frames(), 1);
     }
 
@@ -732,9 +754,11 @@ mod tests {
         let mut buf2 = [0u8; 256];
         let len = build_ipv6_fragment(&mut buf2, 2, 0, true, IpProtocols::Udp, &[0u8; 16]);
         let f2 = Frame::new(1, &mut buf2, len, false);
-        assert!(reader
-            .process_ipv6(f2, Some(FRAG_OFF), FRAG_OFF + FRAGMENT_EXT_LEN, &mut rx)
-            .is_none());
+        assert!(
+            reader
+                .process_ipv6(f2, Some(FRAG_OFF), FRAG_OFF + FRAGMENT_EXT_LEN, &mut rx)
+                .is_none()
+        );
         assert_eq!(rx.num_frames(), 1);
     }
 

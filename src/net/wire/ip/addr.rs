@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 /// An IPv4 address representation.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 #[repr(C, packed)]
@@ -63,6 +65,21 @@ impl From<[u8; 4]> for Ipv4Address {
 impl From<Ipv4Address> for [u8; 4] {
     fn from(addr: Ipv4Address) -> Self {
         addr.octets
+    }
+}
+
+impl From<std::net::Ipv4Addr> for Ipv4Address {
+    fn from(addr: std::net::Ipv4Addr) -> Self {
+        Self::new(addr.octets())
+    }
+}
+
+impl FromStr for Ipv4Address {
+    type Err = std::io::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let addr = std::net::Ipv4Addr::from_str(s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        Ok(addr.into())
     }
 }
 
@@ -192,6 +209,21 @@ impl From<Ipv6Address> for [u8; 16] {
     }
 }
 
+impl From<std::net::Ipv6Addr> for Ipv6Address {
+    fn from(addr: std::net::Ipv6Addr) -> Self {
+        Self::new(addr.octets())
+    }
+}
+
+impl FromStr for Ipv6Address {
+    type Err = std::io::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let addr = std::net::Ipv6Addr::from_str(s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        Ok(addr.into())
+    }
+}
+
 /// Protocol-agnostic IP address used as the key in the neighbor cache.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum IpAddress {
@@ -210,6 +242,30 @@ impl From<Ipv4Address> for IpAddress {
 impl From<Ipv6Address> for IpAddress {
     fn from(addr: Ipv6Address) -> Self {
         Self::V6(addr)
+    }
+}
+
+impl From<std::net::IpAddr> for IpAddress {
+    fn from(addr: std::net::IpAddr) -> Self {
+        match addr {
+            std::net::IpAddr::V4(addr) => Self::V4(addr.into()),
+            std::net::IpAddr::V6(addr) => Self::V6(addr.into()),
+        }
+    }
+}
+
+impl From<std::net::Ipv4Addr> for IpAddress {
+    fn from(addr: std::net::Ipv4Addr) -> Self {
+        Self::V4(addr.into())
+    }
+}
+
+impl FromStr for IpAddress {
+    type Err = std::io::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let addr = std::net::IpAddr::from_str(s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        Ok(Self::from(addr))
     }
 }
 

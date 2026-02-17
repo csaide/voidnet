@@ -15,8 +15,10 @@ pub static IPV4_ID: AtomicU16 = AtomicU16::new(1);
 pub static IPV6_ID: AtomicU32 = AtomicU32::new(1);
 
 /// A packet is a collection of frames that are part of a single packet.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum Packet<'umem> {
+    #[default]
+    Empty,
     Single(Frame<'umem>),
     Multi(Vec<Frame<'umem>>),
 }
@@ -25,14 +27,27 @@ impl<'umem> Packet<'umem> {
     /// Returns the number of frames in this packet.
     pub fn num_frames(&self) -> usize {
         match self {
+            Packet::Empty => 0,
             Packet::Single(_) => 1,
             Packet::Multi(frames) => frames.len(),
+        }
+    }
+
+    /// Returns the total length of the packet in bytes.
+    ///
+    /// Note for fragmented packets this iterates over the entire packet use sparingly.
+    pub fn len(&self) -> usize {
+        match self {
+            Packet::Empty => 0,
+            Packet::Single(frame) => frame.len(),
+            Packet::Multi(frames) => frames.iter().map(|f| f.len()).sum(),
         }
     }
 
     /// Returns a borrowing iterator over the frames in this packet.
     pub fn frames(&self) -> PacketFrameIter<'_, 'umem> {
         match self {
+            Packet::Empty => PacketFrameIter::Empty,
             Packet::Single(frame) => PacketFrameIter::Single(std::iter::once(frame)),
             Packet::Multi(frames) => PacketFrameIter::Multi(frames.iter()),
         }
@@ -41,14 +56,28 @@ impl<'umem> Packet<'umem> {
     /// Returns a consuming iterator over the frames in this packet.
     pub fn into_frames(self) -> PacketIntoIter<'umem> {
         match self {
+            Packet::Empty => PacketIntoIter::Empty,
             Packet::Single(frame) => PacketIntoIter::Single(std::iter::once(frame)),
             Packet::Multi(frames) => PacketIntoIter::Multi(frames.into_iter()),
         }
     }
 }
 
+impl<'umem, T: Iterator<Item = Frame<'umem>> + ExactSizeIterator> From<T> for Packet<'umem> {
+    fn from(mut iter: T) -> Self {
+        if iter.len() == 0 {
+            panic!("Cannot create a packet from an empty iterator");
+        } else if iter.len() == 1 {
+            Packet::Single(iter.next().unwrap())
+        } else {
+            Packet::Multi(iter.collect())
+        }
+    }
+}
+
 /// Borrowing iterator over frames in a [`Packet`].
 pub enum PacketFrameIter<'a, 'umem> {
+    Empty,
     Single(std::iter::Once<&'a Frame<'umem>>),
     Multi(std::slice::Iter<'a, Frame<'umem>>),
 }
@@ -58,6 +87,7 @@ impl<'a, 'umem> Iterator for PacketFrameIter<'a, 'umem> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
+            PacketFrameIter::Empty => None,
             PacketFrameIter::Single(iter) => iter.next(),
             PacketFrameIter::Multi(iter) => iter.next(),
         }
@@ -65,6 +95,7 @@ impl<'a, 'umem> Iterator for PacketFrameIter<'a, 'umem> {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
+            PacketFrameIter::Empty => (0, Some(0)),
             PacketFrameIter::Single(iter) => iter.size_hint(),
             PacketFrameIter::Multi(iter) => iter.size_hint(),
         }
@@ -75,6 +106,7 @@ impl<'a, 'umem> ExactSizeIterator for PacketFrameIter<'a, 'umem> {}
 
 /// Consuming iterator over frames in a [`Packet`].
 pub enum PacketIntoIter<'umem> {
+    Empty,
     Single(std::iter::Once<Frame<'umem>>),
     Multi(std::vec::IntoIter<Frame<'umem>>),
 }
@@ -84,6 +116,7 @@ impl<'umem> Iterator for PacketIntoIter<'umem> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
+            PacketIntoIter::Empty => None,
             PacketIntoIter::Single(iter) => iter.next(),
             PacketIntoIter::Multi(iter) => iter.next(),
         }
@@ -91,6 +124,7 @@ impl<'umem> Iterator for PacketIntoIter<'umem> {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
+            PacketIntoIter::Empty => (0, Some(0)),
             PacketIntoIter::Single(iter) => iter.size_hint(),
             PacketIntoIter::Multi(iter) => iter.size_hint(),
         }

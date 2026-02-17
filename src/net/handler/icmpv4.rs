@@ -19,7 +19,7 @@ use super::wire::{
 /// * All other types are passed to `rx_return`.
 pub fn handle_icmpv4<'umem>(
     mut frame: Frame<'umem>,
-    pmtu: &mut PmtuCache,
+    pmtu: &PmtuCache,
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {

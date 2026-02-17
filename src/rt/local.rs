@@ -1,21 +1,16 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::rc::Rc;
+use std::task::Poll;
 use std::time::Duration;
-
-use crate::net::{
-    NeighborHandler, PmtuCache,
-    handler::{
-        ipv4::Ipv4Handler,
-        ipv6::Ipv6Handler,
-        udp::{UdpHandler, UdpSocket},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
     },
-    wire::{
-        ethernet::{EtherTypes, EthernetFrame, MacAddress},
-        ip::IpAddress,
-    },
+    task::Context,
 };
+
+use futures_util::pin_mut;
+
 use crate::xdp::{
     context::{XdpContext, XdpContextBuilder},
     error::Result,
@@ -24,6 +19,20 @@ use crate::xdp::{
     socket::{CopyMode, Socket, SocketBuilder},
     umem::{Umem, UmemBuilder},
 };
+use crate::{
+    net::{
+        NeighborHandler, PmtuCache,
+        handler::{ipv4::Ipv4Handler, ipv6::Ipv6Handler, udp::UdpHandler},
+        socket::UdpSocket,
+        wire::{
+            ethernet::{EtherTypes, EthernetFrame, MacAddress},
+            ip::IpAddress,
+        },
+    },
+    xdp::frame::SharedFrameBuffer,
+};
+
+use super::waker;
 
 const DEFAULT_ARP_TTL: Duration = Duration::from_secs(60);
 
@@ -146,11 +155,15 @@ pub struct LocalRuntime<'umem> {
     _ctx: XdpContext,
     umem: Umem<'umem>,
     socket: Socket<'umem>,
-    neighbor_handler: NeighborHandler,
+    neighbor_handler: Rc<NeighborHandler>,
     ipv4_handler: Ipv4Handler,
     ipv6_handler: Ipv6Handler,
-    pmtu: PmtuCache,
+    pmtu: Rc<PmtuCache>,
     udp_handler: UdpHandler<'umem>,
+    // Buffers
+    free_frames: SharedFrameBuffer<'umem>,
+    tx_return: SharedFrameBuffer<'umem>,
+    rx_return: SharedFrameBuffer<'umem>,
 }
 
 impl<'umem> LocalRuntime<'umem> {
@@ -171,7 +184,15 @@ impl<'umem> LocalRuntime<'umem> {
         arp_ttl: Duration,
     ) -> Result<Self> {
         let mtu = ctx.info().mtu;
-        let neighbor_handler = NeighborHandler::new(if_name, MacAddress::from(local_mac), arp_ttl)?;
+        let neighbor_handler = Rc::new(NeighborHandler::new(
+            if_name,
+            MacAddress::from(local_mac),
+            arp_ttl,
+        )?);
+
+        let tx_return = BasicFrameBuffer::new(umem.num_frames()).into();
+        let rx_return = BasicFrameBuffer::new(umem.num_frames()).into();
+        let free_frames = umem.init_buffer::<BasicFrameBuffer>().unwrap().into();
 
         Ok(Self {
             _ctx: ctx,
@@ -180,37 +201,44 @@ impl<'umem> LocalRuntime<'umem> {
             neighbor_handler,
             ipv4_handler: Ipv4Handler::new(),
             ipv6_handler: Ipv6Handler::new(),
-            pmtu: PmtuCache::with_mtu(mtu),
+            pmtu: Rc::new(PmtuCache::with_mtu(mtu)),
             udp_handler: UdpHandler::new(256),
+            free_frames,
+            tx_return,
+            rx_return,
         })
     }
 
     /// Bind a UDP socket to the given address and port.
-    pub fn bind_udp(&mut self, addr: IpAddress, port: u16) -> Result<u32> {
-        self.udp_handler
+    pub fn bind_udp(&mut self, addr: IpAddress, port: u16) -> Result<UdpSocket<'umem>> {
+        let rx_queue = self
+            .udp_handler
             .bind(addr, port, DEFAULT_SOCKET_RX_CAPACITY)
-            .map_err(|e| crate::xdp::error::Error::Other(e.to_string()))
+            .map_err(|e| crate::xdp::error::Error::Other(e.to_string()))?;
+        Ok(UdpSocket::new(
+            addr,
+            port,
+            rx_queue,
+            self.free_frames.clone(),
+            self.rx_return.clone(),
+            self.tx_return.clone(),
+            self.pmtu.clone(),
+            self.neighbor_handler.clone(),
+        ))
     }
 
-    /// Access a bound socket by ID.
-    pub fn udp_socket(&self, id: u32) -> Option<&UdpSocket<'umem>> {
-        self.udp_handler.socket(id)
-    }
-
-    /// Mutably access a bound socket by ID (for recv).
-    pub fn udp_socket_mut(&mut self, id: u32) -> Option<&mut UdpSocket<'umem>> {
-        self.udp_handler.socket_mut(id)
-    }
-
-    pub fn run(&mut self, exit: Arc<AtomicBool>) -> Result<()> {
-        let mut buffer = self.umem.init_buffer::<BasicFrameBuffer>().unwrap();
-
-        let mut rx_return = BasicFrameBuffer::new(buffer.num_frames());
-        let mut tx_return = BasicFrameBuffer::new(buffer.num_frames());
-
+    pub fn run<F>(&mut self, exit: Arc<AtomicBool>, fut: F) -> Result<()>
+    where
+        F: Future<Output = ()>,
+    {
         self.umem.maybe_wake_fill_queue(self.socket.fd())?;
-        self.umem.process_fill_queue(&mut buffer);
+        self.umem.process_fill_queue(&mut self.free_frames);
 
+        let waker = waker();
+        let mut cx = Context::from_waker(&waker);
+        pin_mut!(fut);
+
+        let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
         while !exit.load(Ordering::Relaxed) {
             if let Err(_) = self.socket.recv(&mut buffer) {
                 continue;
@@ -233,8 +261,8 @@ impl<'umem> LocalRuntime<'umem> {
                             frame,
                             udp_handler,
                             pmtu,
-                            &mut rx_return,
-                            &mut tx_return,
+                            &mut self.rx_return,
+                            &mut self.tx_return,
                         );
                     }
                     EtherTypes::IPv6 => {
@@ -243,36 +271,44 @@ impl<'umem> LocalRuntime<'umem> {
                             neighbor_handler,
                             udp_handler,
                             pmtu,
-                            &mut rx_return,
-                            &mut tx_return,
+                            &mut self.rx_return,
+                            &mut self.tx_return,
                         );
                     }
                     EtherTypes::Arp => {
-                        neighbor_handler.handle_arp(frame, &mut rx_return, &mut tx_return);
+                        neighbor_handler.handle_arp(
+                            frame,
+                            &mut self.rx_return,
+                            &mut self.tx_return,
+                        );
                     }
                     _ => {
                         // Unsupported ethertype, return the frame to the kernel.
-                        rx_return.push(frame);
+                        self.rx_return.push(frame);
                     }
                 }
             }
 
+            if let Poll::Ready(_) = fut.as_mut().poll(&mut cx) {
+                return Ok(());
+            }
+
             // Periodically evict stale reassembly entries.
             self.udp_handler
-                .evict_stale(Duration::from_secs(30), &mut rx_return);
+                .evict_stale(Duration::from_secs(30), &mut self.rx_return);
 
-            if tx_return.num_frames() > 0 {
-                while let Err(_) = self.socket.send(&mut tx_return) {
+            if self.tx_return.num_frames() > 0 {
+                while let Err(_) = self.socket.send(&mut self.tx_return) {
                     self.socket.maybe_wake()?;
                 }
 
-                while let Err(_) = self.umem.process_completion_queue(&mut rx_return) {
+                while let Err(_) = self.umem.process_completion_queue(&mut self.rx_return) {
                     self.socket.maybe_wake()?;
                 }
             }
 
             self.umem.maybe_wake_fill_queue(self.socket.fd())?;
-            self.umem.process_fill_queue(&mut rx_return);
+            self.umem.process_fill_queue(&mut self.rx_return);
         }
 
         Ok(())

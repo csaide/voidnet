@@ -147,9 +147,9 @@ impl Ipv6Handler {
     pub fn handle<'umem>(
         &mut self,
         frame: Frame<'umem>,
-        neighbor_handler: &mut NeighborHandler,
+        neighbor_handler: &NeighborHandler,
         udp_handler: &mut UdpHandler<'umem>,
-        pmtu: &mut PmtuCache,
+        pmtu: &PmtuCache,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
@@ -274,10 +274,15 @@ mod tests {
         UdpHandler::new(256)
     }
 
-    fn new_udp_handler_with_socket<'umem>(port: u16) -> (UdpHandler<'umem>, u32) {
-        let mut udp = UdpHandler::new(256);
-        let id = udp.bind(IpAddress::V6(LOCAL_IP), port, 256).unwrap();
-        (udp, id)
+    fn new_udp_handler_with_socket<'umem>(
+        port: u16,
+    ) -> (
+        UdpHandler<'umem>,
+        crate::net::socket::SharedQueue<crate::net::packet::ReceivedPacket<'umem>>,
+    ) {
+        let udp = UdpHandler::new(256);
+        let rx_queue = udp.bind(IpAddress::V6(LOCAL_IP), port, 256).unwrap();
+        (udp, rx_queue)
     }
 
     /// Builds a valid Ethernet + IPv6 frame with no extension headers.
@@ -491,7 +496,11 @@ mod tests {
             let off = ext_start + i * ext_size;
             // Each points to Hop-by-Hop (0) as next header, except the last
             // which points to UDP (but we'll never reach it).
-            buf[off] = if i < ext_count - 1 { EXT_HOP_BY_HOP } else { IpProtocols::Udp };
+            buf[off] = if i < ext_count - 1 {
+                EXT_HOP_BY_HOP
+            } else {
+                IpProtocols::Udp
+            };
             buf[off + 1] = 0; // Hdr Ext Len = 0 -> 8 bytes
         }
 
@@ -505,56 +514,78 @@ mod tests {
 
     #[test]
     fn frame_too_short_goes_to_rx() {
+        let mut data = [0u8; 50];
+
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let mut data = [0u8; 50];
         let frame = Frame::new(0, &mut data, 50, false);
 
-        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut nh,
+            &mut udp,
+            &mut PmtuCache::new(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
 
     #[test]
     fn wrong_version_goes_to_rx() {
+        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
+        data[14] = (data[14] & 0x0F) | 0x40; // version 4 instead of 6
+
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
-        data[14] = (data[14] & 0x0F) | 0x40; // version 4 instead of 6
-
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut nh,
+            &mut udp,
+            &mut PmtuCache::new(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
 
     #[test]
     fn payload_shorter_than_claimed_goes_to_rx() {
+        // Build a frame with only 8 bytes payload but claim 100 in payload_length
+        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
+        data[18] = 0x00;
+        data[19] = 100; // claim 100 bytes but only 8 available
+
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        // Build a frame with only 8 bytes payload but claim 100 in payload_length
-        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
-        data[18] = 0x00;
-        data[19] = 100; // claim 100 bytes but only 8 available
-
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut nh,
+            &mut udp,
+            &mut PmtuCache::new(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
@@ -563,18 +594,26 @@ mod tests {
 
     #[test]
     fn fragment_goes_to_udp_handler() {
+        let mut data =
+            build_ipv6_with_fragment(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 0, true, &[0; 8]);
+
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let mut data =
-            build_ipv6_with_fragment(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 0, true, &[0; 8]);
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut nh,
+            &mut udp,
+            &mut PmtuCache::new(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 0);
         assert_eq!(udp.pending_reassembly(), 1);
@@ -583,12 +622,6 @@ mod tests {
     #[test]
     fn icmpv6_echo_request_generates_reply() {
         use super::super::wire::icmpv6::{Icmpv6Types, compute_icmpv6_checksum};
-
-        let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
-        let mut udp = new_udp_handler();
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
 
         let eth_len = size_of::<EthernetFrame>();
         let icmpv6_len = 16;
@@ -616,8 +649,21 @@ mod tests {
         data[icmp_off + 2] = cksum[0];
         data[icmp_off + 3] = cksum[1];
 
+        let mut handler = new_handler();
+        let mut nh = new_neighbor_handler();
+        let mut udp = new_udp_handler();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+
         let frame = Frame::new(0, &mut data, frame_len, false);
-        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut nh,
+            &mut udp,
+            &mut PmtuCache::new(),
+            &mut rx,
+            &mut tx,
+        );
 
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
@@ -625,101 +671,135 @@ mod tests {
 
     #[test]
     fn valid_tcp_accepted() {
+        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Tcp, 64, &[0; 20]);
+
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Tcp, 64, &[0; 20]);
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut nh,
+            &mut udp,
+            &mut PmtuCache::new(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
 
     #[test]
     fn valid_udp_routed_to_socket() {
+        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
+
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
-        let (mut udp, id) = new_udp_handler_with_socket(0);
+        let (mut udp, rx_queue) = new_udp_handler_with_socket(0);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut nh,
+            &mut udp,
+            &mut PmtuCache::new(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 0);
-        assert_eq!(udp.socket(id).unwrap().pending(), 1);
+        assert_eq!(rx_queue.len(), 1);
     }
 
     #[test]
     fn unknown_protocol_sends_parameter_problem() {
+        let raw = build_ipv6_frame(REMOTE_IP, LOCAL_IP, 255, 64, &[0; 8]);
+        let mut data = vec![0u8; 2048];
+        data[..raw.len()].copy_from_slice(&raw);
+
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let raw = build_ipv6_frame(REMOTE_IP, LOCAL_IP, 255, 64, &[0; 8]);
-        let mut data = vec![0u8; 2048];
-        data[..raw.len()].copy_from_slice(&raw);
         let frame = Frame::new(0, &mut data, raw.len(), false);
 
-        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut nh,
+            &mut udp,
+            &mut PmtuCache::new(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
     }
 
     #[test]
     fn extension_header_then_udp_routed_to_socket() {
+        let mut data =
+            build_ipv6_with_ext_header(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
+
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
-        let (mut udp, id) = new_udp_handler_with_socket(0);
+        let (mut udp, rx_queue) = new_udp_handler_with_socket(0);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let mut data =
-            build_ipv6_with_ext_header(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut nh,
+            &mut udp,
+            &mut PmtuCache::new(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 0);
-        assert_eq!(udp.socket(id).unwrap().pending(), 1);
+        assert_eq!(rx_queue.len(), 1);
     }
 
     #[test]
     fn no_next_header_goes_to_rx() {
+        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, NO_NEXT_HEADER, 64, &[]);
+
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, NO_NEXT_HEADER, 64, &[]);
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut nh,
+            &mut udp,
+            &mut PmtuCache::new(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
 
     #[test]
     fn malformed_extension_goes_to_rx() {
-        let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
-        let mut udp = new_udp_handler();
-        let mut rx = BasicFrameBuffer::new(4);
-        let mut tx = BasicFrameBuffer::new(4);
-
         // Build frame with Hop-by-Hop next header but only 2 bytes of ext header data
         // (claims to need 8 bytes via Hdr Ext Len=0).
         let eth_len = size_of::<EthernetFrame>();
@@ -735,10 +815,23 @@ mod tests {
         data[ext_start] = IpProtocols::Udp;
         data[ext_start + 1] = 0;
 
+        let mut handler = new_handler();
+        let mut nh = new_neighbor_handler();
+        let mut udp = new_udp_handler();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut nh, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut nh,
+            &mut udp,
+            &mut PmtuCache::new(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }

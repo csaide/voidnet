@@ -12,7 +12,7 @@ use clap::Parser;
 use libvoid::rt::LocalRuntime;
 
 mod common;
-use common::BaseArgs;
+use common::{BaseArgs, Stats};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -36,6 +36,7 @@ impl DerefMut for Args {
 }
 
 fn main() {
+    let mut stats = Stats::new();
     let args = Args::parse();
 
     let mut runtime = LocalRuntime::builder(
@@ -70,7 +71,24 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    runtime.run(exit).expect("Failed to run runtime");
+    let addr = "fc00:dead:cafe:1::1"
+        .parse()
+        .expect("Failed to parse IPv6 address");
+    let mut socket = runtime
+        .bind_udp(addr, 8080)
+        .expect("Failed to bind UDP socket");
+
+    runtime
+        .run(exit, async move {
+            loop {
+                let packet = socket.recv_from().await;
+                stats.update(packet.packet.len(), false);
+                socket.discard_packet(packet);
+
+                stats.maybe_print();
+            }
+        })
+        .expect("Failed to run runtime");
 
     println!("Exiting...");
 }

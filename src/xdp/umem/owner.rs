@@ -120,6 +120,18 @@ impl<'umem> UmemOwner<'umem> {
                 .collect(),
         )
     }
+
+    /// Returns the number of frames in the UMEM.
+    #[inline(always)]
+    pub fn num_frames(&self) -> usize {
+        self.num_frames
+    }
+
+    /// Returns the size of the frames in the UMEM.
+    #[inline(always)]
+    pub fn frame_size(&self) -> usize {
+        self.frame_size
+    }
 }
 
 impl<'umem> Drop for UmemOwner<'umem> {

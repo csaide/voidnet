@@ -31,8 +31,8 @@ pub fn handle_icmpv6<'umem>(
     mut frame: Frame<'umem>,
     icmpv6_offset: usize,
     icmpv6_len: usize,
-    neighbor_handler: &mut NeighborHandler,
-    pmtu: &mut PmtuCache,
+    neighbor_handler: &NeighborHandler,
+    pmtu: &PmtuCache,
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {

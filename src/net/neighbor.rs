@@ -1,10 +1,10 @@
 use std::{
-    collections::HashMap,
     mem::size_of,
     net::IpAddr,
     time::{Duration, Instant},
 };
 
+use dashmap::DashMap;
 use getifaddrs::InterfaceFilter;
 
 use crate::xdp::{
@@ -62,7 +62,7 @@ pub struct NeighborHandler {
     local_mac: MacAddress,
     local_ipv4: Vec<Ipv4Address>,
     local_ipv6: Vec<Ipv6Address>,
-    table: HashMap<IpAddress, NeighborEntry>,
+    table: DashMap<IpAddress, NeighborEntry>,
     ttl: Duration,
 }
 
@@ -90,7 +90,7 @@ impl NeighborHandler {
             local_mac,
             local_ipv4,
             local_ipv6,
-            table: HashMap::new(),
+            table: DashMap::new(),
             ttl,
         })
     }
@@ -273,7 +273,7 @@ impl NeighborHandler {
     /// Both requests and replies from structurally valid Ethernet/IPv4 ARP
     /// packets update the neighbor cache.
     pub fn handle_arp<'umem>(
-        &mut self,
+        &self,
         mut frame: Frame<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
@@ -356,7 +356,7 @@ impl NeighborHandler {
     /// * Router Advertisement (134) -- cache the router's MAC
     /// * Router Solicitation (133) and Redirect (137) -- pass to `rx_return`
     pub fn handle_ndp<'umem>(
-        &mut self,
+        &self,
         frame: Frame<'umem>,
         icmpv6_offset: usize,
         icmpv6_len: usize,
@@ -411,7 +411,7 @@ impl NeighborHandler {
     }
 
     fn handle_neighbor_solicitation<'umem>(
-        &mut self,
+        &self,
         mut frame: Frame<'umem>,
         icmpv6_offset: usize,
         icmpv6_len: usize,
@@ -557,7 +557,7 @@ impl NeighborHandler {
     }
 
     fn handle_neighbor_advertisement<'umem>(
-        &mut self,
+        &self,
         frame: Frame<'umem>,
         icmpv6_offset: usize,
         icmpv6_len: usize,
@@ -592,7 +592,7 @@ impl NeighborHandler {
     }
 
     fn handle_router_advertisement<'umem>(
-        &mut self,
+        &self,
         frame: Frame<'umem>,
         icmpv6_offset: usize,
         icmpv6_len: usize,
@@ -740,7 +740,7 @@ mod tests {
 
     #[test]
     fn valid_request_produces_reply() {
-        let mut handler = new_handler();
+        let handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -767,7 +767,7 @@ mod tests {
 
     #[test]
     fn request_for_wrong_ip_goes_to_rx() {
-        let mut handler = new_handler();
+        let handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -783,7 +783,7 @@ mod tests {
 
     #[test]
     fn reply_goes_to_rx() {
-        let mut handler = new_handler();
+        let handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -798,7 +798,7 @@ mod tests {
 
     #[test]
     fn frame_too_short_goes_to_rx() {
-        let mut handler = new_handler();
+        let handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -813,7 +813,7 @@ mod tests {
 
     #[test]
     fn invalid_htype_goes_to_rx() {
-        let mut handler = new_handler();
+        let handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -830,7 +830,7 @@ mod tests {
 
     #[test]
     fn invalid_ptype_goes_to_rx() {
-        let mut handler = new_handler();
+        let handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -847,7 +847,7 @@ mod tests {
 
     #[test]
     fn invalid_address_lengths_goes_to_rx() {
-        let mut handler = new_handler();
+        let handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -863,7 +863,7 @@ mod tests {
 
     #[test]
     fn request_caches_sender() {
-        let mut handler = new_handler();
+        let handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -878,7 +878,7 @@ mod tests {
 
     #[test]
     fn reply_caches_sender() {
-        let mut handler = new_handler();
+        let handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -893,7 +893,7 @@ mod tests {
 
     #[test]
     fn wrong_target_still_caches_sender() {
-        let mut handler = new_handler();
+        let handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -907,7 +907,7 @@ mod tests {
 
     #[test]
     fn cache_updates_on_new_mac() {
-        let mut handler = new_handler();
+        let handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -946,7 +946,7 @@ mod tests {
 
     #[test]
     fn invalid_packet_does_not_cache() {
-        let mut handler = new_handler();
+        let handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -1127,7 +1127,7 @@ mod tests {
 
     #[test]
     fn ns_targeting_our_ip_produces_na() {
-        let mut handler = new_ndp_handler();
+        let handler = new_ndp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -1183,7 +1183,7 @@ mod tests {
 
     #[test]
     fn ns_targeting_unknown_ip_goes_to_rx() {
-        let mut handler = new_ndp_handler();
+        let handler = new_ndp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -1212,7 +1212,7 @@ mod tests {
 
     #[test]
     fn ns_caches_sender_mac() {
-        let mut handler = new_ndp_handler();
+        let handler = new_ndp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -1242,7 +1242,7 @@ mod tests {
 
     #[test]
     fn ns_dad_produces_na_with_correct_flags() {
-        let mut handler = new_ndp_handler();
+        let handler = new_ndp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -1291,7 +1291,7 @@ mod tests {
 
     #[test]
     fn ns_too_short_goes_to_rx() {
-        let mut handler = new_ndp_handler();
+        let handler = new_ndp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -1319,7 +1319,7 @@ mod tests {
 
     #[test]
     fn ns_bad_checksum_goes_to_rx() {
-        let mut handler = new_ndp_handler();
+        let handler = new_ndp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -1351,7 +1351,7 @@ mod tests {
 
     #[test]
     fn na_caches_target_mac() {
-        let mut handler = new_ndp_handler();
+        let handler = new_ndp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -1382,7 +1382,7 @@ mod tests {
 
     #[test]
     fn na_too_short_goes_to_rx() {
-        let mut handler = new_ndp_handler();
+        let handler = new_ndp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -1409,7 +1409,7 @@ mod tests {
 
     #[test]
     fn ra_caches_router_mac() {
-        let mut handler = new_ndp_handler();
+        let handler = new_ndp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -1445,7 +1445,7 @@ mod tests {
 
     #[test]
     fn ra_without_source_lla_does_not_crash() {
-        let mut handler = new_ndp_handler();
+        let handler = new_ndp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -1474,7 +1474,7 @@ mod tests {
 
     #[test]
     fn rs_goes_to_rx() {
-        let mut handler = new_ndp_handler();
+        let handler = new_ndp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -1502,7 +1502,7 @@ mod tests {
 
     #[test]
     fn redirect_goes_to_rx() {
-        let mut handler = new_ndp_handler();
+        let handler = new_ndp_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
