@@ -97,12 +97,10 @@ impl<'umem> UdpHandler<'umem> {
                 let ip = Ipv4Header::from_frame(first);
                 let udp_offset = ip.payload_offset();
                 if first.len() < udp_offset + UDP_HEADER_LEN {
-                    for f in reassembled.packet.into_frames() {
-                        rx_return.push(f);
-                    }
+                    reassembled.packet.drain_to(rx_return);
                     return;
                 }
-                let udp = unsafe { &*(first.as_ptr().add(udp_offset) as *const UdpHeader) };
+                let udp = unsafe { UdpHeader::from_frame_at(first, udp_offset) };
                 (
                     IpAddress::V4(ip.src_addr),
                     IpAddress::V4(ip.dst_addr),
@@ -142,7 +140,7 @@ impl<'umem> UdpHandler<'umem> {
                     rx_return.push(frame);
                     return;
                 }
-                let udp = unsafe { &*(frame.as_ptr().add(udp_offset) as *const UdpHeader) };
+                let udp = unsafe { UdpHeader::from_frame_at(&frame, udp_offset) };
                 let src_port = udp.src_port();
                 let dst_port = udp.dst_port();
                 self.route(
@@ -179,13 +177,10 @@ impl<'umem> UdpHandler<'umem> {
                         let ip = Ipv6Header::from_frame(first);
                         let udp_start = frag_off + FRAGMENT_EXT_LEN;
                         if first.len() < udp_start + UDP_HEADER_LEN {
-                            for f in reassembled.packet.into_frames() {
-                                rx_return.push(f);
-                            }
+                            reassembled.packet.drain_to(rx_return);
                             return;
                         }
-                        let udp =
-                            unsafe { &*(first.as_ptr().add(udp_start) as *const UdpHeader) };
+                        let udp = unsafe { UdpHeader::from_frame_at(first, udp_start) };
                         (
                             IpAddress::V6(ip.src_addr),
                             IpAddress::V6(ip.dst_addr),
@@ -223,15 +218,11 @@ impl<'umem> UdpHandler<'umem> {
         if let Some(binding) = self.bindings.get(&key) {
             if let Some(evicted) = binding.rx_queue.push(received) {
                 // Queue was full — oldest packet evicted, return its frames.
-                for frame in evicted.packet.into_frames() {
-                    rx_return.push(frame);
-                }
+                evicted.packet.drain_to(rx_return);
             }
         } else {
             // No socket bound — return frames to kernel.
-            for frame in received.packet.into_frames() {
-                rx_return.push(frame);
-            }
+            received.packet.drain_to(rx_return);
         }
     }
 }

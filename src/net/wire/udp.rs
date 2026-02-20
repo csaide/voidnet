@@ -67,6 +67,74 @@ impl UdpHeader {
             0
         }
     }
+
+    /// Zero-copy reference to a UDP header at `offset` within a frame.
+    ///
+    /// # Safety
+    /// Caller must ensure `frame.len() >= offset + UDP_HEADER_LEN`.
+    #[inline]
+    pub unsafe fn from_frame_at<'a>(frame: &'a Frame<'_>, offset: usize) -> &'a Self {
+        unsafe { &*(frame.as_ptr().add(offset) as *const Self) }
+    }
+}
+
+/// Sum all 16-bit words in `data`, handling a trailing odd byte.
+#[inline]
+fn sum_words(data: &[u8]) -> u32 {
+    let mut sum: u32 = 0;
+    let mut i = 0;
+    while i + 1 < data.len() {
+        sum += ((data[i] as u32) << 8) | (data[i + 1] as u32);
+        i += 2;
+    }
+    if i < data.len() {
+        sum += (data[i] as u32) << 8;
+    }
+    sum
+}
+
+/// Fold 32-bit running sum to 16 bits, then one's-complement.
+#[inline]
+fn fold_checksum(mut sum: u32) -> u16 {
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+/// Fold and check for 0xFFFF (verification path).
+#[inline]
+fn fold_and_verify(mut sum: u32) -> bool {
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    sum == 0xFFFF
+}
+
+/// Build the IPv4 pseudo-header sum: src IP + dst IP + protocol(17) + UDP length.
+#[inline]
+fn pseudo_header_sum_v4(src_addr: &Ipv4Address, dst_addr: &Ipv4Address, udp_len: u16) -> u32 {
+    sum_words(&src_addr.octets) + sum_words(&dst_addr.octets) + 17u32 + udp_len as u32
+}
+
+/// Build the IPv6 pseudo-header sum: src IP + dst IP + UDP length (u32) + next header(17).
+#[inline]
+fn pseudo_header_sum_v6(src_addr: &Ipv6Address, dst_addr: &Ipv6Address, udp_len: u32) -> u32 {
+    sum_words(&src_addr.octets)
+        + sum_words(&dst_addr.octets)
+        + ((udp_len >> 16) & 0xFFFF)
+        + (udp_len & 0xFFFF)
+        + 17u32
+}
+
+/// Convert a folded checksum to wire bytes, mapping zero to 0xFFFF per RFC 768.
+#[inline]
+fn checksum_to_bytes(checksum: u16) -> [u8; 2] {
+    if checksum == 0 {
+        [0xFF, 0xFF]
+    } else {
+        checksum.to_be_bytes()
+    }
 }
 
 /// Computes the UDP checksum over the IPv4 pseudo-header and full UDP segment.
@@ -86,49 +154,9 @@ pub fn compute_udp_checksum(
     dst_addr: &Ipv4Address,
     udp_segment: &[u8],
 ) -> [u8; 2] {
-    let udp_len = udp_segment.len() as u16;
-    let mut sum: u32 = 0;
-
-    // Pseudo-header: src IP (4 bytes)
-    sum += ((src_addr.octets[0] as u32) << 8) | (src_addr.octets[1] as u32);
-    sum += ((src_addr.octets[2] as u32) << 8) | (src_addr.octets[3] as u32);
-
-    // Pseudo-header: dst IP (4 bytes)
-    sum += ((dst_addr.octets[0] as u32) << 8) | (dst_addr.octets[1] as u32);
-    sum += ((dst_addr.octets[2] as u32) << 8) | (dst_addr.octets[3] as u32);
-
-    // Pseudo-header: zero + protocol (2 bytes)
-    sum += 17u32; // UDP protocol number
-
-    // Pseudo-header: UDP length (2 bytes)
-    sum += udp_len as u32;
-
-    // UDP header + data
-    let mut i = 0;
-    while i + 1 < udp_segment.len() {
-        let word = ((udp_segment[i] as u32) << 8) | (udp_segment[i + 1] as u32);
-        sum += word;
-        i += 2;
-    }
-
-    // Pad odd byte
-    if i < udp_segment.len() {
-        sum += (udp_segment[i] as u32) << 8;
-    }
-
-    // Fold carry bits
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    let checksum = !(sum as u16);
-
-    // RFC 768: a computed checksum of zero is transmitted as 0xFFFF.
-    if checksum == 0 {
-        [0xFF, 0xFF]
-    } else {
-        checksum.to_be_bytes()
-    }
+    let sum = pseudo_header_sum_v4(src_addr, dst_addr, udp_segment.len() as u16)
+        + sum_words(udp_segment);
+    checksum_to_bytes(fold_checksum(sum))
 }
 
 /// Verifies the UDP checksum.
@@ -145,42 +173,12 @@ pub fn verify_udp_checksum(
     if udp_segment.len() < UDP_HEADER_LEN {
         return false;
     }
-
-    // RFC 768: checksum field of zero means no checksum was computed.
     if udp_segment[6] == 0 && udp_segment[7] == 0 {
         return true;
     }
-
-    // When the checksum is included in the sum, the result should be 0xFFFF
-    // (all ones), which after one's complement negation gives 0x0000.
-    let udp_len = udp_segment.len() as u16;
-    let mut sum: u32 = 0;
-
-    // Pseudo-header
-    sum += ((src_addr.octets[0] as u32) << 8) | (src_addr.octets[1] as u32);
-    sum += ((src_addr.octets[2] as u32) << 8) | (src_addr.octets[3] as u32);
-    sum += ((dst_addr.octets[0] as u32) << 8) | (dst_addr.octets[1] as u32);
-    sum += ((dst_addr.octets[2] as u32) << 8) | (dst_addr.octets[3] as u32);
-    sum += 17u32;
-    sum += udp_len as u32;
-
-    // UDP segment (including checksum field)
-    let mut i = 0;
-    while i + 1 < udp_segment.len() {
-        let word = ((udp_segment[i] as u32) << 8) | (udp_segment[i + 1] as u32);
-        sum += word;
-        i += 2;
-    }
-
-    if i < udp_segment.len() {
-        sum += (udp_segment[i] as u32) << 8;
-    }
-
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    sum == 0xFFFF
+    let sum = pseudo_header_sum_v4(src_addr, dst_addr, udp_segment.len() as u16)
+        + sum_words(udp_segment);
+    fold_and_verify(sum)
 }
 
 /// Computes the UDP checksum over the IPv6 pseudo-header and full UDP segment.
@@ -202,57 +200,9 @@ pub fn compute_udp_checksum_v6(
     dst_addr: &Ipv6Address,
     udp_segment: &[u8],
 ) -> [u8; 2] {
-    let udp_len = udp_segment.len() as u32;
-    let mut sum: u32 = 0;
-
-    // Pseudo-header: src address (16 bytes)
-    let mut i = 0;
-    while i < 16 {
-        sum += ((src_addr.octets[i] as u32) << 8) | (src_addr.octets[i + 1] as u32);
-        i += 2;
-    }
-
-    // Pseudo-header: dst address (16 bytes)
-    i = 0;
-    while i < 16 {
-        sum += ((dst_addr.octets[i] as u32) << 8) | (dst_addr.octets[i + 1] as u32);
-        i += 2;
-    }
-
-    // Pseudo-header: UDP length as u32 (4 bytes)
-    sum += (udp_len >> 16) & 0xFFFF;
-    sum += udp_len & 0xFFFF;
-
-    // Pseudo-header: zero (3 bytes) + next header = 17 (1 byte)
-    sum += 17u32;
-
-    // UDP header + data
-    i = 0;
-    while i + 1 < udp_segment.len() {
-        let word = ((udp_segment[i] as u32) << 8) | (udp_segment[i + 1] as u32);
-        sum += word;
-        i += 2;
-    }
-
-    // Pad odd byte
-    if i < udp_segment.len() {
-        sum += (udp_segment[i] as u32) << 8;
-    }
-
-    // Fold carry bits
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    let checksum = !(sum as u16);
-
-    // IPv6 UDP checksum must never be zero on the wire; 0xFFFF is the
-    // one's-complement representation of zero.
-    if checksum == 0 {
-        [0xFF, 0xFF]
-    } else {
-        checksum.to_be_bytes()
-    }
+    let sum = pseudo_header_sum_v6(src_addr, dst_addr, udp_segment.len() as u32)
+        + sum_words(udp_segment);
+    checksum_to_bytes(fold_checksum(sum))
 }
 
 /// Verifies the UDP checksum for an IPv6 packet.
@@ -270,69 +220,50 @@ pub fn verify_udp_checksum_v6(
     if udp_segment.len() < UDP_HEADER_LEN {
         return false;
     }
-
-    // IPv6 does not allow a zero checksum field.
     if udp_segment[6] == 0 && udp_segment[7] == 0 {
         return false;
     }
-
-    let udp_len = udp_segment.len() as u32;
-    let mut sum: u32 = 0;
-
-    // Pseudo-header: src address
-    let mut i = 0;
-    while i < 16 {
-        sum += ((src_addr.octets[i] as u32) << 8) | (src_addr.octets[i + 1] as u32);
-        i += 2;
-    }
-
-    // Pseudo-header: dst address
-    i = 0;
-    while i < 16 {
-        sum += ((dst_addr.octets[i] as u32) << 8) | (dst_addr.octets[i + 1] as u32);
-        i += 2;
-    }
-
-    // Pseudo-header: UDP length as u32
-    sum += (udp_len >> 16) & 0xFFFF;
-    sum += udp_len & 0xFFFF;
-
-    // Pseudo-header: next header
-    sum += 17u32;
-
-    // UDP segment (including checksum field)
-    i = 0;
-    while i + 1 < udp_segment.len() {
-        let word = ((udp_segment[i] as u32) << 8) | (udp_segment[i + 1] as u32);
-        sum += word;
-        i += 2;
-    }
-
-    if i < udp_segment.len() {
-        sum += (udp_segment[i] as u32) << 8;
-    }
-
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    sum == 0xFFFF
+    let sum = pseudo_header_sum_v6(src_addr, dst_addr, udp_segment.len() as u32)
+        + sum_words(udp_segment);
+    fold_and_verify(sum)
 }
 
-/// Writes a UDP header at the given offset in a frame.
+/// Compute IPv4 UDP checksum without allocating (from port/payload parts).
 #[inline]
-pub fn write_udp_header(
-    frame: &mut Frame<'_>,
-    offset: usize,
+pub fn compute_udp_checksum_from_parts(
+    src_addr: &Ipv4Address,
+    dst_addr: &Ipv4Address,
     src_port: u16,
     dst_port: u16,
-    length: u16,
-) {
-    frame[offset..offset + 2].copy_from_slice(&src_port.to_be_bytes());
-    frame[offset + 2..offset + 4].copy_from_slice(&dst_port.to_be_bytes());
-    frame[offset + 4..offset + 6].copy_from_slice(&length.to_be_bytes());
-    frame[offset + 6] = 0; // checksum placeholder
-    frame[offset + 7] = 0;
+    udp_len: u16,
+    payload: &[u8],
+) -> [u8; 2] {
+    let sum = pseudo_header_sum_v4(src_addr, dst_addr, udp_len)
+        + src_port as u32
+        + dst_port as u32
+        + udp_len as u32
+        // checksum field is zero, contributes nothing
+        + sum_words(payload);
+    checksum_to_bytes(fold_checksum(sum))
+}
+
+/// Compute IPv6 UDP checksum without allocating (from port/payload parts).
+#[inline]
+pub fn compute_udp_checksum_v6_from_parts(
+    src_addr: &Ipv6Address,
+    dst_addr: &Ipv6Address,
+    src_port: u16,
+    dst_port: u16,
+    udp_len: u16,
+    payload: &[u8],
+) -> [u8; 2] {
+    let sum = pseudo_header_sum_v6(src_addr, dst_addr, udp_len as u32)
+        + src_port as u32
+        + dst_port as u32
+        + udp_len as u32
+        // checksum field is zero, contributes nothing
+        + sum_words(payload);
+    checksum_to_bytes(fold_checksum(sum))
 }
 
 #[cfg(test)]
@@ -480,5 +411,89 @@ mod tests {
     fn udp_header_layout() {
         assert_eq!(UDP_HEADER_LEN, 8);
         assert_eq!(size_of::<UdpHeader>(), 8);
+    }
+
+    #[test]
+    fn from_parts_v4_matches_segment() {
+        let src = Ipv4Address::new([192, 168, 1, 1]);
+        let dst = Ipv4Address::new([10, 0, 0, 1]);
+        let payload = [0x01, 0x02, 0x03, 0x04];
+        let src_port: u16 = 0x1234;
+        let dst_port: u16 = 53;
+        let udp_len = (UDP_HEADER_LEN + payload.len()) as u16;
+
+        let segment = [
+            0x12, 0x34, // src port
+            0x00, 0x35, // dst port
+            0x00, 0x0C, // length = 12
+            0x00, 0x00, // checksum (zeroed)
+            0x01, 0x02, 0x03, 0x04, // payload
+        ];
+        let expected = compute_udp_checksum(&src, &dst, &segment);
+        let actual = compute_udp_checksum_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn from_parts_v6_matches_segment() {
+        let src = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let dst = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let payload = [0x01, 0x02, 0x03, 0x04];
+        let src_port: u16 = 0x1234;
+        let dst_port: u16 = 53;
+        let udp_len = (UDP_HEADER_LEN + payload.len()) as u16;
+
+        let segment = [
+            0x12, 0x34, // src port
+            0x00, 0x35, // dst port
+            0x00, 0x0C, // length = 12
+            0x00, 0x00, // checksum (zeroed)
+            0x01, 0x02, 0x03, 0x04, // payload
+        ];
+        let expected = compute_udp_checksum_v6(&src, &dst, &segment);
+        let actual = compute_udp_checksum_v6_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn from_parts_v4_odd_payload() {
+        let src = Ipv4Address::new([10, 0, 0, 1]);
+        let dst = Ipv4Address::new([10, 0, 0, 2]);
+        let payload = [0x01, 0x02, 0x03, 0x04, 0x05]; // odd
+        let src_port: u16 = 8000;
+        let dst_port: u16 = 9000;
+        let udp_len = (UDP_HEADER_LEN + payload.len()) as u16;
+
+        let mut segment = Vec::with_capacity(UDP_HEADER_LEN + payload.len());
+        segment.extend_from_slice(&src_port.to_be_bytes());
+        segment.extend_from_slice(&dst_port.to_be_bytes());
+        segment.extend_from_slice(&udp_len.to_be_bytes());
+        segment.extend_from_slice(&[0u8; 2]);
+        segment.extend_from_slice(&payload);
+
+        let expected = compute_udp_checksum(&src, &dst, &segment);
+        let actual = compute_udp_checksum_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn from_parts_v6_odd_payload() {
+        let src = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let dst = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let payload = [0x01, 0x02, 0x03, 0x04, 0x05]; // odd
+        let src_port: u16 = 8000;
+        let dst_port: u16 = 9000;
+        let udp_len = (UDP_HEADER_LEN + payload.len()) as u16;
+
+        let mut segment = Vec::with_capacity(UDP_HEADER_LEN + payload.len());
+        segment.extend_from_slice(&src_port.to_be_bytes());
+        segment.extend_from_slice(&dst_port.to_be_bytes());
+        segment.extend_from_slice(&udp_len.to_be_bytes());
+        segment.extend_from_slice(&[0u8; 2]);
+        segment.extend_from_slice(&payload);
+
+        let expected = compute_udp_checksum_v6(&src, &dst, &segment);
+        let actual = compute_udp_checksum_v6_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
+        assert_eq!(actual, expected);
     }
 }

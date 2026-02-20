@@ -61,9 +61,7 @@ impl<'umem> UdpSocket<'umem> {
     }
 
     pub fn discard_packet(&mut self, packet: ReceivedPacket<'umem>) {
-        for frame in packet.packet.into_frames() {
-            self.rx_return.push(frame);
-        }
+        packet.packet.drain_to(&mut self.rx_return);
     }
 
     #[inline(always)]
@@ -167,15 +165,10 @@ impl<'sock, 'buf, 'umem> UdpSendToFuture<'sock, 'buf, 'umem> {
         dst_ip: Ipv4Address,
         pmtu: u32,
     ) -> Result<Packet<'umem>, WouldBlock> {
-        // Pre-compute UDP checksum over the full (unfragmented) UDP segment.
         let udp_len = (UDP_HEADER_LEN + self.payload.len()) as u16;
-        let mut udp_segment = Vec::with_capacity(UDP_HEADER_LEN + self.payload.len());
-        udp_segment.extend_from_slice(&self.src_port.to_be_bytes());
-        udp_segment.extend_from_slice(&self.dst_port.to_be_bytes());
-        udp_segment.extend_from_slice(&udp_len.to_be_bytes());
-        udp_segment.extend_from_slice(&[0u8; 2]); // checksum placeholder
-        udp_segment.extend_from_slice(self.payload);
-        let checksum = udp::compute_udp_checksum(&src_ip, &dst_ip, &udp_segment);
+        let checksum = udp::compute_udp_checksum_from_parts(
+            &src_ip, &dst_ip, self.src_port, self.dst_port, udp_len, self.payload,
+        );
         let transport = UdpHeader::new(self.src_port, self.dst_port, udp_len, checksum);
 
         FragmentWriter::fragment_ipv4(
@@ -199,15 +192,10 @@ impl<'sock, 'buf, 'umem> UdpSendToFuture<'sock, 'buf, 'umem> {
         dst_ip: Ipv6Address,
         pmtu: u32,
     ) -> Result<Packet<'umem>, WouldBlock> {
-        // Pre-compute UDP checksum over the full (unfragmented) UDP segment.
         let udp_len = (UDP_HEADER_LEN + self.payload.len()) as u16;
-        let mut udp_segment = Vec::with_capacity(UDP_HEADER_LEN + self.payload.len());
-        udp_segment.extend_from_slice(&self.src_port.to_be_bytes());
-        udp_segment.extend_from_slice(&self.dst_port.to_be_bytes());
-        udp_segment.extend_from_slice(&udp_len.to_be_bytes());
-        udp_segment.extend_from_slice(&[0u8; 2]); // checksum placeholder
-        udp_segment.extend_from_slice(self.payload);
-        let checksum = udp::compute_udp_checksum_v6(&src_ip, &dst_ip, &udp_segment);
+        let checksum = udp::compute_udp_checksum_v6_from_parts(
+            &src_ip, &dst_ip, self.src_port, self.dst_port, udp_len, self.payload,
+        );
         let transport = UdpHeader::new(self.src_port, self.dst_port, udp_len, checksum);
 
         FragmentWriter::fragment_ipv6(
@@ -243,9 +231,7 @@ impl<'sock, 'buf, 'umem> Future for UdpSendToFuture<'sock, 'buf, 'umem> {
             return Poll::Pending;
         }
 
-        for frame in pkt.into_frames() {
-            this.tx_return.push(frame);
-        }
+        pkt.drain_to(&mut this.tx_return);
         Poll::Ready(this.payload.len() as u32)
     }
 }
