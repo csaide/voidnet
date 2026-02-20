@@ -1,12 +1,18 @@
 use std::task::{Context, Poll};
 use std::{pin::Pin, rc::Rc};
 
-use crate::net::packet::ReceivedPacket;
-use crate::net::wire::ip::IpAddress;
-use crate::net::{NeighborHandler, PacketWriter, PmtuCache};
+use crate::net::fragment::{FragmentWriter, Packet};
+use crate::net::handler::udp::ReceivedPacket;
+use crate::net::wire::ethernet::MacAddress;
+use crate::net::wire::ip::{IpAddress, Ipv4Address, Ipv6Address};
+use crate::net::wire::udp::{self, UDP_HEADER_LEN, UdpHeader};
+use crate::net::{NeighborHandler, PmtuCache};
+use crate::xdp::error::WouldBlock;
 use crate::xdp::frame::{FrameBuffer, SharedFrameBuffer};
 
 use super::SharedQueue;
+
+const DEFAULT_MTU: u32 = 1500;
 
 /// A user-facing UDP socket handle.
 ///
@@ -68,15 +74,14 @@ impl<'umem> UdpSocket<'umem> {
         payload: &'buf [u8],
     ) -> UdpSendToFuture<'_, 'buf, 'umem> {
         UdpSendToFuture {
+            free_frames: &mut self.free_frames,
+            rx_return: &mut self.rx_return,
+            tx_return: &mut self.tx_return,
+            pmtu: &self.pmtu,
+            neighbor_handler: &self.neighbor_handler,
+            pkt: Packet::Empty,
             src_addr: self.local_addr,
             src_port: self.local_port,
-            writer: PacketWriter::new(
-                &mut self.free_frames,
-                &mut self.rx_return,
-                &mut self.tx_return,
-                &self.pmtu,
-                &self.neighbor_handler,
-            ),
             dst_addr,
             dst_port,
             payload,
@@ -92,7 +97,12 @@ impl<'umem> UdpSocket<'umem> {
 }
 
 pub struct UdpSendToFuture<'sock, 'buf, 'umem> {
-    writer: PacketWriter<'sock, 'umem>,
+    free_frames: &'sock mut SharedFrameBuffer<'umem>,
+    rx_return: &'sock mut SharedFrameBuffer<'umem>,
+    tx_return: &'sock mut SharedFrameBuffer<'umem>,
+    pmtu: &'sock PmtuCache,
+    neighbor_handler: &'sock NeighborHandler,
+    pkt: Packet<'umem>,
     src_addr: IpAddress,
     src_port: u16,
     dst_addr: IpAddress,
@@ -100,21 +110,143 @@ pub struct UdpSendToFuture<'sock, 'buf, 'umem> {
     payload: &'buf [u8],
 }
 
+impl<'sock, 'buf, 'umem> UdpSendToFuture<'sock, 'buf, 'umem> {
+    fn prepare_udp_packet(&mut self) -> Result<Packet<'umem>, WouldBlock> {
+        // Step 1: MAC address resolution.
+        let dst_mac = match self.neighbor_handler.lookup(&self.dst_addr) {
+            Some(mac) => mac,
+            None => {
+                let frame = self.free_frames.pop().ok_or(WouldBlock)?;
+                match (self.src_addr, self.dst_addr) {
+                    (IpAddress::V4(src), IpAddress::V4(dst)) => {
+                        self.neighbor_handler.resolve_v4(
+                            src,
+                            dst,
+                            frame,
+                            &mut self.rx_return,
+                            &mut self.tx_return,
+                        );
+                    }
+                    (IpAddress::V6(src), IpAddress::V6(dst)) => {
+                        self.neighbor_handler.resolve_v6(
+                            src,
+                            dst,
+                            frame,
+                            &mut self.rx_return,
+                            &mut self.tx_return,
+                        );
+                    }
+                    _ => {
+                        // Mismatched address families — return frame and error.
+                        self.rx_return.push(frame);
+                    }
+                }
+                return Err(WouldBlock);
+            }
+        };
+        let src_mac = self.neighbor_handler.local_mac();
+
+        let pmtu = self.pmtu.get(&self.dst_addr).min(DEFAULT_MTU);
+
+        match (self.src_addr, self.dst_addr) {
+            (IpAddress::V4(src_ip), IpAddress::V4(dst_ip)) => {
+                self.build_udp_v4(src_mac, dst_mac, src_ip, dst_ip, pmtu)
+            }
+            (IpAddress::V6(src_ip), IpAddress::V6(dst_ip)) => {
+                self.build_udp_v6(src_mac, dst_mac, src_ip, dst_ip, pmtu)
+            }
+            _ => Err(WouldBlock),
+        }
+    }
+
+    fn build_udp_v4(
+        &mut self,
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        pmtu: u32,
+    ) -> Result<Packet<'umem>, WouldBlock> {
+        // Pre-compute UDP checksum over the full (unfragmented) UDP segment.
+        let udp_len = (UDP_HEADER_LEN + self.payload.len()) as u16;
+        let mut udp_segment = Vec::with_capacity(UDP_HEADER_LEN + self.payload.len());
+        udp_segment.extend_from_slice(&self.src_port.to_be_bytes());
+        udp_segment.extend_from_slice(&self.dst_port.to_be_bytes());
+        udp_segment.extend_from_slice(&udp_len.to_be_bytes());
+        udp_segment.extend_from_slice(&[0u8; 2]); // checksum placeholder
+        udp_segment.extend_from_slice(self.payload);
+        let checksum = udp::compute_udp_checksum(&src_ip, &dst_ip, &udp_segment);
+        let transport = UdpHeader::new(self.src_port, self.dst_port, udp_len, checksum);
+
+        FragmentWriter::fragment_ipv4(
+            src_mac,
+            dst_mac,
+            src_ip,
+            dst_ip,
+            64,
+            &transport,
+            self.payload,
+            pmtu,
+            &mut self.free_frames,
+        )
+    }
+
+    fn build_udp_v6(
+        &mut self,
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        pmtu: u32,
+    ) -> Result<Packet<'umem>, WouldBlock> {
+        // Pre-compute UDP checksum over the full (unfragmented) UDP segment.
+        let udp_len = (UDP_HEADER_LEN + self.payload.len()) as u16;
+        let mut udp_segment = Vec::with_capacity(UDP_HEADER_LEN + self.payload.len());
+        udp_segment.extend_from_slice(&self.src_port.to_be_bytes());
+        udp_segment.extend_from_slice(&self.dst_port.to_be_bytes());
+        udp_segment.extend_from_slice(&udp_len.to_be_bytes());
+        udp_segment.extend_from_slice(&[0u8; 2]); // checksum placeholder
+        udp_segment.extend_from_slice(self.payload);
+        let checksum = udp::compute_udp_checksum_v6(&src_ip, &dst_ip, &udp_segment);
+        let transport = UdpHeader::new(self.src_port, self.dst_port, udp_len, checksum);
+
+        FragmentWriter::fragment_ipv6(
+            src_mac,
+            dst_mac,
+            src_ip,
+            dst_ip,
+            64,
+            &transport,
+            self.payload,
+            pmtu,
+            &mut self.free_frames,
+        )
+    }
+}
+
 impl<'sock, 'buf, 'umem> Future for UdpSendToFuture<'sock, 'buf, 'umem> {
     type Output = u32;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        match this.writer.send_udp_packet(
-            this.src_addr,
-            this.dst_addr,
-            this.src_port,
-            this.dst_port,
-            this.payload,
-        ) {
-            Ok(sent) => Poll::Ready(sent),
-            Err(_) => Poll::Pending,
+
+        let pkt = match std::mem::take(&mut this.pkt) {
+            Packet::Empty => match this.prepare_udp_packet() {
+                Ok(pkt) => pkt,
+                Err(_) => return Poll::Pending,
+            },
+            pkt => pkt,
+        };
+
+        if this.tx_return.num_frames() < pkt.num_frames() {
+            this.pkt = pkt;
+            return Poll::Pending;
         }
+
+        for frame in pkt.into_frames() {
+            this.tx_return.push(frame);
+        }
+        Poll::Ready(this.payload.len() as u32)
     }
 }
 

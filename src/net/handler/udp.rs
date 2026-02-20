@@ -3,11 +3,23 @@ use std::time::Duration;
 
 use std::collections::HashMap;
 
-use crate::net::packet::{PacketReader, ReceivedPacket};
+use crate::net::fragment::{FragmentReader, Packet};
 use crate::net::socket::SharedQueue;
+use crate::net::wire::ip::{
+    FRAGMENT_EXT_LEN, IpAddress, IpProtocols, Ipv4Header, Ipv6Header,
+};
+use crate::net::wire::udp::{UDP_HEADER_LEN, UdpHeader};
 use crate::xdp::frame::{Frame, FrameBuffer};
 
-use super::wire::ip::IpAddress;
+/// A completed received UDP packet, ready for delivery to user space.
+#[derive(Debug)]
+pub struct ReceivedPacket<'umem> {
+    pub src_addr: IpAddress,
+    pub dst_addr: IpAddress,
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub packet: Packet<'umem>,
+}
 
 /// Error returned when a `bind` call fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,26 +42,26 @@ pub(crate) struct UdpBinding<'umem> {
 
 /// Manages bound UDP sockets and routes reassembled packets to them.
 ///
-/// Wraps [`PacketReader`] for fragment reassembly and dispatches completed
+/// Wraps [`FragmentReader`] for fragment reassembly and dispatches completed
 /// packets to the matching socket's receive queue. Called from IPv4/IPv6
-/// handlers instead of `PacketReader` directly.
+/// handlers instead of `FragmentReader` directly.
 pub struct UdpHandler<'umem> {
-    packet_reader: PacketReader<'umem>,
+    fragment_reader: FragmentReader<'umem>,
     bindings: HashMap<(IpAddress, u16), UdpBinding<'umem>>,
 }
 
 impl<'umem> UdpHandler<'umem> {
     pub fn new(max_reassembly_entries: usize) -> Self {
         Self {
-            packet_reader: PacketReader::new(max_reassembly_entries),
+            fragment_reader: FragmentReader::new(max_reassembly_entries),
             bindings: HashMap::new(),
         }
     }
 
     /// Bind a new socket to (addr, port).
     ///
-    /// Returns `(id, rx_queue, tx_queue)` so the caller can build a
-    /// user-facing `UdpSocket` that shares the same queues.
+    /// Returns the shared receive queue so the caller can build a
+    /// user-facing `UdpSocket` that shares the same queue.
     pub fn bind(
         &mut self,
         addr: IpAddress,
@@ -75,8 +87,39 @@ impl<'umem> UdpHandler<'umem> {
 
     /// Called by `Ipv4Handler` for UDP frames/fragments.
     pub fn process_ipv4(&mut self, frame: Frame<'umem>, rx_return: &mut impl FrameBuffer<'umem>) {
-        if let Some(packet) = self.packet_reader.process_ipv4(frame, rx_return) {
-            self.route(packet, rx_return);
+        if let Some(reassembled) = self.fragment_reader.process_ipv4(frame, rx_return) {
+            let (src_addr, dst_addr, src_port, dst_port) = {
+                let first = match &reassembled.packet {
+                    Packet::Single(f) => f,
+                    Packet::Multi(fs) => &fs[0],
+                    Packet::Empty => return,
+                };
+                let ip = Ipv4Header::from_frame(first);
+                let udp_offset = ip.payload_offset();
+                if first.len() < udp_offset + UDP_HEADER_LEN {
+                    for f in reassembled.packet.into_frames() {
+                        rx_return.push(f);
+                    }
+                    return;
+                }
+                let udp = unsafe { &*(first.as_ptr().add(udp_offset) as *const UdpHeader) };
+                (
+                    IpAddress::V4(ip.src_addr),
+                    IpAddress::V4(ip.dst_addr),
+                    udp.src_port(),
+                    udp.dst_port(),
+                )
+            };
+            self.route(
+                ReceivedPacket {
+                    src_addr,
+                    dst_addr,
+                    src_port,
+                    dst_port,
+                    packet: reassembled.packet,
+                },
+                rx_return,
+            );
         }
     }
 
@@ -88,22 +131,91 @@ impl<'umem> UdpHandler<'umem> {
         udp_offset: usize,
         rx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        if let Some(packet) =
-            self.packet_reader
-                .process_ipv6(frame, frag_ext_offset, udp_offset, rx_return)
-        {
-            self.route(packet, rx_return);
+        match frag_ext_offset {
+            None => {
+                // Non-fragmented UDP — hot path.
+                let ip = Ipv6Header::from_frame(&frame);
+                let src_addr = ip.src_addr;
+                let dst_addr = ip.dst_addr;
+
+                if frame.len() < udp_offset + UDP_HEADER_LEN {
+                    rx_return.push(frame);
+                    return;
+                }
+                let udp = unsafe { &*(frame.as_ptr().add(udp_offset) as *const UdpHeader) };
+                let src_port = udp.src_port();
+                let dst_port = udp.dst_port();
+                self.route(
+                    ReceivedPacket {
+                        src_addr: IpAddress::V6(src_addr),
+                        dst_addr: IpAddress::V6(dst_addr),
+                        src_port,
+                        dst_port,
+                        packet: Packet::Single(frame),
+                    },
+                    rx_return,
+                );
+            }
+            Some(frag_off) => {
+                // Check that the fragment is UDP before calling fragment_reader.
+                if frame.len() < frag_off + FRAGMENT_EXT_LEN {
+                    rx_return.push(frame);
+                    return;
+                }
+                if frame[frag_off] != IpProtocols::Udp {
+                    rx_return.push(frame);
+                    return;
+                }
+
+                if let Some(reassembled) =
+                    self.fragment_reader.process_ipv6(frame, frag_off, rx_return)
+                {
+                    let (src_addr, dst_addr, src_port, dst_port) = {
+                        let first = match &reassembled.packet {
+                            Packet::Single(f) => f,
+                            Packet::Multi(fs) => &fs[0],
+                            Packet::Empty => return,
+                        };
+                        let ip = Ipv6Header::from_frame(first);
+                        let udp_start = frag_off + FRAGMENT_EXT_LEN;
+                        if first.len() < udp_start + UDP_HEADER_LEN {
+                            for f in reassembled.packet.into_frames() {
+                                rx_return.push(f);
+                            }
+                            return;
+                        }
+                        let udp =
+                            unsafe { &*(first.as_ptr().add(udp_start) as *const UdpHeader) };
+                        (
+                            IpAddress::V6(ip.src_addr),
+                            IpAddress::V6(ip.dst_addr),
+                            udp.src_port(),
+                            udp.dst_port(),
+                        )
+                    };
+                    self.route(
+                        ReceivedPacket {
+                            src_addr,
+                            dst_addr,
+                            src_port,
+                            dst_port,
+                            packet: reassembled.packet,
+                        },
+                        rx_return,
+                    );
+                }
+            }
         }
     }
 
-    /// Evict stale reassembly entries (delegates to `PacketReader`).
+    /// Evict stale reassembly entries (delegates to `FragmentReader`).
     pub fn evict_stale(&mut self, timeout: Duration, rx_return: &mut impl FrameBuffer<'umem>) {
-        self.packet_reader.evict_stale(timeout, rx_return);
+        self.fragment_reader.evict_stale(timeout, rx_return);
     }
 
     /// Number of in-progress reassembly entries.
     pub fn pending_reassembly(&self) -> usize {
-        self.packet_reader.pending_entries()
+        self.fragment_reader.pending_entries()
     }
 
     fn route(&mut self, received: ReceivedPacket<'umem>, rx_return: &mut impl FrameBuffer<'umem>) {

@@ -24,6 +24,19 @@ pub struct UdpHeader {
 }
 
 impl UdpHeader {
+    /// Create a UDP header from host-order values.
+    ///
+    /// Multi-byte fields are converted to network byte order internally.
+    #[inline]
+    pub fn new(src_port: u16, dst_port: u16, length: u16, checksum: [u8; 2]) -> Self {
+        UdpHeader {
+            src_port: src_port.to_be_bytes(),
+            dst_port: dst_port.to_be_bytes(),
+            length: length.to_be_bytes(),
+            checksum,
+        }
+    }
+
     /// Returns the source port in host byte order.
     #[inline]
     pub fn src_port(&self) -> u16 {

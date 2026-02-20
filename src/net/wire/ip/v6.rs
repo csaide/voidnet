@@ -27,6 +27,91 @@ pub const NO_NEXT_HEADER: u8 = 59;
 /// Fragment extension header length (always 8 bytes).
 pub const FRAGMENT_EXT_LEN: usize = 8;
 
+/// Compile-time guarantee that our struct matches the wire size.
+const _: () = assert!(size_of::<Ipv6FragmentHeader>() == FRAGMENT_EXT_LEN);
+
+/// IPv6 Fragment Extension Header wire format (8 bytes, RFC 8200 §4.5).
+///
+/// `#[repr(C, packed)]` allows zero-copy casting from raw frame memory.
+///
+/// Layout:
+/// - `next_header` (1 byte): identifies the upper-layer protocol.
+/// - `reserved` (1 byte): must be zero.
+/// - `fragment_offset_mf` (2 bytes): 13-bit offset in 8-byte units,
+///   2 reserved bits, and 1 MF (More Fragments) bit.
+/// - `identification` (4 bytes): unique datagram identifier.
+#[repr(C, packed)]
+pub struct Ipv6FragmentHeader {
+    /// Next Header type after reassembly (e.g. 17 for UDP, 6 for TCP).
+    pub next_header: u8,
+    /// Reserved field, must be zero on transmit.
+    pub reserved: u8,
+    /// Fragment Offset (13 bits) | Reserved (2 bits) | MF (1 bit), network byte order.
+    pub fragment_offset_mf: [u8; 2],
+    /// Identification field for reassembly, network byte order.
+    pub identification: [u8; 4],
+}
+
+impl Ipv6FragmentHeader {
+    /// Returns the fragment offset in 8-byte units.
+    #[inline]
+    pub fn fragment_offset(&self) -> u16 {
+        u16::from_be_bytes(self.fragment_offset_mf) >> 3
+    }
+
+    /// Returns `true` if the More Fragments (MF) bit is set.
+    #[inline]
+    pub fn more_fragments(&self) -> bool {
+        self.fragment_offset_mf[1] & 0x01 != 0
+    }
+
+    /// Returns the 32-bit identification field.
+    #[inline]
+    pub fn identification(&self) -> u32 {
+        u32::from_be_bytes(self.identification)
+    }
+
+    /// Returns `true` if this header represents a fragment.
+    ///
+    /// A packet is a fragment if MF is set or the fragment offset is non-zero.
+    #[inline]
+    pub fn is_fragment(&self) -> bool {
+        let combined = u16::from_be_bytes(self.fragment_offset_mf);
+        // offset bits (top 13) or MF bit (bottom 1) set
+        (combined & 0xFFF9) != 0
+    }
+
+    /// Sets the fragment_offset_mf field from an offset (in 8-byte units) and MF flag.
+    #[inline]
+    pub fn set_fragment_offset_mf(&mut self, offset_units: u16, more_fragments: bool) {
+        let mf: u16 = if more_fragments { 1 } else { 0 };
+        let value = (offset_units << 3) | mf;
+        self.fragment_offset_mf = value.to_be_bytes();
+    }
+
+    /// Zero-copy borrow from a byte slice at the given offset.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `bytes.len() >= offset + FRAGMENT_EXT_LEN`.
+    #[inline]
+    pub fn from_bytes(bytes: &[u8], offset: usize) -> &Self {
+        debug_assert!(bytes.len() >= offset + FRAGMENT_EXT_LEN);
+        unsafe { &*(bytes.as_ptr().add(offset) as *const Self) }
+    }
+
+    /// Mutable zero-copy borrow from a byte slice at the given offset.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `bytes.len() >= offset + FRAGMENT_EXT_LEN`.
+    #[inline]
+    pub fn from_bytes_mut(bytes: &mut [u8], offset: usize) -> &mut Self {
+        debug_assert!(bytes.len() >= offset + FRAGMENT_EXT_LEN);
+        unsafe { &mut *(bytes.as_mut_ptr().add(offset) as *mut Self) }
+    }
+}
+
 /// IPv6 fixed header wire format (40 bytes).
 ///
 /// `#[repr(C, packed)]` allows zero-copy casting from raw frame memory.
@@ -145,5 +230,102 @@ mod tests {
     fn header_layout() {
         assert_eq!(IPV6_HEADER_LEN, 40);
         assert_eq!(IPV6_MIN_FRAME_LEN, 54);
+    }
+
+    // --- Ipv6FragmentHeader ---
+
+    #[test]
+    fn fragment_header_layout() {
+        assert_eq!(FRAGMENT_EXT_LEN, 8);
+        assert_eq!(size_of::<Ipv6FragmentHeader>(), 8);
+    }
+
+    #[test]
+    fn fragment_header_offset_zero_mf_set() {
+        let hdr = Ipv6FragmentHeader {
+            next_header: 17,
+            reserved: 0,
+            fragment_offset_mf: [0x00, 0x01], // offset=0, MF=1
+            identification: [0x00, 0x00, 0x00, 0x42],
+        };
+        assert_eq!(hdr.fragment_offset(), 0);
+        assert!(hdr.more_fragments());
+        assert_eq!(hdr.identification(), 0x42);
+        assert!(hdr.is_fragment());
+    }
+
+    #[test]
+    fn fragment_header_offset_nonzero_mf_clear() {
+        let hdr = Ipv6FragmentHeader {
+            next_header: 17,
+            reserved: 0,
+            fragment_offset_mf: [0x00, 0x08], // offset=1 (1<<3=8), MF=0
+            identification: [0x00, 0x00, 0x01, 0x00],
+        };
+        assert_eq!(hdr.fragment_offset(), 1);
+        assert!(!hdr.more_fragments());
+        assert_eq!(hdr.identification(), 256);
+        assert!(hdr.is_fragment());
+    }
+
+    #[test]
+    fn fragment_header_not_fragment() {
+        let hdr = Ipv6FragmentHeader {
+            next_header: 17,
+            reserved: 0,
+            fragment_offset_mf: [0x00, 0x00], // offset=0, MF=0
+            identification: [0x00, 0x00, 0x00, 0x01],
+        };
+        assert_eq!(hdr.fragment_offset(), 0);
+        assert!(!hdr.more_fragments());
+        assert!(!hdr.is_fragment());
+    }
+
+    #[test]
+    fn fragment_header_set_offset_mf() {
+        let mut hdr = Ipv6FragmentHeader {
+            next_header: 17,
+            reserved: 0,
+            fragment_offset_mf: [0, 0],
+            identification: [0; 4],
+        };
+
+        hdr.set_fragment_offset_mf(185, true); // offset=185, MF=1
+        assert_eq!(hdr.fragment_offset(), 185);
+        assert!(hdr.more_fragments());
+
+        hdr.set_fragment_offset_mf(370, false); // offset=370, MF=0
+        assert_eq!(hdr.fragment_offset(), 370);
+        assert!(!hdr.more_fragments());
+    }
+
+    #[test]
+    fn fragment_header_from_bytes() {
+        let mut buf = [0u8; 16];
+        buf[4] = 17; // next_header
+        buf[6] = 0x05; // fragment_offset_mf high
+        buf[7] = 0xC9; // fragment_offset_mf low: offset = 0x05C9>>3 = 185, MF=1
+        buf[8..12].copy_from_slice(&42u32.to_be_bytes());
+
+        let hdr = Ipv6FragmentHeader::from_bytes(&buf, 4);
+        assert_eq!(hdr.next_header, 17);
+        assert_eq!(hdr.fragment_offset(), 185);
+        assert!(hdr.more_fragments());
+        assert_eq!(hdr.identification(), 42);
+    }
+
+    #[test]
+    fn fragment_header_from_bytes_mut() {
+        let mut buf = [0u8; 16];
+        let hdr = Ipv6FragmentHeader::from_bytes_mut(&mut buf, 4);
+        hdr.next_header = 6;
+        hdr.set_fragment_offset_mf(100, false);
+        hdr.identification = 999u32.to_be_bytes();
+
+        let hdr = Ipv6FragmentHeader::from_bytes(&buf, 4);
+        assert_eq!(hdr.next_header, 6);
+        assert_eq!(hdr.fragment_offset(), 100);
+        assert!(!hdr.more_fragments());
+        assert_eq!(hdr.identification(), 999);
     }
 }

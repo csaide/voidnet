@@ -1,11 +1,12 @@
+mod fragment;
 mod neighbor;
-mod packet;
 mod pmtu;
 
 pub mod handler;
 pub mod socket;
 pub mod wire;
 
+pub use fragment::{FragmentReader, FragmentWriter, Packet, ReassembledPacket, TransportHeader};
+pub use handler::udp::ReceivedPacket;
 pub use neighbor::NeighborHandler;
-pub use packet::{Packet, PacketReader, PacketWriter};
 pub use pmtu::PmtuCache;
