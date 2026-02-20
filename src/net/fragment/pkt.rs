@@ -59,7 +59,7 @@ impl<'umem> Packet<'umem> {
 impl<'umem, T: Iterator<Item = Frame<'umem>> + ExactSizeIterator> From<T> for Packet<'umem> {
     fn from(mut iter: T) -> Self {
         if iter.len() == 0 {
-            panic!("Cannot create a packet from an empty iterator");
+            Packet::Empty
         } else if iter.len() == 1 {
             Packet::Single(iter.next().unwrap())
         } else {

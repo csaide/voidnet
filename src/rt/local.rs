@@ -294,9 +294,11 @@ impl<'umem> LocalRuntime<'umem> {
                 return Ok(());
             }
 
-            // Periodically evict stale reassembly entries.
+            // Periodically evict stale entries.
             self.udp_handler
                 .evict_stale(Duration::from_secs(30), &mut self.rx_return);
+            self.neighbor_handler.evict_stale();
+            self.pmtu.evict_stale();
 
             if self.tx_return.num_frames() > 0 {
                 while let Err(_) = self.socket.send(&mut self.tx_return) {

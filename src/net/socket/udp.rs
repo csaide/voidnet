@@ -94,6 +94,13 @@ impl<'umem> UdpSocket<'umem> {
     }
 }
 
+/// Future returned by [`UdpSocket::send_to`].
+///
+/// Designed for the `LocalRuntime`'s busy-poll model: the runtime
+/// repeatedly polls this future from a packet-processing loop using a
+/// no-op waker (see `rt/local.rs` and `rt/waker.rs`). Waker
+/// registration is intentionally omitted because wake-ups are driven
+/// by the polling loop, not by I/O readiness notifications.
 pub struct UdpSendToFuture<'sock, 'buf, 'umem> {
     free_frames: &'sock mut SharedFrameBuffer<'umem>,
     rx_return: &'sock mut SharedFrameBuffer<'umem>,
@@ -236,6 +243,13 @@ impl<'sock, 'buf, 'umem> Future for UdpSendToFuture<'sock, 'buf, 'umem> {
     }
 }
 
+/// Future returned by [`UdpSocket::recv_from`].
+///
+/// Designed for the `LocalRuntime`'s busy-poll model: the runtime
+/// repeatedly polls this future from a packet-processing loop using a
+/// no-op waker. Waker registration is intentionally omitted because
+/// wake-ups are driven by the polling loop, not by I/O readiness
+/// notifications.
 pub struct UdpRecvFromFuture<'sock, 'umem> {
     rx_queue: &'sock SharedQueue<ReceivedPacket<'umem>>,
 }

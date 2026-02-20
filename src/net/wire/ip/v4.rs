@@ -126,6 +126,14 @@ impl Ipv4Header {
     }
 
     /// Fills `header_checksum` with the correct value.
+    ///
+    /// # Precondition
+    ///
+    /// When `IHL > 5` (options present), this reads `header_len()` bytes
+    /// starting from `self`. The caller must ensure the struct is backed
+    /// by at least `header_len()` bytes of accessible memory. This is
+    /// always true when obtained via [`from_frame_mut`](Self::from_frame_mut),
+    /// since the underlying frame memory extends beyond the 20-byte struct.
     #[inline]
     pub fn fill_checksum(&mut self) {
         self.header_checksum = [0, 0];

@@ -1,13 +1,9 @@
 use std::fmt;
 use std::time::Duration;
 
-use std::collections::HashMap;
-
 use crate::net::fragment::{FragmentReader, Packet};
 use crate::net::socket::SharedQueue;
-use crate::net::wire::ip::{
-    FRAGMENT_EXT_LEN, IpAddress, IpProtocols, Ipv4Header, Ipv6Header,
-};
+use crate::net::wire::ip::{FRAGMENT_EXT_LEN, IpAddress, Ipv4Header, Ipv6Header};
 use crate::net::wire::udp::{UDP_HEADER_LEN, UdpHeader};
 use crate::xdp::frame::{Frame, FrameBuffer};
 
@@ -40,6 +36,12 @@ pub(crate) struct UdpBinding<'umem> {
     rx_queue: SharedQueue<ReceivedPacket<'umem>>,
 }
 
+/// Groups bindings for a single port: explicit IP bindings and an optional wildcard.
+struct PortBindings<'umem> {
+    explicit: Vec<(IpAddress, UdpBinding<'umem>)>,
+    wildcard: Option<UdpBinding<'umem>>,
+}
+
 /// Manages bound UDP sockets and routes reassembled packets to them.
 ///
 /// Wraps [`FragmentReader`] for fragment reassembly and dispatches completed
@@ -47,18 +49,22 @@ pub(crate) struct UdpBinding<'umem> {
 /// handlers instead of `FragmentReader` directly.
 pub struct UdpHandler<'umem> {
     fragment_reader: FragmentReader<'umem>,
-    bindings: HashMap<(IpAddress, u16), UdpBinding<'umem>>,
+    bindings: Vec<(u16, PortBindings<'umem>)>,
 }
 
 impl<'umem> UdpHandler<'umem> {
     pub fn new(max_reassembly_entries: usize) -> Self {
         Self {
             fragment_reader: FragmentReader::new(max_reassembly_entries),
-            bindings: HashMap::new(),
+            bindings: Vec::new(),
         }
     }
 
     /// Bind a new socket to (addr, port).
+    ///
+    /// If `addr` is the unspecified address (`0.0.0.0` / `::`), the binding
+    /// acts as a wildcard: packets that match the port but have no explicit IP
+    /// binding will be delivered here. Only one wildcard per port is allowed.
     ///
     /// Returns the shared receive queue so the caller can build a
     /// user-facing `UdpSocket` that shares the same queue.
@@ -68,19 +74,35 @@ impl<'umem> UdpHandler<'umem> {
         port: u16,
         rx_capacity: usize,
     ) -> Result<SharedQueue<ReceivedPacket<'umem>>, BindError> {
-        let key = (addr, port);
-        if self.bindings.contains_key(&key) {
-            return Err(BindError::AddressInUse);
-        }
-
         let rx_queue = SharedQueue::new(rx_capacity);
+        let binding = UdpBinding {
+            rx_queue: rx_queue.clone(),
+        };
 
-        self.bindings.insert(
-            key,
-            UdpBinding {
-                rx_queue: rx_queue.clone(),
-            },
-        );
+        if let Some((_, pb)) = self.bindings.iter_mut().find(|(p, _)| *p == port) {
+            if addr.is_unspecified() {
+                if pb.wildcard.is_some() {
+                    return Err(BindError::AddressInUse);
+                }
+                pb.wildcard = Some(binding);
+            } else {
+                if pb.explicit.iter().any(|(a, _)| *a == addr) {
+                    return Err(BindError::AddressInUse);
+                }
+                pb.explicit.push((addr, binding));
+            }
+        } else {
+            let mut pb = PortBindings {
+                explicit: Vec::new(),
+                wildcard: None,
+            };
+            if addr.is_unspecified() {
+                pb.wildcard = Some(binding);
+            } else {
+                pb.explicit.push((addr, binding));
+            }
+            self.bindings.push((port, pb));
+        }
 
         Ok(rx_queue)
     }
@@ -155,12 +177,7 @@ impl<'umem> UdpHandler<'umem> {
                 );
             }
             Some(frag_off) => {
-                // Check that the fragment is UDP before calling fragment_reader.
                 if frame.len() < frag_off + FRAGMENT_EXT_LEN {
-                    rx_return.push(frame);
-                    return;
-                }
-                if frame[frag_off] != IpProtocols::Udp {
                     rx_return.push(frame);
                     return;
                 }
@@ -214,16 +231,27 @@ impl<'umem> UdpHandler<'umem> {
     }
 
     fn route(&mut self, received: ReceivedPacket<'umem>, rx_return: &mut impl FrameBuffer<'umem>) {
-        let key = (received.dst_addr, received.dst_port);
-        if let Some(binding) = self.bindings.get(&key) {
-            if let Some(evicted) = binding.rx_queue.push(received) {
-                // Queue was full — oldest packet evicted, return its frames.
-                evicted.packet.drain_to(rx_return);
+        let port = received.dst_port;
+        let addr = received.dst_addr;
+
+        if let Some((_, pb)) = self.bindings.iter().find(|(p, _)| *p == port) {
+            // Try explicit match first.
+            if let Some((_, binding)) = pb.explicit.iter().find(|(a, _)| *a == addr) {
+                if let Some(evicted) = binding.rx_queue.push(received) {
+                    evicted.packet.drain_to(rx_return);
+                }
+                return;
             }
-        } else {
-            // No socket bound — return frames to kernel.
-            received.packet.drain_to(rx_return);
+            // Fall back to wildcard.
+            if let Some(binding) = &pb.wildcard {
+                if let Some(evicted) = binding.rx_queue.push(received) {
+                    evicted.packet.drain_to(rx_return);
+                }
+                return;
+            }
         }
+        // No match — return frames to kernel.
+        received.packet.drain_to(rx_return);
     }
 }
 
@@ -457,5 +485,78 @@ mod tests {
 
         handler.evict_stale(Duration::from_secs(30), &mut rx);
         assert_eq!(handler.pending_reassembly(), 0);
+    }
+
+    #[test]
+    fn wildcard_bind_receives_packets() {
+        let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
+
+        let mut handler = UdpHandler::new(256);
+        let rx_queue = handler
+            .bind(IpAddress::V4(Ipv4Address::unspecified()), 53, 128)
+            .unwrap();
+
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+        let mut rx = BasicFrameBuffer::new(4);
+
+        handler.process_ipv4(frame, &mut rx);
+
+        assert_eq!(rx.num_frames(), 0);
+        assert_eq!(rx_queue.len(), 1);
+    }
+
+    #[test]
+    fn explicit_bind_takes_priority_over_wildcard() {
+        let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
+
+        let mut handler = UdpHandler::new(256);
+        let wildcard_q = handler
+            .bind(IpAddress::V4(Ipv4Address::unspecified()), 53, 128)
+            .unwrap();
+        let explicit_q = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
+
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+        let mut rx = BasicFrameBuffer::new(4);
+
+        handler.process_ipv4(frame, &mut rx);
+
+        assert_eq!(explicit_q.len(), 1);
+        assert_eq!(wildcard_q.len(), 0);
+    }
+
+    #[test]
+    fn wildcard_receives_when_no_explicit_match() {
+        // Packet destined for LOCAL_IPV4, but only a different explicit IP is bound.
+        let other_ip = Ipv4Address::new([10, 0, 0, 99]);
+        let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
+
+        let mut handler = UdpHandler::new(256);
+        let wildcard_q = handler
+            .bind(IpAddress::V4(Ipv4Address::unspecified()), 53, 128)
+            .unwrap();
+        let explicit_q = handler.bind(IpAddress::V4(other_ip), 53, 128).unwrap();
+
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+        let mut rx = BasicFrameBuffer::new(4);
+
+        handler.process_ipv4(frame, &mut rx);
+
+        assert_eq!(wildcard_q.len(), 1);
+        assert_eq!(explicit_q.len(), 0);
+    }
+
+    #[test]
+    fn duplicate_wildcard_bind_returns_address_in_use() {
+        let mut handler = UdpHandler::new(256);
+        handler
+            .bind(IpAddress::V4(Ipv4Address::unspecified()), 53, 128)
+            .unwrap();
+        let err = handler
+            .bind(IpAddress::V4(Ipv4Address::unspecified()), 53, 128)
+            .unwrap_err();
+        assert_eq!(err, BindError::AddressInUse);
     }
 }

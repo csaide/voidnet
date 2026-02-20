@@ -233,7 +233,15 @@ impl Ipv6Handler {
                 }
             },
             NextHeaderResult::Fragment { offset } => {
-                udp_handler.process_ipv6(frame, Some(offset), 0, rx_return);
+                // Read the fragment extension header's next_header field
+                // to determine the upper-layer protocol. Only dispatch
+                // UDP fragments to the UDP handler; return others.
+                let frag_next_header = frame[offset];
+                if frag_next_header == IpProtocols::Udp {
+                    udp_handler.process_ipv6(frame, Some(offset), 0, rx_return);
+                } else {
+                    rx_return.push(frame);
+                }
             }
             NextHeaderResult::Malformed => {
                 eprintln!("ipv6: malformed extension header chain");

@@ -109,6 +109,12 @@ impl NeighborHandler {
         }
     }
 
+    /// Removes all entries whose TTL has expired.
+    pub fn evict_stale(&self) {
+        let now = Instant::now();
+        self.table.retain(|_, entry| now < entry.expires_at);
+    }
+
     /// Looks up a cached MAC for the given IP address (v4 or v6).
     ///
     /// Returns `None` if the entry is missing or expired.

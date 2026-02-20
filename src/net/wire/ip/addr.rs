@@ -233,6 +233,17 @@ pub enum IpAddress {
     V6(Ipv6Address),
 }
 
+impl IpAddress {
+    /// Returns `true` if this is the unspecified address for its protocol.
+    #[inline]
+    pub fn is_unspecified(&self) -> bool {
+        match self {
+            IpAddress::V4(v4) => v4.is_unspecified(),
+            IpAddress::V6(v6) => v6.is_unspecified(),
+        }
+    }
+}
+
 impl From<Ipv4Address> for IpAddress {
     fn from(addr: Ipv4Address) -> Self {
         Self::V4(addr)

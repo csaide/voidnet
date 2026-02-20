@@ -78,18 +78,32 @@ impl UdpHeader {
     }
 }
 
-/// Sum all 16-bit words in `data`, handling a trailing odd byte.
+/// Sum all 16-bit words in `data`, handling trailing bytes.
+///
+/// Processes four bytes (two 16-bit words) per iteration to reduce
+/// loop overhead, then handles the remaining 1-3 trailing bytes.
 #[inline]
 fn sum_words(data: &[u8]) -> u32 {
     let mut sum: u32 = 0;
+    let len = data.len();
     let mut i = 0;
-    while i + 1 < data.len() {
+
+    // Process 4 bytes (two u16 words) per iteration.
+    while i + 3 < len {
+        sum += ((data[i] as u32) << 8) | (data[i + 1] as u32);
+        sum += ((data[i + 2] as u32) << 8) | (data[i + 3] as u32);
+        i += 4;
+    }
+
+    // Handle remaining 1-3 bytes.
+    if i + 1 < len {
         sum += ((data[i] as u32) << 8) | (data[i + 1] as u32);
         i += 2;
     }
-    if i < data.len() {
+    if i < len {
         sum += (data[i] as u32) << 8;
     }
+
     sum
 }
 

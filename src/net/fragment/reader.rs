@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     hash::Hash,
     time::{Duration, Instant},
 };
@@ -40,8 +40,8 @@ struct Ipv6FragmentKey {
 }
 
 struct ReassemblyEntry<'umem> {
-    /// (offset_bytes, frame), kept sorted by offset.
-    fragments: Vec<(usize, Frame<'umem>)>,
+    /// Fragments keyed by byte offset, kept sorted via BTreeMap.
+    fragments: BTreeMap<usize, Frame<'umem>>,
     /// Known when the final fragment (MF=0) arrives.
     total_len: Option<usize>,
     /// Sum of all received fragment data lengths.
@@ -52,14 +52,14 @@ struct ReassemblyEntry<'umem> {
 impl<'umem> ReassemblyEntry<'umem> {
     fn new() -> Self {
         Self {
-            fragments: Vec::new(),
+            fragments: BTreeMap::new(),
             total_len: None,
             received_len: 0,
             first_received: Instant::now(),
         }
     }
 
-    /// Insert a fragment sorted by offset. Returns `Some(frame)` if a
+    /// Insert a fragment by offset. Returns `Some(frame)` if a
     /// duplicate offset is already present.
     fn insert(
         &mut self,
@@ -68,10 +68,11 @@ impl<'umem> ReassemblyEntry<'umem> {
         more_fragments: bool,
         frame: Frame<'umem>,
     ) -> Option<Frame<'umem>> {
-        match self.fragments.binary_search_by_key(&offset, |&(o, _)| o) {
-            Ok(_) => Some(frame), // duplicate
-            Err(pos) => {
-                self.fragments.insert(pos, (offset, frame));
+        use std::collections::btree_map::Entry;
+        match self.fragments.entry(offset) {
+            Entry::Occupied(_) => Some(frame), // duplicate
+            Entry::Vacant(entry) => {
+                entry.insert(frame);
                 self.received_len += data_len;
                 if !more_fragments {
                     self.total_len = Some(offset + data_len);
@@ -89,7 +90,7 @@ impl<'umem> ReassemblyEntry<'umem> {
     }
 
     fn into_packet(self) -> Packet<'umem> {
-        Packet::Multi(self.fragments.into_iter().map(|(_, f)| f).collect())
+        Packet::Multi(self.fragments.into_values().collect())
     }
 }
 
@@ -102,7 +103,7 @@ fn evict_map<'umem, K: Eq + Hash>(
 ) {
     map.retain(|_, entry| {
         if now.duration_since(entry.first_received) > timeout {
-            for (_, frame) in entry.fragments.drain(..) {
+            for (_, frame) in std::mem::take(&mut entry.fragments) {
                 rx_return.push(frame);
             }
             false
@@ -128,8 +129,8 @@ impl<'umem> FragmentReader<'umem> {
     /// reassembly entries (across both IPv4 and IPv6).
     pub fn new(max_entries: usize) -> Self {
         Self {
-            ipv4_reassembly: HashMap::new(),
-            ipv6_reassembly: HashMap::new(),
+            ipv4_reassembly: HashMap::with_capacity(max_entries),
+            ipv6_reassembly: HashMap::with_capacity(max_entries),
             max_entries,
         }
     }
