@@ -261,6 +261,7 @@ mod tests {
     use super::*;
     use crate::net::pmtu::PmtuCache;
     use crate::net::wire::ip::NO_NEXT_HEADER;
+    use crate::net::wire::udp::{UDP_HEADER_LEN, compute_udp_checksum_v6};
     use crate::xdp::frame::BasicFrameBuffer;
     use std::time::Duration;
 
@@ -280,6 +281,18 @@ mod tests {
 
     fn new_udp_handler<'umem>() -> UdpHandler<'umem> {
         UdpHandler::new(256)
+    }
+
+    /// Builds a minimal valid UDP segment (header only, no payload) with a
+    /// correct IPv6 checksum. Ports are zero, length is 8.
+    fn build_udp_bytes_v6(src: &Ipv6Address, dst: &Ipv6Address) -> Vec<u8> {
+        let mut buf = vec![0u8; UDP_HEADER_LEN]; // ports=0, len=0, cksum=0
+        let udp_len = UDP_HEADER_LEN as u16;
+        buf[4..6].copy_from_slice(&udp_len.to_be_bytes());
+        let cksum = compute_udp_checksum_v6(src, dst, &buf);
+        buf[6] = cksum[0];
+        buf[7] = cksum[1];
+        buf
     }
 
     fn new_udp_handler_with_socket<'umem>(
@@ -704,7 +717,8 @@ mod tests {
 
     #[test]
     fn valid_udp_routed_to_socket() {
-        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
+        let udp_bytes = build_udp_bytes_v6(&REMOTE_IP, &LOCAL_IP);
+        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &udp_bytes);
 
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();
@@ -756,8 +770,9 @@ mod tests {
 
     #[test]
     fn extension_header_then_udp_routed_to_socket() {
+        let udp_bytes = build_udp_bytes_v6(&REMOTE_IP, &LOCAL_IP);
         let mut data =
-            build_ipv6_with_ext_header(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
+            build_ipv6_with_ext_header(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &udp_bytes);
 
         let mut handler = new_handler();
         let mut nh = new_neighbor_handler();

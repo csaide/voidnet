@@ -4,7 +4,10 @@ use std::time::Duration;
 use crate::net::fragment::{FragmentReader, Packet};
 use crate::net::socket::SharedQueue;
 use crate::net::wire::ip::{FRAGMENT_EXT_LEN, IpAddress, Ipv4Header, Ipv6Header};
-use crate::net::wire::udp::{UDP_HEADER_LEN, UdpHeader};
+use crate::net::wire::udp::{
+    UDP_HEADER_LEN, UdpHeader, fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6,
+    sum_words_carry, verify_udp_checksum, verify_udp_checksum_v6,
+};
 use crate::xdp::frame::{Frame, FrameBuffer};
 
 /// A completed received UDP packet, ready for delivery to user space.
@@ -110,7 +113,7 @@ impl<'umem> UdpHandler<'umem> {
     /// Called by `Ipv4Handler` for UDP frames/fragments.
     pub fn process_ipv4(&mut self, frame: Frame<'umem>, rx_return: &mut impl FrameBuffer<'umem>) {
         if let Some(reassembled) = self.fragment_reader.process_ipv4(frame, rx_return) {
-            let (src_addr, dst_addr, src_port, dst_port) = {
+            let (src_addr, dst_addr, src_port, dst_port, valid) = {
                 let first = match &reassembled.packet {
                     Packet::Single(f) => f,
                     Packet::Multi(fs) => &fs[0],
@@ -123,13 +126,76 @@ impl<'umem> UdpHandler<'umem> {
                     return;
                 }
                 let udp = unsafe { UdpHeader::from_frame_at(first, udp_offset) };
+                let udp_len = udp.length() as usize;
+                if udp_len < UDP_HEADER_LEN {
+                    reassembled.packet.drain_to(rx_return);
+                    return;
+                }
+
+                let valid = match &reassembled.packet {
+                    Packet::Single(f) => {
+                        let available = f.len() - udp_offset;
+                        if available < udp_len {
+                            false
+                        } else {
+                            verify_udp_checksum(
+                                &ip.src_addr,
+                                &ip.dst_addr,
+                                &f[udp_offset..udp_offset + udp_len],
+                            )
+                        }
+                    }
+                    Packet::Multi(fs) => {
+                        // Zero checksum means "no checksum" for IPv4.
+                        if fs[0][udp_offset + 6] == 0 && fs[0][udp_offset + 7] == 0 {
+                            true
+                        } else {
+                            let mut sum: u64 = 0;
+                            let mut pending: Option<u8> = None;
+                            let mut total: usize = 0;
+
+                            let slice = &fs[0][udp_offset..];
+                            total += slice.len();
+                            (sum, pending) = sum_words_carry(slice, sum, pending);
+
+                            for f in &fs[1..] {
+                                let fip = Ipv4Header::from_frame(f);
+                                let slice = &f[fip.payload_offset()..];
+                                total += slice.len();
+                                (sum, pending) = sum_words_carry(slice, sum, pending);
+                            }
+
+                            if let Some(hi) = pending {
+                                sum += (hi as u64) << 8;
+                            }
+
+                            if total < udp_len {
+                                false
+                            } else {
+                                sum += pseudo_header_sum_v4(
+                                    &ip.src_addr,
+                                    &ip.dst_addr,
+                                    total as u16,
+                                );
+                                fold_and_verify(sum)
+                            }
+                        }
+                    }
+                    Packet::Empty => return,
+                };
+
                 (
                     IpAddress::V4(ip.src_addr),
                     IpAddress::V4(ip.dst_addr),
                     udp.src_port(),
                     udp.dst_port(),
+                    valid,
                 )
             };
+            if !valid {
+                reassembled.packet.drain_to(rx_return);
+                return;
+            }
             self.route(
                 ReceivedPacket {
                     src_addr,
@@ -163,6 +229,19 @@ impl<'umem> UdpHandler<'umem> {
                     return;
                 }
                 let udp = unsafe { UdpHeader::from_frame_at(&frame, udp_offset) };
+                let udp_len = udp.length() as usize;
+                if udp_len < UDP_HEADER_LEN || frame.len() < udp_offset + udp_len {
+                    rx_return.push(frame);
+                    return;
+                }
+                if !verify_udp_checksum_v6(
+                    &src_addr,
+                    &dst_addr,
+                    &frame[udp_offset..udp_offset + udp_len],
+                ) {
+                    rx_return.push(frame);
+                    return;
+                }
                 let src_port = udp.src_port();
                 let dst_port = udp.dst_port();
                 self.route(
@@ -185,7 +264,7 @@ impl<'umem> UdpHandler<'umem> {
                 if let Some(reassembled) =
                     self.fragment_reader.process_ipv6(frame, frag_off, rx_return)
                 {
-                    let (src_addr, dst_addr, src_port, dst_port) = {
+                    let (src_addr, dst_addr, src_port, dst_port, valid) = {
                         let first = match &reassembled.packet {
                             Packet::Single(f) => f,
                             Packet::Multi(fs) => &fs[0],
@@ -198,13 +277,76 @@ impl<'umem> UdpHandler<'umem> {
                             return;
                         }
                         let udp = unsafe { UdpHeader::from_frame_at(first, udp_start) };
+                        let udp_len = udp.length() as usize;
+                        if udp_len < UDP_HEADER_LEN {
+                            reassembled.packet.drain_to(rx_return);
+                            return;
+                        }
+
+                        let valid = match &reassembled.packet {
+                            Packet::Single(f) => {
+                                let available = f.len() - udp_start;
+                                if available < udp_len {
+                                    false
+                                } else {
+                                    verify_udp_checksum_v6(
+                                        &ip.src_addr,
+                                        &ip.dst_addr,
+                                        &f[udp_start..udp_start + udp_len],
+                                    )
+                                }
+                            }
+                            Packet::Multi(fs) => {
+                                let data_start = frag_off + FRAGMENT_EXT_LEN;
+                                // IPv6 does not allow zero checksum.
+                                if fs[0][data_start + 6] == 0 && fs[0][data_start + 7] == 0 {
+                                    false
+                                } else {
+                                    let mut sum: u64 = 0;
+                                    let mut pending: Option<u8> = None;
+                                    let mut total: usize = 0;
+
+                                    let slice = &fs[0][data_start..];
+                                    total += slice.len();
+                                    (sum, pending) = sum_words_carry(slice, sum, pending);
+
+                                    for f in &fs[1..] {
+                                        let slice = &f[data_start..];
+                                        total += slice.len();
+                                        (sum, pending) = sum_words_carry(slice, sum, pending);
+                                    }
+
+                                    if let Some(hi) = pending {
+                                        sum += (hi as u64) << 8;
+                                    }
+
+                                    if total < udp_len {
+                                        false
+                                    } else {
+                                        sum += pseudo_header_sum_v6(
+                                            &ip.src_addr,
+                                            &ip.dst_addr,
+                                            total as u32,
+                                        );
+                                        fold_and_verify(sum)
+                                    }
+                                }
+                            }
+                            Packet::Empty => return,
+                        };
+
                         (
                             IpAddress::V6(ip.src_addr),
                             IpAddress::V6(ip.dst_addr),
                             udp.src_port(),
                             udp.dst_port(),
+                            valid,
                         )
                     };
+                    if !valid {
+                        reassembled.packet.drain_to(rx_return);
+                        return;
+                    }
                     self.route(
                         ReceivedPacket {
                             src_addr,
@@ -263,7 +405,7 @@ mod tests {
             IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, Ipv4Address, Ipv6Address,
             compute_ipv4_checksum,
         },
-        udp::UDP_HEADER_LEN,
+        udp::{UDP_HEADER_LEN, compute_udp_checksum, compute_udp_checksum_v6},
     };
     use crate::xdp::frame::{BasicFrameBuffer, Frame};
 
@@ -311,8 +453,13 @@ mod tests {
         buf[udp_off..udp_off + 2].copy_from_slice(&src_port.to_be_bytes());
         buf[udp_off + 2..udp_off + 4].copy_from_slice(&dst_port.to_be_bytes());
         buf[udp_off + 4..udp_off + 6].copy_from_slice(&udp_len.to_be_bytes());
-
+        // checksum bytes [6..8] are zero; fill payload first, then compute
         buf[udp_off + UDP_HEADER_LEN..].copy_from_slice(payload);
+
+        let cksum = compute_udp_checksum(&src_ip, &dst_ip, &buf[udp_off..]);
+        buf[udp_off + 6] = cksum[0];
+        buf[udp_off + 7] = cksum[1];
+
         buf
     }
 
@@ -346,8 +493,13 @@ mod tests {
         buf[udp_off..udp_off + 2].copy_from_slice(&src_port.to_be_bytes());
         buf[udp_off + 2..udp_off + 4].copy_from_slice(&dst_port.to_be_bytes());
         buf[udp_off + 4..udp_off + 6].copy_from_slice(&udp_len.to_be_bytes());
-
+        // checksum bytes [6..8] are zero; fill payload first, then compute
         buf[udp_off + UDP_HEADER_LEN..].copy_from_slice(payload);
+
+        let cksum = compute_udp_checksum_v6(&src_ip, &dst_ip, &buf[udp_off..]);
+        buf[udp_off + 6] = cksum[0];
+        buf[udp_off + 7] = cksum[1];
+
         buf
     }
 
@@ -558,5 +710,133 @@ mod tests {
             .bind(IpAddress::V4(Ipv4Address::unspecified()), 53, 128)
             .unwrap_err();
         assert_eq!(err, BindError::AddressInUse);
+    }
+
+    // -- Checksum & length validation tests --
+
+    #[test]
+    fn process_ipv4_rejects_bad_udp_checksum() {
+        let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
+        // Corrupt the UDP checksum byte
+        let udp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        buf[udp_off + 6] ^= 0xFF;
+
+        let mut handler = UdpHandler::new(256);
+        let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
+
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+        let mut rx = BasicFrameBuffer::new(4);
+
+        handler.process_ipv4(frame, &mut rx);
+
+        assert_eq!(rx_queue.len(), 0, "bad checksum should not be delivered");
+        assert_eq!(rx.num_frames(), 1, "frame should be returned");
+    }
+
+    #[test]
+    fn process_ipv4_accepts_zero_checksum() {
+        let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
+        // Set checksum to zero (valid for IPv4 — means "no checksum")
+        let udp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        buf[udp_off + 6] = 0;
+        buf[udp_off + 7] = 0;
+
+        let mut handler = UdpHandler::new(256);
+        let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
+
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+        let mut rx = BasicFrameBuffer::new(4);
+
+        handler.process_ipv4(frame, &mut rx);
+
+        assert_eq!(rx_queue.len(), 1, "zero checksum should be accepted for IPv4");
+        assert_eq!(rx.num_frames(), 0);
+    }
+
+    #[test]
+    fn process_ipv6_rejects_zero_checksum() {
+        let mut buf = build_ipv6_udp_frame(REMOTE_IPV6, LOCAL_IPV6, 12345, 53, b"hello");
+        // Set checksum to zero (INVALID for IPv6)
+        let udp_off = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+        buf[udp_off + 6] = 0;
+        buf[udp_off + 7] = 0;
+
+        let mut handler = UdpHandler::new(256);
+        let rx_queue = handler.bind(IpAddress::V6(LOCAL_IPV6), 53, 128).unwrap();
+
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+        let mut rx = BasicFrameBuffer::new(4);
+
+        let udp_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+        handler.process_ipv6(frame, None, udp_offset, &mut rx);
+
+        assert_eq!(rx_queue.len(), 0, "zero checksum should be rejected for IPv6");
+        assert_eq!(rx.num_frames(), 1, "frame should be returned");
+    }
+
+    #[test]
+    fn process_ipv6_rejects_bad_udp_checksum() {
+        let mut buf = build_ipv6_udp_frame(REMOTE_IPV6, LOCAL_IPV6, 12345, 53, b"hello");
+        // Corrupt the UDP checksum byte
+        let udp_off = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+        buf[udp_off + 6] ^= 0xFF;
+
+        let mut handler = UdpHandler::new(256);
+        let rx_queue = handler.bind(IpAddress::V6(LOCAL_IPV6), 53, 128).unwrap();
+
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+        let mut rx = BasicFrameBuffer::new(4);
+
+        let udp_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+        handler.process_ipv6(frame, None, udp_offset, &mut rx);
+
+        assert_eq!(rx_queue.len(), 0, "bad checksum should not be delivered");
+        assert_eq!(rx.num_frames(), 1, "frame should be returned");
+    }
+
+    #[test]
+    fn process_ipv4_rejects_udp_length_too_small() {
+        let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
+        // Set UDP length to 4 (< 8 minimum)
+        let udp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        buf[udp_off + 4] = 0;
+        buf[udp_off + 5] = 4;
+
+        let mut handler = UdpHandler::new(256);
+        let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
+
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+        let mut rx = BasicFrameBuffer::new(4);
+
+        handler.process_ipv4(frame, &mut rx);
+
+        assert_eq!(rx_queue.len(), 0, "short UDP length should be rejected");
+        assert_eq!(rx.num_frames(), 1, "frame should be returned");
+    }
+
+    #[test]
+    fn process_ipv4_rejects_udp_length_exceeds_frame() {
+        let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hi");
+        // Set UDP length to 100 (much larger than actual data)
+        let udp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        buf[udp_off + 4] = 0;
+        buf[udp_off + 5] = 100;
+
+        let mut handler = UdpHandler::new(256);
+        let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
+
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+        let mut rx = BasicFrameBuffer::new(4);
+
+        handler.process_ipv4(frame, &mut rx);
+
+        assert_eq!(rx_queue.len(), 0, "oversized UDP length should be rejected");
+        assert_eq!(rx.num_frames(), 1, "frame should be returned");
     }
 }

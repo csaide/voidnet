@@ -80,36 +80,83 @@ impl UdpHeader {
 
 /// Sum all 16-bit words in `data`, handling trailing bytes.
 ///
-/// Processes four bytes (two 16-bit words) per iteration to reduce
-/// loop overhead, then handles the remaining 1-3 trailing bytes.
+/// Uses a `u64` accumulator and processes 32 bytes (sixteen 16-bit words)
+/// per iteration to reduce loop overhead and let the CPU pipeline loads.
 #[inline]
-fn sum_words(data: &[u8]) -> u32 {
-    let mut sum: u32 = 0;
-    let len = data.len();
-    let mut i = 0;
-
-    // Process 4 bytes (two u16 words) per iteration.
-    while i + 3 < len {
-        sum += ((data[i] as u32) << 8) | (data[i + 1] as u32);
-        sum += ((data[i + 2] as u32) << 8) | (data[i + 3] as u32);
-        i += 4;
+fn sum_words(data: &[u8]) -> u64 {
+    let (mut sum, pending) = sum_words_carry(data, 0, None);
+    if let Some(hi) = pending {
+        sum += (hi as u64) << 8;
     }
-
-    // Handle remaining 1-3 bytes.
-    if i + 1 < len {
-        sum += ((data[i] as u32) << 8) | (data[i + 1] as u32);
-        i += 2;
-    }
-    if i < len {
-        sum += (data[i] as u32) << 8;
-    }
-
     sum
 }
 
-/// Fold 32-bit running sum to 16 bits, then one's-complement.
+/// Sum 16-bit words across a slice, carrying a pending odd byte in/out.
+///
+/// This is the building block for checksumming fragmented (multi-frame)
+/// packets without heap-allocating a `Vec` of slices. Call it once per
+/// fragment and thread the `(sum, pending)` state through.
 #[inline]
-fn fold_checksum(mut sum: u32) -> u16 {
+pub(crate) fn sum_words_carry(
+    data: &[u8],
+    mut sum: u64,
+    pending: Option<u8>,
+) -> (u64, Option<u8>) {
+    let len = data.len();
+    let mut i = 0;
+
+    if let Some(hi) = pending {
+        if len > 0 {
+            sum += ((hi as u64) << 8) | (data[0] as u64);
+            i = 1;
+        } else {
+            return (sum, Some(hi));
+        }
+    }
+
+    // Process 32 bytes (sixteen u16 words) per iteration.
+    while i + 31 < len {
+        sum += ((data[i] as u64) << 8) | (data[i + 1] as u64);
+        sum += ((data[i + 2] as u64) << 8) | (data[i + 3] as u64);
+        sum += ((data[i + 4] as u64) << 8) | (data[i + 5] as u64);
+        sum += ((data[i + 6] as u64) << 8) | (data[i + 7] as u64);
+        sum += ((data[i + 8] as u64) << 8) | (data[i + 9] as u64);
+        sum += ((data[i + 10] as u64) << 8) | (data[i + 11] as u64);
+        sum += ((data[i + 12] as u64) << 8) | (data[i + 13] as u64);
+        sum += ((data[i + 14] as u64) << 8) | (data[i + 15] as u64);
+        sum += ((data[i + 16] as u64) << 8) | (data[i + 17] as u64);
+        sum += ((data[i + 18] as u64) << 8) | (data[i + 19] as u64);
+        sum += ((data[i + 20] as u64) << 8) | (data[i + 21] as u64);
+        sum += ((data[i + 22] as u64) << 8) | (data[i + 23] as u64);
+        sum += ((data[i + 24] as u64) << 8) | (data[i + 25] as u64);
+        sum += ((data[i + 26] as u64) << 8) | (data[i + 27] as u64);
+        sum += ((data[i + 28] as u64) << 8) | (data[i + 29] as u64);
+        sum += ((data[i + 30] as u64) << 8) | (data[i + 31] as u64);
+        i += 32;
+    }
+
+    // Handle remaining 4 bytes at a time.
+    while i + 3 < len {
+        sum += ((data[i] as u64) << 8) | (data[i + 1] as u64);
+        sum += ((data[i + 2] as u64) << 8) | (data[i + 3] as u64);
+        i += 4;
+    }
+
+    if i + 1 < len {
+        sum += ((data[i] as u64) << 8) | (data[i + 1] as u64);
+        i += 2;
+    }
+
+    if i < len {
+        return (sum, Some(data[i]));
+    }
+
+    (sum, None)
+}
+
+/// Fold 64-bit running sum to 16 bits, then one's-complement.
+#[inline]
+fn fold_checksum(mut sum: u64) -> u16 {
     while (sum >> 16) != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
@@ -118,7 +165,7 @@ fn fold_checksum(mut sum: u32) -> u16 {
 
 /// Fold and check for 0xFFFF (verification path).
 #[inline]
-fn fold_and_verify(mut sum: u32) -> bool {
+pub(crate) fn fold_and_verify(mut sum: u64) -> bool {
     while (sum >> 16) != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
@@ -127,18 +174,18 @@ fn fold_and_verify(mut sum: u32) -> bool {
 
 /// Build the IPv4 pseudo-header sum: src IP + dst IP + protocol(17) + UDP length.
 #[inline]
-fn pseudo_header_sum_v4(src_addr: &Ipv4Address, dst_addr: &Ipv4Address, udp_len: u16) -> u32 {
-    sum_words(&src_addr.octets) + sum_words(&dst_addr.octets) + 17u32 + udp_len as u32
+pub(crate) fn pseudo_header_sum_v4(src_addr: &Ipv4Address, dst_addr: &Ipv4Address, udp_len: u16) -> u64 {
+    sum_words(&src_addr.octets) + sum_words(&dst_addr.octets) + 17u64 + udp_len as u64
 }
 
 /// Build the IPv6 pseudo-header sum: src IP + dst IP + UDP length (u32) + next header(17).
 #[inline]
-fn pseudo_header_sum_v6(src_addr: &Ipv6Address, dst_addr: &Ipv6Address, udp_len: u32) -> u32 {
+pub(crate) fn pseudo_header_sum_v6(src_addr: &Ipv6Address, dst_addr: &Ipv6Address, udp_len: u32) -> u64 {
     sum_words(&src_addr.octets)
         + sum_words(&dst_addr.octets)
-        + ((udp_len >> 16) & 0xFFFF)
-        + (udp_len & 0xFFFF)
-        + 17u32
+        + (udp_len >> 16) as u64
+        + (udp_len & 0xFFFF) as u64
+        + 17u64
 }
 
 /// Convert a folded checksum to wire bytes, mapping zero to 0xFFFF per RFC 768.
@@ -253,9 +300,9 @@ pub fn compute_udp_checksum_from_parts(
     payload: &[u8],
 ) -> [u8; 2] {
     let sum = pseudo_header_sum_v4(src_addr, dst_addr, udp_len)
-        + src_port as u32
-        + dst_port as u32
-        + udp_len as u32
+        + src_port as u64
+        + dst_port as u64
+        + udp_len as u64
         // checksum field is zero, contributes nothing
         + sum_words(payload);
     checksum_to_bytes(fold_checksum(sum))
@@ -272,9 +319,9 @@ pub fn compute_udp_checksum_v6_from_parts(
     payload: &[u8],
 ) -> [u8; 2] {
     let sum = pseudo_header_sum_v6(src_addr, dst_addr, udp_len as u32)
-        + src_port as u32
-        + dst_port as u32
-        + udp_len as u32
+        + src_port as u64
+        + dst_port as u64
+        + udp_len as u64
         // checksum field is zero, contributes nothing
         + sum_words(payload);
     checksum_to_bytes(fold_checksum(sum))
@@ -509,5 +556,58 @@ mod tests {
         let expected = compute_udp_checksum_v6(&src, &dst, &segment);
         let actual = compute_udp_checksum_v6_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn sum_words_carry_even_boundary() {
+        let src = Ipv4Address::new([192, 168, 1, 1]);
+        let dst = Ipv4Address::new([10, 0, 0, 1]);
+        let mut segment = [
+            0x12, 0x34, 0x00, 0x35, 0x00, 0x0C, 0x00, 0x00,
+            0x01, 0x02, 0x03, 0x04,
+        ];
+        let checksum = compute_udp_checksum(&src, &dst, &segment);
+        segment[6] = checksum[0];
+        segment[7] = checksum[1];
+
+        // Sum across two slices split at an even boundary
+        let (a, b) = segment.split_at(8);
+        let mut sum = pseudo_header_sum_v4(&src, &dst, segment.len() as u16);
+        let pending;
+        (sum, pending) = sum_words_carry(a, sum, None);
+        (sum, _) = sum_words_carry(b, sum, pending);
+        assert!(fold_and_verify(sum));
+    }
+
+    #[test]
+    fn sum_words_carry_odd_boundary() {
+        let src = Ipv4Address::new([192, 168, 1, 1]);
+        let dst = Ipv4Address::new([10, 0, 0, 1]);
+        let mut segment = [
+            0x12, 0x34, 0x00, 0x35, 0x00, 0x0D, 0x00, 0x00,
+            0x01, 0x02, 0x03, 0x04, 0x05,
+        ];
+        let checksum = compute_udp_checksum(&src, &dst, &segment);
+        segment[6] = checksum[0];
+        segment[7] = checksum[1];
+
+        // Split at an odd boundary (9 bytes + 4 bytes)
+        let (a, b) = segment.split_at(9);
+        let mut sum = pseudo_header_sum_v4(&src, &dst, segment.len() as u16);
+        let pending;
+        (sum, pending) = sum_words_carry(a, sum, None);
+        let trailing;
+        (sum, trailing) = sum_words_carry(b, sum, pending);
+        if let Some(hi) = trailing {
+            sum += (hi as u64) << 8;
+        }
+        assert!(fold_and_verify(sum));
+    }
+
+    #[test]
+    fn sum_words_carry_empty_slice() {
+        let (sum, pending) = sum_words_carry(&[], 42, Some(0xAB));
+        assert_eq!(sum, 42);
+        assert_eq!(pending, Some(0xAB));
     }
 }
