@@ -79,6 +79,8 @@ fn main() {
 
     runtime
         .run(exit, async move {
+            println!("Listening on {:?}:8080", addr);
+
             loop {
                 let packet = socket.recv_from().await;
                 stats.update(packet.packet.len(), false);

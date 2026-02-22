@@ -12,7 +12,7 @@ use clap::Parser;
 use libvoid::{net::TcpReadResult, rt::LocalRuntime};
 
 mod common;
-use common::BaseArgs;
+use common::{BaseArgs, Stats};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -36,6 +36,7 @@ impl DerefMut for Args {
 }
 
 fn main() {
+    let mut stats = Stats::new_with_packets_per_print(1000);
     let args = Args::parse();
 
     let mut runtime = LocalRuntime::builder(
@@ -83,18 +84,11 @@ fn main() {
             loop {
                 let mut stream = listener.accept().await;
 
-                println!(
-                    "Accepted connection from {:?}:{}",
-                    stream.remote_addr(),
-                    stream.remote_port()
-                );
-
                 loop {
                     match stream.read(&mut buf).await {
                         TcpReadResult::Data(n) => {
-                            println!("Received data: {:?}", String::from_utf8_lossy(&buf[..n]));
-                            stream.write(&buf[..n]).await;
-                            println!("Wrote data: {:?}", String::from_utf8_lossy(&buf[..n]));
+                            stats.update(n, false);
+                            stats.maybe_print();
                         }
                         TcpReadResult::Connected => continue,
                         TcpReadResult::PeerClosed
