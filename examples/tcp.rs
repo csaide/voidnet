@@ -9,10 +9,10 @@ use std::{
 
 use clap::Parser;
 
-use libvoid::rt::LocalRuntime;
+use libvoid::{net::TcpReadResult, rt::LocalRuntime};
 
 mod common;
-use common::{BaseArgs, Stats};
+use common::BaseArgs;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -36,7 +36,6 @@ impl DerefMut for Args {
 }
 
 fn main() {
-    let mut stats = Stats::new();
     let args = Args::parse();
 
     let mut runtime = LocalRuntime::builder(
@@ -72,19 +71,40 @@ fn main() {
 
     let addr = "fc00:dead:cafe:1::1"
         .parse()
-        .expect("Failed to parse IPv6 address");
-    let mut socket = runtime
-        .bind_udp(addr, 8080)
-        .expect("Failed to bind UDP socket");
+        .expect("Failed to parse IP address");
+    let listener = runtime.listen_tcp(addr, 8080, 1024);
 
+    println!("Starting runtime");
     runtime
         .run(exit, async move {
-            loop {
-                let packet = socket.recv_from().await;
-                stats.update(packet.packet.len(), false);
-                socket.discard_packet(packet);
+            println!("Listening on {:?}:8080", addr);
 
-                stats.maybe_print();
+            let mut buf = [0u8; 1024];
+            loop {
+                let mut stream = listener.accept().await;
+
+                println!(
+                    "Accepted connection from {:?}:{}",
+                    stream.remote_addr(),
+                    stream.remote_port()
+                );
+
+                loop {
+                    match stream.read(&mut buf).await {
+                        TcpReadResult::Data(n) => {
+                            println!("Received data: {:?}", String::from_utf8_lossy(&buf[..n]));
+                            stream.write(&buf[..n]).await;
+                            println!("Wrote data: {:?}", String::from_utf8_lossy(&buf[..n]));
+                        }
+                        TcpReadResult::Connected => continue,
+                        TcpReadResult::PeerClosed
+                        | TcpReadResult::Reset
+                        | TcpReadResult::Closed => {
+                            stream.close();
+                            break;
+                        }
+                    }
+                }
             }
         })
         .expect("Failed to run runtime");

@@ -57,12 +57,14 @@ impl<'umem> FillQueue<'umem> {
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
     pub fn process_queue<B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
-        let (mut idx, ready) = self.ring.reserve(batch.num_frames() as u32);
+        let batch_size = batch.num_frames().min(self.ring.size() as usize);
+        let (mut idx, ready) = self.ring.reserve(batch_size as u32);
         if ready == 0 {
             return;
         }
 
-        for frame in batch.take_frames() {
+        for _ in 0..ready {
+            let frame = batch.pop().unwrap();
             let ptr = self.ring.fill_addr(idx);
             unsafe { *ptr = frame.addr() };
             idx += 1;

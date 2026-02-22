@@ -22,8 +22,8 @@ use crate::xdp::{
 use crate::{
     net::{
         NeighborHandler, PmtuCache,
-        handler::{ipv4::Ipv4Handler, ipv6::Ipv6Handler, udp::UdpHandler},
-        socket::UdpSocket,
+        handler::{ipv4::Ipv4Handler, ipv6::Ipv6Handler, tcp::TcpHandler, udp::UdpHandler},
+        socket::{TcpListener, TcpStream, UdpSocket},
         wire::{
             ethernet::{EtherTypes, EthernetFrame, MacAddress},
             ip::IpAddress,
@@ -36,6 +36,11 @@ use super::waker;
 
 const DEFAULT_ARP_TTL: Duration = Duration::from_secs(60);
 
+/// Builder for configuring and constructing a [`LocalRuntime`].
+///
+/// Wraps the underlying XDP context, UMEM, and socket builders with
+/// sane defaults. All builder methods delegate to the appropriate
+/// sub-builder so callers only interact with a single API.
 pub struct LocalRuntimeBuilder<'name> {
     if_name: &'name str,
     ctx: XdpContextBuilder<'name>,
@@ -85,11 +90,6 @@ impl<'name> LocalRuntimeBuilder<'name> {
 
     pub fn frame_size(mut self, frame_size: usize) -> Self {
         self.umem = self.umem.frame_size(frame_size);
-        self
-    }
-
-    pub fn num_frames(mut self, num_frames: usize) -> Self {
-        self.umem = self.umem.num_frames(num_frames);
         self
     }
 
@@ -151,18 +151,35 @@ impl<'name> LocalRuntimeBuilder<'name> {
 
 const DEFAULT_SOCKET_RX_CAPACITY: usize = 256;
 
+/// Single-threaded packet processing runtime with integrated protocol handlers.
+///
+/// Owns the AF_XDP socket, UMEM, and all protocol handler state. The
+/// `run` method drives the event loop: receive frames, dispatch through
+/// the protocol stack, poll the user future, and transmit responses.
 pub struct LocalRuntime<'umem> {
+    // Overall context for the XDP program, this is used to own the underlying XDP program and socket.
     _ctx: XdpContext,
+    // Shared memory for reading and writing frames to the network.
     umem: Umem<'umem>,
+    // Raw AF_XDP socket for reading and writing frames to the network.
     socket: Socket<'umem>,
+    // ARP/NDP neighbor handling for IPv4 and IPv6.
     neighbor_handler: Rc<NeighborHandler>,
+    // Path MTU cache for handling path MTU discovery.
     pmtu: Rc<PmtuCache>,
+    // Main IPv4 protocol handler calls into udp_handler and tcp_handler.
     ipv4_handler: Ipv4Handler,
+    // Main IPv6 protocol handler calls into neighbor_handler and udp_handler and tcp_handler.
     ipv6_handler: Ipv6Handler,
+    // UDP handler is used to bind and send UDP packets, handling things like fragmentation and reassembly.
     udp_handler: UdpHandler<'umem>,
-    // Buffers
+    // TCP handler is used to handle TCP protocol packets, handling things like reassembly, segmentation, and retransmission.
+    tcp_handler: TcpHandler<'umem>,
+    // Set of empty ready to go frame structs that can be used for building outbound packets.
     free_frames: SharedFrameBuffer<'umem>,
+    // Frames that are filled and ready to be sent to the network.
     tx_return: SharedFrameBuffer<'umem>,
+    // Frames that were read from the network and should be handed back to the kernel for re-use.
     rx_return: SharedFrameBuffer<'umem>,
 }
 
@@ -204,6 +221,7 @@ impl<'umem> LocalRuntime<'umem> {
             ipv4_handler: Ipv4Handler::new(),
             ipv6_handler: Ipv6Handler::new(),
             udp_handler: UdpHandler::new(256),
+            tcp_handler: TcpHandler::new(256),
             free_frames,
             tx_return,
             rx_return,
@@ -228,10 +246,62 @@ impl<'umem> LocalRuntime<'umem> {
         ))
     }
 
+    /// Listen for incoming TCP connections on the given address and port.
+    pub fn listen_tcp(&mut self, addr: IpAddress, port: u16, backlog: usize) -> TcpListener<'umem> {
+        let accept_queue = self.tcp_handler.listen(addr, port, backlog);
+        TcpListener::new(
+            addr,
+            port,
+            accept_queue,
+            self.free_frames.clone(),
+            self.rx_return.clone(),
+        )
+    }
+
+    /// Initiate an active TCP connection to a remote host.
+    pub fn connect_tcp(
+        &mut self,
+        local_addr: IpAddress,
+        local_port: u16,
+        remote_addr: IpAddress,
+        remote_port: u16,
+        local_mac: MacAddress,
+        remote_mac: MacAddress,
+    ) -> Option<TcpStream<'umem>> {
+        let (rx_queue, cmd_queue, send_buffer) = self.tcp_handler.connect(
+            local_addr,
+            local_port,
+            remote_addr,
+            remote_port,
+            local_mac,
+            remote_mac,
+            &mut self.free_frames,
+            &mut self.tx_return,
+        )?;
+        Some(TcpStream::new(
+            local_addr,
+            local_port,
+            remote_addr,
+            remote_port,
+            rx_queue,
+            cmd_queue,
+            send_buffer,
+            self.free_frames.clone(),
+            self.rx_return.clone(),
+        ))
+    }
+
+    /// Runs the event loop until `exit` is set or `fut` completes.
+    ///
+    /// Each iteration: receive frames, dispatch through the protocol stack,
+    /// poll `fut`, drive TCP timers, evict stale state, and transmit.
     pub fn run<F>(&mut self, exit: Arc<AtomicBool>, fut: F) -> Result<()>
     where
         F: Future<Output = ()>,
     {
+        // Before we can operate properly we need to seed the kernel with free frames to read into, this logic
+        // will take as many frames as it can from the free_frames buffer and submit them to the kernel. Note the logic
+        // ensures there will be a set of frames still present here equaling the number of slots in the completion (send) ring.
         self.umem.maybe_wake_fill_queue(self.socket.fd())?;
         self.umem.process_fill_queue(&mut self.free_frames);
 
@@ -239,79 +309,103 @@ impl<'umem> LocalRuntime<'umem> {
         let mut cx = Context::from_waker(&waker);
         pin_mut!(fut);
 
+        // We need a storage container for the incoming frames, this will be used to store the frames
+        // that are read from the network while the runtime is processing them.
         let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
         while !exit.load(Ordering::Relaxed) {
-            if let Err(_) = self.socket.recv(&mut buffer) {
-                continue;
-            }
+            // We only drive the network read logic if we have new network frames to process.
+            //
+            // This will return with 1 > N frames in the success case, as soon as possible. If there are no frames it will return an error,
+            // at this point we would have blocked so execute the runtime loop again but don't bother processing the frames.
+            if let Ok(_) = self.socket.recv(&mut buffer) {
+                let Self {
+                    neighbor_handler,
+                    ipv4_handler,
+                    ipv6_handler,
+                    pmtu,
+                    udp_handler,
+                    tcp_handler,
+                    ..
+                } = self;
 
-            let Self {
-                neighbor_handler,
-                ipv4_handler,
-                ipv6_handler,
-                pmtu,
-                udp_handler,
-                ..
-            } = self;
-
-            for frame in buffer.take_frames() {
-                let ethernet_frame = EthernetFrame::from_frame(&frame);
-                match ethernet_frame.ether_type {
-                    EtherTypes::IPv4 => {
-                        ipv4_handler.handle(
-                            frame,
-                            udp_handler,
-                            pmtu,
-                            &mut self.rx_return,
-                            &mut self.tx_return,
-                        );
-                    }
-                    EtherTypes::IPv6 => {
-                        ipv6_handler.handle(
-                            frame,
-                            neighbor_handler,
-                            udp_handler,
-                            pmtu,
-                            &mut self.rx_return,
-                            &mut self.tx_return,
-                        );
-                    }
-                    EtherTypes::Arp => {
-                        neighbor_handler.handle_arp(
-                            frame,
-                            &mut self.rx_return,
-                            &mut self.tx_return,
-                        );
-                    }
-                    _ => {
-                        // Unsupported ethertype, return the frame to the kernel.
-                        self.rx_return.push(frame);
+                for frame in buffer.take_frames() {
+                    let ethernet_frame = EthernetFrame::from_frame(&frame);
+                    match ethernet_frame.ether_type {
+                        EtherTypes::IPv4 => {
+                            ipv4_handler.handle(
+                                frame,
+                                udp_handler,
+                                tcp_handler,
+                                pmtu,
+                                &mut self.free_frames,
+                                &mut self.rx_return,
+                                &mut self.tx_return,
+                            );
+                        }
+                        EtherTypes::IPv6 => {
+                            ipv6_handler.handle(
+                                frame,
+                                neighbor_handler,
+                                udp_handler,
+                                tcp_handler,
+                                pmtu,
+                                &mut self.free_frames,
+                                &mut self.rx_return,
+                                &mut self.tx_return,
+                            );
+                        }
+                        EtherTypes::Arp => {
+                            neighbor_handler.handle_arp(
+                                frame,
+                                &mut self.rx_return,
+                                &mut self.tx_return,
+                            );
+                        }
+                        _ => {
+                            // Unsupported ethertype, return the frame to the kernel.
+                            self.rx_return.push(frame);
+                        }
                     }
                 }
             }
 
+            // Drive the user future, we aren't using wakers here, because in reality we don't
+            // _actually_ have readiness due to the fact that the futures in use here are just
+            // vectors of frames that can't fail. We are designed to be as low latency as possible,
+            // the indirection of having a waker call just to add this back into play is unnecessary.
             if let Poll::Ready(_) = fut.as_mut().poll(&mut cx) {
                 return Ok(());
             }
 
+            // Drive TCP timers and outbound data.
+            self.tcp_handler.tick(
+                &mut self.free_frames,
+                &mut self.rx_return,
+                &mut self.tx_return,
+            );
+
             // Periodically evict stale entries.
             self.udp_handler
                 .evict_stale(Duration::from_secs(30), &mut self.rx_return);
+            self.tcp_handler.evict_stale(&mut self.rx_return);
             self.neighbor_handler.evict_stale();
             self.pmtu.evict_stale();
 
-            if self.tx_return.num_frames() > 0 {
-                while let Err(_) = self.socket.send(&mut self.tx_return) {
-                    self.socket.maybe_wake()?;
-                }
+            // Handle the frames ready to send this will push all of them into the socket for transmission.
+            while self.tx_return.num_frames() > 0 {
+                self.socket.maybe_wake()?;
 
-                while let Err(_) = self.umem.process_completion_queue(&mut self.rx_return) {
-                    self.socket.maybe_wake()?;
-                }
+                let _ = self.socket.send(&mut self.tx_return);
+                let _ = self.umem.process_completion_queue(&mut self.rx_return);
             }
 
+            // Now refill the fill queue with frames to read into, the rest of the frames get pushed back into the free_frames buffer.
             self.umem.maybe_wake_fill_queue(self.socket.fd())?;
             self.umem.process_fill_queue(&mut self.rx_return);
+
+            for frame in self.rx_return.take_frames() {
+                self.free_frames.push(frame);
+            }
         }
 
         Ok(())

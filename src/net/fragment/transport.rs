@@ -1,5 +1,6 @@
 use crate::net::wire::{
     ip::IpProtocols,
+    tcp::{TCP_HEADER_LEN, TcpHeader},
     udp::{UDP_HEADER_LEN, UdpHeader},
 };
 
@@ -19,6 +20,25 @@ pub trait TransportHeader {
     ///
     /// The caller guarantees `buf.len() >= header_len()`.
     fn write_to(&self, buf: &mut [u8]);
+}
+
+impl TransportHeader for TcpHeader {
+    #[inline]
+    fn protocol(&self) -> u8 {
+        IpProtocols::Tcp
+    }
+
+    #[inline]
+    fn header_len(&self) -> usize {
+        TCP_HEADER_LEN
+    }
+
+    #[inline]
+    fn write_to(&self, buf: &mut [u8]) {
+        let bytes =
+            unsafe { std::slice::from_raw_parts(self as *const Self as *const u8, TCP_HEADER_LEN) };
+        buf[..TCP_HEADER_LEN].copy_from_slice(bytes);
+    }
 }
 
 impl TransportHeader for UdpHeader {
@@ -68,8 +88,12 @@ mod tests {
     struct FakeTransport;
 
     impl TransportHeader for FakeTransport {
-        fn protocol(&self) -> u8 { 99 }
-        fn header_len(&self) -> usize { 4 }
+        fn protocol(&self) -> u8 {
+            99
+        }
+        fn header_len(&self) -> usize {
+            4
+        }
         fn write_to(&self, buf: &mut [u8]) {
             buf[0..4].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
         }

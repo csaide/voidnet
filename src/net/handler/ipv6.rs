@@ -16,7 +16,7 @@ use super::wire::{
         IPV6_HEADER_LEN, IPV6_MIN_FRAME_LEN, IpProtocols, Ipv6Header,
     },
 };
-use super::{icmpv6, udp::UdpHandler};
+use super::{icmpv6, tcp::TcpHandler, udp::UdpHandler};
 
 /// Result of walking IPv6 extension headers.
 pub(crate) enum NextHeaderResult {
@@ -149,7 +149,9 @@ impl Ipv6Handler {
         frame: Frame<'umem>,
         neighbor_handler: &NeighborHandler,
         udp_handler: &mut UdpHandler<'umem>,
+        tcp_handler: &mut TcpHandler<'umem>,
         pmtu: &PmtuCache,
+        free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
@@ -212,7 +214,9 @@ impl Ipv6Handler {
                         tx_return,
                     );
                 }
-                IpProtocols::Tcp => rx_return.push(frame),
+                IpProtocols::Tcp => {
+                    tcp_handler.process_ipv6(frame, payload_offset, free_frames, rx_return, tx_return)
+                }
                 IpProtocols::Udp => {
                     udp_handler.process_ipv6(frame, None, payload_offset, rx_return)
                 }
@@ -405,8 +409,6 @@ mod tests {
         buf
     }
 
-    // -- walk_extension_headers tests --
-
     #[test]
     fn walk_no_extensions() {
         let buf = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &[0; 8]);
@@ -531,15 +533,15 @@ mod tests {
         }
     }
 
-    // -- Handler validation tests --
-
     #[test]
     fn frame_too_short_goes_to_rx() {
         let mut data = [0u8; 50];
 
         let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
+        let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = TcpHandler::new(256);
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -547,9 +549,11 @@ mod tests {
 
         handler.handle(
             frame,
-            &mut nh,
+            &nh,
             &mut udp,
-            &mut PmtuCache::new(),
+            &mut tcp,
+            &PmtuCache::new(),
+            &mut free,
             &mut rx,
             &mut tx,
         );
@@ -563,8 +567,10 @@ mod tests {
         data[14] = (data[14] & 0x0F) | 0x40; // version 4 instead of 6
 
         let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
+        let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = TcpHandler::new(256);
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -573,9 +579,11 @@ mod tests {
 
         handler.handle(
             frame,
-            &mut nh,
+            &nh,
             &mut udp,
-            &mut PmtuCache::new(),
+            &mut tcp,
+            &PmtuCache::new(),
+            &mut free,
             &mut rx,
             &mut tx,
         );
@@ -591,8 +599,10 @@ mod tests {
         data[19] = 100; // claim 100 bytes but only 8 available
 
         let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
+        let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = TcpHandler::new(256);
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -601,9 +611,11 @@ mod tests {
 
         handler.handle(
             frame,
-            &mut nh,
+            &nh,
             &mut udp,
-            &mut PmtuCache::new(),
+            &mut tcp,
+            &PmtuCache::new(),
+            &mut free,
             &mut rx,
             &mut tx,
         );
@@ -611,16 +623,16 @@ mod tests {
         assert_eq!(tx.num_frames(), 0);
     }
 
-    // -- Dispatch tests --
-
     #[test]
     fn fragment_goes_to_udp_handler() {
         let mut data =
             build_ipv6_with_fragment(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 0, true, &[0; 8]);
 
         let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
+        let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = TcpHandler::new(256);
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -629,9 +641,11 @@ mod tests {
 
         handler.handle(
             frame,
-            &mut nh,
+            &nh,
             &mut udp,
-            &mut PmtuCache::new(),
+            &mut tcp,
+            &PmtuCache::new(),
+            &mut free,
             &mut rx,
             &mut tx,
         );
@@ -671,17 +685,21 @@ mod tests {
         data[icmp_off + 3] = cksum[1];
 
         let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
+        let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = TcpHandler::new(256);
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let frame = Frame::new(0, &mut data, frame_len, false);
         handler.handle(
             frame,
-            &mut nh,
+            &nh,
             &mut udp,
-            &mut PmtuCache::new(),
+            &mut tcp,
+            &PmtuCache::new(),
+            &mut free,
             &mut rx,
             &mut tx,
         );
@@ -695,8 +713,10 @@ mod tests {
         let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Tcp, 64, &[0; 20]);
 
         let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
+        let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = TcpHandler::new(256);
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -705,12 +725,16 @@ mod tests {
 
         handler.handle(
             frame,
-            &mut nh,
+            &nh,
             &mut udp,
-            &mut PmtuCache::new(),
+            &mut tcp,
+            &PmtuCache::new(),
+            &mut free,
             &mut rx,
             &mut tx,
         );
+        // TCP payload is all zeros so data_offset=0 fails header validation,
+        // causing the frame to be dropped to rx_return.
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
@@ -721,8 +745,10 @@ mod tests {
         let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &udp_bytes);
 
         let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
+        let nh = new_neighbor_handler();
         let (mut udp, rx_queue) = new_udp_handler_with_socket(0);
+        let mut tcp = TcpHandler::new(256);
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -731,9 +757,11 @@ mod tests {
 
         handler.handle(
             frame,
-            &mut nh,
+            &nh,
             &mut udp,
-            &mut PmtuCache::new(),
+            &mut tcp,
+            &PmtuCache::new(),
+            &mut free,
             &mut rx,
             &mut tx,
         );
@@ -749,8 +777,10 @@ mod tests {
         data[..raw.len()].copy_from_slice(&raw);
 
         let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
+        let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = TcpHandler::new(256);
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -758,9 +788,11 @@ mod tests {
 
         handler.handle(
             frame,
-            &mut nh,
+            &nh,
             &mut udp,
-            &mut PmtuCache::new(),
+            &mut tcp,
+            &PmtuCache::new(),
+            &mut free,
             &mut rx,
             &mut tx,
         );
@@ -775,8 +807,10 @@ mod tests {
             build_ipv6_with_ext_header(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 64, &udp_bytes);
 
         let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
+        let nh = new_neighbor_handler();
         let (mut udp, rx_queue) = new_udp_handler_with_socket(0);
+        let mut tcp = TcpHandler::new(256);
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -785,9 +819,11 @@ mod tests {
 
         handler.handle(
             frame,
-            &mut nh,
+            &nh,
             &mut udp,
-            &mut PmtuCache::new(),
+            &mut tcp,
+            &PmtuCache::new(),
+            &mut free,
             &mut rx,
             &mut tx,
         );
@@ -801,8 +837,10 @@ mod tests {
         let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, NO_NEXT_HEADER, 64, &[]);
 
         let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
+        let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = TcpHandler::new(256);
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -811,9 +849,11 @@ mod tests {
 
         handler.handle(
             frame,
-            &mut nh,
+            &nh,
             &mut udp,
-            &mut PmtuCache::new(),
+            &mut tcp,
+            &PmtuCache::new(),
+            &mut free,
             &mut rx,
             &mut tx,
         );
@@ -839,8 +879,10 @@ mod tests {
         data[ext_start + 1] = 0;
 
         let mut handler = new_handler();
-        let mut nh = new_neighbor_handler();
+        let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = TcpHandler::new(256);
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
@@ -849,9 +891,11 @@ mod tests {
 
         handler.handle(
             frame,
-            &mut nh,
+            &nh,
             &mut udp,
-            &mut PmtuCache::new(),
+            &mut tcp,
+            &PmtuCache::new(),
+            &mut free,
             &mut rx,
             &mut tx,
         );

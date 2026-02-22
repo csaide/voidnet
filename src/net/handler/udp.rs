@@ -172,12 +172,9 @@ impl<'umem> UdpHandler<'umem> {
                             if total < udp_len {
                                 false
                             } else {
-                                sum += pseudo_header_sum_v4(
-                                    &ip.src_addr,
-                                    &ip.dst_addr,
-                                    total as u16,
-                                );
-                                fold_and_verify(sum)
+                                sum +=
+                                    pseudo_header_sum_v4(&ip.src_addr, &ip.dst_addr, total as u16);
+                                fold_and_verify(sum, 0x0000)
                             }
                         }
                     }
@@ -261,8 +258,9 @@ impl<'umem> UdpHandler<'umem> {
                     return;
                 }
 
-                if let Some(reassembled) =
-                    self.fragment_reader.process_ipv6(frame, frag_off, rx_return)
+                if let Some(reassembled) = self
+                    .fragment_reader
+                    .process_ipv6(frame, frag_off, rx_return)
                 {
                     let (src_addr, dst_addr, src_port, dst_port, valid) = {
                         let first = match &reassembled.packet {
@@ -328,7 +326,7 @@ impl<'umem> UdpHandler<'umem> {
                                             &ip.dst_addr,
                                             total as u32,
                                         );
-                                        fold_and_verify(sum)
+                                        fold_and_verify(sum, 0x0000)
                                     }
                                 }
                             }
@@ -751,7 +749,11 @@ mod tests {
 
         handler.process_ipv4(frame, &mut rx);
 
-        assert_eq!(rx_queue.len(), 1, "zero checksum should be accepted for IPv4");
+        assert_eq!(
+            rx_queue.len(),
+            1,
+            "zero checksum should be accepted for IPv4"
+        );
         assert_eq!(rx.num_frames(), 0);
     }
 
@@ -773,7 +775,11 @@ mod tests {
         let udp_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
         handler.process_ipv6(frame, None, udp_offset, &mut rx);
 
-        assert_eq!(rx_queue.len(), 0, "zero checksum should be rejected for IPv6");
+        assert_eq!(
+            rx_queue.len(),
+            0,
+            "zero checksum should be rejected for IPv6"
+        );
         assert_eq!(rx.num_frames(), 1, "frame should be returned");
     }
 

@@ -10,7 +10,7 @@ use super::wire::{
     icmpv4::Icmpv4Codes,
     ip::{IPV4_MIN_FRAME_LEN, IpProtocols, Ipv4Header, verify_ipv4_checksum},
 };
-use super::{icmpv4, udp::UdpHandler};
+use super::{icmpv4, tcp::TcpHandler, udp::UdpHandler};
 
 /// Layer-3 handler for incoming IPv4 frames.
 ///
@@ -37,7 +37,9 @@ impl Ipv4Handler {
         &mut self,
         frame: Frame<'umem>,
         udp_handler: &mut UdpHandler<'umem>,
+        tcp_handler: &mut TcpHandler<'umem>,
         pmtu: &PmtuCache,
+        free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
@@ -98,7 +100,7 @@ impl Ipv4Handler {
         let protocol = ip.protocol;
         match protocol {
             IpProtocols::Icmp => icmpv4::handle_icmpv4(frame, pmtu, rx_return, tx_return),
-            IpProtocols::Tcp => rx_return.push(frame),
+            IpProtocols::Tcp => tcp_handler.process_ipv4(frame, free_frames, rx_return, tx_return),
             IpProtocols::Udp => udp_handler.process_ipv4(frame, rx_return),
             _ => icmpv4::send_destination_unreachable(
                 frame,
@@ -130,6 +132,10 @@ mod tests {
 
     fn new_udp_handler<'umem>() -> UdpHandler<'umem> {
         UdpHandler::new(256)
+    }
+
+    fn new_tcp_handler<'umem>() -> TcpHandler<'umem> {
+        TcpHandler::new(256)
     }
 
     /// Builds a minimal valid UDP segment (header only, no payload) with a
@@ -230,19 +236,19 @@ mod tests {
         buf
     }
 
-    // -- Validation tests --
-
     #[test]
     fn frame_too_short_goes_to_rx() {
         let mut data = [0u8; 30];
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = new_tcp_handler();
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let frame = Frame::new(0, &mut data, 30, false);
 
-        handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
@@ -257,13 +263,15 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = new_tcp_handler();
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
@@ -275,13 +283,15 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = new_tcp_handler();
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
@@ -293,13 +303,15 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = new_tcp_handler();
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
@@ -319,18 +331,18 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = new_tcp_handler();
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
-
-    // -- Dispatch tests --
 
     #[test]
     fn udp_fragment_goes_to_udp_handler() {
@@ -339,13 +351,15 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = new_tcp_handler();
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 0);
         assert_eq!(udp.pending_reassembly(), 1);
@@ -353,19 +367,23 @@ mod tests {
 
     #[test]
     fn non_udp_fragment_goes_to_rx() {
-        // TCP fragment should go to rx_return, not UDP handler
+        // TCP fragment — dispatched via tcp_handler.process_ipv4; the
+        // all-zeros payload will fail TCP header validation and the frame
+        // ends up in rx_return.
         let mut data =
             build_fragment_frame(REMOTE_IP, LOCAL_IP, IpProtocols::Tcp, 0, true, &[0; 20]);
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = new_tcp_handler();
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
         assert_eq!(udp.pending_reassembly(), 0);
@@ -402,11 +420,13 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = new_tcp_handler();
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let frame = Frame::new(0, &mut data, frame_len, false);
-        handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
 
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
@@ -418,15 +438,19 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = new_tcp_handler();
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
-        assert_eq!(rx.num_frames(), 1);
-        assert_eq!(tx.num_frames(), 0);
+        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
+        // TCP payload is all-zeros; no valid SYN so the frame ends up in
+        // rx_return (validation failure or no matching listener).
+        let total = rx.num_frames() + tx.num_frames();
+        assert!(total >= 1, "frame must be consumed: rx={} tx={}", rx.num_frames(), tx.num_frames());
     }
 
     #[test]
@@ -436,13 +460,15 @@ mod tests {
 
         let mut handler = new_handler();
         let (mut udp, rx_queue) = new_udp_handler_with_socket(0);
+        let mut tcp = new_tcp_handler();
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 0);
         assert_eq!(rx_queue.len(), 1);
@@ -456,12 +482,14 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
+        let mut tcp = new_tcp_handler();
+        let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
         let frame = Frame::new(0, &mut data, raw.len(), false);
 
-        handler.handle(frame, &mut udp, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
     }

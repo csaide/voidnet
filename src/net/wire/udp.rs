@@ -97,11 +97,7 @@ fn sum_words(data: &[u8]) -> u64 {
 /// packets without heap-allocating a `Vec` of slices. Call it once per
 /// fragment and thread the `(sum, pending)` state through.
 #[inline]
-pub(crate) fn sum_words_carry(
-    data: &[u8],
-    mut sum: u64,
-    pending: Option<u8>,
-) -> (u64, Option<u8>) {
+pub(crate) fn sum_words_carry(data: &[u8], mut sum: u64, pending: Option<u8>) -> (u64, Option<u8>) {
     let len = data.len();
     let mut i = 0;
 
@@ -156,7 +152,7 @@ pub(crate) fn sum_words_carry(
 
 /// Fold 64-bit running sum to 16 bits, then one's-complement.
 #[inline]
-fn fold_checksum(mut sum: u64) -> u16 {
+pub(crate) fn fold_checksum(mut sum: u64) -> u16 {
     while (sum >> 16) != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
@@ -165,22 +161,30 @@ fn fold_checksum(mut sum: u64) -> u16 {
 
 /// Fold and check for 0xFFFF (verification path).
 #[inline]
-pub(crate) fn fold_and_verify(mut sum: u64) -> bool {
+pub(crate) fn fold_and_verify(mut sum: u64, actual: u16) -> bool {
     while (sum >> 16) != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
-    sum == 0xFFFF
+    !(sum as u16) == actual
 }
 
 /// Build the IPv4 pseudo-header sum: src IP + dst IP + protocol(17) + UDP length.
 #[inline]
-pub(crate) fn pseudo_header_sum_v4(src_addr: &Ipv4Address, dst_addr: &Ipv4Address, udp_len: u16) -> u64 {
+pub(crate) fn pseudo_header_sum_v4(
+    src_addr: &Ipv4Address,
+    dst_addr: &Ipv4Address,
+    udp_len: u16,
+) -> u64 {
     sum_words(&src_addr.octets) + sum_words(&dst_addr.octets) + 17u64 + udp_len as u64
 }
 
 /// Build the IPv6 pseudo-header sum: src IP + dst IP + UDP length (u32) + next header(17).
 #[inline]
-pub(crate) fn pseudo_header_sum_v6(src_addr: &Ipv6Address, dst_addr: &Ipv6Address, udp_len: u32) -> u64 {
+pub(crate) fn pseudo_header_sum_v6(
+    src_addr: &Ipv6Address,
+    dst_addr: &Ipv6Address,
+    udp_len: u32,
+) -> u64 {
     sum_words(&src_addr.octets)
         + sum_words(&dst_addr.octets)
         + (udp_len >> 16) as u64
@@ -215,8 +219,8 @@ pub fn compute_udp_checksum(
     dst_addr: &Ipv4Address,
     udp_segment: &[u8],
 ) -> [u8; 2] {
-    let sum = pseudo_header_sum_v4(src_addr, dst_addr, udp_segment.len() as u16)
-        + sum_words(udp_segment);
+    let sum =
+        pseudo_header_sum_v4(src_addr, dst_addr, udp_segment.len() as u16) + sum_words(udp_segment);
     checksum_to_bytes(fold_checksum(sum))
 }
 
@@ -237,9 +241,9 @@ pub fn verify_udp_checksum(
     if udp_segment[6] == 0 && udp_segment[7] == 0 {
         return true;
     }
-    let sum = pseudo_header_sum_v4(src_addr, dst_addr, udp_segment.len() as u16)
-        + sum_words(udp_segment);
-    fold_and_verify(sum)
+    let sum =
+        pseudo_header_sum_v4(src_addr, dst_addr, udp_segment.len() as u16) + sum_words(udp_segment);
+    fold_and_verify(sum, 0x0000)
 }
 
 /// Computes the UDP checksum over the IPv6 pseudo-header and full UDP segment.
@@ -261,8 +265,8 @@ pub fn compute_udp_checksum_v6(
     dst_addr: &Ipv6Address,
     udp_segment: &[u8],
 ) -> [u8; 2] {
-    let sum = pseudo_header_sum_v6(src_addr, dst_addr, udp_segment.len() as u32)
-        + sum_words(udp_segment);
+    let sum =
+        pseudo_header_sum_v6(src_addr, dst_addr, udp_segment.len() as u32) + sum_words(udp_segment);
     checksum_to_bytes(fold_checksum(sum))
 }
 
@@ -284,9 +288,9 @@ pub fn verify_udp_checksum_v6(
     if udp_segment[6] == 0 && udp_segment[7] == 0 {
         return false;
     }
-    let sum = pseudo_header_sum_v6(src_addr, dst_addr, udp_segment.len() as u32)
-        + sum_words(udp_segment);
-    fold_and_verify(sum)
+    let sum =
+        pseudo_header_sum_v6(src_addr, dst_addr, udp_segment.len() as u32) + sum_words(udp_segment);
+    fold_and_verify(sum, 0x0000)
 }
 
 /// Compute IPv4 UDP checksum without allocating (from port/payload parts).
@@ -491,7 +495,8 @@ mod tests {
             0x01, 0x02, 0x03, 0x04, // payload
         ];
         let expected = compute_udp_checksum(&src, &dst, &segment);
-        let actual = compute_udp_checksum_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
+        let actual =
+            compute_udp_checksum_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
         assert_eq!(actual, expected);
     }
 
@@ -512,7 +517,8 @@ mod tests {
             0x01, 0x02, 0x03, 0x04, // payload
         ];
         let expected = compute_udp_checksum_v6(&src, &dst, &segment);
-        let actual = compute_udp_checksum_v6_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
+        let actual =
+            compute_udp_checksum_v6_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
         assert_eq!(actual, expected);
     }
 
@@ -533,7 +539,8 @@ mod tests {
         segment.extend_from_slice(&payload);
 
         let expected = compute_udp_checksum(&src, &dst, &segment);
-        let actual = compute_udp_checksum_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
+        let actual =
+            compute_udp_checksum_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
         assert_eq!(actual, expected);
     }
 
@@ -554,7 +561,8 @@ mod tests {
         segment.extend_from_slice(&payload);
 
         let expected = compute_udp_checksum_v6(&src, &dst, &segment);
-        let actual = compute_udp_checksum_v6_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
+        let actual =
+            compute_udp_checksum_v6_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
         assert_eq!(actual, expected);
     }
 
@@ -563,8 +571,7 @@ mod tests {
         let src = Ipv4Address::new([192, 168, 1, 1]);
         let dst = Ipv4Address::new([10, 0, 0, 1]);
         let mut segment = [
-            0x12, 0x34, 0x00, 0x35, 0x00, 0x0C, 0x00, 0x00,
-            0x01, 0x02, 0x03, 0x04,
+            0x12, 0x34, 0x00, 0x35, 0x00, 0x0C, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
         ];
         let checksum = compute_udp_checksum(&src, &dst, &segment);
         segment[6] = checksum[0];
@@ -576,7 +583,7 @@ mod tests {
         let pending;
         (sum, pending) = sum_words_carry(a, sum, None);
         (sum, _) = sum_words_carry(b, sum, pending);
-        assert!(fold_and_verify(sum));
+        assert!(fold_and_verify(sum, 0x0000));
     }
 
     #[test]
@@ -584,8 +591,7 @@ mod tests {
         let src = Ipv4Address::new([192, 168, 1, 1]);
         let dst = Ipv4Address::new([10, 0, 0, 1]);
         let mut segment = [
-            0x12, 0x34, 0x00, 0x35, 0x00, 0x0D, 0x00, 0x00,
-            0x01, 0x02, 0x03, 0x04, 0x05,
+            0x12, 0x34, 0x00, 0x35, 0x00, 0x0D, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
         ];
         let checksum = compute_udp_checksum(&src, &dst, &segment);
         segment[6] = checksum[0];
@@ -601,7 +607,7 @@ mod tests {
         if let Some(hi) = trailing {
             sum += (hi as u64) << 8;
         }
-        assert!(fold_and_verify(sum));
+        assert!(fold_and_verify(sum, 0x0000));
     }
 
     #[test]

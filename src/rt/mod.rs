@@ -1,7 +1,7 @@
 mod affinity;
 mod local;
 mod thread;
-mod waker;
+pub(crate) mod waker;
 
 pub use affinity::*;
 pub use local::*;
