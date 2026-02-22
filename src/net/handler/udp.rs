@@ -12,7 +12,7 @@ use crate::xdp::frame::{Frame, FrameBuffer};
 
 /// A completed received UDP packet, ready for delivery to user space.
 #[derive(Debug)]
-pub struct ReceivedPacket<'umem> {
+pub struct ReceivedUdpPacket<'umem> {
     pub src_addr: IpAddress,
     pub dst_addr: IpAddress,
     pub src_port: u16,
@@ -36,7 +36,7 @@ impl fmt::Display for BindError {
 
 /// Internal binding record kept by `UdpHandler`.
 pub(crate) struct UdpBinding<'umem> {
-    rx_queue: SharedQueue<ReceivedPacket<'umem>>,
+    rx_queue: SharedQueue<ReceivedUdpPacket<'umem>>,
 }
 
 /// Groups bindings for a single port: explicit IP bindings and an optional wildcard.
@@ -76,7 +76,7 @@ impl<'umem> UdpHandler<'umem> {
         addr: IpAddress,
         port: u16,
         rx_capacity: usize,
-    ) -> Result<SharedQueue<ReceivedPacket<'umem>>, BindError> {
+    ) -> Result<SharedQueue<ReceivedUdpPacket<'umem>>, BindError> {
         let rx_queue = SharedQueue::new(rx_capacity);
         let binding = UdpBinding {
             rx_queue: rx_queue.clone(),
@@ -194,7 +194,7 @@ impl<'umem> UdpHandler<'umem> {
                 return;
             }
             self.route(
-                ReceivedPacket {
+                ReceivedUdpPacket {
                     src_addr,
                     dst_addr,
                     src_port,
@@ -242,7 +242,7 @@ impl<'umem> UdpHandler<'umem> {
                 let src_port = udp.src_port();
                 let dst_port = udp.dst_port();
                 self.route(
-                    ReceivedPacket {
+                    ReceivedUdpPacket {
                         src_addr: IpAddress::V6(src_addr),
                         dst_addr: IpAddress::V6(dst_addr),
                         src_port,
@@ -346,7 +346,7 @@ impl<'umem> UdpHandler<'umem> {
                         return;
                     }
                     self.route(
-                        ReceivedPacket {
+                        ReceivedUdpPacket {
                             src_addr,
                             dst_addr,
                             src_port,
@@ -370,7 +370,11 @@ impl<'umem> UdpHandler<'umem> {
         self.fragment_reader.pending_entries()
     }
 
-    fn route(&mut self, received: ReceivedPacket<'umem>, rx_return: &mut impl FrameBuffer<'umem>) {
+    fn route(
+        &mut self,
+        received: ReceivedUdpPacket<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
+    ) {
         let port = received.dst_port;
         let addr = received.dst_addr;
 

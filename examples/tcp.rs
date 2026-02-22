@@ -78,17 +78,27 @@ fn main() {
     println!("Starting runtime");
     runtime
         .run(exit, async move {
-            println!("Listening on {:?}:8080", addr);
+            println!("Listening on {}:8080", addr);
 
             let mut buf = [0u8; 1024];
             loop {
                 let mut stream = listener.accept().await;
+
+                println!(
+                    "Accepted connection from {}:{}",
+                    stream.remote_addr(),
+                    stream.remote_port()
+                );
 
                 loop {
                     match stream.read(&mut buf).await {
                         TcpReadResult::Data(n) => {
                             stats.update(n, false);
                             stats.maybe_print();
+
+                            println!("Echoing data: {}", String::from_utf8_lossy(&buf[..n]));
+
+                            stream.write(&buf[..n]).await;
                         }
                         TcpReadResult::Connected => continue,
                         TcpReadResult::PeerClosed

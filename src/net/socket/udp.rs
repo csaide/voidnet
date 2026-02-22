@@ -2,7 +2,7 @@ use std::task::{Context, Poll};
 use std::{pin::Pin, rc::Rc};
 
 use crate::net::fragment::{FragmentWriter, Packet};
-use crate::net::handler::udp::ReceivedPacket;
+use crate::net::handler::udp::ReceivedUdpPacket;
 use crate::net::wire::ethernet::MacAddress;
 use crate::net::wire::ip::{IpAddress, Ipv4Address, Ipv6Address};
 use crate::net::wire::udp::{self, UDP_HEADER_LEN, UdpHeader};
@@ -21,7 +21,7 @@ const DEFAULT_MTU: u32 = 1500;
 pub struct UdpSocket<'umem> {
     local_addr: IpAddress,
     local_port: u16,
-    rx_queue: SharedQueue<ReceivedPacket<'umem>>,
+    rx_queue: SharedQueue<ReceivedUdpPacket<'umem>>,
     free_frames: SharedFrameBuffer<'umem>,
     tx_return: SharedFrameBuffer<'umem>,
     rx_return: SharedFrameBuffer<'umem>,
@@ -33,7 +33,7 @@ impl<'umem> UdpSocket<'umem> {
     pub(crate) fn new(
         local_addr: IpAddress,
         local_port: u16,
-        rx_queue: SharedQueue<ReceivedPacket<'umem>>,
+        rx_queue: SharedQueue<ReceivedUdpPacket<'umem>>,
         free_frames: SharedFrameBuffer<'umem>,
         rx_return: SharedFrameBuffer<'umem>,
         tx_return: SharedFrameBuffer<'umem>,
@@ -60,7 +60,7 @@ impl<'umem> UdpSocket<'umem> {
         self.local_port
     }
 
-    pub fn discard_packet(&mut self, packet: ReceivedPacket<'umem>) {
+    pub fn discard_packet(&mut self, packet: ReceivedUdpPacket<'umem>) {
         packet.packet.drain_to(&mut self.rx_return);
     }
 
@@ -174,7 +174,12 @@ impl<'sock, 'buf, 'umem> UdpSendToFuture<'sock, 'buf, 'umem> {
     ) -> Result<Packet<'umem>, WouldBlock> {
         let udp_len = (UDP_HEADER_LEN + self.payload.len()) as u16;
         let checksum = udp::compute_udp_checksum_from_parts(
-            &src_ip, &dst_ip, self.src_port, self.dst_port, udp_len, self.payload,
+            &src_ip,
+            &dst_ip,
+            self.src_port,
+            self.dst_port,
+            udp_len,
+            self.payload,
         );
         let transport = UdpHeader::new(self.src_port, self.dst_port, udp_len, checksum);
 
@@ -201,7 +206,12 @@ impl<'sock, 'buf, 'umem> UdpSendToFuture<'sock, 'buf, 'umem> {
     ) -> Result<Packet<'umem>, WouldBlock> {
         let udp_len = (UDP_HEADER_LEN + self.payload.len()) as u16;
         let checksum = udp::compute_udp_checksum_v6_from_parts(
-            &src_ip, &dst_ip, self.src_port, self.dst_port, udp_len, self.payload,
+            &src_ip,
+            &dst_ip,
+            self.src_port,
+            self.dst_port,
+            udp_len,
+            self.payload,
         );
         let transport = UdpHeader::new(self.src_port, self.dst_port, udp_len, checksum);
 
@@ -251,11 +261,11 @@ impl<'sock, 'buf, 'umem> Future for UdpSendToFuture<'sock, 'buf, 'umem> {
 /// wake-ups are driven by the polling loop, not by I/O readiness
 /// notifications.
 pub struct UdpRecvFromFuture<'sock, 'umem> {
-    rx_queue: &'sock SharedQueue<ReceivedPacket<'umem>>,
+    rx_queue: &'sock SharedQueue<ReceivedUdpPacket<'umem>>,
 }
 
 impl<'sock, 'umem> Future for UdpRecvFromFuture<'sock, 'umem> {
-    type Output = ReceivedPacket<'umem>;
+    type Output = ReceivedUdpPacket<'umem>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();

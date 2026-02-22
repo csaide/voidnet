@@ -306,6 +306,15 @@ impl FromStr for IpAddress {
     }
 }
 
+impl Display for IpAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IpAddress::V4(v4) => write!(f, "{}", v4),
+            IpAddress::V6(v6) => write!(f, "{}", v6),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

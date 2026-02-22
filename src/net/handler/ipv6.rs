@@ -303,7 +303,7 @@ mod tests {
         port: u16,
     ) -> (
         UdpHandler<'umem>,
-        crate::net::socket::SharedQueue<crate::net::ReceivedPacket<'umem>>,
+        crate::net::socket::SharedQueue<crate::net::ReceivedUdpPacket<'umem>>,
     ) {
         let mut udp = UdpHandler::new(256);
         let rx_queue = udp.bind(IpAddress::V6(LOCAL_IP), port, 256).unwrap();

@@ -154,7 +154,7 @@ mod tests {
         port: u16,
     ) -> (
         UdpHandler<'umem>,
-        crate::net::socket::SharedQueue<crate::net::ReceivedPacket<'umem>>,
+        crate::net::socket::SharedQueue<crate::net::ReceivedUdpPacket<'umem>>,
     ) {
         let mut udp = UdpHandler::new(256);
         let rx_queue = udp.bind(IpAddress::V4(LOCAL_IP), port, 256).unwrap();
@@ -248,7 +248,15 @@ mod tests {
 
         let frame = Frame::new(0, &mut data, 30, false);
 
-        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut udp,
+            &mut tcp,
+            &mut PmtuCache::new(),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
@@ -271,7 +279,15 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut udp,
+            &mut tcp,
+            &mut PmtuCache::new(),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
@@ -291,7 +307,15 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut udp,
+            &mut tcp,
+            &mut PmtuCache::new(),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
@@ -311,7 +335,15 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut udp,
+            &mut tcp,
+            &mut PmtuCache::new(),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
@@ -339,7 +371,15 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut udp,
+            &mut tcp,
+            &mut PmtuCache::new(),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
@@ -359,7 +399,15 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut udp,
+            &mut tcp,
+            &mut PmtuCache::new(),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 0);
         assert_eq!(udp.pending_reassembly(), 1);
@@ -383,7 +431,15 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut udp,
+            &mut tcp,
+            &mut PmtuCache::new(),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
         assert_eq!(udp.pending_reassembly(), 0);
@@ -426,7 +482,15 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
 
         let frame = Frame::new(0, &mut data, frame_len, false);
-        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut udp,
+            &mut tcp,
+            &mut PmtuCache::new(),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
@@ -446,11 +510,24 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut udp,
+            &mut tcp,
+            &mut PmtuCache::new(),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         // TCP payload is all-zeros; no valid SYN so the frame ends up in
         // rx_return (validation failure or no matching listener).
         let total = rx.num_frames() + tx.num_frames();
-        assert!(total >= 1, "frame must be consumed: rx={} tx={}", rx.num_frames(), tx.num_frames());
+        assert!(
+            total >= 1,
+            "frame must be consumed: rx={} tx={}",
+            rx.num_frames(),
+            tx.num_frames()
+        );
     }
 
     #[test]
@@ -468,7 +545,15 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut udp,
+            &mut tcp,
+            &mut PmtuCache::new(),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 0);
         assert_eq!(rx_queue.len(), 1);
@@ -489,7 +574,15 @@ mod tests {
 
         let frame = Frame::new(0, &mut data, raw.len(), false);
 
-        handler.handle(frame, &mut udp, &mut tcp, &mut PmtuCache::new(), &mut free, &mut rx, &mut tx);
+        handler.handle(
+            frame,
+            &mut udp,
+            &mut tcp,
+            &mut PmtuCache::new(),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
     }
