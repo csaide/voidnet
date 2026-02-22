@@ -1,6 +1,8 @@
+use std::fmt::Display;
+
 use crate::xdp::frame::Frame;
 
-use super::{Ipv4Address, ethernet::EthernetFrame};
+use super::{IpProtocol, Ipv4Address, ethernet::EthernetFrame};
 
 /// Minimum IPv4 header length in bytes (no options, IHL = 5).
 pub const IPV4_MIN_HEADER_LEN: usize = 20;
@@ -18,6 +20,7 @@ pub const IPV4_MIN_FRAME_LEN: usize = size_of::<EthernetFrame>() + IPV4_MIN_HEAD
 /// Multi-byte fields are stored in network byte order as `[u8; 2]` to
 /// avoid alignment issues on packed structs. Use the accessor methods
 /// for host-order values.
+#[derive(Debug)]
 #[repr(C, packed)]
 pub struct Ipv4Header {
     /// Version (high 4 bits) + Internet Header Length (low 4 bits).
@@ -165,6 +168,28 @@ impl Ipv4Header {
     pub fn from_frame_mut<'f, 'u>(frame: &'f mut Frame<'u>) -> &'f mut Self {
         debug_assert!(frame.len() >= IPV4_MIN_FRAME_LEN);
         unsafe { &mut *(frame.as_mut_ptr().add(size_of::<EthernetFrame>()) as *mut Self) }
+    }
+}
+
+impl Display for Ipv4Header {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Ipv4Header {{ version: {}, ihl: {}, dscp_ecn: {}, total_length: {}, identification: {}, dont_fragment: {}, more_fragments: {}, fragment_offset: {}, ttl: {}, protocol: {}, header_checksum: {:x?}, src_addr: {}, dst_addr: {} }}",
+            self.version(),
+            self.ihl(),
+            self.dscp_ecn,
+            self.total_length(),
+            self.identification(),
+            self.dont_fragment(),
+            self.more_fragments(),
+            self.fragment_offset(),
+            self.ttl,
+            IpProtocol(self.protocol),
+            self.header_checksum,
+            self.src_addr,
+            self.dst_addr
+        )
     }
 }
 

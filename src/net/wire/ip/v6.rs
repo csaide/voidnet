@@ -1,4 +1,6 @@
-use crate::xdp::frame::Frame;
+use std::fmt::Display;
+
+use crate::{net::wire::ip::IpProtocol, xdp::frame::Frame};
 
 use super::{Ipv6Address, ethernet::EthernetFrame};
 
@@ -182,6 +184,23 @@ impl Ipv6Header {
     pub fn from_frame_mut<'f, 'u>(frame: &'f mut Frame<'u>) -> &'f mut Self {
         debug_assert!(frame.len() >= IPV6_MIN_FRAME_LEN);
         unsafe { &mut *(frame.as_mut_ptr().add(size_of::<EthernetFrame>()) as *mut Self) }
+    }
+}
+
+impl Display for Ipv6Header {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Ipv6Header {{ version: {}, traffic_class: {}, flow_label: {}, payload_length: {}, next_header: {}, hop_limit: {}, src_addr: {}, dst_addr: {} }}",
+            self.version(),
+            self.traffic_class(),
+            self.flow_label(),
+            self.payload_length(),
+            IpProtocol(self.next_header),
+            self.hop_limit,
+            self.src_addr,
+            self.dst_addr
+        )
     }
 }
 

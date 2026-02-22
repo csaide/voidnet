@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use crate::xdp::frame::Frame;
 
 /// A MAC address representation.
@@ -36,11 +38,37 @@ impl From<MacAddress> for [u8; 6] {
     }
 }
 
+impl Display for MacAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            self.octets[0],
+            self.octets[1],
+            self.octets[2],
+            self.octets[3],
+            self.octets[4],
+            self.octets[5]
+        )
+    }
+}
+
 /// An EtherType representation.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 #[repr(C, packed)]
 pub struct EtherType {
     pub octets: [u8; 2],
+}
+
+impl Display for EtherType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            EtherTypes::IPv4 => write!(f, "IPv4"),
+            EtherTypes::IPv6 => write!(f, "IPv6"),
+            EtherTypes::Arp => write!(f, "ARP"),
+            _ => write!(f, "Unknown"),
+        }
+    }
 }
 
 /// EtherTypes.
@@ -66,6 +94,7 @@ pub mod EtherTypes {
 }
 
 /// An Ethernet frame representation.
+#[derive(Debug)]
 #[repr(C, packed)]
 pub struct EthernetFrame {
     /// Destination MAC address.
@@ -95,6 +124,16 @@ impl EthernetFrame {
     pub fn from_frame_mut<'frame, 'umem>(frame: &'frame mut Frame<'umem>) -> &'frame mut Self {
         debug_assert!(frame.len() >= size_of::<EthernetFrame>());
         unsafe { &mut *(frame.as_mut_ptr() as *mut Self) }
+    }
+}
+
+impl Display for EthernetFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "EthernetFrame {{ src_mac: {}, dst_mac: {}, ether_type: {} }}",
+            self.src_mac, self.dst_mac, self.ether_type
+        )
     }
 }
 

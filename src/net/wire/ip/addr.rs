@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{fmt::Display, str::FromStr};
 
 /// An IPv4 address representation.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
@@ -74,12 +74,25 @@ impl From<std::net::Ipv4Addr> for Ipv4Address {
     }
 }
 
+impl From<Ipv4Address> for std::net::Ipv4Addr {
+    fn from(addr: Ipv4Address) -> Self {
+        std::net::Ipv4Addr::from(addr.octets)
+    }
+}
+
 impl FromStr for Ipv4Address {
     type Err = std::io::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let addr = std::net::Ipv4Addr::from_str(s)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         Ok(addr.into())
+    }
+}
+
+impl Display for Ipv4Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let v4: std::net::Ipv4Addr = (*self).into();
+        write!(f, "{}", v4)
     }
 }
 
@@ -215,12 +228,25 @@ impl From<std::net::Ipv6Addr> for Ipv6Address {
     }
 }
 
+impl From<Ipv6Address> for std::net::Ipv6Addr {
+    fn from(addr: Ipv6Address) -> Self {
+        std::net::Ipv6Addr::from(addr.octets)
+    }
+}
+
 impl FromStr for Ipv6Address {
     type Err = std::io::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let addr = std::net::Ipv6Addr::from_str(s)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         Ok(addr.into())
+    }
+}
+
+impl Display for Ipv6Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let v6: std::net::Ipv6Addr = (*self).into();
+        write!(f, "{}", v6)
     }
 }
 

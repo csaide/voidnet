@@ -2,7 +2,25 @@ mod addr;
 mod v4;
 mod v6;
 
+use std::fmt::Display;
+
 use super::ethernet;
+
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct IpProtocol(pub u8);
+
+impl Display for IpProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            IpProtocols::Icmp => write!(f, "ICMP"),
+            IpProtocols::IcmpV6 => write!(f, "ICMPv6"),
+            IpProtocols::Udp => write!(f, "UDP"),
+            IpProtocols::Tcp => write!(f, "TCP"),
+            _ => write!(f, "Unknown"),
+        }
+    }
+}
 
 #[allow(non_snake_case)]
 #[allow(non_upper_case_globals)]
