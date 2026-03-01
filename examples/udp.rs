@@ -82,11 +82,17 @@ fn main() {
             println!("Listening on {:?}:8080", addr);
 
             loop {
-                let packet = socket.recv_from().await;
-                stats.update(packet.packet.len(), false);
-                socket.discard_packet(packet);
+                let mut packet = socket.recv_from().await;
 
+                // Just some monitoring to see how fast we can recieve/send packets.
+                stats.update(packet.packet.len(), false);
                 stats.maybe_print();
+
+                // Swap the addresses so we can send the packet back to the sender.
+                packet.swap_addresses();
+
+                // Send the packet back to the sender.
+                socket.send_packet_fast(packet);
             }
         })
         .expect("Failed to run runtime");

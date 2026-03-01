@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 use crate::xdp::frame::Frame;
 
 /// Identifies a TCP connection by its 4-tuple.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub struct ConnectionId {
     pub local_addr: IpAddress,
     pub local_port: u16,
@@ -44,7 +44,7 @@ pub enum TcpEvent<'umem> {
         payload_offset: usize,
         payload_len: usize,
     },
-    PeerClosed,
+    Fin,
     Reset,
     Closed,
 }
@@ -55,20 +55,31 @@ pub enum TcpCommand {
     Abort,
 }
 
-use crate::net::socket::SharedQueue;
+use crate::net::socket::LocalQueue;
 use crate::net::wire::ip::IpAddress;
-use crate::xdp::frame::SharedFrameBuffer;
+
+use super::tcb::{SharedFlag, SharedSendBuffer};
+
+/// Pre-parsed TCP header fields to avoid redundant parsing.
+#[derive(Clone, Copy)]
+pub(crate) struct ParsedTcpHeader {
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub seq_num: u32,
+    pub ack_num: u32,
+    pub flags: u8,
+    pub window: u16,
+    pub header_len: usize,
+}
 
 /// Per-connection state pushed through the accept queue when a
 /// three-way handshake completes. Carries everything needed for
 /// `TcpListener` to construct a `TcpStream` without calling back
 /// into the runtime.
 pub(crate) struct AcceptedConnection<'umem> {
-    pub local_addr: IpAddress,
-    pub local_port: u16,
-    pub remote_addr: IpAddress,
-    pub remote_port: u16,
-    pub rx_queue: SharedQueue<TcpEvent<'umem>>,
-    pub cmd_queue: SharedQueue<TcpCommand>,
-    pub send_buffer: SharedFrameBuffer<'umem>,
+    pub conn_id: ConnectionId,
+    pub rx_queue: LocalQueue<TcpEvent<'umem>>,
+    pub cmd_queue: LocalQueue<TcpCommand>,
+    pub send_buffer: SharedSendBuffer,
+    pub send_notify: SharedFlag,
 }

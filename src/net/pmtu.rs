@@ -82,9 +82,9 @@ impl PmtuCache {
     }
 
     /// Removes all entries older than the configured TTL.
-    pub fn evict_stale(&self) {
+    pub fn evict_stale(&self, now: Instant) {
         self.table
-            .retain(|_, (_, inserted_at)| inserted_at.elapsed() <= self.ttl);
+            .retain(|_, (_, inserted_at)| now < *inserted_at + self.ttl);
     }
 }
 
@@ -161,7 +161,7 @@ mod tests {
         let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
         cache.update(addr, 1200);
         std::thread::sleep(Duration::from_millis(5));
-        cache.evict_stale();
+        cache.evict_stale(Instant::now());
         assert_eq!(cache.table.len(), 0);
     }
 
@@ -170,7 +170,7 @@ mod tests {
         let cache = PmtuCache::with_mtu_and_ttl(1500, Duration::from_secs(3600));
         let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
         cache.update(addr, 1200);
-        cache.evict_stale();
+        cache.evict_stale(Instant::now());
         assert_eq!(cache.table.len(), 1);
         assert_eq!(cache.get(&addr), 1200);
     }

@@ -33,7 +33,8 @@ where
     let mut tx_return = BasicFrameBuffer::new(incoming.num_frames());
 
     umem.maybe_wake_fill_queue(socket.fd())?;
-    umem.process_fill_queue(&mut incoming);
+    umem.process_fill_queue(&mut incoming)
+        .expect("failed to process fill queue");
 
     let backoff = Backoff::new();
     while !exit.load(Ordering::Relaxed) {
@@ -69,7 +70,8 @@ where
         }
 
         umem.maybe_wake_fill_queue(socket.fd())?;
-        umem.process_fill_queue(&mut rx_return);
+        umem.process_fill_queue(&mut rx_return)
+            .expect("failed to process fill queue");
     }
     Ok(())
 }

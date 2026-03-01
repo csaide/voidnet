@@ -1,4 +1,5 @@
 use std::mem::size_of;
+use std::time::Instant;
 
 use crate::{
     net::PmtuCache,
@@ -39,6 +40,7 @@ impl Ipv4Handler {
         udp_handler: &mut UdpHandler<'umem>,
         tcp_handler: &mut TcpHandler<'umem>,
         pmtu: &PmtuCache,
+        now: Instant,
         free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
@@ -100,7 +102,7 @@ impl Ipv4Handler {
         let protocol = ip.protocol;
         match protocol {
             IpProtocols::Icmp => icmpv4::handle_icmpv4(frame, pmtu, rx_return, tx_return),
-            IpProtocols::Tcp => tcp_handler.process_ipv4(frame, free_frames, rx_return, tx_return),
+            IpProtocols::Tcp => tcp_handler.process_ipv4(frame, now, free_frames, rx_return, tx_return),
             IpProtocols::Udp => udp_handler.process_ipv4(frame, rx_return),
             _ => icmpv4::send_destination_unreachable(
                 frame,
@@ -154,7 +156,7 @@ mod tests {
         port: u16,
     ) -> (
         UdpHandler<'umem>,
-        crate::net::socket::SharedQueue<crate::net::ReceivedUdpPacket<'umem>>,
+        crate::net::socket::LocalQueue<crate::net::ReceivedUdpPacket<'umem>>,
     ) {
         let mut udp = UdpHandler::new(256);
         let rx_queue = udp.bind(IpAddress::V4(LOCAL_IP), port, 256).unwrap();
@@ -253,6 +255,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &mut PmtuCache::new(),
+            Instant::now(),
             &mut free,
             &mut rx,
             &mut tx,
@@ -284,6 +287,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &mut PmtuCache::new(),
+            Instant::now(),
             &mut free,
             &mut rx,
             &mut tx,
@@ -312,6 +316,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &mut PmtuCache::new(),
+            Instant::now(),
             &mut free,
             &mut rx,
             &mut tx,
@@ -340,6 +345,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &mut PmtuCache::new(),
+            Instant::now(),
             &mut free,
             &mut rx,
             &mut tx,
@@ -376,6 +382,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &mut PmtuCache::new(),
+            Instant::now(),
             &mut free,
             &mut rx,
             &mut tx,
@@ -404,6 +411,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &mut PmtuCache::new(),
+            Instant::now(),
             &mut free,
             &mut rx,
             &mut tx,
@@ -436,6 +444,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &mut PmtuCache::new(),
+            Instant::now(),
             &mut free,
             &mut rx,
             &mut tx,
@@ -487,6 +496,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &mut PmtuCache::new(),
+            Instant::now(),
             &mut free,
             &mut rx,
             &mut tx,
@@ -515,6 +525,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &mut PmtuCache::new(),
+            Instant::now(),
             &mut free,
             &mut rx,
             &mut tx,
@@ -550,6 +561,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &mut PmtuCache::new(),
+            Instant::now(),
             &mut free,
             &mut rx,
             &mut tx,
@@ -579,6 +591,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &mut PmtuCache::new(),
+            Instant::now(),
             &mut free,
             &mut rx,
             &mut tx,

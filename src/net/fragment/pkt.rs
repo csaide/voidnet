@@ -39,6 +39,15 @@ impl<'umem> Packet<'umem> {
         }
     }
 
+    /// Returns a mutable borrowing iterator over the frames in this packet.
+    pub fn frames_mut(&mut self) -> PacketFrameIterMut<'_, 'umem> {
+        match self {
+            Packet::Empty => PacketFrameIterMut::Empty,
+            Packet::Single(frame) => PacketFrameIterMut::Single(std::iter::once(frame)),
+            Packet::Multi(frames) => PacketFrameIterMut::Multi(frames.iter_mut()),
+        }
+    }
+
     /// Consume this packet, pushing all frames into `buf`.
     pub fn drain_to(self, buf: &mut impl FrameBuffer<'umem>) {
         for frame in self.into_frames() {
@@ -96,6 +105,35 @@ impl<'a, 'umem> Iterator for PacketFrameIter<'a, 'umem> {
 }
 
 impl<'a, 'umem> ExactSizeIterator for PacketFrameIter<'a, 'umem> {}
+
+/// Mutable borrowing iterator over frames in a [`Packet`].
+pub enum PacketFrameIterMut<'a, 'umem> {
+    Empty,
+    Single(std::iter::Once<&'a mut Frame<'umem>>),
+    Multi(std::slice::IterMut<'a, Frame<'umem>>),
+}
+
+impl<'a, 'umem> Iterator for PacketFrameIterMut<'a, 'umem> {
+    type Item = &'a mut Frame<'umem>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            PacketFrameIterMut::Empty => None,
+            PacketFrameIterMut::Single(iter) => iter.next(),
+            PacketFrameIterMut::Multi(iter) => iter.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            PacketFrameIterMut::Empty => (0, Some(0)),
+            PacketFrameIterMut::Single(iter) => iter.size_hint(),
+            PacketFrameIterMut::Multi(iter) => iter.size_hint(),
+        }
+    }
+}
+
+impl<'a, 'umem> ExactSizeIterator for PacketFrameIterMut<'a, 'umem> {}
 
 /// Consuming iterator over frames in a [`Packet`].
 pub enum PacketIntoIter<'umem> {
@@ -177,6 +215,53 @@ mod tests {
         for (i, f) in collected.iter().enumerate() {
             assert_eq!(f[0], i as u8);
         }
+    }
+
+    // --- Packet::frames_mut (mutable borrowing iterator) ---
+
+    #[test]
+    fn frames_mut_single() {
+        let mut buf = [0u8; 64];
+        buf[0] = 0xAA;
+        let mut pkt = Packet::Single(make_frame(&mut buf, 10));
+        for frame in pkt.frames_mut() {
+            frame[0] = 0xBB;
+        }
+        let collected: Vec<_> = pkt.frames().collect();
+        assert_eq!(collected[0][0], 0xBB);
+    }
+
+    #[test]
+    fn frames_mut_multi() {
+        let mut bufs = [[0u8; 64]; 3];
+        for (i, b) in bufs.iter_mut().enumerate() {
+            b[0] = i as u8;
+        }
+        let frames: Vec<_> = bufs.iter_mut().map(|b| make_frame(b, 10)).collect();
+        let mut pkt = Packet::Multi(frames);
+        for frame in pkt.frames_mut() {
+            frame[0] += 10;
+        }
+        let collected: Vec<_> = pkt.frames().collect();
+        for (i, f) in collected.iter().enumerate() {
+            assert_eq!(f[0], (i as u8) + 10);
+        }
+    }
+
+    #[test]
+    fn frames_mut_exact_size() {
+        let mut buf = [0u8; 64];
+        let mut pkt = Packet::Single(make_frame(&mut buf, 10));
+        let iter = pkt.frames_mut();
+        assert_eq!(iter.len(), 1);
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+
+        let mut bufs = [[0u8; 64]; 3];
+        let frames: Vec<_> = bufs.iter_mut().map(|b| make_frame(b, 10)).collect();
+        let mut pkt = Packet::Multi(frames);
+        let iter = pkt.frames_mut();
+        assert_eq!(iter.len(), 3);
+        assert_eq!(iter.size_hint(), (3, Some(3)));
     }
 
     // --- Packet::into_frames (consuming iterator) ---

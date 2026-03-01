@@ -1,8 +1,10 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     hash::Hash,
     time::{Duration, Instant},
 };
+
+use rustc_hash::FxHashMap;
 
 use crate::{
     net::wire::ip::{
@@ -96,7 +98,7 @@ impl<'umem> ReassemblyEntry<'umem> {
 
 /// Evict stale reassembly entries from a map, returning held frames.
 fn evict_map<'umem, K: Eq + Hash>(
-    map: &mut HashMap<K, ReassemblyEntry<'umem>>,
+    map: &mut FxHashMap<K, ReassemblyEntry<'umem>>,
     now: Instant,
     timeout: Duration,
     rx_return: &mut impl FrameBuffer<'umem>,
@@ -119,8 +121,8 @@ fn evict_map<'umem, K: Eq + Hash>(
 /// operates purely at the IP fragmentation level, making it usable for
 /// any IP protocol.
 pub struct FragmentReader<'umem> {
-    ipv4_reassembly: HashMap<Ipv4FragmentKey, ReassemblyEntry<'umem>>,
-    ipv6_reassembly: HashMap<Ipv6FragmentKey, ReassemblyEntry<'umem>>,
+    ipv4_reassembly: FxHashMap<Ipv4FragmentKey, ReassemblyEntry<'umem>>,
+    ipv6_reassembly: FxHashMap<Ipv6FragmentKey, ReassemblyEntry<'umem>>,
     max_entries: usize,
 }
 
@@ -129,8 +131,8 @@ impl<'umem> FragmentReader<'umem> {
     /// reassembly entries (across both IPv4 and IPv6).
     pub fn new(max_entries: usize) -> Self {
         Self {
-            ipv4_reassembly: HashMap::with_capacity(max_entries),
-            ipv6_reassembly: HashMap::with_capacity(max_entries),
+            ipv4_reassembly: FxHashMap::with_capacity_and_hasher(max_entries, Default::default()),
+            ipv6_reassembly: FxHashMap::with_capacity_and_hasher(max_entries, Default::default()),
             max_entries,
         }
     }
@@ -190,8 +192,7 @@ impl<'umem> FragmentReader<'umem> {
             .entry(key)
             .or_insert_with(ReassemblyEntry::new);
 
-        if let Some(dup_frame) =
-            entry.insert(frag_offset_bytes, payload_len, more_fragments, frame)
+        if let Some(dup_frame) = entry.insert(frag_offset_bytes, payload_len, more_fragments, frame)
         {
             rx_return.push(dup_frame);
             return None;
@@ -284,8 +285,12 @@ impl<'umem> FragmentReader<'umem> {
     }
 
     /// Evict reassembly entries older than `timeout`, returning held frames.
-    pub fn evict_stale(&mut self, timeout: Duration, rx_return: &mut impl FrameBuffer<'umem>) {
-        let now = Instant::now();
+    pub fn evict_stale(
+        &mut self,
+        now: Instant,
+        timeout: Duration,
+        rx_return: &mut impl FrameBuffer<'umem>,
+    ) {
         evict_map(&mut self.ipv4_reassembly, now, timeout, rx_return);
         evict_map(&mut self.ipv6_reassembly, now, timeout, rx_return);
     }
@@ -601,7 +606,7 @@ mod tests {
         assert_eq!(reader.pending_entries(), 1);
 
         std::thread::sleep(Duration::from_millis(5));
-        reader.evict_stale(Duration::ZERO, &mut rx);
+        reader.evict_stale(Instant::now(), Duration::ZERO, &mut rx);
         assert_eq!(reader.pending_entries(), 0);
         assert_eq!(rx.num_frames(), 1);
     }
@@ -616,7 +621,7 @@ mod tests {
         let frame = Frame::new(0, &mut buf, len, false);
         reader.process_ipv4(frame, &mut rx);
 
-        reader.evict_stale(Duration::from_secs(3600), &mut rx);
+        reader.evict_stale(Instant::now(), Duration::from_secs(3600), &mut rx);
         assert_eq!(reader.pending_entries(), 1);
         assert_eq!(rx.num_frames(), 0);
     }

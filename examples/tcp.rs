@@ -9,7 +9,7 @@ use std::{
 
 use clap::Parser;
 
-use libvoid::{net::TcpReadResult, rt::LocalRuntime};
+use libvoid::{net::TcpRecvResult, rt::LocalRuntime};
 
 mod common;
 use common::{BaseArgs, Stats};
@@ -36,7 +36,7 @@ impl DerefMut for Args {
 }
 
 fn main() {
-    let mut stats = Stats::new_with_packets_per_print(1000);
+    let mut stats = Stats::new_with_packets_per_print(1_000_000);
     let args = Args::parse();
 
     let mut runtime = LocalRuntime::builder(
@@ -80,9 +80,8 @@ fn main() {
         .run(exit, async move {
             println!("Listening on {}:8080", addr);
 
-            let mut buf = [0u8; 1024];
             loop {
-                let mut stream = listener.accept().await;
+                let stream = listener.accept().await;
 
                 println!(
                     "Accepted connection from {}:{}",
@@ -90,20 +89,21 @@ fn main() {
                     stream.remote_port()
                 );
 
+                // Zero-copy read: payload bytes are accessed directly in the
+                // UMEM frame without copying. The frame is returned to the rx
+                // pool when the TcpFrame guard is dropped.
                 loop {
-                    match stream.read(&mut buf).await {
-                        TcpReadResult::Data(n) => {
-                            stats.update(n, false);
+                    match stream.receive().await {
+                        TcpRecvResult::Data(frame) => {
+                            stats.update(frame.len(), false);
                             stats.maybe_print();
 
-                            println!("Echoing data: {}", String::from_utf8_lossy(&buf[..n]));
-
-                            stream.write(&buf[..n]).await;
+                            // stream.send(&frame).await;
                         }
-                        TcpReadResult::Connected => continue,
-                        TcpReadResult::PeerClosed
-                        | TcpReadResult::Reset
-                        | TcpReadResult::Closed => {
+                        TcpRecvResult::Connected => {
+                            continue;
+                        }
+                        TcpRecvResult::Fin | TcpRecvResult::Reset | TcpRecvResult::Closed => {
                             stream.close();
                             break;
                         }

@@ -11,4 +11,4 @@ pub use handler::tcp::{ConnectionId, TcpCommand, TcpEvent, TcpState};
 pub use handler::udp::ReceivedUdpPacket;
 pub use neighbor::NeighborHandler;
 pub use pmtu::PmtuCache;
-pub use socket::{TcpListener, TcpReadResult, TcpStream};
+pub use socket::{TcpConnectFuture, TcpFrame, TcpListener, TcpRecvResult, TcpStream};

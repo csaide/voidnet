@@ -23,7 +23,7 @@ use crate::{
     net::{
         NeighborHandler, PmtuCache,
         handler::{ipv4::Ipv4Handler, ipv6::Ipv6Handler, tcp::TcpHandler, udp::UdpHandler},
-        socket::{TcpListener, TcpStream, UdpSocket},
+        socket::{TcpConnectFuture, TcpListener, TcpStream, UdpSocket},
         wire::{
             ethernet::{EtherTypes, EthernetFrame, MacAddress},
             ip::IpAddress,
@@ -181,6 +181,8 @@ pub struct LocalRuntime<'umem> {
     tx_return: SharedFrameBuffer<'umem>,
     // Frames that were read from the network and should be handed back to the kernel for re-use.
     rx_return: SharedFrameBuffer<'umem>,
+    // Counter for rate-limiting evict_stale() calls (~every 1024 iterations).
+    evict_counter: u32,
 }
 
 impl<'umem> LocalRuntime<'umem> {
@@ -225,6 +227,7 @@ impl<'umem> LocalRuntime<'umem> {
             free_frames,
             tx_return,
             rx_return,
+            evict_counter: 0,
         })
     }
 
@@ -249,16 +252,12 @@ impl<'umem> LocalRuntime<'umem> {
     /// Listen for incoming TCP connections on the given address and port.
     pub fn listen_tcp(&mut self, addr: IpAddress, port: u16, backlog: usize) -> TcpListener<'umem> {
         let accept_queue = self.tcp_handler.listen(addr, port, backlog);
-        TcpListener::new(
-            addr,
-            port,
-            accept_queue,
-            self.free_frames.clone(),
-            self.rx_return.clone(),
-        )
+        TcpListener::new(addr, port, accept_queue, self.rx_return.clone())
     }
 
     /// Initiate an active TCP connection to a remote host.
+    /// Returns a `TcpConnectFuture` that resolves to `Option<TcpStream>` when
+    /// the 3-way handshake completes (or fails).
     pub fn connect_tcp(
         &mut self,
         local_addr: IpAddress,
@@ -267,8 +266,8 @@ impl<'umem> LocalRuntime<'umem> {
         remote_port: u16,
         local_mac: MacAddress,
         remote_mac: MacAddress,
-    ) -> Option<TcpStream<'umem>> {
-        let (rx_queue, cmd_queue, send_buffer) = self.tcp_handler.connect(
+    ) -> Option<TcpConnectFuture<'umem>> {
+        let (conn_id, rx_queue, cmd_queue, send_buffer, send_notify) = self.tcp_handler.connect(
             local_addr,
             local_port,
             remote_addr,
@@ -278,17 +277,15 @@ impl<'umem> LocalRuntime<'umem> {
             &mut self.free_frames,
             &mut self.tx_return,
         )?;
-        Some(TcpStream::new(
-            local_addr,
-            local_port,
-            remote_addr,
-            remote_port,
+        let stream = TcpStream::new(
+            conn_id,
             rx_queue,
             cmd_queue,
             send_buffer,
-            self.free_frames.clone(),
+            send_notify,
             self.rx_return.clone(),
-        ))
+        );
+        Some(TcpConnectFuture::new(stream))
     }
 
     /// Runs the event loop until `exit` is set or `fut` completes.
@@ -303,7 +300,9 @@ impl<'umem> LocalRuntime<'umem> {
         // will take as many frames as it can from the free_frames buffer and submit them to the kernel. Note the logic
         // ensures there will be a set of frames still present here equaling the number of slots in the completion (send) ring.
         self.umem.maybe_wake_fill_queue(self.socket.fd())?;
-        self.umem.process_fill_queue(&mut self.free_frames);
+        self.umem
+            .process_fill_queue(&mut self.free_frames)
+            .expect("failed to process fill queue");
 
         let waker = waker();
         let mut cx = Context::from_waker(&waker);
@@ -313,6 +312,8 @@ impl<'umem> LocalRuntime<'umem> {
         // that are read from the network while the runtime is processing them.
         let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
         while !exit.load(Ordering::Relaxed) {
+            let now = std::time::Instant::now();
+
             // We only drive the network read logic if we have new network frames to process.
             //
             // This will return with 1 > N frames in the success case, as soon as possible. If there are no frames it will return an error,
@@ -337,6 +338,7 @@ impl<'umem> LocalRuntime<'umem> {
                                 udp_handler,
                                 tcp_handler,
                                 pmtu,
+                                now,
                                 &mut self.free_frames,
                                 &mut self.rx_return,
                                 &mut self.tx_return,
@@ -349,6 +351,7 @@ impl<'umem> LocalRuntime<'umem> {
                                 udp_handler,
                                 tcp_handler,
                                 pmtu,
+                                now,
                                 &mut self.free_frames,
                                 &mut self.rx_return,
                                 &mut self.tx_return,
@@ -379,17 +382,21 @@ impl<'umem> LocalRuntime<'umem> {
 
             // Drive TCP timers and outbound data.
             self.tcp_handler.tick(
+                now,
                 &mut self.free_frames,
                 &mut self.rx_return,
                 &mut self.tx_return,
             );
 
-            // Periodically evict stale entries.
-            self.udp_handler
-                .evict_stale(Duration::from_secs(30), &mut self.rx_return);
-            self.tcp_handler.evict_stale(&mut self.rx_return);
-            self.neighbor_handler.evict_stale();
-            self.pmtu.evict_stale();
+            // Periodically evict stale entries (~every 1024 iterations).
+            self.evict_counter = self.evict_counter.wrapping_add(1);
+            if self.evict_counter & 0x3FF == 0 {
+                self.udp_handler
+                    .evict_stale(now, Duration::from_secs(30), &mut self.rx_return);
+                self.tcp_handler.evict_stale(now, &mut self.rx_return);
+                self.neighbor_handler.evict_stale(now);
+                self.pmtu.evict_stale(now);
+            }
 
             // Handle the frames ready to send this will push all of them into the socket for transmission.
             while self.tx_return.num_frames() > 0 {
@@ -400,8 +407,8 @@ impl<'umem> LocalRuntime<'umem> {
             }
 
             // Now refill the fill queue with frames to read into, the rest of the frames get pushed back into the free_frames buffer.
+            let _ = self.umem.process_fill_queue(&mut self.rx_return);
             self.umem.maybe_wake_fill_queue(self.socket.fd())?;
-            self.umem.process_fill_queue(&mut self.rx_return);
 
             for frame in self.rx_return.take_frames() {
                 self.free_frames.push(frame);

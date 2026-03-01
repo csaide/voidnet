@@ -1753,6 +1753,7 @@ dependencies = [
  "neli",
  "pnet",
  "rand",
+ "rustc-hash",
  "smallvec",
  "smol",
  "smol-macros",

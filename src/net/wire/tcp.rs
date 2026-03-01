@@ -28,6 +28,7 @@ pub mod options {
     pub const END: u8 = 0;
     pub const NOP: u8 = 1;
     pub const MSS: u8 = 2;
+    pub const WINDOW_SCALE: u8 = 3;
 }
 
 /// TCP header wire format (20 bytes, minimum).
@@ -234,11 +235,14 @@ pub fn compute_tcp_checksum(
 /// Returns `true` if the one's complement sum of the pseudo-header and
 /// full TCP segment yields the expected result. A zero checksum field
 /// is **invalid** for TCP and will cause this to return `false`.
+///
+/// Uses inclusive verification (sums everything including the checksum
+/// field) to avoid mutating the frame buffer.
 #[inline]
 pub fn verify_tcp_checksum(
     src_addr: &Ipv4Address,
     dst_addr: &Ipv4Address,
-    tcp_segment: &mut [u8],
+    tcp_segment: &[u8],
 ) -> bool {
     if tcp_segment.len() < TCP_HEADER_LEN {
         return false;
@@ -248,14 +252,10 @@ pub fn verify_tcp_checksum(
         return false;
     }
 
-    let actual = u16::from_be_bytes([tcp_segment[16], tcp_segment[17]]);
-    tcp_segment[16] = 0;
-    tcp_segment[17] = 0;
-
     let sum = pseudo_header_sum_v4_tcp(src_addr, dst_addr, tcp_segment.len() as u16)
         + sum_words(tcp_segment);
 
-    fold_and_verify(sum, actual)
+    fold_and_verify(sum, 0x0000)
 }
 
 /// Computes the TCP checksum over the IPv6 pseudo-header and full TCP segment.
@@ -278,11 +278,14 @@ pub fn compute_tcp_checksum_v6(
 /// Returns `true` if the one's complement sum of the pseudo-header and
 /// full TCP segment yields the expected result. A zero checksum field
 /// is **invalid** and will cause this to return `false`.
+///
+/// Uses inclusive verification (sums everything including the checksum
+/// field) to avoid mutating the frame buffer.
 #[inline]
 pub fn verify_tcp_checksum_v6(
     src_addr: &Ipv6Address,
     dst_addr: &Ipv6Address,
-    tcp_segment: &mut [u8],
+    tcp_segment: &[u8],
 ) -> bool {
     if tcp_segment.len() < TCP_HEADER_LEN {
         return false;
@@ -292,13 +295,9 @@ pub fn verify_tcp_checksum_v6(
         return false;
     }
 
-    let actual = u16::from_be_bytes([tcp_segment[16], tcp_segment[17]]);
-    tcp_segment[16] = 0;
-    tcp_segment[17] = 0;
-
     let sum = pseudo_header_sum_v6_tcp(src_addr, dst_addr, tcp_segment.len() as u32)
         + sum_words(tcp_segment);
-    fold_and_verify(sum, actual)
+    fold_and_verify(sum, 0x0000)
 }
 
 /// Parse MSS (Maximum Segment Size) from TCP options.
@@ -349,6 +348,56 @@ pub fn write_mss_option(buf: &mut [u8], mss: u16) -> usize {
     buf[1] = 4;
     buf[2..4].copy_from_slice(&mss.to_be_bytes());
     4
+}
+
+/// Parse Window Scale option from TCP options.
+///
+/// Scans the options bytes for Kind=3, Len=3 and returns the shift count.
+/// Returns `None` if the option is not present or malformed.
+pub fn parse_window_scale(options: &[u8]) -> Option<u8> {
+    let mut i = 0;
+    while i < options.len() {
+        match options[i] {
+            options::END => break,
+            options::NOP => {
+                i += 1;
+            }
+            options::WINDOW_SCALE => {
+                if i + 3 > options.len() {
+                    return None;
+                }
+                if options[i + 1] != 3 {
+                    return None;
+                }
+                // RFC 7323: shift count capped at 14
+                return Some(options[i + 2].min(14));
+            }
+            _ => {
+                if i + 1 >= options.len() {
+                    return None;
+                }
+                let len = options[i + 1] as usize;
+                if len < 2 || i + len > options.len() {
+                    return None;
+                }
+                i += len;
+            }
+        }
+    }
+    None
+}
+
+/// Write a 3-byte Window Scale option into `buf`.
+///
+/// Returns the number of bytes written (3).
+///
+/// # Panics
+/// Panics if `buf.len() < 3`.
+pub fn write_window_scale_option(buf: &mut [u8], shift: u8) -> usize {
+    buf[0] = options::WINDOW_SCALE;
+    buf[1] = 3;
+    buf[2] = shift;
+    3
 }
 
 /// Sequence number less-than comparison with wraparound.
@@ -439,7 +488,7 @@ mod tests {
 
         segment[16] = checksum[0];
         segment[17] = checksum[1];
-        assert!(verify_tcp_checksum(&src, &dst, &mut segment));
+        assert!(verify_tcp_checksum(&src, &dst, &segment));
     }
 
     #[test]
@@ -461,7 +510,7 @@ mod tests {
         let checksum = compute_tcp_checksum(&src, &dst, &segment);
         segment[16] = checksum[0];
         segment[17] = checksum[1];
-        assert!(verify_tcp_checksum(&src, &dst, &mut segment));
+        assert!(verify_tcp_checksum(&src, &dst, &segment));
     }
 
     #[test]
@@ -469,27 +518,27 @@ mod tests {
         let src = Ipv4Address::new([0; 4]);
         let dst = Ipv4Address::new([0; 4]);
         // TCP checksum is mandatory — zero is invalid.
-        let mut segment = [0u8; 20];
-        assert!(!verify_tcp_checksum(&src, &dst, &mut segment));
+        let segment = [0u8; 20];
+        assert!(!verify_tcp_checksum(&src, &dst, &segment));
     }
 
     #[test]
     fn tcp_checksum_v4_rejects_bad() {
         let src = Ipv4Address::new([192, 168, 1, 1]);
         let dst = Ipv4Address::new([10, 0, 0, 1]);
-        let mut segment = [
+        let segment = [
             0x12, 0x34, 0x00, 0x50, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x50, 0x02,
             0x72, 0x10, 0xFF, 0xFF, // wrong checksum
             0x00, 0x00,
         ];
-        assert!(!verify_tcp_checksum(&src, &dst, &mut segment));
+        assert!(!verify_tcp_checksum(&src, &dst, &segment));
     }
 
     #[test]
     fn tcp_checksum_v4_too_short() {
         let src = Ipv4Address::new([0; 4]);
         let dst = Ipv4Address::new([0; 4]);
-        assert!(!verify_tcp_checksum(&src, &dst, &mut [0; 19]));
+        assert!(!verify_tcp_checksum(&src, &dst, &[0; 19]));
     }
 
     #[test]
@@ -512,22 +561,22 @@ mod tests {
 
         segment[16] = checksum[0];
         segment[17] = checksum[1];
-        assert!(verify_tcp_checksum_v6(&src, &dst, &mut segment));
+        assert!(verify_tcp_checksum_v6(&src, &dst, &segment));
     }
 
     #[test]
     fn tcp_checksum_v6_rejects_zero() {
         let src = Ipv6Address::new([0; 16]);
         let dst = Ipv6Address::new([0; 16]);
-        let mut segment = [0u8; 20];
-        assert!(!verify_tcp_checksum_v6(&src, &dst, &mut segment));
+        let segment = [0u8; 20];
+        assert!(!verify_tcp_checksum_v6(&src, &dst, &segment));
     }
 
     #[test]
     fn tcp_checksum_v6_too_short() {
         let src = Ipv6Address::new([0; 16]);
         let dst = Ipv6Address::new([0; 16]);
-        assert!(!verify_tcp_checksum_v6(&src, &dst, &mut [0; 19]));
+        assert!(!verify_tcp_checksum_v6(&src, &dst, &[0; 19]));
     }
 
     #[test]
@@ -549,7 +598,7 @@ mod tests {
         let checksum = compute_tcp_checksum_v6(&src, &dst, &segment);
         segment[16] = checksum[0];
         segment[17] = checksum[1];
-        assert!(verify_tcp_checksum_v6(&src, &dst, &mut segment));
+        assert!(verify_tcp_checksum_v6(&src, &dst, &segment));
     }
 
     #[test]
@@ -594,6 +643,38 @@ mod tests {
         let written = write_mss_option(&mut buf, 1460);
         assert_eq!(written, 4);
         assert_eq!(buf, [options::MSS, 4, 0x05, 0xB4]);
+    }
+
+    #[test]
+    fn parse_window_scale_valid() {
+        let opts = [options::WINDOW_SCALE, 3, 7];
+        assert_eq!(parse_window_scale(&opts), Some(7));
+    }
+
+    #[test]
+    fn parse_window_scale_capped_at_14() {
+        let opts = [options::WINDOW_SCALE, 3, 20];
+        assert_eq!(parse_window_scale(&opts), Some(14));
+    }
+
+    #[test]
+    fn parse_window_scale_absent() {
+        let opts = [options::MSS, 4, 0x05, 0xB4];
+        assert_eq!(parse_window_scale(&opts), None);
+    }
+
+    #[test]
+    fn parse_window_scale_after_mss() {
+        let opts = [options::MSS, 4, 0x05, 0xB4, options::NOP, options::WINDOW_SCALE, 3, 7];
+        assert_eq!(parse_window_scale(&opts), Some(7));
+    }
+
+    #[test]
+    fn write_window_scale_option_test() {
+        let mut buf = [0u8; 3];
+        let written = write_window_scale_option(&mut buf, 7);
+        assert_eq!(written, 3);
+        assert_eq!(buf, [options::WINDOW_SCALE, 3, 7]);
     }
 
     #[test]

@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use super::TcpHandler;
 use super::segment::ETH_HEADER_LEN;
 use super::types::*;
@@ -185,7 +187,7 @@ fn syn_to_listening_port_creates_syn_received() {
 
     let frame = Frame::new(0, &mut buf, raw.len(), false);
 
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     assert_eq!(handler.num_connections(), 1);
 }
@@ -215,7 +217,7 @@ fn syn_to_closed_port_generates_rst() {
 
     let frame = Frame::new(0, &mut buf, raw.len(), false);
 
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     assert_eq!(handler.num_connections(), 0);
     assert!(tx.num_frames() > 0);
@@ -247,7 +249,7 @@ fn bad_checksum_drops_frame() {
 
     let frame = Frame::new(0, &mut buf, raw.len(), false);
 
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     assert_eq!(handler.num_connections(), 0);
     assert_eq!(rx.num_frames(), 1);
@@ -277,7 +279,7 @@ fn ipv6_syn_to_listening_port() {
 
     let frame = Frame::new(0, &mut buf, raw.len(), false);
     let tcp_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
-    handler.process_ipv6(frame, tcp_offset, &mut free, &mut rx, &mut tx);
+    handler.process_ipv6(frame, tcp_offset, Instant::now(), &mut free, &mut rx, &mut tx);
 
     assert_eq!(handler.num_connections(), 1);
 }
@@ -306,7 +308,7 @@ fn passive_three_way_handshake() {
     let accept_q = handler.listen(IpAddress::V4(LOCAL_IPV4), 80, 16);
 
     let frame = Frame::new(0, &mut buf, raw.len(), false);
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     let conn_id = ConnectionId {
         local_addr: IpAddress::V4(LOCAL_IPV4),
@@ -334,7 +336,7 @@ fn passive_three_way_handshake() {
     );
     buf2[..raw2.len()].copy_from_slice(&raw2);
     let frame2 = Frame::new(1, &mut buf2, raw2.len(), false);
-    handler.process_ipv4(frame2, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame2, Instant::now(), &mut free, &mut rx, &mut tx);
 
     assert_eq!(
         handler.connections.get(&conn_id).unwrap().state,
@@ -366,7 +368,7 @@ fn rst_handling_in_listen() {
 
     let frame = Frame::new(0, &mut buf, raw.len(), false);
 
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     assert_eq!(handler.num_connections(), 0);
     assert_eq!(tx.num_frames(), 0);
@@ -399,7 +401,7 @@ fn mss_parsed_from_syn() {
 
     let frame = Frame::new(0, &mut buf, raw.len(), false);
 
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     let conn_id = ConnectionId {
         local_addr: IpAddress::V4(LOCAL_IPV4),
@@ -587,7 +589,7 @@ fn pnet_ipv4_checksum_cross_verify() {
 
     // Our verify must accept pnet-generated checksum
     assert!(
-        verify_tcp_checksum(&REMOTE_IPV4, &LOCAL_IPV4, &mut tcp_buf),
+        verify_tcp_checksum(&REMOTE_IPV4, &LOCAL_IPV4, &tcp_buf),
         "pnet-generated IPv4 TCP checksum must verify"
     );
 
@@ -644,7 +646,7 @@ fn pnet_ipv6_checksum_cross_verify() {
     }
 
     assert!(
-        verify_tcp_checksum_v6(&REMOTE_IPV6, &LOCAL_IPV6, &mut tcp_buf),
+        verify_tcp_checksum_v6(&REMOTE_IPV6, &LOCAL_IPV6, &tcp_buf),
         "pnet-generated IPv6 TCP checksum must verify"
     );
 
@@ -700,7 +702,7 @@ fn pnet_ipv4_odd_payload_checksum_cross_verify() {
     }
 
     assert!(
-        verify_tcp_checksum(&REMOTE_IPV4, &LOCAL_IPV4, &mut tcp_buf),
+        verify_tcp_checksum(&REMOTE_IPV4, &LOCAL_IPV4, &tcp_buf),
         "pnet IPv4 TCP checksum with odd payload must verify"
     );
 }
@@ -735,7 +737,7 @@ fn pnet_ipv6_odd_payload_checksum_cross_verify() {
     }
 
     assert!(
-        verify_tcp_checksum_v6(&REMOTE_IPV6, &LOCAL_IPV6, &mut tcp_buf),
+        verify_tcp_checksum_v6(&REMOTE_IPV6, &LOCAL_IPV6, &tcp_buf),
         "pnet IPv6 TCP checksum with odd payload must verify"
     );
 }
@@ -764,7 +766,7 @@ fn pnet_ipv4_syn_accepted() {
     let _accept_q = handler.listen(IpAddress::V4(LOCAL_IPV4), 80, 16);
 
     let frame = Frame::new(0, &mut buf, raw.len(), false);
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     assert_eq!(
         handler.num_connections(),
@@ -796,7 +798,7 @@ fn pnet_ipv6_syn_accepted() {
 
     let frame = Frame::new(0, &mut buf, raw.len(), false);
     let tcp_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
-    handler.process_ipv6(frame, tcp_offset, &mut free, &mut rx, &mut tx);
+    handler.process_ipv6(frame, tcp_offset, Instant::now(), &mut free, &mut rx, &mut tx);
 
     assert_eq!(
         handler.num_connections(),
@@ -830,7 +832,7 @@ fn pnet_ipv4_padded_frame_accepted() {
     let _accept_q = handler.listen(IpAddress::V4(LOCAL_IPV4), 80, 16);
 
     let frame = Frame::new(0, &mut buf, padded_len, false);
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     assert_eq!(
         handler.num_connections(),
@@ -864,7 +866,7 @@ fn pnet_ipv6_padded_frame_accepted() {
 
     let frame = Frame::new(0, &mut buf, padded_len, false);
     let tcp_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
-    handler.process_ipv6(frame, tcp_offset, &mut free, &mut rx, &mut tx);
+    handler.process_ipv6(frame, tcp_offset, Instant::now(), &mut free, &mut rx, &mut tx);
 
     assert_eq!(
         handler.num_connections(),
@@ -903,7 +905,7 @@ fn setup_ipv4_established<'a>(
     );
     syn_buf[..raw.len()].copy_from_slice(&raw);
     let frame = Frame::new(0, syn_buf, raw.len(), false);
-    handler.process_ipv4(frame, free, rx, tx);
+    handler.process_ipv4(frame, Instant::now(), free, rx, tx);
 
     let conn_id = ConnectionId {
         local_addr: IpAddress::V4(LOCAL_IPV4),
@@ -926,7 +928,7 @@ fn setup_ipv4_established<'a>(
     );
     ack_buf[..raw.len()].copy_from_slice(&raw);
     let frame = Frame::new(1, ack_buf, raw.len(), false);
-    handler.process_ipv4(frame, free, rx, tx);
+    handler.process_ipv4(frame, Instant::now(), free, rx, tx);
 
     assert_eq!(
         handler.connections.get(&conn_id).unwrap().state,
@@ -958,7 +960,7 @@ fn setup_ipv6_established<'a>(
     );
     syn_buf[..raw.len()].copy_from_slice(&raw);
     let frame = Frame::new(0, syn_buf, raw.len(), false);
-    handler.process_ipv6(frame, tcp_offset, free, rx, tx);
+    handler.process_ipv6(frame, tcp_offset, Instant::now(), free, rx, tx);
 
     let conn_id = ConnectionId {
         local_addr: IpAddress::V6(LOCAL_IPV6),
@@ -981,7 +983,7 @@ fn setup_ipv6_established<'a>(
     );
     ack_buf[..raw.len()].copy_from_slice(&raw);
     let frame = Frame::new(1, ack_buf, raw.len(), false);
-    handler.process_ipv6(frame, tcp_offset, free, rx, tx);
+    handler.process_ipv6(frame, tcp_offset, Instant::now(), free, rx, tx);
 
     assert_eq!(
         handler.connections.get(&conn_id).unwrap().state,
@@ -1021,7 +1023,7 @@ fn pnet_ipv4_data_accepted() {
     );
     data_buf[..raw.len()].copy_from_slice(&raw);
     let frame = Frame::new(2, &mut data_buf, raw.len(), false);
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     let tcb = handler.connections.get(&conn_id).unwrap();
     assert_eq!(tcb.rcv_nxt, 1001 + payload.len() as u32);
@@ -1074,7 +1076,7 @@ fn pnet_ipv6_data_accepted() {
     );
     data_buf[..raw.len()].copy_from_slice(&raw);
     let frame = Frame::new(2, &mut data_buf, raw.len(), false);
-    handler.process_ipv6(frame, tcp_offset, &mut free, &mut rx, &mut tx);
+    handler.process_ipv6(frame, tcp_offset, Instant::now(), &mut free, &mut rx, &mut tx);
 
     let tcb = handler.connections.get(&conn_id).unwrap();
     assert_eq!(tcb.rcv_nxt, 1001 + payload.len() as u32);
@@ -1126,7 +1128,7 @@ fn pnet_ipv4_even_payload_data_accepted() {
     );
     data_buf[..raw.len()].copy_from_slice(&raw);
     let frame = Frame::new(2, &mut data_buf, raw.len(), false);
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     let tcb = handler.connections.get(&conn_id).unwrap();
     assert_eq!(tcb.rcv_nxt, 1001 + payload.len() as u32);
@@ -1179,7 +1181,7 @@ fn pnet_ipv6_even_payload_data_accepted() {
     );
     data_buf[..raw.len()].copy_from_slice(&raw);
     let frame = Frame::new(2, &mut data_buf, raw.len(), false);
-    handler.process_ipv6(frame, tcp_offset, &mut free, &mut rx, &mut tx);
+    handler.process_ipv6(frame, tcp_offset, Instant::now(), &mut free, &mut rx, &mut tx);
 
     let tcb = handler.connections.get(&conn_id).unwrap();
     assert_eq!(tcb.rcv_nxt, 1001 + payload.len() as u32);
@@ -1233,7 +1235,7 @@ fn pnet_ipv4_padded_data_frame_accepted() {
     data_buf[..raw.len()].copy_from_slice(&raw);
     let padded_len = 128.max(raw.len());
     let frame = Frame::new(2, &mut data_buf, padded_len, false);
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     let tcb = handler.connections.get(&conn_id).unwrap();
     assert_eq!(
@@ -1295,7 +1297,7 @@ fn pnet_ipv6_padded_data_frame_accepted() {
     data_buf[..raw.len()].copy_from_slice(&raw);
     let padded_len = 128.max(raw.len());
     let frame = Frame::new(2, &mut data_buf, padded_len, false);
-    handler.process_ipv6(frame, tcp_offset, &mut free, &mut rx, &mut tx);
+    handler.process_ipv6(frame, tcp_offset, Instant::now(), &mut free, &mut rx, &mut tx);
 
     let tcb = handler.connections.get(&conn_id).unwrap();
     assert_eq!(
@@ -1355,7 +1357,7 @@ fn pnet_ipv4_single_byte_payload_accepted() {
     );
     data_buf[..raw.len()].copy_from_slice(&raw);
     let frame = Frame::new(2, &mut data_buf, raw.len(), false);
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     let tcb = handler.connections.get(&conn_id).unwrap();
     assert_eq!(tcb.rcv_nxt, 1002);
@@ -1404,7 +1406,7 @@ fn pnet_ipv4_large_payload_accepted() {
     );
     data_buf[..raw.len()].copy_from_slice(&raw);
     let frame = Frame::new(2, &mut data_buf, raw.len(), false);
-    handler.process_ipv4(frame, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, Instant::now(), &mut free, &mut rx, &mut tx);
 
     let tcb = handler.connections.get(&conn_id).unwrap();
     assert_eq!(tcb.rcv_nxt, 1001 + 100);
@@ -1422,5 +1424,218 @@ fn pnet_ipv4_large_payload_accepted() {
             );
         }
         _ => panic!("expected TcpEvent::Data"),
+    }
+}
+
+// ============================================================
+// SendByteBuffer ring buffer unit tests
+// ============================================================
+
+mod send_buffer_tests {
+    use super::super::tcb::SendByteBuffer;
+
+    #[test]
+    fn new_buffer_is_empty() {
+        let buf = SendByteBuffer::new(1024);
+        assert_eq!(buf.len(), 0);
+        assert_eq!(buf.free_space(), 1024);
+    }
+
+    #[test]
+    fn capacity_rounds_to_power_of_two() {
+        let buf = SendByteBuffer::new(1000);
+        assert_eq!(buf.free_space(), 1024);
+    }
+
+    #[test]
+    fn push_and_peek() {
+        let mut buf = SendByteBuffer::new(64);
+        let data = b"Hello, world!";
+        let written = buf.push(data);
+        assert_eq!(written, data.len());
+        assert_eq!(buf.len(), data.len());
+
+        let (a, b) = buf.peek_slices(0, data.len());
+        assert_eq!(a, data.as_slice());
+        assert!(b.is_empty());
+    }
+
+    #[test]
+    fn push_returns_zero_when_full() {
+        let mut buf = SendByteBuffer::new(8);
+        let data = [0u8; 8];
+        assert_eq!(buf.push(&data), 8);
+        assert_eq!(buf.push(&[1]), 0);
+    }
+
+    #[test]
+    fn push_partial_when_nearly_full() {
+        let mut buf = SendByteBuffer::new(8);
+        assert_eq!(buf.push(&[1, 2, 3, 4, 5]), 5);
+        assert_eq!(buf.push(&[6, 7, 8, 9, 10]), 3);
+        assert_eq!(buf.len(), 8);
+    }
+
+    #[test]
+    fn advance_frees_space() {
+        let mut buf = SendByteBuffer::new(16);
+        buf.push(b"Hello, world!");
+        let initial_len = buf.len();
+        buf.advance(5);
+        assert_eq!(buf.len(), initial_len - 5);
+        assert_eq!(buf.free_space(), 16 - initial_len + 5);
+    }
+
+    #[test]
+    fn ring_wrap_around() {
+        let mut buf = SendByteBuffer::new(8);
+        // Fill with 6 bytes
+        buf.push(&[1, 2, 3, 4, 5, 6]);
+        // Advance head past 4 bytes (freeing space)
+        buf.advance(4);
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.free_space(), 6);
+
+        // Now write 6 more bytes — this should wrap around
+        let written = buf.push(&[7, 8, 9, 10, 11, 12]);
+        assert_eq!(written, 6);
+        assert_eq!(buf.len(), 8);
+
+        // Peek should return two slices (wrapping)
+        let (a, b) = buf.peek_slices(0, 8);
+        let mut result = Vec::new();
+        result.extend_from_slice(a);
+        result.extend_from_slice(b);
+        assert_eq!(result, vec![5, 6, 7, 8, 9, 10, 11, 12]);
+    }
+
+    #[test]
+    fn peek_with_offset() {
+        let mut buf = SendByteBuffer::new(32);
+        buf.push(b"ABCDEFGHIJ");
+        let (a, b) = buf.peek_slices(3, 4);
+        assert_eq!(a, b"DEFG");
+        assert!(b.is_empty());
+    }
+
+    #[test]
+    fn peek_slices_at_wrap_boundary() {
+        let mut buf = SendByteBuffer::new(8);
+        buf.push(&[1, 2, 3, 4, 5, 6, 7]);
+        buf.advance(6); // head at index 6
+        buf.push(&[8, 9, 10, 11]); // tail wraps
+        // Data: [7, 8, 9, 10, 11] — indices 6,7,0,1,2
+        let (a, b) = buf.peek_slices(0, 5);
+        let mut result = Vec::new();
+        result.extend_from_slice(a);
+        result.extend_from_slice(b);
+        assert_eq!(result, vec![7, 8, 9, 10, 11]);
+    }
+
+    #[test]
+    fn advance_beyond_len_clamped() {
+        let mut buf = SendByteBuffer::new(16);
+        buf.push(b"hello");
+        buf.advance(100); // Should not panic, clamped to len
+        assert_eq!(buf.len(), 0);
+    }
+}
+
+// ============================================================
+// RetransmitQueue unit tests
+// ============================================================
+
+mod retransmit_queue_tests {
+    use std::time::Instant;
+    use super::super::tcb::{RetransmitEntry, RetransmitQueue};
+
+    fn make_entry(seq: u32) -> RetransmitEntry {
+        RetransmitEntry {
+            seq,
+            len: 100,
+            seg_flags: 0x10, // ACK
+            ack: 0,
+            window: 65535,
+            options: [0; 8],
+            options_len: 0,
+            sent_at: Instant::now(),
+            retransmit_count: 0,
+            is_retransmit: false,
+            first_retransmit_time: None,
+        }
+    }
+
+    #[test]
+    fn new_queue_is_empty() {
+        let q = RetransmitQueue::new(16);
+        assert!(q.is_empty());
+        assert_eq!(q.len(), 0);
+    }
+
+    #[test]
+    fn push_and_pop_fifo() {
+        let mut q = RetransmitQueue::new(16);
+        q.push_back(make_entry(100));
+        q.push_back(make_entry(200));
+        q.push_back(make_entry(300));
+
+        assert_eq!(q.len(), 3);
+        assert_eq!(q.pop_front().unwrap().seq, 100);
+        assert_eq!(q.pop_front().unwrap().seq, 200);
+        assert_eq!(q.pop_front().unwrap().seq, 300);
+        assert!(q.pop_front().is_none());
+    }
+
+    #[test]
+    fn front_peeks_without_removing() {
+        let mut q = RetransmitQueue::new(16);
+        q.push_back(make_entry(42));
+        assert_eq!(q.front().unwrap().seq, 42);
+        assert_eq!(q.len(), 1); // Still there
+    }
+
+    #[test]
+    fn front_mut_allows_modification() {
+        let mut q = RetransmitQueue::new(16);
+        q.push_back(make_entry(42));
+        q.front_mut().unwrap().retransmit_count = 5;
+        assert_eq!(q.front().unwrap().retransmit_count, 5);
+    }
+
+    #[test]
+    fn push_returns_false_when_full() {
+        let mut q = RetransmitQueue::new(4); // capacity rounds to 4
+        assert!(q.push_back(make_entry(1)));
+        assert!(q.push_back(make_entry(2)));
+        assert!(q.push_back(make_entry(3)));
+        assert!(q.push_back(make_entry(4)));
+        assert!(!q.push_back(make_entry(5)));
+    }
+
+    #[test]
+    fn wrap_around() {
+        let mut q = RetransmitQueue::new(4);
+        q.push_back(make_entry(1));
+        q.push_back(make_entry(2));
+        q.pop_front(); // free slot
+        q.pop_front(); // free slot
+        q.push_back(make_entry(3));
+        q.push_back(make_entry(4));
+        q.push_back(make_entry(5));
+        q.push_back(make_entry(6));
+        assert_eq!(q.len(), 4);
+        assert_eq!(q.pop_front().unwrap().seq, 3);
+        assert_eq!(q.pop_front().unwrap().seq, 4);
+        assert_eq!(q.pop_front().unwrap().seq, 5);
+        assert_eq!(q.pop_front().unwrap().seq, 6);
+    }
+
+    #[test]
+    fn capacity_rounds_to_power_of_two() {
+        let mut q = RetransmitQueue::new(5); // rounds to 8
+        for i in 0..8 {
+            assert!(q.push_back(make_entry(i)));
+        }
+        assert!(!q.push_back(make_entry(8)));
     }
 }

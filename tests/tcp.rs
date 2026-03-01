@@ -9,7 +9,7 @@ use std::{
 
 use libvoid::{
     net::{
-        TcpReadResult,
+        TcpRecvResult,
         wire::{ethernet::MacAddress as WireMac, ip::IpAddress},
     },
     rt::LocalRuntime,
@@ -55,18 +55,17 @@ fn test_tcp_connect() {
                 let mut stream = listener.accept().await;
 
                 // Read until we get the client's message.
-                let mut buf = [0u8; 1024];
                 loop {
-                    match stream.read(&mut buf).await {
-                        TcpReadResult::Data(n) => {
-                            let msg = std::str::from_utf8(&buf[..n]).unwrap();
+                    match stream.receive().await {
+                        TcpRecvResult::Data(frame) => {
+                            let msg = std::str::from_utf8(&frame).unwrap();
                             assert_eq!(msg, "Hello world TCP in XDP!!!");
                             break;
                         }
-                        TcpReadResult::Connected => continue,
-                        TcpReadResult::PeerClosed
-                        | TcpReadResult::Reset
-                        | TcpReadResult::Closed => {
+                        TcpRecvResult::Connected => continue,
+                        TcpRecvResult::Fin
+                        | TcpRecvResult::Reset
+                        | TcpRecvResult::Closed => {
                             panic!("server: connection ended before receiving data");
                         }
                     }
@@ -74,15 +73,15 @@ fn test_tcp_connect() {
 
                 // Send response.
                 stream
-                    .write(b"Acknowledged receipt of first ever request!!!")
+                    .send(b"Acknowledged receipt of first ever request!!!")
                     .await;
 
                 // Keep the runtime alive to transmit the response.
                 loop {
-                    match stream.read(&mut buf).await {
-                        TcpReadResult::PeerClosed
-                        | TcpReadResult::Reset
-                        | TcpReadResult::Closed => break,
+                    match stream.receive().await {
+                        TcpRecvResult::Fin
+                        | TcpRecvResult::Reset
+                        | TcpRecvResult::Closed => break,
                         _ => continue,
                     }
                 }
@@ -102,7 +101,7 @@ fn test_tcp_connect() {
             .build()
             .expect("failed to build client runtime");
 
-        let mut stream = runtime
+        let connect_fut = runtime
             .connect_tcp(
                 client_ip,
                 54321,
@@ -116,33 +115,22 @@ fn test_tcp_connect() {
         runtime
             .run(cli_exit, async {
                 // Wait for the handshake to complete.
-                let mut buf = [0u8; 1024];
-                loop {
-                    match stream.read(&mut buf).await {
-                        TcpReadResult::Connected => break,
-                        TcpReadResult::PeerClosed
-                        | TcpReadResult::Reset
-                        | TcpReadResult::Closed => {
-                            panic!("client: connection ended before Connected");
-                        }
-                        _ => continue,
-                    }
-                }
+                let mut stream = connect_fut.await.expect("TCP connect failed");
 
                 // Send data.
-                stream.write(b"Hello world TCP in XDP!!!").await;
+                stream.send(b"Hello world TCP in XDP!!!").await;
 
                 // Read server response.
                 loop {
-                    match stream.read(&mut buf).await {
-                        TcpReadResult::Data(n) => {
-                            let msg = std::str::from_utf8(&buf[..n]).unwrap();
+                    match stream.receive().await {
+                        TcpRecvResult::Data(frame) => {
+                            let msg = std::str::from_utf8(&frame).unwrap();
                             assert_eq!(msg, "Acknowledged receipt of first ever request!!!");
                             break;
                         }
-                        TcpReadResult::PeerClosed
-                        | TcpReadResult::Reset
-                        | TcpReadResult::Closed => {
+                        TcpRecvResult::Fin
+                        | TcpRecvResult::Reset
+                        | TcpRecvResult::Closed => {
                             panic!("client: connection ended before receiving response");
                         }
                         _ => continue,

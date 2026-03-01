@@ -10,7 +10,7 @@ use crate::net::{NeighborHandler, PmtuCache};
 use crate::xdp::error::WouldBlock;
 use crate::xdp::frame::{FrameBuffer, SharedFrameBuffer};
 
-use super::SharedQueue;
+use super::LocalQueue;
 
 const DEFAULT_MTU: u32 = 1500;
 
@@ -21,7 +21,7 @@ const DEFAULT_MTU: u32 = 1500;
 pub struct UdpSocket<'umem> {
     local_addr: IpAddress,
     local_port: u16,
-    rx_queue: SharedQueue<ReceivedUdpPacket<'umem>>,
+    rx_queue: LocalQueue<ReceivedUdpPacket<'umem>>,
     free_frames: SharedFrameBuffer<'umem>,
     tx_return: SharedFrameBuffer<'umem>,
     rx_return: SharedFrameBuffer<'umem>,
@@ -33,7 +33,7 @@ impl<'umem> UdpSocket<'umem> {
     pub(crate) fn new(
         local_addr: IpAddress,
         local_port: u16,
-        rx_queue: SharedQueue<ReceivedUdpPacket<'umem>>,
+        rx_queue: LocalQueue<ReceivedUdpPacket<'umem>>,
         free_frames: SharedFrameBuffer<'umem>,
         rx_return: SharedFrameBuffer<'umem>,
         tx_return: SharedFrameBuffer<'umem>,
@@ -62,6 +62,29 @@ impl<'umem> UdpSocket<'umem> {
 
     pub fn discard_packet(&mut self, packet: ReceivedUdpPacket<'umem>) {
         packet.packet.drain_to(&mut self.rx_return);
+    }
+
+    pub fn send_packet_fast(&mut self, packet: ReceivedUdpPacket<'umem>) -> u32 {
+        let payload_len = packet.packet.len() as u32;
+        packet.packet.drain_to(&mut self.tx_return);
+        payload_len
+    }
+
+    /// Send a received packet back out by draining its frames to the TX path.
+    ///
+    /// Typically used after [`ReceivedUdpPacket::swap_addresses`] to echo
+    /// packets back to the sender without allocating new frames.
+    #[inline(always)]
+    pub fn send_packet(
+        &mut self,
+        packet: ReceivedUdpPacket<'umem>,
+    ) -> UdpSendPacketFuture<'_, 'umem> {
+        let payload_len = packet.packet.len() as u32;
+        UdpSendPacketFuture {
+            tx_return: &mut self.tx_return,
+            pkt: packet.packet,
+            payload_len,
+        }
     }
 
     #[inline(always)]
@@ -243,13 +266,41 @@ impl<'sock, 'buf, 'umem> Future for UdpSendToFuture<'sock, 'buf, 'umem> {
             pkt => pkt,
         };
 
-        if this.tx_return.num_frames() < pkt.num_frames() {
+        if this.tx_return.free_space() < pkt.num_frames() {
             this.pkt = pkt;
             return Poll::Pending;
         }
 
         pkt.drain_to(&mut this.tx_return);
         Poll::Ready(this.payload.len() as u32)
+    }
+}
+
+/// Future returned by [`UdpSocket::send_packet`].
+///
+/// Waits until the TX return path has enough capacity for the packet's
+/// frames, then drains them. No preparation step is needed since the
+/// frames are already built.
+pub struct UdpSendPacketFuture<'sock, 'umem> {
+    tx_return: &'sock mut SharedFrameBuffer<'umem>,
+    pkt: Packet<'umem>,
+    payload_len: u32,
+}
+
+impl<'sock, 'umem> Future for UdpSendPacketFuture<'sock, 'umem> {
+    type Output = u32;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+
+        if this.tx_return.free_space() < this.pkt.num_frames() {
+            return Poll::Pending;
+        }
+
+        let len = this.payload_len;
+        let pkt = std::mem::take(&mut this.pkt);
+        pkt.drain_to(&mut this.tx_return);
+        Poll::Ready(len)
     }
 }
 
@@ -261,7 +312,7 @@ impl<'sock, 'buf, 'umem> Future for UdpSendToFuture<'sock, 'buf, 'umem> {
 /// wake-ups are driven by the polling loop, not by I/O readiness
 /// notifications.
 pub struct UdpRecvFromFuture<'sock, 'umem> {
-    rx_queue: &'sock SharedQueue<ReceivedUdpPacket<'umem>>,
+    rx_queue: &'sock LocalQueue<ReceivedUdpPacket<'umem>>,
 }
 
 impl<'sock, 'umem> Future for UdpRecvFromFuture<'sock, 'umem> {
@@ -287,7 +338,7 @@ mod tests {
 
     #[test]
     fn accessors() {
-        let rx = SharedQueue::new(128);
+        let rx = LocalQueue::new(128);
         let free_frames = BasicFrameBuffer::new(128).into();
         let tx_return = BasicFrameBuffer::new(128).into();
         let rx_return = BasicFrameBuffer::new(128).into();

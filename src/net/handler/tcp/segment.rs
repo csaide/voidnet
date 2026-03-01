@@ -13,10 +13,13 @@ use super::types::ConnectionId;
 
 use std::time::Instant;
 
-pub(crate) const DEFAULT_RCV_WND: u16 = 65535;
+pub(crate) const DEFAULT_RCV_WND: u32 = 262144;
 pub(crate) const DEFAULT_RCV_MSS: u16 = 1460;
 pub(crate) const DEFAULT_TIME_WAIT_DURATION: Duration = Duration::from_secs(120);
 pub(crate) const MAX_RETRANSMIT_TIME: Duration = Duration::from_secs(100);
+pub(crate) const DELAYED_ACK_TIMEOUT: Duration = Duration::from_millis(40);
+/// Default receive window scale factor (shift count). 7 allows up to 8MB window.
+pub(crate) const DEFAULT_RCV_WND_SCALE: u8 = 7;
 pub(crate) const ETH_HEADER_LEN: usize = 14;
 
 /// Builds a complete TCP segment (Ethernet + IP + TCP + options + payload).
@@ -33,10 +36,11 @@ pub(crate) fn build_tcp_segment<'umem>(
     seq: u32,
     ack: u32,
     seg_flags: u8,
-    window: u16,
+    window: u32,
     options: &[u8],
     payload: &[u8],
-) -> Option<Frame<'umem>> {
+) -> Result<Frame<'umem>, Frame<'umem>> {
+    let wire_window = window.min(u16::MAX as u32) as u16;
     let tcp_header_len = TCP_HEADER_LEN + options.len();
 
     let ip_header_len = match src_addr {
@@ -45,7 +49,7 @@ pub(crate) fn build_tcp_segment<'umem>(
     };
     let total_len = ETH_HEADER_LEN + ip_header_len + tcp_header_len + payload.len();
     if total_len > frame.capacity() {
-        return None;
+        return Err(frame);
     }
 
     // Set the frame length before writing so DerefMut exposes the full buffer.
@@ -98,7 +102,7 @@ pub(crate) fn build_tcp_segment<'umem>(
             let dst_bytes: [u8; 16] = dst_ip.into();
             frame[ip_start + 24..ip_start + 40].copy_from_slice(&dst_bytes);
         }
-        _ => return None,
+        _ => return Err(frame),
     }
 
     let tcp_off = ETH_HEADER_LEN + ip_header_len;
@@ -109,7 +113,7 @@ pub(crate) fn build_tcp_segment<'umem>(
     frame[tcp_off + 8..tcp_off + 12].copy_from_slice(&ack.to_be_bytes());
     frame[tcp_off + 12] = data_offset << 4;
     frame[tcp_off + 13] = seg_flags;
-    frame[tcp_off + 14..tcp_off + 16].copy_from_slice(&window.to_be_bytes());
+    frame[tcp_off + 14..tcp_off + 16].copy_from_slice(&wire_window.to_be_bytes());
     frame[tcp_off + 16..tcp_off + 18].copy_from_slice(&[0, 0]); // checksum placeholder
     frame[tcp_off + 18..tcp_off + 20].copy_from_slice(&[0, 0]); // urgent ptr
 
@@ -137,7 +141,7 @@ pub(crate) fn build_tcp_segment<'umem>(
     frame[tcp_off + 16] = cksum[0];
     frame[tcp_off + 17] = cksum[1];
 
-    Some(frame)
+    Ok(frame)
 }
 
 /// Send a TCP segment using addressing info from a TCB.
@@ -147,14 +151,14 @@ pub(crate) fn send_segment<'umem>(
     seq: u32,
     ack: u32,
     seg_flags: u8,
-    window: u16,
+    window: u32,
     options: &[u8],
     payload: &[u8],
     free_source: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {
     if let Some(frame) = free_source.pop() {
-        if let Some(f) = build_tcp_segment(
+        match build_tcp_segment(
             frame,
             tcb.local_mac,
             tcb.remote_mac,
@@ -169,7 +173,8 @@ pub(crate) fn send_segment<'umem>(
             options,
             payload,
         ) {
-            tx_return.push(f);
+            Ok(f) => tx_return.push(f),
+            Err(f) => free_source.push(f),
         }
     }
 }
@@ -181,16 +186,17 @@ pub(crate) fn send_and_queue_retransmit<'umem>(
     seq: u32,
     ack: u32,
     seg_flags: u8,
-    window: u16,
+    window: u32,
     options: &[u8],
     seq_len: usize,
+    now: Instant,
     free_source: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {
     let Some(frame) = free_source.pop() else {
         return;
     };
-    let Some(tx_f) = build_tcp_segment(
+    let tx_f = match build_tcp_segment(
         frame,
         tcb.local_mac,
         tcb.remote_mac,
@@ -204,25 +210,28 @@ pub(crate) fn send_and_queue_retransmit<'umem>(
         window,
         options,
         &[],
-    ) else {
-        return;
+    ) {
+        Ok(f) => f,
+        Err(f) => { free_source.push(f); return; }
     };
 
-    // Try to allocate a retransmit copy
-    if let Some(mut retransmit_f) = free_source.pop() {
-        let len = tx_f.len();
-        unsafe { retransmit_f.set_len(len) };
-        retransmit_f[..len].copy_from_slice(&tx_f[..len]);
-        tcb.retransmit_queue.push_back(RetransmitEntry {
-            seq,
-            len: seq_len,
-            frame: retransmit_f,
-            sent_at: Instant::now(),
-            retransmit_count: 0,
-            is_retransmit: false,
-            first_retransmit_time: None,
-        });
-    }
+    // Queue lightweight retransmit entry (no frame copy needed).
+    let mut opts_arr = [0u8; 8];
+    let opts_len = options.len().min(8);
+    opts_arr[..opts_len].copy_from_slice(&options[..opts_len]);
+    tcb.retransmit_queue.push_back(RetransmitEntry {
+        seq,
+        len: seq_len,
+        seg_flags,
+        ack,
+        window,
+        options: opts_arr,
+        options_len: opts_len as u8,
+        sent_at: now,
+        retransmit_count: 0,
+        is_retransmit: false,
+        first_retransmit_time: None,
+    });
 
     tx_return.push(tx_f);
 }
@@ -243,11 +252,12 @@ pub(crate) fn send_rst_stateless<'umem>(
 ) {
     if let Some(frame) = free_source.pop() {
         let seg_flags = flags::RST | if has_ack { flags::ACK } else { 0 };
-        if let Some(f) = build_tcp_segment(
+        match build_tcp_segment(
             frame, src_mac, dst_mac, src_addr, dst_addr, src_port, dst_port, seq, ack, seg_flags,
             0, &[], &[],
         ) {
-            tx_return.push(f);
+            Ok(f) => tx_return.push(f),
+            Err(f) => free_source.push(f),
         }
     }
 }

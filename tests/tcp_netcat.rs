@@ -10,7 +10,7 @@ use std::{
 };
 
 use libvoid::{
-    net::{TcpReadResult, wire::ip::IpAddress},
+    net::{TcpRecvResult, wire::ip::IpAddress},
     rt::LocalRuntime,
     xdp::test_utils::TestVethPair,
 };
@@ -83,20 +83,19 @@ fn test_tcp_netcat_client() {
         runtime
             .run(srv_exit, async {
                 let mut stream = listener.accept().await;
-                let mut buf = [0u8; 1024];
 
                 // Read data from netcat.
                 loop {
-                    match stream.read(&mut buf).await {
-                        TcpReadResult::Data(n) => {
-                            let msg = std::str::from_utf8(&buf[..n]).unwrap();
+                    match stream.receive().await {
+                        TcpRecvResult::Data(frame) => {
+                            let msg = std::str::from_utf8(&frame).unwrap();
                             assert_eq!(msg.trim(), "Hello from netcat!");
                             break;
                         }
-                        TcpReadResult::Connected => continue,
-                        TcpReadResult::PeerClosed
-                        | TcpReadResult::Reset
-                        | TcpReadResult::Closed => {
+                        TcpRecvResult::Connected => continue,
+                        TcpRecvResult::Fin
+                        | TcpRecvResult::Reset
+                        | TcpRecvResult::Closed => {
                             panic!("server: connection ended before receiving data");
                         }
                     }
@@ -105,15 +104,15 @@ fn test_tcp_netcat_client() {
                 srv_done.store(true, Ordering::Relaxed);
 
                 // Send response.
-                stream.write(b"XDP server says hello!").await;
+                stream.send(b"XDP server says hello!").await;
 
                 // Keep the runtime alive so tick() drains the send buffer and
                 // transmits the response. The exit flag terminates us.
                 loop {
-                    match stream.read(&mut buf).await {
-                        TcpReadResult::PeerClosed
-                        | TcpReadResult::Reset
-                        | TcpReadResult::Closed => break,
+                    match stream.receive().await {
+                        TcpRecvResult::Fin
+                        | TcpRecvResult::Reset
+                        | TcpRecvResult::Closed => break,
                         _ => continue,
                     }
                 }

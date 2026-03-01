@@ -110,8 +110,7 @@ impl NeighborHandler {
     }
 
     /// Removes all entries whose TTL has expired.
-    pub fn evict_stale(&self) {
-        let now = Instant::now();
+    pub fn evict_stale(&self, now: Instant) {
         self.table.retain(|_, entry| now < entry.expires_at);
     }
 

@@ -1,7 +1,7 @@
 use std::{fmt::Display, str::FromStr};
 
 /// An IPv4 address representation.
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 #[repr(C, packed)]
 pub struct Ipv4Address {
     pub octets: [u8; 4],
@@ -97,7 +97,7 @@ impl Display for Ipv4Address {
 }
 
 /// An IPv6 address representation.
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 #[repr(C, packed)]
 pub struct Ipv6Address {
     pub octets: [u8; 16],
@@ -251,7 +251,7 @@ impl Display for Ipv6Address {
 }
 
 /// Protocol-agnostic IP address used as the key in the neighbor cache.
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub enum IpAddress {
     /// IPv4 address.
     V4(Ipv4Address),

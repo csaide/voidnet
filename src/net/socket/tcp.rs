@@ -1,11 +1,14 @@
+use std::ops::Deref;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use crate::net::handler::tcp::{AcceptedConnection, TcpCommand, TcpEvent};
+use crate::net::handler::tcp::{
+    AcceptedConnection, ConnectionId, SharedFlag, SharedSendBuffer, TcpCommand, TcpEvent,
+};
 use crate::net::wire::ip::IpAddress;
 use crate::xdp::frame::{Frame, FrameBuffer, SharedFrameBuffer};
 
-use super::SharedQueue;
+use super::LocalQueue;
 
 /// A user-facing TCP listener handle.
 ///
@@ -15,8 +18,7 @@ use super::SharedQueue;
 pub struct TcpListener<'umem> {
     local_addr: IpAddress,
     local_port: u16,
-    accept_queue: SharedQueue<AcceptedConnection<'umem>>,
-    free_frames: SharedFrameBuffer<'umem>,
+    accept_queue: LocalQueue<AcceptedConnection<'umem>>,
     rx_return: SharedFrameBuffer<'umem>,
 }
 
@@ -24,15 +26,13 @@ impl<'umem> TcpListener<'umem> {
     pub(crate) fn new(
         local_addr: IpAddress,
         local_port: u16,
-        accept_queue: SharedQueue<AcceptedConnection<'umem>>,
-        free_frames: SharedFrameBuffer<'umem>,
+        accept_queue: LocalQueue<AcceptedConnection<'umem>>,
         rx_return: SharedFrameBuffer<'umem>,
     ) -> Self {
         Self {
             local_addr,
             local_port,
             accept_queue,
-            free_frames,
             rx_return,
         }
     }
@@ -50,7 +50,6 @@ impl<'umem> TcpListener<'umem> {
     pub fn accept(&self) -> TcpAcceptFuture<'_, 'umem> {
         TcpAcceptFuture {
             accept_queue: &self.accept_queue,
-            free_frames: &self.free_frames,
             rx_return: &self.rx_return,
         }
     }
@@ -61,8 +60,7 @@ impl<'umem> TcpListener<'umem> {
 /// Designed for the `LocalRuntime`'s busy-poll model: the runtime
 /// repeatedly polls this future using a no-op waker.
 pub struct TcpAcceptFuture<'sock, 'umem> {
-    accept_queue: &'sock SharedQueue<AcceptedConnection<'umem>>,
-    free_frames: &'sock SharedFrameBuffer<'umem>,
+    accept_queue: &'sock LocalQueue<AcceptedConnection<'umem>>,
     rx_return: &'sock SharedFrameBuffer<'umem>,
 }
 
@@ -72,15 +70,8 @@ impl<'sock, 'umem> Future for TcpAcceptFuture<'sock, 'umem> {
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         match this.accept_queue.pop() {
-            Some(accepted) => Poll::Ready(TcpStream::new(
-                accepted.local_addr,
-                accepted.local_port,
-                accepted.remote_addr,
-                accepted.remote_port,
-                accepted.rx_queue,
-                accepted.cmd_queue,
-                accepted.send_buffer,
-                this.free_frames.clone(),
+            Some(accepted) => Poll::Ready(TcpStream::from_accepted(
+                accepted,
                 this.rx_return.clone(),
             )),
             None => Poll::Pending,
@@ -91,81 +82,86 @@ impl<'sock, 'umem> Future for TcpAcceptFuture<'sock, 'umem> {
 /// A user-facing TCP stream handle.
 ///
 /// Obtained via `LocalRuntime::connect_tcp()` or by accepting a connection
-/// from a `TcpListener`. Provides read/write operations and close/abort
+/// from a `TcpListener`. Provides send/receive operations and close/abort
 /// commands.
 pub struct TcpStream<'umem> {
-    local_addr: IpAddress,
-    local_port: u16,
-    remote_addr: IpAddress,
-    remote_port: u16,
-    rx_queue: SharedQueue<TcpEvent<'umem>>,
-    cmd_queue: SharedQueue<TcpCommand>,
-    send_buffer: SharedFrameBuffer<'umem>,
-    free_frames: SharedFrameBuffer<'umem>,
+    conn_id: ConnectionId,
+    rx_queue: LocalQueue<TcpEvent<'umem>>,
+    cmd_queue: LocalQueue<TcpCommand>,
+    send_buffer: SharedSendBuffer,
+    send_notify: SharedFlag,
     rx_return: SharedFrameBuffer<'umem>,
 }
 
 impl<'umem> TcpStream<'umem> {
     pub(crate) fn new(
-        local_addr: IpAddress,
-        local_port: u16,
-        remote_addr: IpAddress,
-        remote_port: u16,
-        rx_queue: SharedQueue<TcpEvent<'umem>>,
-        cmd_queue: SharedQueue<TcpCommand>,
-        send_buffer: SharedFrameBuffer<'umem>,
-        free_frames: SharedFrameBuffer<'umem>,
+        conn_id: ConnectionId,
+        rx_queue: LocalQueue<TcpEvent<'umem>>,
+        cmd_queue: LocalQueue<TcpCommand>,
+        send_buffer: SharedSendBuffer,
+        send_notify: SharedFlag,
         rx_return: SharedFrameBuffer<'umem>,
     ) -> Self {
         Self {
-            local_addr,
-            local_port,
-            remote_addr,
-            remote_port,
+            conn_id,
             rx_queue,
             cmd_queue,
             send_buffer,
-            free_frames,
+            send_notify,
+            rx_return,
+        }
+    }
+
+    fn from_accepted(
+        accepted: AcceptedConnection<'umem>,
+        rx_return: SharedFrameBuffer<'umem>,
+    ) -> Self {
+        Self {
+            conn_id: accepted.conn_id,
+            rx_queue: accepted.rx_queue,
+            cmd_queue: accepted.cmd_queue,
+            send_buffer: accepted.send_buffer,
+            send_notify: accepted.send_notify,
             rx_return,
         }
     }
 
     pub fn local_addr(&self) -> IpAddress {
-        self.local_addr
+        self.conn_id.local_addr
     }
 
     pub fn local_port(&self) -> u16 {
-        self.local_port
+        self.conn_id.local_port
     }
 
     pub fn remote_addr(&self) -> IpAddress {
-        self.remote_addr
+        self.conn_id.remote_addr
     }
 
     pub fn remote_port(&self) -> u16 {
-        self.remote_port
+        self.conn_id.remote_port
     }
 
-    /// Returns a future that writes data to the TCP stream.
-    ///
-    /// Allocates a frame from `free_frames`, copies the payload, and pushes
-    /// it to `send_buffer`. The handler drains `send_buffer` during `tick()`.
+    /// Returns a future that copies data into the ring buffer (THE ONE copy).
+    /// Returns `usize` bytes accepted. Returns `Pending` when buffer is full.
     #[inline(always)]
-    pub fn write<'buf>(&mut self, data: &'buf [u8]) -> TcpWriteFuture<'_, 'buf, 'umem> {
-        TcpWriteFuture {
-            send_buffer: &mut self.send_buffer,
-            free_frames: &mut self.free_frames,
+    pub fn send<'buf>(&mut self, data: &'buf [u8]) -> TcpSendFuture<'_, 'buf> {
+        TcpSendFuture {
+            send_buffer: &self.send_buffer,
+            send_notify: &self.send_notify,
             data,
+            written: 0,
         }
     }
 
-    /// Returns a future that reads data from the TCP stream.
+    /// Returns a future that reads data from the TCP stream without copying.
+    /// The returned [`TcpRecvResult::Data`] variant holds a [`TcpFrame`] that
+    /// provides direct access to the payload in the UMEM frame.
     #[inline(always)]
-    pub fn read<'buf>(&mut self, buf: &'buf mut [u8]) -> TcpReadFuture<'_, 'buf, 'umem> {
-        TcpReadFuture {
+    pub fn receive(&self) -> TcpReceiveFuture<'_, 'umem> {
+        TcpReceiveFuture {
             rx_queue: &self.rx_queue,
-            rx_return: &mut self.rx_return,
-            buf,
+            rx_return: self.rx_return.clone(),
         }
     }
 
@@ -178,52 +174,89 @@ impl<'umem> TcpStream<'umem> {
     pub fn abort(&self) {
         self.cmd_queue.push(TcpCommand::Abort);
     }
+}
 
-    /// Return a frame to the rx_return buffer after direct processing.
-    pub fn discard_frame(&mut self, frame: Frame<'umem>) {
-        self.rx_return.push(frame);
+/// Future wrapping a `TcpStream` that waits for the 3-way handshake to complete.
+/// Resolves to `Option<TcpStream>` (None if RST/timeout during handshake).
+pub struct TcpConnectFuture<'umem> {
+    stream: Option<TcpStream<'umem>>,
+}
+
+impl<'umem> TcpConnectFuture<'umem> {
+    pub(crate) fn new(stream: TcpStream<'umem>) -> Self {
+        Self {
+            stream: Some(stream),
+        }
     }
 }
 
-/// Future returned by [`TcpStream::write`].
-///
-/// Designed for the `LocalRuntime`'s busy-poll model.
-pub struct TcpWriteFuture<'sock, 'buf, 'umem> {
-    send_buffer: &'sock mut SharedFrameBuffer<'umem>,
-    free_frames: &'sock mut SharedFrameBuffer<'umem>,
-    data: &'buf [u8],
+impl<'umem> Future for TcpConnectFuture<'umem> {
+    type Output = Option<TcpStream<'umem>>;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let stream = this.stream.as_mut().unwrap();
+        match stream.rx_queue.pop() {
+            Some(TcpEvent::Connected) => Poll::Ready(this.stream.take()),
+            Some(TcpEvent::Reset) | Some(TcpEvent::Closed) => {
+                this.stream.take();
+                Poll::Ready(None)
+            }
+            Some(TcpEvent::Data { frame, .. }) => {
+                stream.rx_return.push(frame);
+                Poll::Pending
+            }
+            _ => Poll::Pending,
+        }
+    }
 }
 
-impl<'sock, 'buf, 'umem> Future for TcpWriteFuture<'sock, 'buf, 'umem> {
+/// Future returned by [`TcpStream::send`].
+///
+/// Copies data into the ring buffer. If all written → `Ready(total)`.
+/// If partial/zero → `Pending` (busy-poll retries when space freed by ACKs).
+pub struct TcpSendFuture<'sock, 'buf> {
+    send_buffer: &'sock SharedSendBuffer,
+    send_notify: &'sock SharedFlag,
+    data: &'buf [u8],
+    written: usize,
+}
+
+impl<'sock, 'buf> Future for TcpSendFuture<'sock, 'buf> {
     type Output = usize;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-
-        let mut frame = match this.free_frames.pop() {
-            Some(f) => f,
-            None => return Poll::Pending,
-        };
-
-        let len = this.data.len().min(frame.capacity());
-        unsafe { frame.set_len(len) };
-        frame[..len].copy_from_slice(&this.data[..len]);
-        this.send_buffer.push(frame);
-        Poll::Ready(len)
+        let remaining = &this.data[this.written..];
+        if remaining.is_empty() {
+            return Poll::Ready(this.written);
+        }
+        let n = this.send_buffer.push(remaining);
+        this.written += n;
+        if this.written == this.data.len() {
+            Poll::Ready(this.written)
+        } else if n > 0 {
+            // Partial write — we made progress but buffer is full. Go pending.
+            this.send_notify.set(false);
+            Poll::Pending
+        } else {
+            // No space at all. Wait for ACKs to free space.
+            this.send_notify.set(false);
+            Poll::Pending
+        }
     }
 }
 
-/// Future returned by [`TcpStream::read`].
+/// Future returned by [`TcpStream::receive`].
 ///
 /// Designed for the `LocalRuntime`'s busy-poll model.
-pub struct TcpReadFuture<'sock, 'buf, 'umem> {
-    rx_queue: &'sock SharedQueue<TcpEvent<'umem>>,
-    rx_return: &'sock mut SharedFrameBuffer<'umem>,
-    buf: &'buf mut [u8],
+pub struct TcpReceiveFuture<'sock, 'umem> {
+    rx_queue: &'sock LocalQueue<TcpEvent<'umem>>,
+    rx_return: SharedFrameBuffer<'umem>,
 }
 
-impl<'sock, 'buf, 'umem> Future for TcpReadFuture<'sock, 'buf, 'umem> {
-    type Output = TcpReadResult;
+impl<'sock, 'umem> Future for TcpReceiveFuture<'sock, 'umem> {
+    type Output = TcpRecvResult<'umem>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -233,31 +266,72 @@ impl<'sock, 'buf, 'umem> Future for TcpReadFuture<'sock, 'buf, 'umem> {
                 frame,
                 payload_offset,
                 payload_len,
-            }) => {
-                let copy_len = payload_len.min(this.buf.len());
-                this.buf[..copy_len]
-                    .copy_from_slice(&frame[payload_offset..payload_offset + copy_len]);
-                this.rx_return.push(frame);
-                Poll::Ready(TcpReadResult::Data(copy_len))
-            }
-            Some(TcpEvent::Connected) => Poll::Ready(TcpReadResult::Connected),
-            Some(TcpEvent::PeerClosed) => Poll::Ready(TcpReadResult::PeerClosed),
-            Some(TcpEvent::Reset) => Poll::Ready(TcpReadResult::Reset),
-            Some(TcpEvent::Closed) => Poll::Ready(TcpReadResult::Closed),
+            }) => Poll::Ready(TcpRecvResult::Data(TcpFrame {
+                frame: Some(frame),
+                payload_offset,
+                payload_len,
+                rx_return: this.rx_return.clone(),
+            })),
+            Some(TcpEvent::Connected) => Poll::Ready(TcpRecvResult::Connected),
+            Some(TcpEvent::Fin) => Poll::Ready(TcpRecvResult::Fin),
+            Some(TcpEvent::Reset) => Poll::Ready(TcpRecvResult::Reset),
+            Some(TcpEvent::Closed) => Poll::Ready(TcpRecvResult::Closed),
             None => Poll::Pending,
         }
     }
 }
 
-/// Result of a TCP read operation.
-#[derive(Debug)]
-pub enum TcpReadResult {
-    /// Data was received. Contains the number of bytes copied.
-    Data(usize),
+/// RAII guard providing zero-copy access to received TCP payload data.
+///
+/// When dropped, the underlying UMEM frame is returned to the rx pool.
+/// Use [`Deref<Target=[u8]>`] to access the payload bytes without copying.
+pub struct TcpFrame<'umem> {
+    frame: Option<Frame<'umem>>,
+    payload_offset: usize,
+    payload_len: usize,
+    rx_return: SharedFrameBuffer<'umem>,
+}
+
+impl<'umem> TcpFrame<'umem> {
+    /// Returns the length of the payload.
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.payload_len
+    }
+
+    /// Returns true if the payload is empty.
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.payload_len == 0
+    }
+}
+
+impl<'umem> Deref for TcpFrame<'umem> {
+    type Target = [u8];
+
+    #[inline(always)]
+    fn deref(&self) -> &[u8] {
+        let frame = self.frame.as_ref().unwrap();
+        &frame[self.payload_offset..self.payload_offset + self.payload_len]
+    }
+}
+
+impl<'umem> Drop for TcpFrame<'umem> {
+    fn drop(&mut self) {
+        if let Some(frame) = self.frame.take() {
+            self.rx_return.push(frame);
+        }
+    }
+}
+
+/// Result of a TCP receive operation.
+pub enum TcpRecvResult<'umem> {
+    /// Data was received. Contains a [`TcpFrame`] for zero-copy access.
+    Data(TcpFrame<'umem>),
     /// Connection established (three-way handshake completed).
     Connected,
-    /// Peer closed their end of the connection (received FIN).
-    PeerClosed,
+    /// Peer sent FIN.
+    Fin,
     /// Connection was reset by peer.
     Reset,
     /// Connection fully closed.
@@ -275,16 +349,14 @@ mod tests {
         port: u16,
     ) -> (
         TcpListener<'umem>,
-        SharedQueue<AcceptedConnection<'umem>>,
+        LocalQueue<AcceptedConnection<'umem>>,
     ) {
-        let accept_queue = SharedQueue::new(16);
-        let free_frames: SharedFrameBuffer = BasicFrameBuffer::new(256).into();
+        let accept_queue = LocalQueue::new(16);
         let rx_return: SharedFrameBuffer = BasicFrameBuffer::new(256).into();
         let listener = TcpListener::new(
             addr,
             port,
             accept_queue.clone(),
-            free_frames,
             rx_return,
         );
         (listener, accept_queue)
@@ -303,14 +375,20 @@ mod tests {
     fn stream_accessors() {
         let local_addr = IpAddress::V4(Ipv4Address::new([192, 168, 1, 1]));
         let remote_addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 2]));
-        let rx_queue = SharedQueue::new(256);
-        let cmd_queue = SharedQueue::new(64);
-        let send_buffer: SharedFrameBuffer = BasicFrameBuffer::new(256).into();
-        let free_frames: SharedFrameBuffer = BasicFrameBuffer::new(256).into();
+        let conn_id = ConnectionId {
+            local_addr,
+            local_port: 8080,
+            remote_addr,
+            remote_port: 12345,
+        };
+        let rx_queue = LocalQueue::new(256);
+        let cmd_queue = LocalQueue::new(64);
+        let send_buffer = SharedSendBuffer::new(65536);
+        let send_notify = SharedFlag::new();
         let rx_return: SharedFrameBuffer = BasicFrameBuffer::new(256).into();
 
         let stream = TcpStream::new(
-            local_addr, 8080, remote_addr, 12345, rx_queue, cmd_queue, send_buffer, free_frames,
+            conn_id, rx_queue, cmd_queue, send_buffer, send_notify,
             rx_return,
         );
 
@@ -324,15 +402,21 @@ mod tests {
     fn close_pushes_command() {
         let local_addr = IpAddress::V4(Ipv4Address::new([192, 168, 1, 1]));
         let remote_addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 2]));
-        let rx_queue = SharedQueue::new(256);
-        let cmd_queue = SharedQueue::new(64);
-        let send_buffer: SharedFrameBuffer = BasicFrameBuffer::new(256).into();
-        let free_frames: SharedFrameBuffer = BasicFrameBuffer::new(256).into();
+        let conn_id = ConnectionId {
+            local_addr,
+            local_port: 8080,
+            remote_addr,
+            remote_port: 12345,
+        };
+        let rx_queue = LocalQueue::new(256);
+        let cmd_queue = LocalQueue::new(64);
+        let send_buffer = SharedSendBuffer::new(65536);
+        let send_notify = SharedFlag::new();
         let rx_return: SharedFrameBuffer = BasicFrameBuffer::new(256).into();
 
         let stream = TcpStream::new(
-            local_addr, 8080, remote_addr, 12345, rx_queue, cmd_queue.clone(), send_buffer,
-            free_frames, rx_return,
+            conn_id, rx_queue, cmd_queue.clone(), send_buffer, send_notify,
+            rx_return,
         );
         stream.close();
 
@@ -346,15 +430,21 @@ mod tests {
     fn abort_pushes_command() {
         let local_addr = IpAddress::V4(Ipv4Address::new([192, 168, 1, 1]));
         let remote_addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 2]));
-        let rx_queue = SharedQueue::new(256);
-        let cmd_queue = SharedQueue::new(64);
-        let send_buffer: SharedFrameBuffer = BasicFrameBuffer::new(256).into();
-        let free_frames: SharedFrameBuffer = BasicFrameBuffer::new(256).into();
+        let conn_id = ConnectionId {
+            local_addr,
+            local_port: 8080,
+            remote_addr,
+            remote_port: 12345,
+        };
+        let rx_queue = LocalQueue::new(256);
+        let cmd_queue = LocalQueue::new(64);
+        let send_buffer = SharedSendBuffer::new(65536);
+        let send_notify = SharedFlag::new();
         let rx_return: SharedFrameBuffer = BasicFrameBuffer::new(256).into();
 
         let stream = TcpStream::new(
-            local_addr, 8080, remote_addr, 12345, rx_queue, cmd_queue.clone(), send_buffer,
-            free_frames, rx_return,
+            conn_id, rx_queue, cmd_queue.clone(), send_buffer, send_notify,
+            rx_return,
         );
         stream.abort();
 
@@ -384,14 +474,18 @@ mod tests {
         let remote_addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 2]));
         let (listener, accept_queue) = make_listener(addr, 8080);
 
-        accept_queue.push(AcceptedConnection {
+        let conn_id = ConnectionId {
             local_addr: addr,
             local_port: 8080,
             remote_addr,
             remote_port: 12345,
-            rx_queue: SharedQueue::new(256),
-            cmd_queue: SharedQueue::new(64),
-            send_buffer: BasicFrameBuffer::new(256).into(),
+        };
+        accept_queue.push(AcceptedConnection {
+            conn_id,
+            rx_queue: LocalQueue::new(256),
+            cmd_queue: LocalQueue::new(64),
+            send_buffer: SharedSendBuffer::new(65536),
+            send_notify: SharedFlag::new(),
         });
 
         let waker = waker();

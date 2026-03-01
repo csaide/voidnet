@@ -1,9 +1,12 @@
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::net::fragment::{FragmentReader, Packet};
-use crate::net::socket::SharedQueue;
-use crate::net::wire::ip::{FRAGMENT_EXT_LEN, IpAddress, Ipv4Header, Ipv6Header};
+use crate::net::socket::LocalQueue;
+use crate::net::wire::ethernet::EthernetFrame;
+use crate::net::wire::ip::{
+    EXT_FRAGMENT, FRAGMENT_EXT_LEN, IPV6_HEADER_LEN, IpAddress, Ipv4Header, Ipv6Header,
+};
 use crate::net::wire::udp::{
     UDP_HEADER_LEN, UdpHeader, fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6,
     sum_words_carry, verify_udp_checksum, verify_udp_checksum_v6,
@@ -18,6 +21,58 @@ pub struct ReceivedUdpPacket<'umem> {
     pub src_port: u16,
     pub dst_port: u16,
     pub packet: Packet<'umem>,
+}
+
+impl<'umem> ReceivedUdpPacket<'umem> {
+    /// Swap source and destination addresses in-place (Ethernet MACs, IP
+    /// addresses, UDP ports) so the packet can be echoed back to the sender.
+    ///
+    /// This performs zero-copy in-place mutations on the frame bytes. Checksums
+    /// do not need recalculation because swapping src↔dst produces the same
+    /// one's-complement sum (addition is commutative).
+    pub fn swap_addresses(&mut self) {
+        let is_ipv4 = matches!(self.src_addr, IpAddress::V4(_));
+        let mut first = true;
+
+        for frame in self.packet.frames_mut() {
+            // Swap Ethernet MACs.
+            {
+                let eth = EthernetFrame::from_frame_mut(frame);
+                std::mem::swap(&mut eth.src_mac, &mut eth.dst_mac);
+            }
+
+            // Swap IP addresses.
+            if is_ipv4 {
+                let ip = Ipv4Header::from_frame_mut(frame);
+                std::mem::swap(&mut ip.src_addr, &mut ip.dst_addr);
+            } else {
+                let ip = Ipv6Header::from_frame_mut(frame);
+                std::mem::swap(&mut ip.src_addr, &mut ip.dst_addr);
+            }
+
+            // Swap UDP ports on the first frame only.
+            if first {
+                first = false;
+                let udp_offset = if is_ipv4 {
+                    Ipv4Header::from_frame(frame).payload_offset()
+                } else {
+                    let next_header = Ipv6Header::from_frame(frame).next_header;
+                    let base = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
+                    if next_header == EXT_FRAGMENT {
+                        base + FRAGMENT_EXT_LEN
+                    } else {
+                        base
+                    }
+                };
+                let udp = unsafe { UdpHeader::from_frame_at_mut(frame, udp_offset) };
+                std::mem::swap(&mut udp.src_port, &mut udp.dst_port);
+            }
+        }
+
+        // Swap metadata fields.
+        std::mem::swap(&mut self.src_addr, &mut self.dst_addr);
+        std::mem::swap(&mut self.src_port, &mut self.dst_port);
+    }
 }
 
 /// Error returned when a `bind` call fails.
@@ -36,7 +91,7 @@ impl fmt::Display for BindError {
 
 /// Internal binding record kept by `UdpHandler`.
 pub(crate) struct UdpBinding<'umem> {
-    rx_queue: SharedQueue<ReceivedUdpPacket<'umem>>,
+    rx_queue: LocalQueue<ReceivedUdpPacket<'umem>>,
 }
 
 /// Groups bindings for a single port: explicit IP bindings and an optional wildcard.
@@ -76,8 +131,8 @@ impl<'umem> UdpHandler<'umem> {
         addr: IpAddress,
         port: u16,
         rx_capacity: usize,
-    ) -> Result<SharedQueue<ReceivedUdpPacket<'umem>>, BindError> {
-        let rx_queue = SharedQueue::new(rx_capacity);
+    ) -> Result<LocalQueue<ReceivedUdpPacket<'umem>>, BindError> {
+        let rx_queue = LocalQueue::new(rx_capacity);
         let binding = UdpBinding {
             rx_queue: rx_queue.clone(),
         };
@@ -361,8 +416,13 @@ impl<'umem> UdpHandler<'umem> {
     }
 
     /// Evict stale reassembly entries (delegates to `FragmentReader`).
-    pub fn evict_stale(&mut self, timeout: Duration, rx_return: &mut impl FrameBuffer<'umem>) {
-        self.fragment_reader.evict_stale(timeout, rx_return);
+    pub fn evict_stale(
+        &mut self,
+        now: Instant,
+        timeout: Duration,
+        rx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        self.fragment_reader.evict_stale(now, timeout, rx_return);
     }
 
     /// Number of in-progress reassembly entries.
@@ -637,7 +697,7 @@ mod tests {
         let mut handler = UdpHandler::new(256);
         let mut rx = BasicFrameBuffer::new(4);
 
-        handler.evict_stale(Duration::from_secs(30), &mut rx);
+        handler.evict_stale(Instant::now(), Duration::from_secs(30), &mut rx);
         assert_eq!(handler.pending_reassembly(), 0);
     }
 
@@ -848,5 +908,109 @@ mod tests {
 
         assert_eq!(rx_queue.len(), 0, "oversized UDP length should be rejected");
         assert_eq!(rx.num_frames(), 1, "frame should be returned");
+    }
+
+    // -- swap_addresses tests --
+
+    #[test]
+    fn swap_addresses_ipv4() {
+        let src_mac = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        let dst_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+
+        let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
+        // Set MAC addresses in the Ethernet header.
+        buf[0..6].copy_from_slice(&dst_mac);
+        buf[6..12].copy_from_slice(&src_mac);
+
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+
+        let mut pkt = ReceivedUdpPacket {
+            src_addr: IpAddress::V4(REMOTE_IPV4),
+            dst_addr: IpAddress::V4(LOCAL_IPV4),
+            src_port: 12345,
+            dst_port: 53,
+            packet: Packet::Single(frame),
+        };
+
+        pkt.swap_addresses();
+
+        // Metadata should be swapped.
+        assert_eq!(pkt.src_addr, IpAddress::V4(LOCAL_IPV4));
+        assert_eq!(pkt.dst_addr, IpAddress::V4(REMOTE_IPV4));
+        assert_eq!(pkt.src_port, 53);
+        assert_eq!(pkt.dst_port, 12345);
+
+        // Verify wire bytes.
+        let frame = match &pkt.packet {
+            Packet::Single(f) => f,
+            _ => panic!("expected Single"),
+        };
+
+        // Ethernet MACs swapped.
+        assert_eq!(&frame[0..6], &src_mac);
+        assert_eq!(&frame[6..12], &dst_mac);
+
+        // IPv4 addresses swapped.
+        let ip = Ipv4Header::from_frame(frame);
+        assert_eq!(ip.src_addr, LOCAL_IPV4);
+        assert_eq!(ip.dst_addr, REMOTE_IPV4);
+
+        // UDP ports swapped.
+        let udp_off = ip.payload_offset();
+        let udp = unsafe { UdpHeader::from_frame_at(frame, udp_off) };
+        assert_eq!(udp.src_port(), 53);
+        assert_eq!(udp.dst_port(), 12345);
+    }
+
+    #[test]
+    fn swap_addresses_ipv6() {
+        let src_mac = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        let dst_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+
+        let mut buf = build_ipv6_udp_frame(REMOTE_IPV6, LOCAL_IPV6, 12345, 53, b"hello");
+        // Set MAC addresses in the Ethernet header.
+        buf[0..6].copy_from_slice(&dst_mac);
+        buf[6..12].copy_from_slice(&src_mac);
+
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+
+        let mut pkt = ReceivedUdpPacket {
+            src_addr: IpAddress::V6(REMOTE_IPV6),
+            dst_addr: IpAddress::V6(LOCAL_IPV6),
+            src_port: 12345,
+            dst_port: 53,
+            packet: Packet::Single(frame),
+        };
+
+        pkt.swap_addresses();
+
+        // Metadata should be swapped.
+        assert_eq!(pkt.src_addr, IpAddress::V6(LOCAL_IPV6));
+        assert_eq!(pkt.dst_addr, IpAddress::V6(REMOTE_IPV6));
+        assert_eq!(pkt.src_port, 53);
+        assert_eq!(pkt.dst_port, 12345);
+
+        // Verify wire bytes.
+        let frame = match &pkt.packet {
+            Packet::Single(f) => f,
+            _ => panic!("expected Single"),
+        };
+
+        // Ethernet MACs swapped.
+        assert_eq!(&frame[0..6], &src_mac);
+        assert_eq!(&frame[6..12], &dst_mac);
+
+        // IPv6 addresses swapped.
+        let ip = Ipv6Header::from_frame(frame);
+        assert_eq!(ip.src_addr, LOCAL_IPV6);
+        assert_eq!(ip.dst_addr, REMOTE_IPV6);
+
+        // UDP ports swapped.
+        let udp_off = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+        let udp = unsafe { UdpHeader::from_frame_at(frame, udp_off) };
+        assert_eq!(udp.src_port(), 53);
+        assert_eq!(udp.dst_port(), 12345);
     }
 }

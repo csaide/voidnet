@@ -15,191 +15,271 @@ impl<'umem> TcpHandler<'umem> {
     /// Called once per event loop iteration by `LocalRuntime::run`.
     pub fn tick(
         &mut self,
+        now: Instant,
         free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        let mut conn_ids = std::mem::take(&mut self.tick_conn_ids);
-        conn_ids.clear();
-        conn_ids.extend(self.connections.keys().copied());
-        let now = Instant::now();
+        let mut conn_ids = std::mem::take(&mut self.dirty_conn_ids);
+        conn_ids.sort_unstable();
+        conn_ids.dedup();
+
+        let Self { connections, dirty_conn_ids, .. } = self;
 
         for &conn_id in conn_ids.iter() {
-            // Process commands from socket layer.
-            if let Some(tcb) = self.connections.get(&conn_id) {
-                if let Some(cmd) = tcb.cmd_queue.pop() {
-                    match cmd {
-                        TcpCommand::Close => {
-                            let state = tcb.state;
-                            match state {
-                                TcpState::Established => {
-                                    let tcb = self.connections.get_mut(&conn_id).unwrap();
-                                    let seq = tcb.snd_nxt;
-                                    let ack = tcb.rcv_nxt;
-                                    let wnd = tcb.rcv_wnd;
-                                    send_and_queue_retransmit(
-                                        tcb,
-                                        seq,
-                                        ack,
-                                        flags::FIN | flags::ACK,
-                                        wnd,
-                                        &[],
-                                        1,
-                                        free_frames,
-                                        tx_return,
-                                    );
-                                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
-                                    tcb.state = TcpState::FinWait1;
-                                }
-                                TcpState::CloseWait => {
-                                    let tcb = self.connections.get_mut(&conn_id).unwrap();
-                                    let seq = tcb.snd_nxt;
-                                    let ack = tcb.rcv_nxt;
-                                    let wnd = tcb.rcv_wnd;
-                                    send_and_queue_retransmit(
-                                        tcb,
-                                        seq,
-                                        ack,
-                                        flags::FIN | flags::ACK,
-                                        wnd,
-                                        &[],
-                                        1,
-                                        free_frames,
-                                        tx_return,
-                                    );
-                                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
-                                    tcb.state = TcpState::LastAck;
-                                }
-                                _ => {}
-                            }
-                        }
-                        TcpCommand::Abort => {
-                            if let Some(tcb) = self.connections.get(&conn_id) {
-                                send_rst_stateless(
-                                    tcb.conn_id.local_addr,
-                                    tcb.conn_id.remote_addr,
-                                    tcb.conn_id.local_port,
-                                    tcb.conn_id.remote_port,
-                                    tcb.snd_nxt,
-                                    tcb.rcv_nxt,
-                                    true,
-                                    tcb.local_mac,
-                                    tcb.remote_mac,
-                                    free_frames,
-                                    tx_return,
-                                );
-                                tcb.rx_queue.push(TcpEvent::Reset);
-                            }
-                            self.remove_connection(&conn_id, rx_return);
-                            continue;
-                        }
+            let should_remove = if let Some(tcb) = connections.get_mut(&conn_id) {
+                Self::tick_connection(tcb, now, free_frames, rx_return, tx_return)
+            } else {
+                continue;
+            };
+            if should_remove {
+                if let Some(tcb) = connections.remove(&conn_id) {
+                    tcb.drain_rx_queue(rx_return);
+                    for (_, (frame, _, _)) in tcb.recv_reorder {
+                        rx_return.push(frame);
                     }
                 }
-            }
-
-            // Drain send buffer and transmit data.
-            if let Some(tcb) = self.connections.get(&conn_id) {
-                if (tcb.state == TcpState::Established || tcb.state == TcpState::CloseWait)
-                    && tcb.send_buffer.num_frames() > 0
-                {
-                    let _ = tcb;
-                    self.drain_send_buffer(&conn_id, free_frames, rx_return, tx_return);
+            } else if let Some(tcb) = connections.get(&conn_id) {
+                if tcb.needs_tick {
+                    dirty_conn_ids.push(conn_id);
                 }
             }
+        }
 
-            // Retransmission check.
-            if let Some(tcb) = self.connections.get_mut(&conn_id) {
-                if !tcb.retransmit_queue.is_empty() {
-                    let rto = tcb.rto_state.rto;
-                    if let Some(entry) = tcb.retransmit_queue.front() {
-                        if now.duration_since(entry.sent_at) >= rto {
-                            let entry = tcb.retransmit_queue.front_mut().unwrap();
-                            if entry.first_retransmit_time.is_none() {
-                                entry.first_retransmit_time = Some(now);
-                            }
-                            entry.retransmit_count += 1;
-                            entry.is_retransmit = true;
-                            entry.sent_at = now;
+        // Merge: move new dirty entries into conn_ids for capacity reuse.
+        conn_ids.clear();
+        conn_ids.append(dirty_conn_ids);
+        *dirty_conn_ids = conn_ids;
+    }
 
-                            // Copy frame for retransmit.
-                            if let Some(mut tx_frame) = free_frames.pop() {
-                                let src = &entry.frame;
-                                let len = src.len();
-                                if len <= tx_frame.capacity() {
-                                    unsafe { tx_frame.set_len(len) };
-                                    tx_frame[..len].copy_from_slice(&src[..len]);
-                                    tx_return.push(tx_frame);
-                                } else {
-                                    rx_return.push(tx_frame);
-                                }
-                            }
-
-                            // Exponential backoff
-                            tcb.rto_state.backoff();
-
-                            // Congestion: timeout
-                            let mss = tcb.snd_mss as u32;
-                            tcb.congestion.ssthresh =
-                                (tcb.congestion.cwnd / 2).max(2 * mss);
-                            tcb.congestion.cwnd = mss;
-
-                            // Connection failure check using first_retransmit_time
-                            if let Some(first_rt) =
-                                tcb.retransmit_queue.front().unwrap().first_retransmit_time
-                            {
-                                if now.duration_since(first_rt) >= MAX_RETRANSMIT_TIME {
-                                    tcb.rx_queue.push(TcpEvent::Reset);
-                                    tcb.state = TcpState::Closed;
-                                    self.remove_connection(&conn_id, rx_return);
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Zero-window probing.
-            if let Some(tcb) = self.connections.get_mut(&conn_id) {
-                if tcb.snd_wnd == 0
-                    && (tcb.state == TcpState::Established || tcb.state == TcpState::CloseWait)
-                    && tcb.send_buffer.num_frames() > 0
-                {
-                    let rto = tcb.rto_state.rto;
-                    if now.duration_since(tcb.last_activity) >= rto {
-                        send_segment(
-                            tcb,
-                            tcb.snd_nxt,
-                            tcb.rcv_nxt,
-                            flags::ACK,
-                            tcb.rcv_wnd,
-                            &[],
-                            &[],
-                            free_frames,
-                            tx_return,
+    /// Per-connection tick logic. Returns `true` if the connection should be removed.
+    fn tick_connection(
+        tcb: &mut Tcb<'umem>,
+        now: Instant,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) -> bool {
+        // Process commands from socket layer.
+        if let Some(cmd) = tcb.cmd_queue.pop() {
+            match cmd {
+                TcpCommand::Close => match tcb.state {
+                    TcpState::Established => {
+                        let seq = tcb.snd_nxt;
+                        let ack = tcb.rcv_nxt;
+                        let wnd = tcb.wire_rcv_wnd() as u32;
+                        send_and_queue_retransmit(
+                            tcb, seq, ack,
+                            flags::FIN | flags::ACK,
+                            wnd, &[], 1, now,
+                            free_frames, tx_return,
                         );
-                        tcb.last_activity = now;
+                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+                        tcb.state = TcpState::FinWait1;
+                    }
+                    TcpState::CloseWait => {
+                        let seq = tcb.snd_nxt;
+                        let ack = tcb.rcv_nxt;
+                        let wnd = tcb.wire_rcv_wnd() as u32;
+                        send_and_queue_retransmit(
+                            tcb, seq, ack,
+                            flags::FIN | flags::ACK,
+                            wnd, &[], 1, now,
+                            free_frames, tx_return,
+                        );
+                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+                        tcb.state = TcpState::LastAck;
+                    }
+                    _ => {}
+                },
+                TcpCommand::Abort => {
+                    send_rst_stateless(
+                        tcb.conn_id.local_addr,
+                        tcb.conn_id.remote_addr,
+                        tcb.conn_id.local_port,
+                        tcb.conn_id.remote_port,
+                        tcb.snd_nxt,
+                        tcb.rcv_nxt,
+                        true,
+                        tcb.local_mac,
+                        tcb.remote_mac,
+                        free_frames,
+                        tx_return,
+                    );
+                    tcb.push_rx_event(TcpEvent::Reset, rx_return);
+                    return true; // Remove connection.
+                }
+            }
+        }
+
+        // Drain send buffer and transmit data.
+        if (tcb.state == TcpState::Established || tcb.state == TcpState::CloseWait)
+            && tcb.send_buffer.len() > 0
+        {
+            Self::drain_send_buffer_direct(tcb, now, free_frames, tx_return);
+        }
+
+        // Retransmission check.
+        if !tcb.retransmit_queue.is_empty() {
+            let rto = tcb.rto_state.rto;
+            if let Some(entry) = tcb.retransmit_queue.front() {
+                if now.duration_since(entry.sent_at) >= rto {
+                    let entry_seq = entry.seq;
+                    let entry_len = entry.len;
+                    let entry_flags = entry.seg_flags;
+                    let entry_ack = entry.ack;
+                    let entry_wnd = entry.window;
+                    let mut entry_opts = [0u8; 8];
+                    let entry_opts_len = entry.options_len as usize;
+                    entry_opts[..entry_opts_len]
+                        .copy_from_slice(&entry.options[..entry_opts_len]);
+
+                    let entry = tcb.retransmit_queue.front_mut().unwrap();
+                    if entry.first_retransmit_time.is_none() {
+                        entry.first_retransmit_time = Some(now);
+                    }
+                    entry.retransmit_count += 1;
+                    entry.is_retransmit = true;
+                    entry.sent_at = now;
+
+                    if let Some(tx_frame) = free_frames.pop() {
+                        let buf_offset = entry_seq.wrapping_sub(tcb.snd_una) as usize;
+                        if entry_len > 0 {
+                            let (a, b) = tcb.send_buffer.peek_slices(buf_offset, entry_len);
+                            let payload: &[u8];
+                            let mut scratch = [0u8; 1460];
+                            if b.is_empty() {
+                                payload = a;
+                            } else {
+                                scratch[..a.len()].copy_from_slice(a);
+                                scratch[a.len()..a.len() + b.len()].copy_from_slice(b);
+                                payload = &scratch[..a.len() + b.len()];
+                            }
+                            match build_tcp_segment(
+                                tx_frame,
+                                tcb.local_mac,
+                                tcb.remote_mac,
+                                tcb.conn_id.local_addr,
+                                tcb.conn_id.remote_addr,
+                                tcb.conn_id.local_port,
+                                tcb.conn_id.remote_port,
+                                entry_seq,
+                                entry_ack,
+                                entry_flags,
+                                entry_wnd,
+                                &entry_opts[..entry_opts_len],
+                                payload,
+                            ) {
+                                Ok(f) => tx_return.push(f),
+                                Err(f) => free_frames.push(f),
+                            }
+                        } else {
+                            match build_tcp_segment(
+                                tx_frame,
+                                tcb.local_mac,
+                                tcb.remote_mac,
+                                tcb.conn_id.local_addr,
+                                tcb.conn_id.remote_addr,
+                                tcb.conn_id.local_port,
+                                tcb.conn_id.remote_port,
+                                entry_seq,
+                                entry_ack,
+                                entry_flags,
+                                entry_wnd,
+                                &entry_opts[..entry_opts_len],
+                                &[],
+                            ) {
+                                Ok(f) => tx_return.push(f),
+                                Err(f) => free_frames.push(f),
+                            }
+                        }
+                    }
+
+                    tcb.rto_state.backoff();
+
+                    let mss = tcb.snd_mss as u32;
+                    tcb.congestion.ssthresh = (tcb.congestion.cwnd / 2).max(2 * mss);
+                    tcb.congestion.cwnd = mss;
+                    tcb.dup_ack_count = 0;
+                    tcb.in_fast_recovery = false;
+
+                    if let Some(first_rt) =
+                        tcb.retransmit_queue.front().unwrap().first_retransmit_time
+                    {
+                        if now.duration_since(first_rt) >= MAX_RETRANSMIT_TIME {
+                            tcb.push_rx_event(TcpEvent::Reset, rx_return);
+                            tcb.state = TcpState::Closed;
+                            return true; // Remove connection.
+                        }
                     }
                 }
             }
         }
 
-        self.tick_conn_ids = conn_ids;
+        // Zero-window probing.
+        if tcb.snd_wnd == 0
+            && (tcb.state == TcpState::Established || tcb.state == TcpState::CloseWait)
+            && tcb.send_buffer.len() > 0
+        {
+            let rto = tcb.rto_state.rto;
+            if now.duration_since(tcb.last_activity) >= rto {
+                send_segment(
+                    tcb,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
+                    flags::ACK,
+                    tcb.wire_rcv_wnd() as u32,
+                    &[],
+                    &[],
+                    free_frames,
+                    tx_return,
+                );
+                tcb.last_activity = now;
+            }
+        }
+
+        // Flush delayed ACKs that have exceeded the 40ms timeout.
+        if tcb.delayed_ack_pending > 0 {
+            if let Some(ack_at) = tcb.delayed_ack_at {
+                if now.duration_since(ack_at) >= DELAYED_ACK_TIMEOUT {
+                    send_segment(
+                        tcb,
+                        tcb.snd_nxt,
+                        tcb.rcv_nxt,
+                        flags::ACK,
+                        tcb.wire_rcv_wnd() as u32,
+                        &[],
+                        &[],
+                        free_frames,
+                        tx_return,
+                    );
+                    tcb.delayed_ack_pending = 0;
+                    tcb.delayed_ack_at = None;
+                }
+            }
+        }
+
+        // Clear needs_tick if nothing left to do.
+        if tcb.cmd_queue.is_empty()
+            && tcb.send_buffer.len() == 0
+            && tcb.retransmit_queue.is_empty()
+            && tcb.delayed_ack_pending == 0
+            && tcb.snd_wnd != 0
+        {
+            tcb.needs_tick = false;
+        }
+
+        false // Keep connection.
     }
 
-    pub(super) fn drain_send_buffer(
-        &mut self,
-        conn_id: &ConnectionId,
+    /// Drains the send buffer directly on an owned TCB, avoiding HashMap lookups.
+    fn drain_send_buffer_direct(
+        tcb: &mut Tcb<'umem>,
+        now: Instant,
         free_frames: &mut impl FrameBuffer<'umem>,
-        rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         loop {
-            let tcb = match self.connections.get_mut(conn_id) {
-                Some(t) => t,
-                None => return,
-            };
-
             let eff_wnd = tcb.effective_window();
             let flight_size = tcb.snd_nxt.wrapping_sub(tcb.snd_una);
             if flight_size >= eff_wnd {
@@ -207,91 +287,85 @@ impl<'umem> TcpHandler<'umem> {
             }
             let available_wnd = eff_wnd - flight_size;
 
-            let data_frame = match tcb.send_buffer.pop() {
-                Some(f) => f,
-                None => break,
-            };
+            // Bytes available beyond what's already in flight.
+            let buf_offset = tcb.snd_nxt.wrapping_sub(tcb.snd_una) as usize;
+            let buf_available = tcb.send_buffer.len().saturating_sub(buf_offset);
+            if buf_available == 0 {
+                break;
+            }
 
-            let data_len = data_frame.len();
-            let seg_size = data_len.min(tcb.snd_mss as usize).min(available_wnd as usize);
+            let seg_size = buf_available
+                .min(tcb.snd_mss as usize)
+                .min(available_wnd as usize);
             if seg_size == 0 {
-                tcb.send_buffer.push(data_frame);
                 break;
             }
 
             let seq = tcb.snd_nxt;
             let ack = tcb.rcv_nxt;
-            let wnd = tcb.rcv_wnd;
-            let local_addr = tcb.conn_id.local_addr;
-            let remote_addr = tcb.conn_id.remote_addr;
-            let local_port = tcb.conn_id.local_port;
-            let remote_port = tcb.conn_id.remote_port;
-            let local_mac = tcb.local_mac;
-            let remote_mac = tcb.remote_mac;
-            let is_last = tcb.send_buffer.num_frames() == 0;
-            let seg_flags = flags::ACK | if is_last { flags::PSH } else { 0 };
+            let wnd = tcb.wire_rcv_wnd() as u32;
+            let remaining_after = buf_available - seg_size;
+            let seg_flags = flags::ACK | if remaining_after == 0 { flags::PSH } else { 0 };
 
             let tx_frame = match free_frames.pop() {
                 Some(f) => f,
-                None => {
-                    let tcb = self.connections.get_mut(conn_id).unwrap();
-                    tcb.send_buffer.push(data_frame);
-                    break;
-                }
-            };
-            let retransmit_frame = match free_frames.pop() {
-                Some(f) => f,
-                None => {
-                    free_frames.push(tx_frame);
-                    let tcb = self.connections.get_mut(conn_id).unwrap();
-                    tcb.send_buffer.push(data_frame);
-                    break;
-                }
+                None => break,
             };
 
-            let payload = &data_frame[..seg_size];
-            let built = build_tcp_segment(
-                tx_frame, local_mac, remote_mac, local_addr, remote_addr, local_port, remote_port,
+            // Peek payload bytes from the send buffer (no consume — kept for retransmit).
+            let (a, b) = tcb.send_buffer.peek_slices(buf_offset, seg_size);
+            let payload: &[u8];
+            let mut scratch = [0u8; 1460];
+            if b.is_empty() {
+                // Common case: contiguous data, pass directly
+                payload = a;
+            } else {
+                // Rare: ring wrap, use stack scratch
+                scratch[..a.len()].copy_from_slice(a);
+                scratch[a.len()..a.len() + b.len()].copy_from_slice(b);
+                payload = &scratch[..a.len() + b.len()];
+            }
+            match build_tcp_segment(
+                tx_frame,
+                tcb.local_mac,
+                tcb.remote_mac,
+                tcb.conn_id.local_addr,
+                tcb.conn_id.remote_addr,
+                tcb.conn_id.local_port,
+                tcb.conn_id.remote_port,
                 seq, ack, seg_flags, wnd, &[], payload,
-            );
-
-            match built {
-                Some(tx_f) => {
-                    let mut retransmit_f = retransmit_frame;
-                    let len = tx_f.len();
-                    unsafe { retransmit_f.set_len(len) };
-                    retransmit_f[..len].copy_from_slice(&tx_f[..len]);
-
+            ) {
+                Ok(tx_f) => {
                     tx_return.push(tx_f);
 
-                    let tcb = self.connections.get_mut(conn_id).unwrap();
+                    // Data segment carries ACK — clear delayed ACK state (piggybacking).
+                    tcb.delayed_ack_pending = 0;
+                    tcb.delayed_ack_at = None;
                     tcb.snd_nxt = tcb.snd_nxt.wrapping_add(seg_size as u32);
                     tcb.retransmit_queue.push_back(RetransmitEntry {
                         seq,
                         len: seg_size,
-                        frame: retransmit_f,
-                        sent_at: Instant::now(),
+                        seg_flags,
+                        ack,
+                        window: wnd,
+                        options: [0; 8],
+                        options_len: 0,
+                        sent_at: now,
                         retransmit_count: 0,
                         is_retransmit: false,
                         first_retransmit_time: None,
                     });
                 }
-                None => {
-                    rx_return.push(retransmit_frame);
-                }
+                Err(f) => { free_frames.push(f); break; }
             }
-
-            rx_return.push(data_frame);
         }
     }
 
     /// Removes connections that have exceeded their TIME-WAIT duration.
-    pub fn evict_stale(&mut self, rx_return: &mut impl FrameBuffer<'umem>) {
-        let now = Instant::now();
+    pub fn evict_stale(&mut self, now: Instant, rx_return: &mut impl FrameBuffer<'umem>) {
         let time_wait_duration = self.time_wait_duration;
 
-        let mut expired = std::mem::take(&mut self.tick_conn_ids);
-        expired.clear();
+        let mut expired: Vec<ConnectionId> = Vec::new();
         for (id, tcb) in self.connections.iter() {
             if tcb.state == TcpState::TimeWait {
                 if let Some(start) = tcb.time_wait_start {
@@ -304,11 +378,9 @@ impl<'umem> TcpHandler<'umem> {
 
         for conn_id in expired.iter() {
             if let Some(tcb) = self.connections.get(conn_id) {
-                tcb.rx_queue.push(TcpEvent::Closed);
+                tcb.push_rx_event(TcpEvent::Closed, rx_return);
             }
             self.remove_connection(conn_id, rx_return);
         }
-        expired.clear();
-        self.tick_conn_ids = expired;
     }
 }

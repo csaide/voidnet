@@ -16,6 +16,7 @@ getifaddrs = { version = "0.6", default-features = false }
 libc = { version = "0.2", default-features = false }
 libxdp-sys = { version = "=0.2.2", default-features = false } # Latest version of this library has a broken build....
 memmap2 = { version = "0.9", default-features = false }
+rustc-hash = { version = "2" }
 neli = { version = "0.7", default-features = false, features = ["sync"] }
 smallvec = { version = "1.15", default-features = false }
 thiserror = { version = "2", default-features = false }
