@@ -1,7 +1,5 @@
 use std::fmt::Display;
 
-use crate::xdp::frame::Frame;
-
 /// A MAC address representation.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 #[repr(C, packed)]
@@ -111,7 +109,7 @@ impl EthernetFrame {
     /// # Safety
     ///
     /// The caller must ensure `frame.len() >= size_of::<EthernetFrame>()`.
-    pub fn from_frame<'frame, 'umem>(frame: &'frame Frame<'umem>) -> &'frame Self {
+    pub fn from_bytes(frame: &[u8]) -> &Self {
         debug_assert!(frame.len() >= size_of::<EthernetFrame>());
         unsafe { &*(frame.as_ptr() as *const Self) }
     }
@@ -121,7 +119,7 @@ impl EthernetFrame {
     /// # Safety
     ///
     /// The caller must ensure `frame.len() >= size_of::<EthernetFrame>()`.
-    pub fn from_frame_mut<'frame, 'umem>(frame: &'frame mut Frame<'umem>) -> &'frame mut Self {
+    pub fn from_bytes_mut(frame: &mut [u8]) -> &mut Self {
         debug_assert!(frame.len() >= size_of::<EthernetFrame>());
         unsafe { &mut *(frame.as_mut_ptr() as *mut Self) }
     }
@@ -137,14 +135,15 @@ impl Display for EthernetFrame {
     }
 }
 
+/// Writes the Ethernet header to a frame.
 #[inline]
 pub fn write_ethernet_header(
-    frame: &mut Frame<'_>,
+    frame: &mut [u8],
     dst_mac: MacAddress,
     src_mac: MacAddress,
     ether_type: EtherType,
 ) {
-    let eth = EthernetFrame::from_frame_mut(frame);
+    let eth = EthernetFrame::from_bytes_mut(frame);
     eth.dst_mac = dst_mac;
     eth.src_mac = src_mac;
     eth.ether_type = ether_type;

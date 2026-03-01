@@ -1,5 +1,3 @@
-use crate::xdp::frame::Frame;
-
 use super::{
     ethernet::EthernetFrame,
     ip::{IPV6_HEADER_LEN, IpProtocols, Ipv6Address, Ipv6Header},
@@ -49,18 +47,18 @@ impl Icmpv6Header {
     ///
     /// The caller must ensure `offset + ICMPV6_HEADER_LEN <= frame.len()`.
     #[inline(always)]
-    pub fn from_frame_at<'f, 'u>(frame: &'f Frame<'u>, offset: usize) -> &'f Self {
-        debug_assert!(offset + ICMPV6_HEADER_LEN <= frame.len());
-        unsafe { &*(frame.as_ptr().add(offset) as *const Self) }
+    pub fn from_bytes_at(bytes: &[u8], offset: usize) -> &Self {
+        debug_assert!(offset + ICMPV6_HEADER_LEN <= bytes.len());
+        unsafe { &*(bytes.as_ptr().add(offset) as *const Self) }
     }
 
     /// Mutable zero-copy borrow of the ICMPv6 header at the given byte offset.
     ///
     /// The caller must ensure `offset + ICMPV6_HEADER_LEN <= frame.len()`.
     #[inline(always)]
-    pub fn from_frame_at_mut<'f, 'u>(frame: &'f mut Frame<'u>, offset: usize) -> &'f mut Self {
-        debug_assert!(offset + ICMPV6_HEADER_LEN <= frame.len());
-        unsafe { &mut *(frame.as_mut_ptr().add(offset) as *mut Self) }
+    pub fn from_bytes_at_mut(bytes: &mut [u8], offset: usize) -> &mut Self {
+        debug_assert!(offset + ICMPV6_HEADER_LEN <= bytes.len());
+        unsafe { &mut *(bytes.as_mut_ptr().add(offset) as *mut Self) }
     }
 
     /// Returns the body field as a big-endian `u32`.
@@ -145,9 +143,9 @@ impl Icmpv6Frame {
     ///
     /// The caller must ensure `frame.len() >= ICMPV6_FRAME_LEN`.
     #[inline(always)]
-    pub fn from_frame_mut<'f, 'u>(frame: &'f mut Frame<'u>) -> &'f mut Self {
-        debug_assert!(frame.len() >= ICMPV6_FRAME_LEN);
-        unsafe { &mut *(frame.as_mut_ptr() as *mut Self) }
+    pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
+        debug_assert!(bytes.len() >= ICMPV6_FRAME_LEN);
+        unsafe { &mut *(bytes.as_mut_ptr() as *mut Self) }
     }
 }
 

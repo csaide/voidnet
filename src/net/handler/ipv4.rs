@@ -49,7 +49,7 @@ impl Ipv4Handler {
             return;
         }
 
-        let ip = Ipv4Header::from_frame(&frame);
+        let ip = Ipv4Header::from_bytes(&frame);
 
         if ip.version() != 4 {
             rx_return.push(frame);

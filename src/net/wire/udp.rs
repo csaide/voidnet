@@ -1,5 +1,3 @@
-use crate::xdp::frame::Frame;
-
 use super::ip::{Ipv4Address, Ipv6Address};
 
 /// UDP header length in bytes.
@@ -73,8 +71,9 @@ impl UdpHeader {
     /// # Safety
     /// Caller must ensure `frame.len() >= offset + UDP_HEADER_LEN`.
     #[inline]
-    pub unsafe fn from_frame_at<'a>(frame: &'a Frame<'_>, offset: usize) -> &'a Self {
-        unsafe { &*(frame.as_ptr().add(offset) as *const Self) }
+    pub unsafe fn from_bytes_at(bytes: &[u8], offset: usize) -> &Self {
+        debug_assert!(offset + UDP_HEADER_LEN <= bytes.len());
+        unsafe { &*(bytes.as_ptr().add(offset) as *const Self) }
     }
 
     /// Mutable zero-copy reference to a UDP header at `offset` within a frame.
@@ -82,8 +81,9 @@ impl UdpHeader {
     /// # Safety
     /// Caller must ensure `frame.len() >= offset + UDP_HEADER_LEN`.
     #[inline]
-    pub unsafe fn from_frame_at_mut<'a>(frame: &'a mut Frame<'_>, offset: usize) -> &'a mut Self {
-        unsafe { &mut *(frame.as_mut_ptr().add(offset) as *mut Self) }
+    pub unsafe fn from_bytes_at_mut(bytes: &mut [u8], offset: usize) -> &mut Self {
+        debug_assert!(offset + UDP_HEADER_LEN <= bytes.len());
+        unsafe { &mut *(bytes.as_mut_ptr().add(offset) as *mut Self) }
     }
 }
 
@@ -123,10 +123,46 @@ pub(crate) fn sum_words_carry(data: &[u8], mut sum: u64, pending: Option<u8>) ->
     // Each u64 is split into 4 u16 words via shifts — safe for unaligned data
     // because from_be_bytes copies rather than casting pointers.
     while i + 31 < len {
-        let w0 = u64::from_be_bytes([data[i], data[i+1], data[i+2], data[i+3], data[i+4], data[i+5], data[i+6], data[i+7]]);
-        let w1 = u64::from_be_bytes([data[i+8], data[i+9], data[i+10], data[i+11], data[i+12], data[i+13], data[i+14], data[i+15]]);
-        let w2 = u64::from_be_bytes([data[i+16], data[i+17], data[i+18], data[i+19], data[i+20], data[i+21], data[i+22], data[i+23]]);
-        let w3 = u64::from_be_bytes([data[i+24], data[i+25], data[i+26], data[i+27], data[i+28], data[i+29], data[i+30], data[i+31]]);
+        let w0 = u64::from_be_bytes([
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3],
+            data[i + 4],
+            data[i + 5],
+            data[i + 6],
+            data[i + 7],
+        ]);
+        let w1 = u64::from_be_bytes([
+            data[i + 8],
+            data[i + 9],
+            data[i + 10],
+            data[i + 11],
+            data[i + 12],
+            data[i + 13],
+            data[i + 14],
+            data[i + 15],
+        ]);
+        let w2 = u64::from_be_bytes([
+            data[i + 16],
+            data[i + 17],
+            data[i + 18],
+            data[i + 19],
+            data[i + 20],
+            data[i + 21],
+            data[i + 22],
+            data[i + 23],
+        ]);
+        let w3 = u64::from_be_bytes([
+            data[i + 24],
+            data[i + 25],
+            data[i + 26],
+            data[i + 27],
+            data[i + 28],
+            data[i + 29],
+            data[i + 30],
+            data[i + 31],
+        ]);
         sum += (w0 >> 48) + ((w0 >> 32) & 0xFFFF) + ((w0 >> 16) & 0xFFFF) + (w0 & 0xFFFF);
         sum += (w1 >> 48) + ((w1 >> 32) & 0xFFFF) + ((w1 >> 16) & 0xFFFF) + (w1 & 0xFFFF);
         sum += (w2 >> 48) + ((w2 >> 32) & 0xFFFF) + ((w2 >> 16) & 0xFFFF) + (w2 & 0xFFFF);

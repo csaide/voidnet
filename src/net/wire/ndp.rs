@@ -1,5 +1,3 @@
-use crate::xdp::frame::Frame;
-
 use super::{
     ethernet::{EthernetFrame, MacAddress},
     ip::{Ipv6Address, Ipv6Header},
@@ -46,9 +44,9 @@ impl NdpNsFrame {
     }
 
     #[inline(always)]
-    pub fn from_frame_mut<'frame, 'umem>(frame: &'frame mut Frame<'umem>) -> &'frame mut Self {
-        debug_assert!(frame.len() >= NDP_NS_FRAME_LEN);
-        unsafe { &mut *(frame.as_mut_ptr() as *mut Self) }
+    pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
+        debug_assert!(bytes.len() >= NDP_NS_FRAME_LEN);
+        unsafe { &mut *(bytes.as_mut_ptr() as *mut Self) }
     }
 }
 
@@ -97,9 +95,9 @@ impl NdpNaFrame {
     }
 
     #[inline(always)]
-    pub fn from_frame_mut<'frame, 'umem>(frame: &'frame mut Frame<'umem>) -> &'frame mut Self {
-        debug_assert!(frame.len() >= NDP_NA_FRAME_LEN);
-        unsafe { &mut *(frame.as_mut_ptr() as *mut Self) }
+    pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
+        debug_assert!(bytes.len() >= NDP_NA_FRAME_LEN);
+        unsafe { &mut *(bytes.as_mut_ptr() as *mut Self) }
     }
 }
 

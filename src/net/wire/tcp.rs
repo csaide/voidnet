@@ -1,9 +1,9 @@
 use std::fmt::Display;
 
-use crate::xdp::frame::Frame;
-
-use super::ip::{Ipv4Address, Ipv6Address};
-use super::udp::{fold_and_verify, fold_checksum, sum_words_carry};
+use super::{
+    ip::{Ipv4Address, Ipv6Address},
+    udp::{fold_and_verify, fold_checksum, sum_words_carry},
+};
 
 /// TCP header length in bytes (minimum, without options).
 pub const TCP_HEADER_LEN: usize = 20;
@@ -144,8 +144,9 @@ impl TcpHeader {
     /// # Safety
     /// Caller must ensure `frame.len() >= offset + TCP_HEADER_LEN`.
     #[inline]
-    pub unsafe fn from_frame_at<'a>(frame: &'a Frame<'_>, offset: usize) -> &'a Self {
-        unsafe { &*(frame.as_ptr().add(offset) as *const Self) }
+    pub unsafe fn from_bytes_at(bytes: &[u8], offset: usize) -> &Self {
+        debug_assert!(offset + TCP_HEADER_LEN <= bytes.len());
+        unsafe { &*(bytes.as_ptr().add(offset) as *const Self) }
     }
 
     /// Zero-copy mutable reference to a TCP header at `offset` within a frame.
@@ -153,8 +154,9 @@ impl TcpHeader {
     /// # Safety
     /// Caller must ensure `frame.len() >= offset + TCP_HEADER_LEN`.
     #[inline]
-    pub unsafe fn from_frame_mut_at<'a>(frame: &'a mut Frame<'_>, offset: usize) -> &'a mut Self {
-        unsafe { &mut *(frame.as_mut_ptr().add(offset) as *mut Self) }
+    pub unsafe fn from_bytes_mut_at(bytes: &mut [u8], offset: usize) -> &mut Self {
+        debug_assert!(offset + TCP_HEADER_LEN <= bytes.len());
+        unsafe { &mut *(bytes.as_mut_ptr().add(offset) as *mut Self) }
     }
 }
 
@@ -665,7 +667,16 @@ mod tests {
 
     #[test]
     fn parse_window_scale_after_mss() {
-        let opts = [options::MSS, 4, 0x05, 0xB4, options::NOP, options::WINDOW_SCALE, 3, 7];
+        let opts = [
+            options::MSS,
+            4,
+            0x05,
+            0xB4,
+            options::NOP,
+            options::WINDOW_SCALE,
+            3,
+            7,
+        ];
         assert_eq!(parse_window_scale(&opts), Some(7));
     }
 

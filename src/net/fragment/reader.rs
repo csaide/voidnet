@@ -155,7 +155,7 @@ impl<'umem> FragmentReader<'umem> {
         frame: Frame<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
     ) -> Option<ReassembledPacket<'umem>> {
-        let ip = Ipv4Header::from_frame(&frame);
+        let ip = Ipv4Header::from_bytes(&frame);
         let src_addr = ip.src_addr;
         let dst_addr = ip.dst_addr;
         let protocol = ip.protocol;
@@ -226,7 +226,7 @@ impl<'umem> FragmentReader<'umem> {
             return None;
         }
 
-        let frag_hdr = Ipv6FragmentHeader::from_bytes(&frame, frag_ext_offset);
+        let frag_hdr = Ipv6FragmentHeader::from_bytes_at(&frame, frag_ext_offset);
         let protocol = frag_hdr.next_header;
         let frag_offset_bytes = frag_hdr.fragment_offset() as usize * 8;
         let more_fragments = frag_hdr.more_fragments();
@@ -242,7 +242,7 @@ impl<'umem> FragmentReader<'umem> {
             });
         }
 
-        let ip = Ipv6Header::from_frame(&frame);
+        let ip = Ipv6Header::from_bytes(&frame);
         let src_addr = ip.src_addr;
         let dst_addr = ip.dst_addr;
 
@@ -667,7 +667,7 @@ mod tests {
         // Verify payload from reassembled frames.
         let mut data = Vec::new();
         for (i, frame) in reassembled.packet.frames().enumerate() {
-            let ip = Ipv4Header::from_frame(frame);
+            let ip = Ipv4Header::from_bytes(frame);
             let data_start = ip.payload_offset();
             if i == 0 {
                 // First fragment includes transport header.
@@ -758,7 +758,7 @@ mod tests {
         assert_eq!(packet.num_frames(), 1);
         match &packet {
             Packet::Single(frame) => {
-                let ip = Ipv4Header::from_frame(frame);
+                let ip = Ipv4Header::from_bytes(frame);
                 assert!(ip.dont_fragment());
                 assert!(!ip.is_fragment());
             }

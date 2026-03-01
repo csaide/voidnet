@@ -28,7 +28,7 @@ pub fn handle_icmpv4<'umem>(
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {
-    let ip = Ipv4Header::from_frame(&frame);
+    let ip = Ipv4Header::from_bytes(&frame);
     let payload_offset = ip.payload_offset();
     let payload_len = ip.payload_len();
     let dst_addr = ip.dst_addr;
@@ -45,7 +45,7 @@ pub fn handle_icmpv4<'umem>(
         return;
     }
 
-    let icmp = Icmpv4Header::from_frame_at(&frame, payload_offset);
+    let icmp = Icmpv4Header::from_bytes_at(&frame, payload_offset);
     let icmp_type = icmp.icmp_type;
     let icmp_code = icmp.code;
 
@@ -59,13 +59,13 @@ pub fn handle_icmpv4<'umem>(
             }
 
             // Swap Ethernet MACs.
-            let eth = EthernetFrame::from_frame_mut(&mut frame);
+            let eth = EthernetFrame::from_bytes_mut(&mut frame);
             let tmp_mac = eth.dst_mac;
             eth.dst_mac = eth.src_mac;
             eth.src_mac = tmp_mac;
 
             // Swap IPv4 addresses and reset TTL.
-            let ip = Ipv4Header::from_frame_mut(&mut frame);
+            let ip = Ipv4Header::from_bytes_mut(&mut frame);
             let tmp_addr = ip.src_addr;
             ip.src_addr = ip.dst_addr;
             ip.dst_addr = tmp_addr;
@@ -73,19 +73,17 @@ pub fn handle_icmpv4<'umem>(
             ip.fill_checksum();
 
             // Set ICMP type to Echo Reply and recompute checksum.
-            let icmp = Icmpv4Header::from_frame_at_mut(&mut frame, payload_offset);
+            let icmp = Icmpv4Header::from_bytes_at_mut(&mut frame, payload_offset);
             icmp.icmp_type = Icmpv4Types::EchoReply;
             icmp.checksum = [0, 0];
             let cksum = compute_ipv4_checksum(&frame[payload_offset..icmp_end]);
-            Icmpv4Header::from_frame_at_mut(&mut frame, payload_offset).checksum = cksum;
+            Icmpv4Header::from_bytes_at_mut(&mut frame, payload_offset).checksum = cksum;
 
             tx_return.push(frame);
         }
-        Icmpv4Types::DestinationUnreachable
-            if icmp_code == Icmpv4Codes::FragmentationNeeded =>
-        {
+        Icmpv4Types::DestinationUnreachable if icmp_code == Icmpv4Codes::FragmentationNeeded => {
             // Extract next-hop MTU from the ICMP header.
-            let icmp = Icmpv4Header::from_frame_at(&frame, payload_offset);
+            let icmp = Icmpv4Header::from_bytes_at(&frame, payload_offset);
             let mtu = icmp.next_hop_mtu() as u32;
 
             // Extract original destination IP from embedded IP header.
@@ -130,7 +128,7 @@ pub fn send_destination_unreachable<'umem>(
 ) {
     let eth_len = size_of::<EthernetFrame>();
 
-    let ip = Ipv4Header::from_frame(&frame);
+    let ip = Ipv4Header::from_bytes(&frame);
     let src_addr = ip.src_addr;
     let dst_addr = ip.dst_addr;
     let orig_header_len = ip.header_len();
@@ -183,7 +181,7 @@ pub fn send_destination_unreachable<'umem>(
     // Build Ethernet + IPv4 + ICMP headers via struct overlay.
     let icmp_start = eth_len + IPV4_MIN_HEADER_LEN;
     {
-        let pkt = Icmpv4Frame::from_frame_mut(&mut frame);
+        let pkt = Icmpv4Frame::from_bytes_mut(&mut frame);
 
         // Swap Ethernet MACs.
         let tmp_mac = pkt.ethernet.dst_mac;
@@ -221,7 +219,7 @@ pub fn send_destination_unreachable<'umem>(
     // Compute and write ICMP checksum.
     let icmp_end = icmp_start + icmp_total_len;
     let cksum = compute_ipv4_checksum(&frame[icmp_start..icmp_end]);
-    Icmpv4Header::from_frame_at_mut(&mut frame, icmp_start).checksum = cksum;
+    Icmpv4Header::from_bytes_at_mut(&mut frame, icmp_start).checksum = cksum;
 
     tx_return.push(frame);
 }
@@ -360,12 +358,12 @@ mod tests {
         assert_eq!(reply[icmp_offset + 1], 0);
 
         // Ethernet MACs swapped
-        let eth = EthernetFrame::from_frame(&reply);
+        let eth = EthernetFrame::from_bytes(&reply);
         assert_eq!(eth.src_mac, MacAddress::from(DST_MAC));
         assert_eq!(eth.dst_mac, MacAddress::from(SRC_MAC));
 
         // IPv4 addresses swapped, TTL reset
-        let ip = Ipv4Header::from_frame(&reply);
+        let ip = Ipv4Header::from_bytes(&reply);
         assert_eq!(ip.src_addr, LOCAL_IP);
         assert_eq!(ip.dst_addr, REMOTE_IP);
         assert_eq!(ip.ttl, 64);
@@ -522,10 +520,10 @@ mod tests {
         assert_eq!(reply[icmp_start + 1], Icmpv4Codes::ProtocolUnreachable);
 
         // Addresses swapped
-        let eth = EthernetFrame::from_frame(&reply);
+        let eth = EthernetFrame::from_bytes(&reply);
         assert_eq!(eth.src_mac, MacAddress::from(DST_MAC));
         assert_eq!(eth.dst_mac, MacAddress::from(SRC_MAC));
-        let ip = Ipv4Header::from_frame(&reply);
+        let ip = Ipv4Header::from_bytes(&reply);
         assert_eq!(ip.src_addr, LOCAL_IP);
         assert_eq!(ip.dst_addr, REMOTE_IP);
         assert_eq!(ip.protocol, IpProtocols::Icmp);

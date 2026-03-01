@@ -161,7 +161,7 @@ impl Ipv6Handler {
             return;
         }
 
-        let ip = Ipv6Header::from_frame(&frame);
+        let ip = Ipv6Header::from_bytes(&frame);
 
         if ip.version() != 6 {
             rx_return.push(frame);

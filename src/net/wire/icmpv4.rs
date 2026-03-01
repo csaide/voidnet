@@ -1,9 +1,4 @@
-use crate::xdp::frame::Frame;
-
-use super::{
-    ethernet::EthernetFrame,
-    ip::Ipv4Header,
-};
+use super::{ethernet::EthernetFrame, ip::Ipv4Header};
 
 /// ICMPv4 header length in bytes (type + code + checksum + rest-of-header).
 pub const ICMPV4_HEADER_LEN: usize = 8;
@@ -43,18 +38,18 @@ impl Icmpv4Header {
     ///
     /// The caller must ensure `offset + ICMPV4_HEADER_LEN <= frame.len()`.
     #[inline(always)]
-    pub fn from_frame_at<'f, 'u>(frame: &'f Frame<'u>, offset: usize) -> &'f Self {
-        debug_assert!(offset + ICMPV4_HEADER_LEN <= frame.len());
-        unsafe { &*(frame.as_ptr().add(offset) as *const Self) }
+    pub fn from_bytes_at(bytes: &[u8], offset: usize) -> &Self {
+        debug_assert!(offset + ICMPV4_HEADER_LEN <= bytes.len());
+        unsafe { &*(bytes.as_ptr().add(offset) as *const Self) }
     }
 
     /// Mutable zero-copy borrow of the ICMPv4 header at the given byte offset.
     ///
     /// The caller must ensure `offset + ICMPV4_HEADER_LEN <= frame.len()`.
     #[inline(always)]
-    pub fn from_frame_at_mut<'f, 'u>(frame: &'f mut Frame<'u>, offset: usize) -> &'f mut Self {
-        debug_assert!(offset + ICMPV4_HEADER_LEN <= frame.len());
-        unsafe { &mut *(frame.as_mut_ptr().add(offset) as *mut Self) }
+    pub fn from_bytes_at_mut(bytes: &mut [u8], offset: usize) -> &mut Self {
+        debug_assert!(offset + ICMPV4_HEADER_LEN <= bytes.len());
+        unsafe { &mut *(bytes.as_mut_ptr().add(offset) as *mut Self) }
     }
 
     /// Returns the next-hop MTU from a Destination Unreachable / Fragmentation
@@ -134,9 +129,9 @@ impl Icmpv4Frame {
     ///
     /// The caller must ensure `frame.len() >= ICMPV4_FRAME_LEN`.
     #[inline(always)]
-    pub fn from_frame_mut<'f, 'u>(frame: &'f mut Frame<'u>) -> &'f mut Self {
-        debug_assert!(frame.len() >= ICMPV4_FRAME_LEN);
-        unsafe { &mut *(frame.as_mut_ptr() as *mut Self) }
+    pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
+        debug_assert!(bytes.len() >= ICMPV4_FRAME_LEN);
+        unsafe { &mut *(bytes.as_mut_ptr() as *mut Self) }
     }
 }
 

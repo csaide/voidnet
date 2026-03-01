@@ -287,7 +287,7 @@ impl<'umem> LocalRuntime<'umem> {
                 } = self;
 
                 for frame in buffer.take_frames() {
-                    let ethernet_frame = EthernetFrame::from_frame(&frame);
+                    let ethernet_frame = EthernetFrame::from_bytes(&frame);
                     match ethernet_frame.ether_type {
                         EtherTypes::IPv4 => {
                             ipv4_handler.handle(

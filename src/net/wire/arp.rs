@@ -1,7 +1,5 @@
 use std::mem::size_of;
 
-use crate::xdp::frame::Frame;
-
 use super::{
     ethernet::{EtherType, EthernetFrame, MacAddress},
     ip::Ipv4Address,
@@ -85,15 +83,17 @@ pub struct ArpFrame {
 }
 
 impl ArpFrame {
+    /// Returns the raw bytes of the ARP frame.
     #[inline(always)]
     pub fn as_bytes(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
     }
 
+    /// Mutable zero-copy borrow of the ARP frame from a received frame.
     #[inline(always)]
-    pub fn from_frame_mut<'frame, 'umem>(frame: &'frame mut Frame<'umem>) -> &'frame mut Self {
-        debug_assert!(frame.len() >= ARP_FRAME_LEN);
-        unsafe { &mut *(frame.as_mut_ptr() as *mut Self) }
+    pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
+        debug_assert!(bytes.len() >= ARP_FRAME_LEN);
+        unsafe { &mut *(bytes.as_mut_ptr() as *mut Self) }
     }
 }
 
@@ -107,9 +107,9 @@ impl ArpPacket {
     /// # Safety
     ///
     /// The caller must ensure `frame.len() >= ARP_FRAME_LEN`.
-    pub fn from_frame<'f, 'u>(frame: &'f Frame<'u>) -> &'f Self {
-        debug_assert!(frame.len() >= ARP_FRAME_LEN);
-        unsafe { &*(frame.as_ptr().add(size_of::<EthernetFrame>()) as *const Self) }
+    pub fn from_bytes(bytes: &[u8]) -> &Self {
+        debug_assert!(bytes.len() >= ARP_FRAME_LEN);
+        unsafe { &*(bytes.as_ptr().add(size_of::<EthernetFrame>()) as *const Self) }
     }
 
     /// Mutable zero-copy borrow of the ARP header from a received frame.
@@ -117,9 +117,9 @@ impl ArpPacket {
     /// # Safety
     ///
     /// The caller must ensure `frame.len() >= ARP_FRAME_LEN`.
-    pub fn from_frame_mut<'f, 'u>(frame: &'f mut Frame<'u>) -> &'f mut Self {
-        debug_assert!(frame.len() >= ARP_FRAME_LEN);
-        unsafe { &mut *(frame.as_mut_ptr().add(size_of::<EthernetFrame>()) as *mut Self) }
+    pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
+        debug_assert!(bytes.len() >= ARP_FRAME_LEN);
+        unsafe { &mut *(bytes.as_mut_ptr().add(size_of::<EthernetFrame>()) as *mut Self) }
     }
 }
 

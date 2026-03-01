@@ -43,7 +43,7 @@ pub(super) fn resolve_v6<'umem>(
     }
 
     // Create our NDP NS frame.
-    let pkt = NdpNsFrame::from_frame_mut(&mut frame);
+    let pkt = NdpNsFrame::from_bytes_mut(&mut frame);
 
     // Setup ethernet headers.
     pkt.ethernet.dst_mac = dst_mac;
@@ -96,7 +96,7 @@ pub(super) fn handle_ndp<'umem>(
 
     // Validate checksum.
     {
-        let ip = Ipv6Header::from_frame(&frame);
+        let ip = Ipv6Header::from_bytes(&frame);
         let src_addr = ip.src_addr;
         let dst_addr = ip.dst_addr;
         if compute_icmpv6_checksum(&src_addr, &dst_addr, &frame[icmpv6_offset..icmpv6_end])
@@ -178,7 +178,7 @@ fn handle_neighbor_solicitation<'umem>(
     let target_addr = Ipv6Address::from(target_bytes);
 
     // Extract IPv6 source address.
-    let ip = Ipv6Header::from_frame(&frame);
+    let ip = Ipv6Header::from_bytes(&frame);
     let src_addr = ip.src_addr;
 
     // Parse Source Link-Layer Address option (type=1) to get sender MAC.
@@ -210,7 +210,7 @@ fn handle_neighbor_solicitation<'umem>(
             src_addr,
             sender_mac.unwrap_or_else(|| {
                 // Fallback: use the Ethernet source MAC from the frame.
-                let eth = EthernetFrame::from_frame(&frame);
+                let eth = EthernetFrame::from_bytes(&frame);
                 eth.src_mac
             }),
             [0x60, 0x00, 0x00, 0x00],
@@ -225,7 +225,7 @@ fn handle_neighbor_solicitation<'umem>(
     }
 
     // Create our NDP NA frame.
-    let pkt = NdpNaFrame::from_frame_mut(&mut frame);
+    let pkt = NdpNaFrame::from_bytes_mut(&mut frame);
 
     // Setup ethernet headers.
     pkt.ethernet.dst_mac = reply_dst_mac;
@@ -306,7 +306,7 @@ fn handle_router_advertisement<'umem>(
     let icmpv6_end = icmpv6_offset + icmpv6_len;
 
     // Extract IPv6 source address (router).
-    let ip = Ipv6Header::from_frame(&frame);
+    let ip = Ipv6Header::from_bytes(&frame);
     let src_addr = ip.src_addr;
 
     // Parse Source Link-Layer Address option (type=1).
@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(reply[off + 25], 1);
         assert_eq!(&reply[off + 26..off + 32], &local_mac);
 
-        let ip = Ipv6Header::from_frame(&reply);
+        let ip = Ipv6Header::from_bytes(&reply);
         assert_eq!(ip.hop_limit, 255);
 
         let cksum = compute_icmpv6_checksum(&ip.src_addr, &ip.dst_addr, &reply[off..off + 32]);
@@ -631,10 +631,10 @@ mod tests {
 
         assert_eq!(reply[off + 4], 0x20);
 
-        let eth = EthernetFrame::from_frame(&reply);
+        let eth = EthernetFrame::from_bytes(&reply);
         assert_eq!(<[u8; 6]>::from(eth.dst_mac), all_nodes_mac);
 
-        let ip = Ipv6Header::from_frame(&reply);
+        let ip = Ipv6Header::from_bytes(&reply);
         assert_eq!(
             ip.dst_addr,
             Ipv6Address::new([0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
@@ -910,11 +910,11 @@ mod tests {
 
         let sol_mcast = target.solicited_node_multicast();
         let expected_mac = sol_mcast.multicast_mac();
-        let eth = EthernetFrame::from_frame(&req);
+        let eth = EthernetFrame::from_bytes(&req);
         assert_eq!(eth.dst_mac, expected_mac);
         assert_eq!(eth.src_mac, TEST_LOCAL_MAC);
 
-        let ip = Ipv6Header::from_frame(&req);
+        let ip = Ipv6Header::from_bytes(&req);
         assert_eq!(ip.dst_addr, sol_mcast);
         assert_eq!(ip.src_addr, TEST_LOCAL_IPV6);
         assert_eq!(ip.hop_limit, 255);

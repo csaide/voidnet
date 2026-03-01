@@ -1,8 +1,6 @@
 use std::fmt::Display;
 
-use crate::{net::wire::ip::IpProtocol, xdp::frame::Frame};
-
-use super::{Ipv6Address, ethernet::EthernetFrame};
+use super::{IpProtocol, Ipv6Address, ethernet::EthernetFrame};
 
 /// Fixed IPv6 header length in bytes (always 40, no variable-length header).
 pub const IPV6_HEADER_LEN: usize = 40;
@@ -57,19 +55,19 @@ pub struct Ipv6FragmentHeader {
 impl Ipv6FragmentHeader {
     /// Returns the fragment offset in 8-byte units.
     #[inline]
-    pub fn fragment_offset(&self) -> u16 {
+    pub const fn fragment_offset(&self) -> u16 {
         u16::from_be_bytes(self.fragment_offset_mf) >> 3
     }
 
     /// Returns `true` if the More Fragments (MF) bit is set.
     #[inline]
-    pub fn more_fragments(&self) -> bool {
+    pub const fn more_fragments(&self) -> bool {
         self.fragment_offset_mf[1] & 0x01 != 0
     }
 
     /// Returns the 32-bit identification field.
     #[inline]
-    pub fn identification(&self) -> u32 {
+    pub const fn identification(&self) -> u32 {
         u32::from_be_bytes(self.identification)
     }
 
@@ -77,7 +75,7 @@ impl Ipv6FragmentHeader {
     ///
     /// A packet is a fragment if MF is set or the fragment offset is non-zero.
     #[inline]
-    pub fn is_fragment(&self) -> bool {
+    pub const fn is_fragment(&self) -> bool {
         let combined = u16::from_be_bytes(self.fragment_offset_mf);
         // offset bits (top 13) or MF bit (bottom 1) set
         (combined & 0xFFF9) != 0
@@ -85,7 +83,7 @@ impl Ipv6FragmentHeader {
 
     /// Sets the fragment_offset_mf field from an offset (in 8-byte units) and MF flag.
     #[inline]
-    pub fn set_fragment_offset_mf(&mut self, offset_units: u16, more_fragments: bool) {
+    pub const fn set_fragment_offset_mf(&mut self, offset_units: u16, more_fragments: bool) {
         let mf: u16 = if more_fragments { 1 } else { 0 };
         let value = (offset_units << 3) | mf;
         self.fragment_offset_mf = value.to_be_bytes();
@@ -97,7 +95,7 @@ impl Ipv6FragmentHeader {
     ///
     /// The caller must ensure `bytes.len() >= offset + FRAGMENT_EXT_LEN`.
     #[inline]
-    pub fn from_bytes(bytes: &[u8], offset: usize) -> &Self {
+    pub fn from_bytes_at(bytes: &[u8], offset: usize) -> &Self {
         debug_assert!(bytes.len() >= offset + FRAGMENT_EXT_LEN);
         unsafe { &*(bytes.as_ptr().add(offset) as *const Self) }
     }
@@ -108,7 +106,7 @@ impl Ipv6FragmentHeader {
     ///
     /// The caller must ensure `bytes.len() >= offset + FRAGMENT_EXT_LEN`.
     #[inline]
-    pub fn from_bytes_mut(bytes: &mut [u8], offset: usize) -> &mut Self {
+    pub fn from_bytes_at_mut(bytes: &mut [u8], offset: usize) -> &mut Self {
         debug_assert!(bytes.len() >= offset + FRAGMENT_EXT_LEN);
         unsafe { &mut *(bytes.as_mut_ptr().add(offset) as *mut Self) }
     }
@@ -170,9 +168,9 @@ impl Ipv6Header {
     ///
     /// The caller must ensure `frame.len() >= IPV6_MIN_FRAME_LEN`.
     #[inline]
-    pub fn from_frame<'f, 'u>(frame: &'f Frame<'u>) -> &'f Self {
-        debug_assert!(frame.len() >= IPV6_MIN_FRAME_LEN);
-        unsafe { &*(frame.as_ptr().add(size_of::<EthernetFrame>()) as *const Self) }
+    pub fn from_bytes(bytes: &[u8]) -> &Self {
+        debug_assert!(bytes.len() >= IPV6_MIN_FRAME_LEN);
+        unsafe { &*(bytes.as_ptr().add(size_of::<EthernetFrame>()) as *const Self) }
     }
 
     /// Mutable zero-copy borrow of the IPv6 header from a received frame.
@@ -181,9 +179,9 @@ impl Ipv6Header {
     ///
     /// The caller must ensure `frame.len() >= IPV6_MIN_FRAME_LEN`.
     #[inline]
-    pub fn from_frame_mut<'f, 'u>(frame: &'f mut Frame<'u>) -> &'f mut Self {
-        debug_assert!(frame.len() >= IPV6_MIN_FRAME_LEN);
-        unsafe { &mut *(frame.as_mut_ptr().add(size_of::<EthernetFrame>()) as *mut Self) }
+    pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
+        debug_assert!(bytes.len() >= IPV6_MIN_FRAME_LEN);
+        unsafe { &mut *(bytes.as_mut_ptr().add(size_of::<EthernetFrame>()) as *mut Self) }
     }
 }
 
@@ -326,7 +324,7 @@ mod tests {
         buf[7] = 0xC9; // fragment_offset_mf low: offset = 0x05C9>>3 = 185, MF=1
         buf[8..12].copy_from_slice(&42u32.to_be_bytes());
 
-        let hdr = Ipv6FragmentHeader::from_bytes(&buf, 4);
+        let hdr = Ipv6FragmentHeader::from_bytes_at(&buf, 4);
         assert_eq!(hdr.next_header, 17);
         assert_eq!(hdr.fragment_offset(), 185);
         assert!(hdr.more_fragments());
@@ -336,12 +334,12 @@ mod tests {
     #[test]
     fn fragment_header_from_bytes_mut() {
         let mut buf = [0u8; 16];
-        let hdr = Ipv6FragmentHeader::from_bytes_mut(&mut buf, 4);
+        let hdr = Ipv6FragmentHeader::from_bytes_at_mut(&mut buf, 4);
         hdr.next_header = 6;
         hdr.set_fragment_offset_mf(100, false);
         hdr.identification = 999u32.to_be_bytes();
 
-        let hdr = Ipv6FragmentHeader::from_bytes(&buf, 4);
+        let hdr = Ipv6FragmentHeader::from_bytes_at(&buf, 4);
         assert_eq!(hdr.next_header, 6);
         assert_eq!(hdr.fragment_offset(), 100);
         assert!(!hdr.more_fragments());

@@ -8,8 +8,8 @@ use crate::{
 use super::wire::{
     ethernet::EthernetFrame,
     icmpv6::{
-        ICMPV6_HEADER_LEN, Icmpv6Codes, Icmpv6Frame, Icmpv6Header, Icmpv6Types,
-        MAX_ERROR_PAYLOAD, compute_icmpv6_checksum, is_icmpv6_error,
+        ICMPV6_HEADER_LEN, Icmpv6Codes, Icmpv6Frame, Icmpv6Header, Icmpv6Types, MAX_ERROR_PAYLOAD,
+        compute_icmpv6_checksum, is_icmpv6_error,
     },
     ip::{IPV6_HEADER_LEN, IpProtocols, Ipv6Address, Ipv6Header},
 };
@@ -42,7 +42,7 @@ pub fn handle_icmpv6<'umem>(
         return;
     }
 
-    let ip = Ipv6Header::from_frame(&frame);
+    let ip = Ipv6Header::from_bytes(&frame);
     let src_addr = ip.src_addr;
     let dst_addr = ip.dst_addr;
 
@@ -55,7 +55,7 @@ pub fn handle_icmpv6<'umem>(
         return;
     }
 
-    let icmpv6 = Icmpv6Header::from_frame_at(&frame, icmpv6_offset);
+    let icmpv6 = Icmpv6Header::from_bytes_at(&frame, icmpv6_offset);
     let icmpv6_type = icmpv6.icmp_type;
 
     match icmpv6_type {
@@ -69,20 +69,20 @@ pub fn handle_icmpv6<'umem>(
             }
 
             // Swap Ethernet MACs.
-            let eth = EthernetFrame::from_frame_mut(&mut frame);
+            let eth = EthernetFrame::from_bytes_mut(&mut frame);
             let tmp_mac = eth.dst_mac;
             eth.dst_mac = eth.src_mac;
             eth.src_mac = tmp_mac;
 
             // Swap IPv6 addresses and reset hop limit.
-            let ip = Ipv6Header::from_frame_mut(&mut frame);
+            let ip = Ipv6Header::from_bytes_mut(&mut frame);
             let tmp_addr = ip.src_addr;
             ip.src_addr = ip.dst_addr;
             ip.dst_addr = tmp_addr;
             ip.hop_limit = 64;
 
             // Set ICMPv6 type to Echo Reply and recompute checksum.
-            let icmpv6 = Icmpv6Header::from_frame_at_mut(&mut frame, icmpv6_offset);
+            let icmpv6 = Icmpv6Header::from_bytes_at_mut(&mut frame, icmpv6_offset);
             icmpv6.icmp_type = Icmpv6Types::EchoReply;
             icmpv6.checksum = [0, 0];
             let cksum = compute_icmpv6_checksum(
@@ -90,13 +90,13 @@ pub fn handle_icmpv6<'umem>(
                 &src_addr, // new dst = old src
                 &frame[icmpv6_offset..icmpv6_end],
             );
-            Icmpv6Header::from_frame_at_mut(&mut frame, icmpv6_offset).checksum = cksum;
+            Icmpv6Header::from_bytes_at_mut(&mut frame, icmpv6_offset).checksum = cksum;
 
             tx_return.push(frame);
         }
         Icmpv6Types::PacketTooBig => {
             // Extract MTU from ICMPv6 header body.
-            let icmpv6 = Icmpv6Header::from_frame_at(&frame, icmpv6_offset);
+            let icmpv6 = Icmpv6Header::from_bytes_at(&frame, icmpv6_offset);
             let mtu = icmpv6.body_as_u32();
 
             // Extract original destination IP from embedded IPv6 header.
@@ -160,7 +160,7 @@ pub fn send_icmpv6_error<'umem>(
 ) {
     let eth_len = size_of::<EthernetFrame>();
 
-    let ip = Ipv6Header::from_frame(&frame);
+    let ip = Ipv6Header::from_bytes(&frame);
     let src_addr = ip.src_addr;
     let dst_addr = ip.dst_addr;
     let payload_length = ip.payload_length() as usize;
@@ -220,7 +220,7 @@ pub fn send_icmpv6_error<'umem>(
     // Build all headers via struct overlay.
     let icmp_start = eth_len + IPV6_HEADER_LEN;
     {
-        let pkt = Icmpv6Frame::from_frame_mut(&mut frame);
+        let pkt = Icmpv6Frame::from_bytes_mut(&mut frame);
 
         // Swap Ethernet MACs.
         let tmp_mac = pkt.ethernet.dst_mac;
@@ -254,7 +254,7 @@ pub fn send_icmpv6_error<'umem>(
         &src_addr, // new dst
         &frame[icmp_start..icmp_end],
     );
-    Icmpv6Header::from_frame_at_mut(&mut frame, icmp_start).checksum = cksum;
+    Icmpv6Header::from_bytes_at_mut(&mut frame, icmp_start).checksum = cksum;
 
     tx_return.push(frame);
 }
@@ -402,12 +402,12 @@ mod tests {
         assert_eq!(reply[icmpv6_offset + 1], 0);
 
         // Ethernet MACs swapped
-        let eth = EthernetFrame::from_frame(&reply);
+        let eth = EthernetFrame::from_bytes(&reply);
         assert_eq!(eth.src_mac, MacAddress::from(DST_MAC));
         assert_eq!(eth.dst_mac, MacAddress::from(SRC_MAC));
 
         // IPv6 addresses swapped, hop limit reset
-        let ip = Ipv6Header::from_frame(&reply);
+        let ip = Ipv6Header::from_bytes(&reply);
         assert_eq!(ip.src_addr, LOCAL_IP);
         assert_eq!(ip.dst_addr, REMOTE_IP);
         assert_eq!(ip.hop_limit, 64);
@@ -669,10 +669,10 @@ mod tests {
         assert_eq!(reply[icmp_start + 1], Icmpv6Codes::PortUnreachable);
 
         // Addresses swapped
-        let eth = EthernetFrame::from_frame(&reply);
+        let eth = EthernetFrame::from_bytes(&reply);
         assert_eq!(eth.src_mac, MacAddress::from(DST_MAC));
         assert_eq!(eth.dst_mac, MacAddress::from(SRC_MAC));
-        let ip = Ipv6Header::from_frame(&reply);
+        let ip = Ipv6Header::from_bytes(&reply);
         assert_eq!(ip.src_addr, LOCAL_IP);
         assert_eq!(ip.dst_addr, REMOTE_IP);
         assert_eq!(ip.next_header, IpProtocols::IcmpV6);

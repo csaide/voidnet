@@ -48,26 +48,36 @@ impl FragmentWriter {
 
         if payload.len() <= max_payload {
             let protocol = transport.protocol();
-            let ip_total_len =
-                (IPV4_MIN_HEADER_LEN + transport_header_len + payload.len()) as u16;
+            let ip_total_len = (IPV4_MIN_HEADER_LEN + transport_header_len + payload.len()) as u16;
             let identification = id::next_ipv4_id();
 
-            return Self::build_single(transport, payload, IPV4_MIN_HEADER_LEN, free_frames, |frame| {
-                ethernet::write_ethernet_header(&mut *frame, dst_mac, src_mac, EtherTypes::IPv4);
+            return Self::build_single(
+                transport,
+                payload,
+                IPV4_MIN_HEADER_LEN,
+                free_frames,
+                |frame| {
+                    ethernet::write_ethernet_header(
+                        &mut *frame,
+                        dst_mac,
+                        src_mac,
+                        EtherTypes::IPv4,
+                    );
 
-                let ip = Ipv4Header::from_frame_mut(frame);
-                ip.version_ihl = 0x45;
-                ip.dscp_ecn = 0;
-                ip.total_length = ip_total_len.to_be_bytes();
-                ip.identification = identification.to_be_bytes();
-                ip.flags_fragment_offset = [0x40, 0x00]; // DF set
-                ip.ttl = ttl;
-                ip.protocol = protocol;
-                ip.header_checksum = [0, 0];
-                ip.src_addr = src_ip;
-                ip.dst_addr = dst_ip;
-                ip.fill_checksum();
-            });
+                    let ip = Ipv4Header::from_bytes_mut(frame);
+                    ip.version_ihl = 0x45;
+                    ip.dscp_ecn = 0;
+                    ip.total_length = ip_total_len.to_be_bytes();
+                    ip.identification = identification.to_be_bytes();
+                    ip.flags_fragment_offset = [0x40, 0x00]; // DF set
+                    ip.ttl = ttl;
+                    ip.protocol = protocol;
+                    ip.header_checksum = [0, 0];
+                    ip.src_addr = src_ip;
+                    ip.dst_addr = dst_ip;
+                    ip.fill_checksum();
+                },
+            );
         }
 
         let plan = FragmentPlan::new(
@@ -98,7 +108,7 @@ impl FragmentWriter {
                 let flags_frag_hi = mf | ((frag_offset_units >> 8) as u8 & 0x1F);
                 let flags_frag_lo = frag_offset_units as u8;
 
-                let ip = Ipv4Header::from_frame_mut(frame);
+                let ip = Ipv4Header::from_bytes_mut(frame);
                 ip.version_ihl = 0x45;
                 ip.dscp_ecn = 0;
                 ip.total_length = ip_total_len.to_be_bytes();
@@ -142,7 +152,7 @@ impl FragmentWriter {
             return Self::build_single(transport, payload, IPV6_HEADER_LEN, free_frames, |frame| {
                 ethernet::write_ethernet_header(&mut *frame, dst_mac, src_mac, EtherTypes::IPv6);
 
-                let ip = Ipv6Header::from_frame_mut(frame);
+                let ip = Ipv6Header::from_bytes_mut(frame);
                 ip.version_tc_fl = [0x60, 0x00, 0x00, 0x00];
                 ip.payload_length = ipv6_payload_len.to_be_bytes();
                 ip.next_header = protocol;
@@ -172,7 +182,7 @@ impl FragmentWriter {
 
                 let ipv6_payload_len = (FRAGMENT_EXT_LEN + frag_data_len) as u16;
                 {
-                    let ip = Ipv6Header::from_frame_mut(frame);
+                    let ip = Ipv6Header::from_bytes_mut(frame);
                     ip.version_tc_fl = [0x60, 0x00, 0x00, 0x00];
                     ip.payload_length = ipv6_payload_len.to_be_bytes();
                     ip.next_header = 44;
@@ -182,7 +192,7 @@ impl FragmentWriter {
                 }
 
                 let frag_ext_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
-                let frag_hdr = Ipv6FragmentHeader::from_bytes_mut(frame, frag_ext_offset);
+                let frag_hdr = Ipv6FragmentHeader::from_bytes_at_mut(frame, frag_ext_offset);
                 frag_hdr.next_header = transport.protocol();
                 frag_hdr.reserved = 0;
                 let frag_offset_units = (frag_byte_offset / 8) as u16;
@@ -324,7 +334,7 @@ mod tests {
                 let expected_len = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + 8 + payload.len();
                 assert_eq!(frame.len(), expected_len);
 
-                let ip = Ipv4Header::from_frame(&frame);
+                let ip = Ipv4Header::from_bytes(&frame);
                 assert_eq!(ip.version(), 4);
                 assert_eq!(ip.ihl(), 5);
                 assert_eq!(ip.ttl, 64);
@@ -374,9 +384,9 @@ mod tests {
             Packet::Multi(frames) => {
                 assert!(frames.len() >= 2);
 
-                let first_id = Ipv4Header::from_frame(&frames[0]).identification();
+                let first_id = Ipv4Header::from_bytes(&frames[0]).identification();
                 for f in &frames {
-                    let ip = Ipv4Header::from_frame(f);
+                    let ip = Ipv4Header::from_bytes(f);
                     assert_eq!(ip.identification(), first_id);
                     assert_eq!(ip.protocol, IpProtocols::Udp);
                     assert_eq!(ip.src_addr, SRC_V4);
@@ -389,17 +399,17 @@ mod tests {
                 }
 
                 // First fragment: MF set, offset 0.
-                let first_ip = Ipv4Header::from_frame(&frames[0]);
+                let first_ip = Ipv4Header::from_bytes(&frames[0]);
                 assert!(first_ip.more_fragments());
                 assert_eq!(first_ip.fragment_offset(), 0);
 
                 // Last fragment: MF clear.
-                let last_ip = Ipv4Header::from_frame(frames.last().unwrap());
+                let last_ip = Ipv4Header::from_bytes(frames.last().unwrap());
                 assert!(!last_ip.more_fragments());
 
                 // Non-last fragments: 8-byte aligned payload.
                 for (i, f) in frames.iter().enumerate() {
-                    let ip = Ipv4Header::from_frame(f);
+                    let ip = Ipv4Header::from_bytes(f);
                     if i < frames.len() - 1 {
                         assert_eq!(ip.payload_len() % 8, 0, "non-last fragment not 8-aligned");
                     }
@@ -440,7 +450,7 @@ mod tests {
                 let expected_len = ETH_HEADER_LEN + IPV6_HEADER_LEN + 8 + payload.len();
                 assert_eq!(frame.len(), expected_len);
 
-                let ip = Ipv6Header::from_frame(&frame);
+                let ip = Ipv6Header::from_bytes(&frame);
                 assert_eq!(ip.version(), 6);
                 assert_eq!(ip.hop_limit, 64);
                 assert_eq!(ip.next_header, IpProtocols::Udp);
@@ -474,16 +484,16 @@ mod tests {
                 assert!(frames.len() >= 2);
 
                 let frag_ext_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
-                let first_frag = Ipv6FragmentHeader::from_bytes(&frames[0], frag_ext_offset);
+                let first_frag = Ipv6FragmentHeader::from_bytes_at(&frames[0], frag_ext_offset);
                 let first_id = first_frag.identification();
 
                 for f in &frames {
-                    let ip = Ipv6Header::from_frame(f);
+                    let ip = Ipv6Header::from_bytes(f);
                     assert_eq!(ip.next_header, 44); // Fragment ext header
                     assert_eq!(ip.src_addr, SRC_V6);
                     assert_eq!(ip.dst_addr, DST_V6);
 
-                    let frag_hdr = Ipv6FragmentHeader::from_bytes(f, frag_ext_offset);
+                    let frag_hdr = Ipv6FragmentHeader::from_bytes_at(f, frag_ext_offset);
                     assert_eq!(frag_hdr.identification(), first_id);
                     assert_eq!(frag_hdr.next_header, IpProtocols::Udp);
                 }
@@ -494,7 +504,7 @@ mod tests {
 
                 // Last fragment: MF clear.
                 let last_frag =
-                    Ipv6FragmentHeader::from_bytes(frames.last().unwrap(), frag_ext_offset);
+                    Ipv6FragmentHeader::from_bytes_at(frames.last().unwrap(), frag_ext_offset);
                 assert!(!last_frag.more_fragments());
 
                 // Reassemble payload.
@@ -602,7 +612,7 @@ mod tests {
 
         match result.unwrap() {
             Packet::Single(frame) => {
-                let ip = Ipv4Header::from_frame(&frame);
+                let ip = Ipv4Header::from_bytes(&frame);
                 assert_eq!(ip.protocol, 99);
                 assert_eq!(ip.ttl, 128);
 

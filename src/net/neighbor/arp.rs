@@ -39,7 +39,7 @@ pub(super) fn resolve_v4<'umem>(
     // Create our ARP request frame:
     // - Broadcast ethernet frame, set to ARP protocol.
     // - ARP request packet, for Ethernet/IPv4, sent to the target IP.
-    let arp = ArpFrame::from_frame_mut(&mut frame);
+    let arp = ArpFrame::from_bytes_mut(&mut frame);
 
     // First setup ethernet headers.
     arp.ethernet.dst_mac = MacAddress::broadcast();
@@ -78,7 +78,7 @@ pub(super) fn handle_arp<'umem>(
     }
 
     // Parse the ARP packet from the frame.
-    let ArpFrame { ethernet, arp } = ArpFrame::from_frame_mut(&mut frame);
+    let ArpFrame { ethernet, arp } = ArpFrame::from_bytes_mut(&mut frame);
 
     // Verify that we are dealing with:
     // - Ethernet hardware type.
@@ -220,8 +220,8 @@ mod tests {
         assert_eq!(tx.num_frames(), 1);
 
         let reply = tx.pop().unwrap();
-        let eth = EthernetFrame::from_frame(&reply);
-        let arp = ArpPacket::from_frame(&reply);
+        let eth = EthernetFrame::from_bytes(&reply);
+        let arp = ArpPacket::from_bytes(&reply);
 
         assert_eq!(eth.dst_mac, TEST_REMOTE_MAC);
         assert_eq!(eth.src_mac, TEST_LOCAL_MAC);
@@ -468,8 +468,8 @@ mod tests {
         let req = tx.pop().unwrap();
         assert_eq!(req.len(), ARP_FRAME_LEN);
 
-        let eth = EthernetFrame::from_frame(&req);
-        let arp = ArpPacket::from_frame(&req);
+        let eth = EthernetFrame::from_bytes(&req);
+        let arp = ArpPacket::from_bytes(&req);
 
         assert_eq!(eth.dst_mac, MacAddress::broadcast());
         assert_eq!(eth.src_mac, TEST_LOCAL_MAC);

@@ -37,16 +37,16 @@ impl<'umem> ReceivedUdpPacket<'umem> {
         for frame in self.packet.frames_mut() {
             // Swap Ethernet MACs.
             {
-                let eth = EthernetFrame::from_frame_mut(frame);
+                let eth = EthernetFrame::from_bytes_mut(frame);
                 std::mem::swap(&mut eth.src_mac, &mut eth.dst_mac);
             }
 
             // Swap IP addresses.
             if is_ipv4 {
-                let ip = Ipv4Header::from_frame_mut(frame);
+                let ip = Ipv4Header::from_bytes_mut(frame);
                 std::mem::swap(&mut ip.src_addr, &mut ip.dst_addr);
             } else {
-                let ip = Ipv6Header::from_frame_mut(frame);
+                let ip = Ipv6Header::from_bytes_mut(frame);
                 std::mem::swap(&mut ip.src_addr, &mut ip.dst_addr);
             }
 
@@ -54,9 +54,9 @@ impl<'umem> ReceivedUdpPacket<'umem> {
             if first {
                 first = false;
                 let udp_offset = if is_ipv4 {
-                    Ipv4Header::from_frame(frame).payload_offset()
+                    Ipv4Header::from_bytes(frame).payload_offset()
                 } else {
-                    let next_header = Ipv6Header::from_frame(frame).next_header;
+                    let next_header = Ipv6Header::from_bytes(frame).next_header;
                     let base = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
                     if next_header == EXT_FRAGMENT {
                         base + FRAGMENT_EXT_LEN
@@ -64,7 +64,7 @@ impl<'umem> ReceivedUdpPacket<'umem> {
                         base
                     }
                 };
-                let udp = unsafe { UdpHeader::from_frame_at_mut(frame, udp_offset) };
+                let udp = unsafe { UdpHeader::from_bytes_at_mut(frame, udp_offset) };
                 std::mem::swap(&mut udp.src_port, &mut udp.dst_port);
             }
         }
@@ -174,13 +174,13 @@ impl<'umem> UdpHandler<'umem> {
                     Packet::Multi(fs) => &fs[0],
                     Packet::Empty => return,
                 };
-                let ip = Ipv4Header::from_frame(first);
+                let ip = Ipv4Header::from_bytes(first);
                 let udp_offset = ip.payload_offset();
                 if first.len() < udp_offset + UDP_HEADER_LEN {
                     reassembled.packet.drain_to(rx_return);
                     return;
                 }
-                let udp = unsafe { UdpHeader::from_frame_at(first, udp_offset) };
+                let udp = unsafe { UdpHeader::from_bytes_at(first, udp_offset) };
                 let udp_len = udp.length() as usize;
                 if udp_len < UDP_HEADER_LEN {
                     reassembled.packet.drain_to(rx_return);
@@ -214,7 +214,7 @@ impl<'umem> UdpHandler<'umem> {
                             (sum, pending) = sum_words_carry(slice, sum, pending);
 
                             for f in &fs[1..] {
-                                let fip = Ipv4Header::from_frame(f);
+                                let fip = Ipv4Header::from_bytes(f);
                                 let slice = &f[fip.payload_offset()..];
                                 total += slice.len();
                                 (sum, pending) = sum_words_carry(slice, sum, pending);
@@ -272,7 +272,7 @@ impl<'umem> UdpHandler<'umem> {
         match frag_ext_offset {
             None => {
                 // Non-fragmented UDP — hot path.
-                let ip = Ipv6Header::from_frame(&frame);
+                let ip = Ipv6Header::from_bytes(&frame);
                 let src_addr = ip.src_addr;
                 let dst_addr = ip.dst_addr;
 
@@ -280,7 +280,7 @@ impl<'umem> UdpHandler<'umem> {
                     rx_return.push(frame);
                     return;
                 }
-                let udp = unsafe { UdpHeader::from_frame_at(&frame, udp_offset) };
+                let udp = unsafe { UdpHeader::from_bytes_at(&frame, udp_offset) };
                 let udp_len = udp.length() as usize;
                 if udp_len < UDP_HEADER_LEN || frame.len() < udp_offset + udp_len {
                     rx_return.push(frame);
@@ -323,13 +323,13 @@ impl<'umem> UdpHandler<'umem> {
                             Packet::Multi(fs) => &fs[0],
                             Packet::Empty => return,
                         };
-                        let ip = Ipv6Header::from_frame(first);
+                        let ip = Ipv6Header::from_bytes(first);
                         let udp_start = frag_off + FRAGMENT_EXT_LEN;
                         if first.len() < udp_start + UDP_HEADER_LEN {
                             reassembled.packet.drain_to(rx_return);
                             return;
                         }
-                        let udp = unsafe { UdpHeader::from_frame_at(first, udp_start) };
+                        let udp = unsafe { UdpHeader::from_bytes_at(first, udp_start) };
                         let udp_len = udp.length() as usize;
                         if udp_len < UDP_HEADER_LEN {
                             reassembled.packet.drain_to(rx_return);
@@ -952,13 +952,13 @@ mod tests {
         assert_eq!(&frame[6..12], &dst_mac);
 
         // IPv4 addresses swapped.
-        let ip = Ipv4Header::from_frame(frame);
+        let ip = Ipv4Header::from_bytes(frame);
         assert_eq!(ip.src_addr, LOCAL_IPV4);
         assert_eq!(ip.dst_addr, REMOTE_IPV4);
 
         // UDP ports swapped.
         let udp_off = ip.payload_offset();
-        let udp = unsafe { UdpHeader::from_frame_at(frame, udp_off) };
+        let udp = unsafe { UdpHeader::from_bytes_at(frame, udp_off) };
         assert_eq!(udp.src_port(), 53);
         assert_eq!(udp.dst_port(), 12345);
     }
@@ -1003,13 +1003,13 @@ mod tests {
         assert_eq!(&frame[6..12], &dst_mac);
 
         // IPv6 addresses swapped.
-        let ip = Ipv6Header::from_frame(frame);
+        let ip = Ipv6Header::from_bytes(frame);
         assert_eq!(ip.src_addr, LOCAL_IPV6);
         assert_eq!(ip.dst_addr, REMOTE_IPV6);
 
         // UDP ports swapped.
         let udp_off = ETH_HEADER_LEN + IPV6_HEADER_LEN;
-        let udp = unsafe { UdpHeader::from_frame_at(frame, udp_off) };
+        let udp = unsafe { UdpHeader::from_bytes_at(frame, udp_off) };
         assert_eq!(udp.src_port(), 53);
         assert_eq!(udp.dst_port(), 12345);
     }

@@ -1,7 +1,5 @@
 use std::fmt::Display;
 
-use crate::xdp::frame::Frame;
-
 use super::{IpProtocol, Ipv4Address, ethernet::EthernetFrame};
 
 /// Minimum IPv4 header length in bytes (no options, IHL = 5).
@@ -48,7 +46,7 @@ pub struct Ipv4Header {
 impl Ipv4Header {
     /// Returns the IP version (should be 4).
     #[inline]
-    pub fn version(&self) -> u8 {
+    pub const fn version(&self) -> u8 {
         (self.version_ihl >> 4) & 0x0F
     }
 
@@ -57,43 +55,43 @@ impl Ipv4Header {
     /// A value of 5 means 20 bytes (no options). Values > 5 indicate
     /// options are present.
     #[inline]
-    pub fn ihl(&self) -> u8 {
+    pub const fn ihl(&self) -> u8 {
         self.version_ihl & 0x0F
     }
 
     /// Returns the header length in bytes (`ihl() * 4`).
     #[inline]
-    pub fn header_len(&self) -> usize {
+    pub const fn header_len(&self) -> usize {
         self.ihl() as usize * 4
     }
 
     /// Returns the total length of the IPv4 packet (header + payload).
     #[inline]
-    pub fn total_length(&self) -> u16 {
+    pub const fn total_length(&self) -> u16 {
         u16::from_be_bytes(self.total_length)
     }
 
     /// Returns the identification field.
     #[inline]
-    pub fn identification(&self) -> u16 {
+    pub const fn identification(&self) -> u16 {
         u16::from_be_bytes(self.identification)
     }
 
     /// Returns `true` if the Don't Fragment (DF) flag is set.
     #[inline]
-    pub fn dont_fragment(&self) -> bool {
+    pub const fn dont_fragment(&self) -> bool {
         self.flags_fragment_offset[0] & 0x40 != 0
     }
 
     /// Returns `true` if the More Fragments (MF) flag is set.
     #[inline]
-    pub fn more_fragments(&self) -> bool {
+    pub const fn more_fragments(&self) -> bool {
         self.flags_fragment_offset[0] & 0x20 != 0
     }
 
     /// Returns the fragment offset in 8-byte units.
     #[inline]
-    pub fn fragment_offset(&self) -> u16 {
+    pub const fn fragment_offset(&self) -> u16 {
         let hi = (self.flags_fragment_offset[0] & 0x1F) as u16;
         let lo = self.flags_fragment_offset[1] as u16;
         (hi << 8) | lo
@@ -104,7 +102,7 @@ impl Ipv4Header {
     /// A packet is a fragment if MF is set or the fragment offset is non-zero.
     /// This is the single-branch fast-path check used by the handler.
     #[inline]
-    pub fn is_fragment(&self) -> bool {
+    pub const fn is_fragment(&self) -> bool {
         let combined = u16::from_be_bytes(self.flags_fragment_offset);
         (combined & 0x3FFF) != 0
     }
@@ -114,7 +112,7 @@ impl Ipv4Header {
     /// Equal to `sizeof(EthernetFrame) + header_len()`. When IHL == 5
     /// (no options) this compiles to a constant 34.
     #[inline]
-    pub fn payload_offset(&self) -> usize {
+    pub const fn payload_offset(&self) -> usize {
         size_of::<EthernetFrame>() + self.header_len()
     }
 
@@ -122,7 +120,7 @@ impl Ipv4Header {
     ///
     /// Returns 0 if total_length < header_len (malformed).
     #[inline]
-    pub fn payload_len(&self) -> usize {
+    pub const fn payload_len(&self) -> usize {
         let total = self.total_length() as usize;
         let hdr = self.header_len();
         if total > hdr { total - hdr } else { 0 }
@@ -154,7 +152,7 @@ impl Ipv4Header {
     ///
     /// The caller must ensure `frame.len() >= IPV4_MIN_FRAME_LEN`.
     #[inline]
-    pub fn from_frame<'f, 'u>(frame: &'f Frame<'u>) -> &'f Self {
+    pub fn from_bytes(frame: &[u8]) -> &Self {
         debug_assert!(frame.len() >= IPV4_MIN_FRAME_LEN);
         unsafe { &*(frame.as_ptr().add(size_of::<EthernetFrame>()) as *const Self) }
     }
@@ -165,7 +163,7 @@ impl Ipv4Header {
     ///
     /// The caller must ensure `frame.len() >= IPV4_MIN_FRAME_LEN`.
     #[inline]
-    pub fn from_frame_mut<'f, 'u>(frame: &'f mut Frame<'u>) -> &'f mut Self {
+    pub fn from_bytes_mut(frame: &mut [u8]) -> &mut Self {
         debug_assert!(frame.len() >= IPV4_MIN_FRAME_LEN);
         unsafe { &mut *(frame.as_mut_ptr().add(size_of::<EthernetFrame>()) as *mut Self) }
     }
