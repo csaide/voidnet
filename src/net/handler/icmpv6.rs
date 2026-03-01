@@ -8,8 +8,8 @@ use crate::{
 use super::wire::{
     ethernet::EthernetFrame,
     icmpv6::{
-        ICMPV6_HEADER_LEN, Icmpv6Codes, Icmpv6Types, MAX_ERROR_PAYLOAD, compute_icmpv6_checksum,
-        is_icmpv6_error,
+        ICMPV6_HEADER_LEN, Icmpv6Codes, Icmpv6Frame, Icmpv6Header, Icmpv6Types,
+        MAX_ERROR_PAYLOAD, compute_icmpv6_checksum, is_icmpv6_error,
     },
     ip::{IPV6_HEADER_LEN, IpProtocols, Ipv6Address, Ipv6Header},
 };
@@ -38,7 +38,6 @@ pub fn handle_icmpv6<'umem>(
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {
     if icmpv6_len < ICMPV6_HEADER_LEN {
-        eprintln!("icmpv6: payload too short ({} bytes)", icmpv6_len);
         rx_return.push(frame);
         return;
     }
@@ -52,16 +51,15 @@ pub fn handle_icmpv6<'umem>(
     if compute_icmpv6_checksum(&src_addr, &dst_addr, &frame[icmpv6_offset..icmpv6_end])
         != [0x00, 0x00]
     {
-        eprintln!("icmpv6: invalid checksum");
         rx_return.push(frame);
         return;
     }
 
-    let icmpv6_type = frame[icmpv6_offset];
+    let icmpv6 = Icmpv6Header::from_frame_at(&frame, icmpv6_offset);
+    let icmpv6_type = icmpv6.icmp_type;
 
     match icmpv6_type {
         Icmpv6Types::EchoRequest => {
-            println!("icmpv6: echo request");
             // Silently discard echo requests to multicast destinations.
             // We cannot form a correct reply (source must be unicast, and
             // we do not track our own unicast address here).
@@ -84,27 +82,22 @@ pub fn handle_icmpv6<'umem>(
             ip.hop_limit = 64;
 
             // Set ICMPv6 type to Echo Reply and recompute checksum.
-            frame[icmpv6_offset] = Icmpv6Types::EchoReply;
-            frame[icmpv6_offset + 2] = 0;
-            frame[icmpv6_offset + 3] = 0;
+            let icmpv6 = Icmpv6Header::from_frame_at_mut(&mut frame, icmpv6_offset);
+            icmpv6.icmp_type = Icmpv6Types::EchoReply;
+            icmpv6.checksum = [0, 0];
             let cksum = compute_icmpv6_checksum(
                 &dst_addr, // new src = old dst
                 &src_addr, // new dst = old src
                 &frame[icmpv6_offset..icmpv6_end],
             );
-            frame[icmpv6_offset + 2] = cksum[0];
-            frame[icmpv6_offset + 3] = cksum[1];
+            Icmpv6Header::from_frame_at_mut(&mut frame, icmpv6_offset).checksum = cksum;
 
             tx_return.push(frame);
         }
         Icmpv6Types::PacketTooBig => {
-            // Extract MTU from ICMPv6 header body bytes (u32 big-endian at offset+4).
-            let mtu = u32::from_be_bytes([
-                frame[icmpv6_offset + 4],
-                frame[icmpv6_offset + 5],
-                frame[icmpv6_offset + 6],
-                frame[icmpv6_offset + 7],
-            ]);
+            // Extract MTU from ICMPv6 header body.
+            let icmpv6 = Icmpv6Header::from_frame_at(&frame, icmpv6_offset);
+            let mtu = icmpv6.body_as_u32();
 
             // Extract original destination IP from embedded IPv6 header.
             // The embedded IPv6 header starts at icmpv6_offset + ICMPV6_HEADER_LEN.
@@ -224,31 +217,30 @@ pub fn send_icmpv6_error<'umem>(
     let icmp_payload_start = eth_len + IPV6_HEADER_LEN + ICMPV6_HEADER_LEN;
     frame.copy_within(eth_len..eth_len + save_len, icmp_payload_start);
 
-    // Swap Ethernet MACs.
-    let eth = EthernetFrame::from_frame_mut(&mut frame);
-    let tmp_mac = eth.dst_mac;
-    eth.dst_mac = eth.src_mac;
-    eth.src_mac = tmp_mac;
-
-    // Build the new IPv6 header.
-    let ip = Ipv6Header::from_frame_mut(&mut frame);
-    ip.version_tc_fl = [0x60, 0x00, 0x00, 0x00];
-    ip.payload_length = (new_ipv6_payload_len as u16).to_be_bytes();
-    ip.next_header = IpProtocols::IcmpV6;
-    ip.hop_limit = 64;
-    ip.src_addr = dst_addr; // our address
-    ip.dst_addr = src_addr; // original sender
-
-    // Build the ICMPv6 header.
+    // Build all headers via struct overlay.
     let icmp_start = eth_len + IPV6_HEADER_LEN;
-    frame[icmp_start] = icmpv6_type;
-    frame[icmp_start + 1] = code;
-    frame[icmp_start + 2] = 0; // checksum (zero for computation)
-    frame[icmp_start + 3] = 0;
-    frame[icmp_start + 4] = body[0];
-    frame[icmp_start + 5] = body[1];
-    frame[icmp_start + 6] = body[2];
-    frame[icmp_start + 7] = body[3];
+    {
+        let pkt = Icmpv6Frame::from_frame_mut(&mut frame);
+
+        // Swap Ethernet MACs.
+        let tmp_mac = pkt.ethernet.dst_mac;
+        pkt.ethernet.dst_mac = pkt.ethernet.src_mac;
+        pkt.ethernet.src_mac = tmp_mac;
+
+        // Build the new IPv6 header.
+        pkt.ipv6.version_tc_fl = [0x60, 0x00, 0x00, 0x00];
+        pkt.ipv6.payload_length = (new_ipv6_payload_len as u16).to_be_bytes();
+        pkt.ipv6.next_header = IpProtocols::IcmpV6;
+        pkt.ipv6.hop_limit = 64;
+        pkt.ipv6.src_addr = dst_addr; // our address
+        pkt.ipv6.dst_addr = src_addr; // original sender
+
+        // Build the ICMPv6 header.
+        pkt.icmpv6.icmp_type = icmpv6_type;
+        pkt.icmpv6.code = code;
+        pkt.icmpv6.checksum = [0, 0];
+        pkt.icmpv6.body = body;
+    }
 
     // Truncate to the correct length before computing checksum.
     unsafe {
@@ -262,8 +254,7 @@ pub fn send_icmpv6_error<'umem>(
         &src_addr, // new dst
         &frame[icmp_start..icmp_end],
     );
-    frame[icmp_start + 2] = cksum[0];
-    frame[icmp_start + 3] = cksum[1];
+    Icmpv6Header::from_frame_at_mut(&mut frame, icmp_start).checksum = cksum;
 
     tx_return.push(frame);
 }

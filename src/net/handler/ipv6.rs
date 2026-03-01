@@ -157,11 +157,6 @@ impl Ipv6Handler {
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         if frame.len() < IPV6_MIN_FRAME_LEN {
-            eprintln!(
-                "ipv6: frame too short ({} bytes, need {})",
-                frame.len(),
-                IPV6_MIN_FRAME_LEN,
-            );
             rx_return.push(frame);
             return;
         }
@@ -169,7 +164,6 @@ impl Ipv6Handler {
         let ip = Ipv6Header::from_frame(&frame);
 
         if ip.version() != 6 {
-            eprintln!("ipv6: unexpected version {}", ip.version());
             rx_return.push(frame);
             return;
         }
@@ -178,11 +172,6 @@ impl Ipv6Handler {
         let eth_len = size_of::<EthernetFrame>();
 
         if frame.len() < eth_len + IPV6_HEADER_LEN + payload_length {
-            eprintln!(
-                "ipv6: frame too short for payload_length ({} bytes, need {})",
-                frame.len(),
-                eth_len + IPV6_HEADER_LEN + payload_length,
-            );
             rx_return.push(frame);
             return;
         }
@@ -246,11 +235,7 @@ impl Ipv6Handler {
                     rx_return.push(frame);
                 }
             }
-            NextHeaderResult::Malformed => {
-                eprintln!("ipv6: malformed extension header chain");
-                rx_return.push(frame);
-            }
-            NextHeaderResult::NoPayload => {
+            NextHeaderResult::Malformed | NextHeaderResult::NoPayload => {
                 rx_return.push(frame);
             }
         }

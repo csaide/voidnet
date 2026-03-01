@@ -1,4 +1,9 @@
-use super::ip::{IPV6_HEADER_LEN, IpProtocols, Ipv6Address};
+use crate::xdp::frame::Frame;
+
+use super::{
+    ethernet::EthernetFrame,
+    ip::{IPV6_HEADER_LEN, IpProtocols, Ipv6Address, Ipv6Header},
+};
 
 /// ICMPv6 header length in bytes (type + code + checksum + body).
 pub const ICMPV6_HEADER_LEN: usize = 8;
@@ -31,6 +36,43 @@ pub struct Icmpv6Header {
     pub checksum: [u8; 2],
     /// Body.
     pub body: [u8; 4],
+}
+
+impl Icmpv6Header {
+    /// Returns the raw bytes of this header.
+    #[inline(always)]
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
+    }
+
+    /// Zero-copy borrow of the ICMPv6 header at the given byte offset in a frame.
+    ///
+    /// The caller must ensure `offset + ICMPV6_HEADER_LEN <= frame.len()`.
+    #[inline(always)]
+    pub fn from_frame_at<'f, 'u>(frame: &'f Frame<'u>, offset: usize) -> &'f Self {
+        debug_assert!(offset + ICMPV6_HEADER_LEN <= frame.len());
+        unsafe { &*(frame.as_ptr().add(offset) as *const Self) }
+    }
+
+    /// Mutable zero-copy borrow of the ICMPv6 header at the given byte offset.
+    ///
+    /// The caller must ensure `offset + ICMPV6_HEADER_LEN <= frame.len()`.
+    #[inline(always)]
+    pub fn from_frame_at_mut<'f, 'u>(frame: &'f mut Frame<'u>, offset: usize) -> &'f mut Self {
+        debug_assert!(offset + ICMPV6_HEADER_LEN <= frame.len());
+        unsafe { &mut *(frame.as_mut_ptr().add(offset) as *mut Self) }
+    }
+
+    /// Returns the body field as a big-endian `u32`.
+    ///
+    /// The interpretation depends on the ICMPv6 type:
+    /// * Packet Too Big: MTU
+    /// * Parameter Problem: pointer to the offending field
+    /// * Destination Unreachable / Time Exceeded: unused (zero)
+    #[inline]
+    pub fn body_as_u32(&self) -> u32 {
+        u32::from_be_bytes(self.body)
+    }
 }
 
 /// ICMPv6 types.
@@ -81,6 +123,32 @@ pub mod Icmpv6Codes {
     pub const UnrecognizedNextHeader: u8 = 1;
     /// Unrecognized Option.
     pub const UnrecognizedOption: u8 = 2;
+}
+
+/// Ethernet + IPv6 + ICMPv6 header frame overlay.
+///
+/// Used for building ICMPv6 responses where no IPv6 extension headers
+/// are present. Any ICMPv6 payload follows immediately after.
+#[repr(C, packed)]
+pub struct Icmpv6Frame {
+    pub ethernet: EthernetFrame,
+    pub ipv6: Ipv6Header,
+    pub icmpv6: Icmpv6Header,
+}
+
+/// Minimum frame length for Ethernet + IPv6 + ICMPv6 header.
+pub const ICMPV6_FRAME_LEN: usize = size_of::<Icmpv6Frame>();
+const _: () = assert!(ICMPV6_FRAME_LEN == 62); // 14 + 40 + 8
+
+impl Icmpv6Frame {
+    /// Mutable zero-copy borrow of the Ethernet + IPv6 + ICMPv6 headers.
+    ///
+    /// The caller must ensure `frame.len() >= ICMPV6_FRAME_LEN`.
+    #[inline(always)]
+    pub fn from_frame_mut<'f, 'u>(frame: &'f mut Frame<'u>) -> &'f mut Self {
+        debug_assert!(frame.len() >= ICMPV6_FRAME_LEN);
+        unsafe { &mut *(frame.as_mut_ptr() as *mut Self) }
+    }
 }
 
 /// Returns `true` if the ICMPv6 type is an error message.
@@ -217,5 +285,21 @@ mod tests {
     fn icmpv6_header_layout() {
         assert_eq!(ICMPV6_HEADER_LEN, 8);
         assert_eq!(size_of::<Icmpv6Header>(), 8);
+    }
+
+    #[test]
+    fn icmpv6_frame_layout() {
+        assert_eq!(ICMPV6_FRAME_LEN, 62); // 14 + 40 + 8
+    }
+
+    #[test]
+    fn body_as_u32_parsing() {
+        let hdr = Icmpv6Header {
+            icmp_type: Icmpv6Types::PacketTooBig,
+            code: 0,
+            checksum: [0, 0],
+            body: 1280u32.to_be_bytes(),
+        };
+        assert_eq!(hdr.body_as_u32(), 1280);
     }
 }

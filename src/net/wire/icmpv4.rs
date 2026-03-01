@@ -1,3 +1,10 @@
+use crate::xdp::frame::Frame;
+
+use super::{
+    ethernet::EthernetFrame,
+    ip::Ipv4Header,
+};
+
 /// ICMPv4 header length in bytes (type + code + checksum + rest-of-header).
 pub const ICMPV4_HEADER_LEN: usize = 8;
 
@@ -23,6 +30,40 @@ pub struct Icmpv4Header {
     /// For Destination Unreachable: unused (2 bytes) + next-hop MTU (2 bytes, code 4 only)
     /// For Time Exceeded / Parameter Problem: unused (4 bytes)
     pub rest_of_header: [u8; 4],
+}
+
+impl Icmpv4Header {
+    /// Returns the raw bytes of this header.
+    #[inline(always)]
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
+    }
+
+    /// Zero-copy borrow of the ICMPv4 header at the given byte offset in a frame.
+    ///
+    /// The caller must ensure `offset + ICMPV4_HEADER_LEN <= frame.len()`.
+    #[inline(always)]
+    pub fn from_frame_at<'f, 'u>(frame: &'f Frame<'u>, offset: usize) -> &'f Self {
+        debug_assert!(offset + ICMPV4_HEADER_LEN <= frame.len());
+        unsafe { &*(frame.as_ptr().add(offset) as *const Self) }
+    }
+
+    /// Mutable zero-copy borrow of the ICMPv4 header at the given byte offset.
+    ///
+    /// The caller must ensure `offset + ICMPV4_HEADER_LEN <= frame.len()`.
+    #[inline(always)]
+    pub fn from_frame_at_mut<'f, 'u>(frame: &'f mut Frame<'u>, offset: usize) -> &'f mut Self {
+        debug_assert!(offset + ICMPV4_HEADER_LEN <= frame.len());
+        unsafe { &mut *(frame.as_mut_ptr().add(offset) as *mut Self) }
+    }
+
+    /// Returns the next-hop MTU from a Destination Unreachable / Fragmentation
+    /// Needed message. Bytes 6-7 of the ICMP header (`rest_of_header[2..4]`)
+    /// contain the next-hop MTU in network byte order.
+    #[inline]
+    pub fn next_hop_mtu(&self) -> u16 {
+        u16::from_be_bytes([self.rest_of_header[2], self.rest_of_header[3]])
+    }
 }
 
 /// ICMPv4 types.
@@ -73,6 +114,32 @@ pub fn is_icmp_error(icmp_type: u8) -> bool {
     )
 }
 
+/// Ethernet + IPv4 (minimum header) + ICMPv4 header frame overlay.
+///
+/// Used for building ICMP responses where the IPv4 header has no options
+/// (IHL = 5). Any ICMP payload follows immediately after.
+#[repr(C, packed)]
+pub struct Icmpv4Frame {
+    pub ethernet: EthernetFrame,
+    pub ipv4: Ipv4Header,
+    pub icmpv4: Icmpv4Header,
+}
+
+/// Minimum frame length for Ethernet + IPv4 + ICMPv4 header.
+pub const ICMPV4_FRAME_LEN: usize = size_of::<Icmpv4Frame>();
+const _: () = assert!(ICMPV4_FRAME_LEN == 42);
+
+impl Icmpv4Frame {
+    /// Mutable zero-copy borrow of the Ethernet + IPv4 + ICMPv4 headers.
+    ///
+    /// The caller must ensure `frame.len() >= ICMPV4_FRAME_LEN`.
+    #[inline(always)]
+    pub fn from_frame_mut<'f, 'u>(frame: &'f mut Frame<'u>) -> &'f mut Self {
+        debug_assert!(frame.len() >= ICMPV4_FRAME_LEN);
+        unsafe { &mut *(frame.as_mut_ptr() as *mut Self) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +163,21 @@ mod tests {
     fn icmpv4_header_layout() {
         assert_eq!(ICMPV4_HEADER_LEN, 8);
         assert_eq!(size_of::<Icmpv4Header>(), 8);
+    }
+
+    #[test]
+    fn icmpv4_frame_layout() {
+        assert_eq!(ICMPV4_FRAME_LEN, 42); // 14 + 20 + 8
+    }
+
+    #[test]
+    fn next_hop_mtu_parsing() {
+        let hdr = Icmpv4Header {
+            icmp_type: Icmpv4Types::DestinationUnreachable,
+            code: Icmpv4Codes::FragmentationNeeded,
+            checksum: [0, 0],
+            rest_of_header: [0, 0, 0x05, 0x00], // MTU = 1280
+        };
+        assert_eq!(hdr.next_hop_mtu(), 1280);
     }
 }

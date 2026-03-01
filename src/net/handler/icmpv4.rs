@@ -7,7 +7,9 @@ use crate::{
 
 use super::wire::{
     ethernet::EthernetFrame,
-    icmpv4::{ICMPV4_HEADER_LEN, Icmpv4Codes, Icmpv4Types, is_icmp_error},
+    icmpv4::{
+        ICMPV4_HEADER_LEN, Icmpv4Codes, Icmpv4Frame, Icmpv4Header, Icmpv4Types, is_icmp_error,
+    },
     ip::{IPV4_MIN_HEADER_LEN, IpProtocols, Ipv4Address, Ipv4Header, compute_ipv4_checksum},
 };
 
@@ -32,7 +34,6 @@ pub fn handle_icmpv4<'umem>(
     let dst_addr = ip.dst_addr;
 
     if payload_len < ICMPV4_HEADER_LEN {
-        eprintln!("icmpv4: payload too short ({} bytes)", payload_len);
         rx_return.push(frame);
         return;
     }
@@ -40,12 +41,13 @@ pub fn handle_icmpv4<'umem>(
     let icmp_end = payload_offset + payload_len;
 
     if compute_ipv4_checksum(&frame[payload_offset..icmp_end]) != [0x00, 0x00] {
-        eprintln!("icmpv4: invalid checksum");
         rx_return.push(frame);
         return;
     }
 
-    let icmp_type = frame[payload_offset];
+    let icmp = Icmpv4Header::from_frame_at(&frame, payload_offset);
+    let icmp_type = icmp.icmp_type;
+    let icmp_code = icmp.code;
 
     match icmp_type {
         Icmpv4Types::EchoRequest => {
@@ -71,21 +73,20 @@ pub fn handle_icmpv4<'umem>(
             ip.fill_checksum();
 
             // Set ICMP type to Echo Reply and recompute checksum.
-            frame[payload_offset] = Icmpv4Types::EchoReply;
-            frame[payload_offset + 2] = 0;
-            frame[payload_offset + 3] = 0;
+            let icmp = Icmpv4Header::from_frame_at_mut(&mut frame, payload_offset);
+            icmp.icmp_type = Icmpv4Types::EchoReply;
+            icmp.checksum = [0, 0];
             let cksum = compute_ipv4_checksum(&frame[payload_offset..icmp_end]);
-            frame[payload_offset + 2] = cksum[0];
-            frame[payload_offset + 3] = cksum[1];
+            Icmpv4Header::from_frame_at_mut(&mut frame, payload_offset).checksum = cksum;
 
             tx_return.push(frame);
         }
         Icmpv4Types::DestinationUnreachable
-            if frame[payload_offset + 1] == Icmpv4Codes::FragmentationNeeded =>
+            if icmp_code == Icmpv4Codes::FragmentationNeeded =>
         {
-            // Extract next-hop MTU from rest-of-header bytes 6-7 (u16 big-endian).
-            let mtu =
-                u16::from_be_bytes([frame[payload_offset + 6], frame[payload_offset + 7]]) as u32;
+            // Extract next-hop MTU from the ICMP header.
+            let icmp = Icmpv4Header::from_frame_at(&frame, payload_offset);
+            let mtu = icmp.next_hop_mtu() as u32;
 
             // Extract original destination IP from embedded IP header.
             // The embedded IP header starts at payload_offset + ICMPV4_HEADER_LEN.
@@ -179,42 +180,38 @@ pub fn send_destination_unreachable<'umem>(
         frame.set_len(new_frame_len);
     }
 
-    // Swap Ethernet MACs.
-    let eth = EthernetFrame::from_frame_mut(&mut frame);
-    let tmp_mac = eth.dst_mac;
-    eth.dst_mac = eth.src_mac;
-    eth.src_mac = tmp_mac;
-
-    // Build the new IPv4 header (always 20 bytes, no options).
-    let ip = Ipv4Header::from_frame_mut(&mut frame);
-    ip.version_ihl = 0x45;
-    ip.dscp_ecn = 0;
-    ip.total_length = (new_ip_total_len as u16).to_be_bytes();
-    ip.identification = [0, 0];
-    ip.flags_fragment_offset = [0x40, 0x00]; // DF=1
-    ip.ttl = 64;
-    ip.protocol = IpProtocols::Icmp;
-    ip.header_checksum = [0, 0];
-    ip.src_addr = dst_addr; // our address
-    ip.dst_addr = src_addr; // original sender
-    ip.fill_checksum();
-
-    // Build the ICMP header.
+    // Build Ethernet + IPv4 + ICMP headers via struct overlay.
     let icmp_start = eth_len + IPV4_MIN_HEADER_LEN;
-    frame[icmp_start] = Icmpv4Types::DestinationUnreachable;
-    frame[icmp_start + 1] = code;
-    frame[icmp_start + 2] = 0; // checksum (zero for computation)
-    frame[icmp_start + 3] = 0;
-    if code == Icmpv4Codes::FragmentationNeeded {
-        frame[icmp_start + 4] = 0;
-        frame[icmp_start + 5] = 0;
-        frame[icmp_start + 6] = (next_hop_mtu >> 8) as u8;
-        frame[icmp_start + 7] = next_hop_mtu as u8;
-    } else {
-        frame[icmp_start + 4] = 0;
-        frame[icmp_start + 5] = 0;
-        frame[icmp_start + 6] = 0;
-        frame[icmp_start + 7] = 0;
+    {
+        let pkt = Icmpv4Frame::from_frame_mut(&mut frame);
+
+        // Swap Ethernet MACs.
+        let tmp_mac = pkt.ethernet.dst_mac;
+        pkt.ethernet.dst_mac = pkt.ethernet.src_mac;
+        pkt.ethernet.src_mac = tmp_mac;
+
+        // Build the new IPv4 header (always 20 bytes, no options).
+        pkt.ipv4.version_ihl = 0x45;
+        pkt.ipv4.dscp_ecn = 0;
+        pkt.ipv4.total_length = (new_ip_total_len as u16).to_be_bytes();
+        pkt.ipv4.identification = [0, 0];
+        pkt.ipv4.flags_fragment_offset = [0x40, 0x00]; // DF=1
+        pkt.ipv4.ttl = 64;
+        pkt.ipv4.protocol = IpProtocols::Icmp;
+        pkt.ipv4.header_checksum = [0, 0];
+        pkt.ipv4.src_addr = dst_addr; // our address
+        pkt.ipv4.dst_addr = src_addr; // original sender
+        pkt.ipv4.fill_checksum();
+
+        // Build the ICMP header.
+        pkt.icmpv4.icmp_type = Icmpv4Types::DestinationUnreachable;
+        pkt.icmpv4.code = code;
+        pkt.icmpv4.checksum = [0, 0];
+        if code == Icmpv4Codes::FragmentationNeeded {
+            pkt.icmpv4.rest_of_header = [0, 0, (next_hop_mtu >> 8) as u8, next_hop_mtu as u8];
+        } else {
+            pkt.icmpv4.rest_of_header = [0, 0, 0, 0];
+        }
     }
 
     // Copy the saved original data into the ICMP payload.
@@ -224,8 +221,7 @@ pub fn send_destination_unreachable<'umem>(
     // Compute and write ICMP checksum.
     let icmp_end = icmp_start + icmp_total_len;
     let cksum = compute_ipv4_checksum(&frame[icmp_start..icmp_end]);
-    frame[icmp_start + 2] = cksum[0];
-    frame[icmp_start + 3] = cksum[1];
+    Icmpv4Header::from_frame_at_mut(&mut frame, icmp_start).checksum = cksum;
 
     tx_return.push(frame);
 }

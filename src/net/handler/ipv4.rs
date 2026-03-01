@@ -45,11 +45,6 @@ impl Ipv4Handler {
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         if frame.len() < IPV4_MIN_FRAME_LEN {
-            eprintln!(
-                "ipv4: frame too short ({} bytes, need {})",
-                frame.len(),
-                IPV4_MIN_FRAME_LEN,
-            );
             rx_return.push(frame);
             return;
         }
@@ -57,13 +52,11 @@ impl Ipv4Handler {
         let ip = Ipv4Header::from_frame(&frame);
 
         if ip.version() != 4 {
-            eprintln!("ipv4: unexpected version {}", ip.version());
             rx_return.push(frame);
             return;
         }
 
         if ip.ihl() < 5 {
-            eprintln!("ipv4: IHL too small ({})", ip.ihl());
             rx_return.push(frame);
             return;
         }
@@ -72,28 +65,18 @@ impl Ipv4Handler {
         let header_len = ip.header_len();
 
         if total_length < header_len {
-            eprintln!(
-                "ipv4: total_length ({}) < header_len ({})",
-                total_length, header_len,
-            );
             rx_return.push(frame);
             return;
         }
 
         let eth_len = size_of::<EthernetFrame>();
         if frame.len() < eth_len + total_length {
-            eprintln!(
-                "ipv4: frame too short for total_length ({} bytes, need {})",
-                frame.len(),
-                eth_len + total_length,
-            );
             rx_return.push(frame);
             return;
         }
 
         let ip_bytes = &frame[eth_len..eth_len + header_len];
         if !verify_ipv4_checksum(ip_bytes) {
-            eprintln!("ipv4: invalid header checksum");
             rx_return.push(frame);
             return;
         }
