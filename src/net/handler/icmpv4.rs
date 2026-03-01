@@ -10,8 +10,9 @@ use super::wire::{
     icmpv4::{
         ICMPV4_HEADER_LEN, Icmpv4Codes, Icmpv4Frame, Icmpv4Header, Icmpv4Types, is_icmp_error,
     },
-    ip::{IPV4_MIN_HEADER_LEN, IpProtocols, Ipv4Address, Ipv4Header, compute_ipv4_checksum},
+    ip::{IPV4_MIN_HEADER_LEN, IpProtocols, Ipv4Address, Ipv4Header},
 };
+use crate::net::checksum::compute_ipv4_checksum;
 
 /// Processes an incoming ICMPv4 packet.
 ///

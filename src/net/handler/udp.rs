@@ -7,10 +7,11 @@ use crate::net::wire::ethernet::EthernetFrame;
 use crate::net::wire::ip::{
     EXT_FRAGMENT, FRAGMENT_EXT_LEN, IPV6_HEADER_LEN, IpAddress, Ipv4Header, Ipv6Header,
 };
-use crate::net::wire::udp::{
-    UDP_HEADER_LEN, UdpHeader, fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6,
-    sum_words_carry, verify_udp_checksum, verify_udp_checksum_v6,
+use crate::net::checksum::{
+    fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6, sum_words_carry,
+    verify_udp_checksum, verify_udp_checksum_v6,
 };
+use crate::net::wire::udp::{UDP_HEADER_LEN, UdpHeader};
 use crate::xdp::frame::{Frame, FrameBuffer};
 
 /// A completed received UDP packet, ready for delivery to user space.
@@ -227,8 +228,12 @@ impl<'umem> UdpHandler<'umem> {
                             if total < udp_len {
                                 false
                             } else {
-                                sum +=
-                                    pseudo_header_sum_v4(&ip.src_addr, &ip.dst_addr, total as u16);
+                                sum += pseudo_header_sum_v4(
+                                    &ip.src_addr,
+                                    &ip.dst_addr,
+                                    17, // UDP
+                                    total as u16,
+                                );
                                 fold_and_verify(sum, 0x0000)
                             }
                         }
@@ -379,6 +384,7 @@ impl<'umem> UdpHandler<'umem> {
                                         sum += pseudo_header_sum_v6(
                                             &ip.src_addr,
                                             &ip.dst_addr,
+                                            17, // UDP
                                             total as u32,
                                         );
                                         fold_and_verify(sum, 0x0000)
@@ -462,13 +468,13 @@ impl<'umem> UdpHandler<'umem> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::wire::{
-        ip::{
-            IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, Ipv4Address, Ipv6Address,
-            compute_ipv4_checksum,
-        },
-        udp::{UDP_HEADER_LEN, compute_udp_checksum, compute_udp_checksum_v6},
+    use crate::net::checksum::{
+        compute_ipv4_checksum, compute_udp_checksum, compute_udp_checksum_v6,
     };
+    use crate::net::wire::ip::{
+        IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, Ipv4Address, Ipv6Address,
+    };
+    use crate::net::wire::udp::UDP_HEADER_LEN;
     use crate::xdp::frame::{BasicFrameBuffer, Frame};
 
     const LOCAL_IPV4: Ipv4Address = Ipv4Address::new([192, 168, 1, 1]);

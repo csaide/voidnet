@@ -1,41 +1,13 @@
 mod addr;
+mod proto;
 mod v4;
 mod v6;
 
-use std::fmt::Display;
-
 use super::ethernet;
 
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct IpProtocol(pub u8);
-
-impl Display for IpProtocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            IpProtocols::Icmp => write!(f, "ICMP"),
-            IpProtocols::IcmpV6 => write!(f, "ICMPv6"),
-            IpProtocols::Udp => write!(f, "UDP"),
-            IpProtocols::Tcp => write!(f, "TCP"),
-            _ => write!(f, "Unknown"),
-        }
-    }
-}
-
-#[allow(non_snake_case)]
-#[allow(non_upper_case_globals)]
-pub mod IpProtocols {
-    pub const Icmp: u8 = 1;
-    pub const IcmpV6: u8 = 58;
-    pub const Udp: u8 = 17;
-    pub const Tcp: u8 = 6;
-}
-
 pub use addr::{IpAddress, Ipv4Address, Ipv6Address};
-pub use v4::{
-    IPV4_MIN_FRAME_LEN, IPV4_MIN_HEADER_LEN, Ipv4Header, compute_ipv4_checksum,
-    verify_ipv4_checksum,
-};
+pub use proto::{IpProtocol, IpProtocols};
+pub use v4::{IPV4_MIN_FRAME_LEN, IPV4_MIN_HEADER_LEN, Ipv4Header};
 pub use v6::{
     EXT_AH, EXT_DESTINATION, EXT_FRAGMENT, EXT_HOP_BY_HOP, EXT_ROUTING, FRAGMENT_EXT_LEN,
     IPV6_HEADER_LEN, IPV6_MIN_FRAME_LEN, Ipv6FragmentHeader, Ipv6Header, NO_NEXT_HEADER,

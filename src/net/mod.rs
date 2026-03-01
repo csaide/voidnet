@@ -1,3 +1,4 @@
+pub(crate) mod checksum;
 mod fragment;
 mod neighbor;
 mod pmtu;

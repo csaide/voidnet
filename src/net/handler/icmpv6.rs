@@ -5,11 +5,13 @@ use crate::{
     xdp::frame::{Frame, FrameBuffer},
 };
 
+use crate::net::checksum::compute_icmpv6_checksum;
+
 use super::wire::{
     ethernet::EthernetFrame,
     icmpv6::{
         ICMPV6_HEADER_LEN, Icmpv6Codes, Icmpv6Frame, Icmpv6Header, Icmpv6Types, MAX_ERROR_PAYLOAD,
-        compute_icmpv6_checksum, is_icmpv6_error,
+        is_icmpv6_error,
     },
     ip::{IPV6_HEADER_LEN, IpProtocols, Ipv6Address, Ipv6Header},
 };

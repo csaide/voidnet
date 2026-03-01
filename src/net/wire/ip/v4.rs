@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use crate::net::checksum::compute_ipv4_checksum;
+
 use super::{IpProtocol, Ipv4Address, ethernet::EthernetFrame};
 
 /// Minimum IPv4 header length in bytes (no options, IHL = 5).
@@ -191,47 +193,10 @@ impl Display for Ipv4Header {
     }
 }
 
-/// Computes the IPv4 header checksum per RFC 1071.
-///
-/// `header_bytes` must contain the full header with the checksum field
-/// set to zero. Returns the two-byte checksum in network byte order.
-#[inline]
-pub fn compute_ipv4_checksum(header_bytes: &[u8]) -> [u8; 2] {
-    let mut sum: u32 = 0;
-    let len = header_bytes.len();
-
-    let mut i = 0;
-    while i + 1 < len {
-        let word = ((header_bytes[i] as u32) << 8) | (header_bytes[i + 1] as u32);
-        sum += word;
-        i += 2;
-    }
-
-    if i < len {
-        sum += (header_bytes[i] as u32) << 8;
-    }
-
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    let checksum = !(sum as u16);
-    checksum.to_be_bytes()
-}
-
-/// Verifies the IPv4 header checksum.
-///
-/// Returns `true` if the checksum is valid (the one's complement sum
-/// of the entire header including the checksum field yields zero).
-#[inline]
-pub fn verify_ipv4_checksum(header_bytes: &[u8]) -> bool {
-    let result = compute_ipv4_checksum(header_bytes);
-    result == [0x00, 0x00]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::checksum::verify_ipv4_checksum;
 
     fn sample_header() -> Ipv4Header {
         Ipv4Header {

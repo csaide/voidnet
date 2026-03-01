@@ -34,6 +34,7 @@ pub struct PmtuCache {
 }
 
 impl PmtuCache {
+    /// Creates a new PMTU cache with the default MTU and TTL.
     pub fn new() -> Self {
         Self {
             table: DashMap::new(),
@@ -42,6 +43,7 @@ impl PmtuCache {
         }
     }
 
+    /// Creates a new PMTU cache with the given MTU and default TTL.
     pub fn with_mtu(mtu: u32) -> Self {
         Self {
             table: DashMap::new(),
@@ -50,6 +52,7 @@ impl PmtuCache {
         }
     }
 
+    /// Creates a new PMTU cache with the given MTU and TTL.
     pub fn with_mtu_and_ttl(mtu: u32, ttl: Duration) -> Self {
         Self {
             table: DashMap::new(),

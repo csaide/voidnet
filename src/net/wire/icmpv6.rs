@@ -1,6 +1,6 @@
 use super::{
     ethernet::EthernetFrame,
-    ip::{IPV6_HEADER_LEN, IpProtocols, Ipv6Address, Ipv6Header},
+    ip::{IPV6_HEADER_LEN, Ipv6Header},
 };
 
 /// ICMPv6 header length in bytes (type + code + checksum + body).
@@ -158,59 +158,6 @@ pub fn is_icmpv6_error(icmpv6_type: u8) -> bool {
     icmpv6_type < 128
 }
 
-/// Computes the ICMPv6 checksum per RFC 4443 §2.3.
-///
-/// The checksum covers an IPv6 pseudo-header (source address,
-/// destination address, upper-layer packet length, next header = 58)
-/// followed by the ICMPv6 message data.
-///
-/// When computing a fresh checksum, zero the checksum field in
-/// `icmpv6_data` first. When verifying, pass the data as-is and
-/// check for a `[0x00, 0x00]` result.
-pub fn compute_icmpv6_checksum(
-    src_addr: &Ipv6Address,
-    dst_addr: &Ipv6Address,
-    icmpv6_data: &[u8],
-) -> [u8; 2] {
-    let mut sum: u32 = 0;
-
-    let src: [u8; 16] = (*src_addr).into();
-    let mut i = 0;
-    while i < 16 {
-        sum += ((src[i] as u32) << 8) | (src[i + 1] as u32);
-        i += 2;
-    }
-
-    let dst: [u8; 16] = (*dst_addr).into();
-    i = 0;
-    while i < 16 {
-        sum += ((dst[i] as u32) << 8) | (dst[i + 1] as u32);
-        i += 2;
-    }
-
-    let len = icmpv6_data.len() as u32;
-    sum += (len >> 16) & 0xFFFF;
-    sum += len & 0xFFFF;
-
-    sum += IpProtocols::IcmpV6 as u32;
-
-    i = 0;
-    while i + 1 < icmpv6_data.len() {
-        sum += ((icmpv6_data[i] as u32) << 8) | (icmpv6_data[i + 1] as u32);
-        i += 2;
-    }
-    if i < icmpv6_data.len() {
-        sum += (icmpv6_data[i] as u32) << 8;
-    }
-
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    let checksum = !(sum as u16);
-    checksum.to_be_bytes()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,46 +178,6 @@ mod tests {
         assert!(!is_icmpv6_error(Icmpv6Types::EchoRequest));
         assert!(!is_icmpv6_error(Icmpv6Types::EchoReply));
         assert!(!is_icmpv6_error(Icmpv6Types::NeighborSolicitation));
-    }
-
-    #[test]
-    fn compute_icmpv6_checksum_echo_request() {
-        let src = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let dst = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-        // ICMPv6 Echo Request: type=128, code=0, checksum=0, id=1, seq=1
-        let data = [0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01];
-        let checksum = compute_icmpv6_checksum(&src, &dst, &data);
-        assert_eq!(checksum, [0x82, 0xB6]);
-    }
-
-    #[test]
-    fn icmpv6_checksum_verify_roundtrip() {
-        let src = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let dst = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-        let mut data = [0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01];
-
-        let checksum = compute_icmpv6_checksum(&src, &dst, &data);
-        data[2] = checksum[0];
-        data[3] = checksum[1];
-
-        // Recomputing over data with correct checksum should yield [0, 0]
-        let verify = compute_icmpv6_checksum(&src, &dst, &data);
-        assert_eq!(verify, [0x00, 0x00]);
-    }
-
-    #[test]
-    fn icmpv6_checksum_odd_length_data() {
-        let src = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let dst = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-        // 9 bytes: echo request header + 1 byte payload (odd length)
-        let mut data = [0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0xAB];
-
-        let checksum = compute_icmpv6_checksum(&src, &dst, &data);
-        data[2] = checksum[0];
-        data[3] = checksum[1];
-
-        let verify = compute_icmpv6_checksum(&src, &dst, &data);
-        assert_eq!(verify, [0x00, 0x00]);
     }
 
     #[test]

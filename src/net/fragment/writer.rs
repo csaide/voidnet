@@ -289,7 +289,8 @@ impl FragmentWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::wire::ip::{IpProtocols, compute_ipv4_checksum};
+    use crate::net::checksum::compute_ipv4_checksum;
+    use crate::net::wire::ip::IpProtocols;
     use crate::xdp::frame::{BasicFrameBuffer, Frame};
 
     use crate::net::wire::udp::UdpHeader;

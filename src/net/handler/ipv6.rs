@@ -249,7 +249,8 @@ mod tests {
     use super::*;
     use crate::net::pmtu::PmtuCache;
     use crate::net::wire::ip::NO_NEXT_HEADER;
-    use crate::net::wire::udp::{UDP_HEADER_LEN, compute_udp_checksum_v6};
+    use crate::net::checksum::compute_udp_checksum_v6;
+    use crate::net::wire::udp::UDP_HEADER_LEN;
     use crate::xdp::frame::BasicFrameBuffer;
     use std::time::Duration;
 
@@ -636,7 +637,8 @@ mod tests {
 
     #[test]
     fn icmpv6_echo_request_generates_reply() {
-        use super::super::wire::icmpv6::{Icmpv6Types, compute_icmpv6_checksum};
+        use super::super::wire::icmpv6::Icmpv6Types;
+        use crate::net::checksum::compute_icmpv6_checksum;
 
         let eth_len = size_of::<EthernetFrame>();
         let icmpv6_len = 16;

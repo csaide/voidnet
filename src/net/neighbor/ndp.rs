@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 
 use crate::{
+    net::checksum::compute_icmpv6_checksum,
     net::wire::{
         ethernet::{EtherTypes, EthernetFrame, MacAddress},
-        icmpv6::{Icmpv6Types, compute_icmpv6_checksum},
+        icmpv6::Icmpv6Types,
         ip::{IpAddress, IpProtocols, Ipv6Address, Ipv6Header},
         ndp::{
             ALL_NODES_MULTICAST, NDP_MIN_NS_NA_LEN, NDP_MIN_RA_LEN, NDP_NA_FRAME_LEN,
@@ -365,10 +366,10 @@ mod tests {
 
     use crate::{
         net::{
+            checksum::compute_icmpv6_checksum,
             neighbor::NeighborHandler,
             wire::{
                 ethernet::{EthernetFrame, MacAddress},
-                icmpv6::compute_icmpv6_checksum,
                 ip::{IPV6_HEADER_LEN, IpProtocols, Ipv4Address, Ipv6Address, Ipv6Header},
                 ndp::NDP_NS_FRAME_LEN,
             },

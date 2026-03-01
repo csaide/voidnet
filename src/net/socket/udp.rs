@@ -6,7 +6,10 @@ use crate::net::fragment::{FragmentWriter, Packet};
 use crate::net::handler::udp::ReceivedUdpPacket;
 use crate::net::wire::ethernet::MacAddress;
 use crate::net::wire::ip::{IpAddress, Ipv4Address, Ipv6Address};
-use crate::net::wire::udp::{self, UDP_HEADER_LEN, UdpHeader};
+use crate::net::checksum::{
+    compute_udp_checksum_from_parts, compute_udp_checksum_v6_from_parts,
+};
+use crate::net::wire::udp::{UDP_HEADER_LEN, UdpHeader};
 use crate::net::{NeighborHandler, PmtuCache};
 use crate::xdp::error::WouldBlock;
 use crate::xdp::frame::{FrameBuffer, SharedFrameBuffer};
@@ -198,7 +201,7 @@ impl<'sock, 'buf, 'umem> UdpSendToFuture<'sock, 'buf, 'umem> {
         pmtu: u32,
     ) -> Result<Packet<'umem>, WouldBlock> {
         let udp_len = (UDP_HEADER_LEN + self.payload.len()) as u16;
-        let checksum = udp::compute_udp_checksum_from_parts(
+        let checksum = compute_udp_checksum_from_parts(
             &src_ip,
             &dst_ip,
             self.src_port,
@@ -230,7 +233,7 @@ impl<'sock, 'buf, 'umem> UdpSendToFuture<'sock, 'buf, 'umem> {
         pmtu: u32,
     ) -> Result<Packet<'umem>, WouldBlock> {
         let udp_len = (UDP_HEADER_LEN + self.payload.len()) as u16;
-        let checksum = udp::compute_udp_checksum_v6_from_parts(
+        let checksum = compute_udp_checksum_v6_from_parts(
             &src_ip,
             &dst_ip,
             self.src_port,
