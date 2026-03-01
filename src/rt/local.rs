@@ -22,8 +22,8 @@ use crate::xdp::{
 use crate::{
     net::{
         NeighborHandler, PmtuCache,
-        handler::{ipv4::Ipv4Handler, ipv6::Ipv6Handler, tcp::TcpHandler, udp::UdpHandler},
-        socket::{TcpConnectFuture, TcpListener, TcpStream, UdpSocket},
+        handler::{ipv4::Ipv4Handler, ipv6::Ipv6Handler, udp::UdpHandler},
+        socket::UdpSocket,
         wire::{
             ethernet::{EtherTypes, EthernetFrame, MacAddress},
             ip::IpAddress,
@@ -173,8 +173,6 @@ pub struct LocalRuntime<'umem> {
     ipv6_handler: Ipv6Handler,
     // UDP handler is used to bind and send UDP packets, handling things like fragmentation and reassembly.
     udp_handler: UdpHandler<'umem>,
-    // TCP handler is used to handle TCP protocol packets, handling things like reassembly, segmentation, and retransmission.
-    tcp_handler: TcpHandler<'umem>,
     // Set of empty ready to go frame structs that can be used for building outbound packets.
     free_frames: SharedFrameBuffer<'umem>,
     // Frames that are filled and ready to be sent to the network.
@@ -223,7 +221,6 @@ impl<'umem> LocalRuntime<'umem> {
             ipv4_handler: Ipv4Handler::new(),
             ipv6_handler: Ipv6Handler::new(),
             udp_handler: UdpHandler::new(256),
-            tcp_handler: TcpHandler::new(256),
             free_frames,
             tx_return,
             rx_return,
@@ -247,45 +244,6 @@ impl<'umem> LocalRuntime<'umem> {
             self.pmtu.clone(),
             self.neighbor_handler.clone(),
         ))
-    }
-
-    /// Listen for incoming TCP connections on the given address and port.
-    pub fn listen_tcp(&mut self, addr: IpAddress, port: u16, backlog: usize) -> TcpListener<'umem> {
-        let accept_queue = self.tcp_handler.listen(addr, port, backlog);
-        TcpListener::new(addr, port, accept_queue, self.rx_return.clone())
-    }
-
-    /// Initiate an active TCP connection to a remote host.
-    /// Returns a `TcpConnectFuture` that resolves to `Option<TcpStream>` when
-    /// the 3-way handshake completes (or fails).
-    pub fn connect_tcp(
-        &mut self,
-        local_addr: IpAddress,
-        local_port: u16,
-        remote_addr: IpAddress,
-        remote_port: u16,
-        local_mac: MacAddress,
-        remote_mac: MacAddress,
-    ) -> Option<TcpConnectFuture<'umem>> {
-        let (conn_id, rx_queue, cmd_queue, send_buffer, send_notify) = self.tcp_handler.connect(
-            local_addr,
-            local_port,
-            remote_addr,
-            remote_port,
-            local_mac,
-            remote_mac,
-            &mut self.free_frames,
-            &mut self.tx_return,
-        )?;
-        let stream = TcpStream::new(
-            conn_id,
-            rx_queue,
-            cmd_queue,
-            send_buffer,
-            send_notify,
-            self.rx_return.clone(),
-        );
-        Some(TcpConnectFuture::new(stream))
     }
 
     /// Runs the event loop until `exit` is set or `fut` completes.
@@ -325,7 +283,6 @@ impl<'umem> LocalRuntime<'umem> {
                     ipv6_handler,
                     pmtu,
                     udp_handler,
-                    tcp_handler,
                     ..
                 } = self;
 
@@ -336,7 +293,6 @@ impl<'umem> LocalRuntime<'umem> {
                             ipv4_handler.handle(
                                 frame,
                                 udp_handler,
-                                tcp_handler,
                                 pmtu,
                                 now,
                                 &mut self.free_frames,
@@ -349,7 +305,6 @@ impl<'umem> LocalRuntime<'umem> {
                                 frame,
                                 neighbor_handler,
                                 udp_handler,
-                                tcp_handler,
                                 pmtu,
                                 now,
                                 &mut self.free_frames,
@@ -380,20 +335,11 @@ impl<'umem> LocalRuntime<'umem> {
                 return Ok(());
             }
 
-            // Drive TCP timers and outbound data.
-            self.tcp_handler.tick(
-                now,
-                &mut self.free_frames,
-                &mut self.rx_return,
-                &mut self.tx_return,
-            );
-
             // Periodically evict stale entries (~every 1024 iterations).
             self.evict_counter = self.evict_counter.wrapping_add(1);
             if self.evict_counter & 0x3FF == 0 {
                 self.udp_handler
                     .evict_stale(now, Duration::from_secs(30), &mut self.rx_return);
-                self.tcp_handler.evict_stale(now, &mut self.rx_return);
                 self.neighbor_handler.evict_stale(now);
                 self.pmtu.evict_stale(now);
             }

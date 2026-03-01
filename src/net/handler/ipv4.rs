@@ -11,7 +11,7 @@ use super::wire::{
     icmpv4::Icmpv4Codes,
     ip::{IPV4_MIN_FRAME_LEN, IpProtocols, Ipv4Header, verify_ipv4_checksum},
 };
-use super::{icmpv4, tcp::TcpHandler, udp::UdpHandler};
+use super::{icmpv4, udp::UdpHandler};
 
 /// Layer-3 handler for incoming IPv4 frames.
 ///
@@ -38,10 +38,9 @@ impl Ipv4Handler {
         &mut self,
         frame: Frame<'umem>,
         udp_handler: &mut UdpHandler<'umem>,
-        tcp_handler: &mut TcpHandler<'umem>,
         pmtu: &PmtuCache,
-        now: Instant,
-        free_frames: &mut impl FrameBuffer<'umem>,
+        _now: Instant,
+        _free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
@@ -102,7 +101,6 @@ impl Ipv4Handler {
         let protocol = ip.protocol;
         match protocol {
             IpProtocols::Icmp => icmpv4::handle_icmpv4(frame, pmtu, rx_return, tx_return),
-            IpProtocols::Tcp => tcp_handler.process_ipv4(frame, now, free_frames, rx_return, tx_return),
             IpProtocols::Udp => udp_handler.process_ipv4(frame, rx_return),
             _ => icmpv4::send_destination_unreachable(
                 frame,
@@ -134,10 +132,6 @@ mod tests {
 
     fn new_udp_handler<'umem>() -> UdpHandler<'umem> {
         UdpHandler::new(256)
-    }
-
-    fn new_tcp_handler<'umem>() -> TcpHandler<'umem> {
-        TcpHandler::new(256)
     }
 
     /// Builds a minimal valid UDP segment (header only, no payload) with a
@@ -243,7 +237,6 @@ mod tests {
         let mut data = [0u8; 30];
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
-        let mut tcp = new_tcp_handler();
         let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
@@ -253,7 +246,6 @@ mod tests {
         handler.handle(
             frame,
             &mut udp,
-            &mut tcp,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -274,7 +266,6 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
-        let mut tcp = new_tcp_handler();
         let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
@@ -285,7 +276,6 @@ mod tests {
         handler.handle(
             frame,
             &mut udp,
-            &mut tcp,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -303,7 +293,6 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
-        let mut tcp = new_tcp_handler();
         let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
@@ -314,7 +303,6 @@ mod tests {
         handler.handle(
             frame,
             &mut udp,
-            &mut tcp,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -332,7 +320,6 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
-        let mut tcp = new_tcp_handler();
         let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
@@ -343,7 +330,6 @@ mod tests {
         handler.handle(
             frame,
             &mut udp,
-            &mut tcp,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -369,7 +355,6 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
-        let mut tcp = new_tcp_handler();
         let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
@@ -380,7 +365,6 @@ mod tests {
         handler.handle(
             frame,
             &mut udp,
-            &mut tcp,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -398,7 +382,6 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
-        let mut tcp = new_tcp_handler();
         let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
@@ -409,7 +392,6 @@ mod tests {
         handler.handle(
             frame,
             &mut udp,
-            &mut tcp,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -431,7 +413,6 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
-        let mut tcp = new_tcp_handler();
         let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
@@ -442,7 +423,6 @@ mod tests {
         handler.handle(
             frame,
             &mut udp,
-            &mut tcp,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -485,7 +465,6 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
-        let mut tcp = new_tcp_handler();
         let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
@@ -494,7 +473,6 @@ mod tests {
         handler.handle(
             frame,
             &mut udp,
-            &mut tcp,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -512,7 +490,6 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
-        let mut tcp = new_tcp_handler();
         let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
@@ -523,7 +500,6 @@ mod tests {
         handler.handle(
             frame,
             &mut udp,
-            &mut tcp,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -548,7 +524,6 @@ mod tests {
 
         let mut handler = new_handler();
         let (mut udp, rx_queue) = new_udp_handler_with_socket(0);
-        let mut tcp = new_tcp_handler();
         let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
@@ -559,7 +534,6 @@ mod tests {
         handler.handle(
             frame,
             &mut udp,
-            &mut tcp,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -579,7 +553,6 @@ mod tests {
 
         let mut handler = new_handler();
         let mut udp = new_udp_handler();
-        let mut tcp = new_tcp_handler();
         let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
@@ -589,7 +562,6 @@ mod tests {
         handler.handle(
             frame,
             &mut udp,
-            &mut tcp,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,

@@ -55,14 +55,6 @@ bench = true
 doctest = true
 
 [[test]]
-name = "tcp"
-path = "tests/tcp.rs"
-
-[[test]]
-name = "tcp_netcat"
-path = "tests/tcp_netcat.rs"
-
-[[test]]
 name = "sync"
 path = "tests/sync.rs"
 
