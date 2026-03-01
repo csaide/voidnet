@@ -151,7 +151,7 @@ impl Ipv6Handler {
         neighbor_handler: &NeighborHandler,
         udp_handler: &mut UdpHandler<'umem>,
         pmtu: &PmtuCache,
-        _now: Instant,
+        now: Instant,
         _free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
@@ -211,6 +211,7 @@ impl Ipv6Handler {
                         icmpv6_len,
                         neighbor_handler,
                         pmtu,
+                        now,
                         rx_return,
                         tx_return,
                     );

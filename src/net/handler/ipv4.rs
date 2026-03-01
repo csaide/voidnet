@@ -39,7 +39,7 @@ impl Ipv4Handler {
         frame: Frame<'umem>,
         udp_handler: &mut UdpHandler<'umem>,
         pmtu: &PmtuCache,
-        _now: Instant,
+        now: Instant,
         _free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
@@ -100,7 +100,7 @@ impl Ipv4Handler {
 
         let protocol = ip.protocol;
         match protocol {
-            IpProtocols::Icmp => icmpv4::handle_icmpv4(frame, pmtu, rx_return, tx_return),
+            IpProtocols::Icmp => icmpv4::handle_icmpv4(frame, pmtu, now, rx_return, tx_return),
             IpProtocols::Udp => udp_handler.process_ipv4(frame, rx_return),
             _ => icmpv4::send_destination_unreachable(
                 frame,

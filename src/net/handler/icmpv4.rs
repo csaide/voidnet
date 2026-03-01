@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crate::{
     net::PmtuCache,
     xdp::frame::{Frame, FrameBuffer},
@@ -20,6 +22,7 @@ use super::wire::{
 pub fn handle_icmpv4<'umem>(
     mut frame: Frame<'umem>,
     pmtu: &PmtuCache,
+    now: Instant,
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {
@@ -95,7 +98,7 @@ pub fn handle_icmpv4<'umem>(
                     frame[dst_offset + 2],
                     frame[dst_offset + 3],
                 ]);
-                pmtu.update(dst_ip.into(), mtu);
+                pmtu.update(now, dst_ip.into(), mtu);
             }
 
             rx_return.push(frame);
@@ -338,6 +341,7 @@ mod tests {
 
     #[test]
     fn echo_reply_complete_response() {
+        let now = Instant::now();
         let data = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
         let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 0x1234, 0x0005, &data);
         let mut buf = vec![0u8; 256];
@@ -346,7 +350,7 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut PmtuCache::new(), now, &mut rx, &mut tx);
 
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
@@ -391,6 +395,7 @@ mod tests {
 
     #[test]
     fn echo_request_bad_checksum_rejected() {
+        let now = Instant::now();
         let mut echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0; 8]);
         let icmp_start = size_of::<EthernetFrame>() + IPV4_MIN_HEADER_LEN;
         echo[icmp_start + 2] ^= 0xFF;
@@ -400,12 +405,13 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut PmtuCache::new(), now, &mut rx, &mut tx);
         assert_rejected(&rx, &tx);
     }
 
     #[test]
     fn echo_request_too_short_rejected() {
+        let now = Instant::now();
         let data = build_ipv4_frame(
             SRC_MAC,
             DST_MAC,
@@ -420,12 +426,13 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut PmtuCache::new(), now, &mut rx, &mut tx);
         assert_rejected(&rx, &tx);
     }
 
     #[test]
     fn echo_request_broadcast_multicast_rejected() {
+        let now = Instant::now();
         // Broadcast destination
         let echo = build_echo_request(
             SRC_MAC,
@@ -441,7 +448,7 @@ mod tests {
         let frame = Frame::new(0, &mut buf, echo.len(), false);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut PmtuCache::new(), now, &mut rx, &mut tx);
         assert_rejected(&rx, &tx);
 
         // Multicast destination
@@ -459,12 +466,13 @@ mod tests {
         let frame = Frame::new(0, &mut buf, echo.len(), false);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut PmtuCache::new(), now, &mut rx, &mut tx);
         assert_rejected(&rx, &tx);
     }
 
     #[test]
     fn non_echo_goes_to_rx() {
+        let now = Instant::now();
         let mut icmp_payload = [0u8; 36];
         icmp_payload[0] = Icmpv4Types::DestinationUnreachable;
         let cksum = compute_ipv4_checksum(&icmp_payload);
@@ -485,7 +493,7 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut PmtuCache::new(), now, &mut rx, &mut tx);
         assert_rejected(&rx, &tx);
     }
 
@@ -668,6 +676,7 @@ mod tests {
 
     #[test]
     fn fragmentation_needed_updates_pmtu() {
+        let now = Instant::now();
         // Build a Fragmentation Needed ICMP message carrying an embedded IPv4 header.
         let dest_ip = Ipv4Address::new([172, 16, 0, 1]);
 
@@ -706,11 +715,11 @@ mod tests {
         let mut pmtu = PmtuCache::new();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut pmtu, &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut pmtu, now, &mut rx, &mut tx);
 
         // Frame goes to rx (not an echo request)
         assert_eq!(rx.num_frames(), 1);
         // PMTU cache should be updated for the embedded destination IP
-        assert_eq!(pmtu.get(&IpAddress::V4(dest_ip)), 1280);
+        assert_eq!(pmtu.get(now, &IpAddress::V4(dest_ip)), 1280);
     }
 }

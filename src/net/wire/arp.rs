@@ -77,8 +77,28 @@ pub struct ArpPacket {
     pub tpa: Ipv4Address,
 }
 
+/// Complete ARP Ethernet frame (Ethernet header + ARP packet).
+#[repr(C, packed)]
+pub struct ArpFrame {
+    pub ethernet: EthernetFrame,
+    pub arp: ArpPacket,
+}
+
+impl ArpFrame {
+    #[inline(always)]
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
+    }
+
+    #[inline(always)]
+    pub fn from_frame_mut<'frame, 'umem>(frame: &'frame mut Frame<'umem>) -> &'frame mut Self {
+        debug_assert!(frame.len() >= ARP_FRAME_LEN);
+        unsafe { &mut *(frame.as_mut_ptr() as *mut Self) }
+    }
+}
+
 /// Minimum frame length for an Ethernet + ARP packet.
-pub const ARP_FRAME_LEN: usize = size_of::<EthernetFrame>() + size_of::<ArpPacket>();
+pub const ARP_FRAME_LEN: usize = size_of::<ArpFrame>();
 const _: () = assert!(ARP_FRAME_LEN == 42);
 
 impl ArpPacket {

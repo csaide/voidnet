@@ -314,6 +314,7 @@ impl<'umem> LocalRuntime<'umem> {
                         }
                         EtherTypes::Arp => {
                             neighbor_handler.handle_arp(
+                                now,
                                 frame,
                                 &mut self.rx_return,
                                 &mut self.tx_return,

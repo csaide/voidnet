@@ -1,4 +1,4 @@
-use std::mem::size_of;
+use std::{mem::size_of, time::Instant};
 
 use crate::{
     net::{NeighborHandler, PmtuCache},
@@ -33,6 +33,7 @@ pub fn handle_icmpv6<'umem>(
     icmpv6_len: usize,
     neighbor_handler: &NeighborHandler,
     pmtu: &PmtuCache,
+    now: Instant,
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {
@@ -113,7 +114,7 @@ pub fn handle_icmpv6<'umem>(
                 let mut octets = [0u8; 16];
                 octets.copy_from_slice(&frame[dst_offset..dst_offset + 16]);
                 let dst_ip = Ipv6Address::new(octets);
-                pmtu.update(dst_ip.into(), mtu);
+                pmtu.update(now, dst_ip.into(), mtu);
             }
 
             rx_return.push(frame);
@@ -121,7 +122,14 @@ pub fn handle_icmpv6<'umem>(
         Icmpv6Types::RouterSolicitation
         | Icmpv6Types::RouterAdvertisement
         | Icmpv6Types::NeighborSolicitation => {
-            neighbor_handler.handle_ndp(frame, icmpv6_offset, icmpv6_len, rx_return, tx_return);
+            neighbor_handler.handle_ndp(
+                now,
+                frame,
+                icmpv6_offset,
+                icmpv6_len,
+                rx_return,
+                tx_return,
+            );
         }
         _ => rx_return.push(frame),
     }
@@ -367,6 +375,7 @@ mod tests {
 
     #[test]
     fn echo_reply_complete_response() {
+        let now = Instant::now();
         let data = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
         let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 0x1234, 0x0005, &data);
         let mut buf = vec![0u8; 512];
@@ -387,6 +396,7 @@ mod tests {
             icmpv6_len,
             &mut neighbor_handler,
             &mut PmtuCache::new(),
+            now,
             &mut rx,
             &mut tx,
         );
@@ -429,6 +439,7 @@ mod tests {
 
     #[test]
     fn echo_request_bad_checksum_rejected() {
+        let now = Instant::now();
         let mut echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, LOCAL_IP, 1, 1, &[0; 8]);
         let icmpv6_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
         echo[icmpv6_offset + 2] ^= 0xFF;
@@ -449,6 +460,7 @@ mod tests {
             icmpv6_len,
             &mut neighbor_handler,
             &mut PmtuCache::new(),
+            now,
             &mut rx,
             &mut tx,
         );
@@ -457,6 +469,7 @@ mod tests {
 
     #[test]
     fn echo_request_too_short_rejected() {
+        let now = Instant::now();
         let data = build_ipv6_frame(
             SRC_MAC,
             DST_MAC,
@@ -482,6 +495,7 @@ mod tests {
             4,
             &mut neighbor_handler,
             &mut PmtuCache::new(),
+            now,
             &mut rx,
             &mut tx,
         );
@@ -490,6 +504,7 @@ mod tests {
 
     #[test]
     fn echo_request_to_multicast_rejected() {
+        let now = Instant::now();
         let echo = build_echo_request(SRC_MAC, DST_MAC, REMOTE_IP, MCAST, 1, 1, &[0; 8]);
         let mut buf = vec![0u8; 512];
         buf[..echo.len()].copy_from_slice(&echo);
@@ -509,6 +524,7 @@ mod tests {
             icmpv6_len,
             &mut neighbor_handler,
             &mut PmtuCache::new(),
+            now,
             &mut rx,
             &mut tx,
         );
@@ -517,6 +533,7 @@ mod tests {
 
     #[test]
     fn non_echo_request_goes_to_rx() {
+        let now = Instant::now();
         let mut icmpv6_payload = [0u8; 48];
         icmpv6_payload[0] = Icmpv6Types::DestinationUnreachable;
         let cksum = compute_icmpv6_checksum(&REMOTE_IP, &LOCAL_IP, &icmpv6_payload);
@@ -548,6 +565,7 @@ mod tests {
             icmpv6_payload.len(),
             &mut neighbor_handler,
             &mut PmtuCache::new(),
+            now,
             &mut rx,
             &mut tx,
         );
@@ -556,6 +574,7 @@ mod tests {
 
     #[test]
     fn packet_too_big_updates_pmtu() {
+        let now = Instant::now();
         let dest_ip = Ipv6Address::new([
             0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x99,
         ]);
@@ -609,6 +628,7 @@ mod tests {
             icmpv6_msg.len(),
             &mut neighbor_handler,
             &mut pmtu,
+            now,
             &mut rx,
             &mut tx,
         );
@@ -616,7 +636,7 @@ mod tests {
         // Frame goes to rx (informational, not echo)
         assert_eq!(rx.num_frames(), 1);
         // PMTU cache should be updated for the embedded destination IP
-        assert_eq!(pmtu.get(&IpAddress::V6(dest_ip)), 1280);
+        assert_eq!(pmtu.get(now, &IpAddress::V6(dest_ip)), 1280);
     }
 
     // -- send_icmpv6_error tests --

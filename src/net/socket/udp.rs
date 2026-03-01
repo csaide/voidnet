@@ -1,4 +1,5 @@
 use std::task::{Context, Poll};
+use std::time::Instant;
 use std::{pin::Pin, rc::Rc};
 
 use crate::net::fragment::{FragmentWriter, Packet};
@@ -140,8 +141,9 @@ pub struct UdpSendToFuture<'sock, 'buf, 'umem> {
 
 impl<'sock, 'buf, 'umem> UdpSendToFuture<'sock, 'buf, 'umem> {
     fn prepare_udp_packet(&mut self) -> Result<Packet<'umem>, WouldBlock> {
+        let now = Instant::now();
         // Step 1: MAC address resolution.
-        let dst_mac = match self.neighbor_handler.lookup(&self.dst_addr) {
+        let dst_mac = match self.neighbor_handler.lookup(now, &self.dst_addr) {
             Some(mac) => mac,
             None => {
                 let frame = self.free_frames.pop().ok_or(WouldBlock)?;
@@ -174,7 +176,7 @@ impl<'sock, 'buf, 'umem> UdpSendToFuture<'sock, 'buf, 'umem> {
         };
         let src_mac = self.neighbor_handler.local_mac();
 
-        let pmtu = self.pmtu.get(&self.dst_addr).min(DEFAULT_MTU);
+        let pmtu = self.pmtu.get(now, &self.dst_addr).min(DEFAULT_MTU);
 
         match (self.src_addr, self.dst_addr) {
             (IpAddress::V4(src_ip), IpAddress::V4(dst_ip)) => {
