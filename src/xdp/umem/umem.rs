@@ -286,7 +286,7 @@ impl<'umem> Umem<'umem> {
 
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
-    pub fn process_fill_queue<B: FrameBuffer<'umem>>(&mut self, batch: B) {
+    pub fn process_fill_queue<B: FrameBuffer<'umem>>(&mut self, batch: B) -> NonBlocking<u32> {
         self.fill_queue.process_queue(batch)
     }
 

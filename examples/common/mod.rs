@@ -319,7 +319,7 @@ pub struct BaseArgs {
     pub unaligned: bool,
     #[arg(
         long,
-        default_value = "2048",
+        default_value = "4096",
         help = "The number of slots in the RX ring in the socket."
     )]
     pub rx_ring_size: u32,

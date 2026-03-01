@@ -440,7 +440,9 @@ mod tests {
         for frame in rx_buffer.drain(..rx_prime_count) {
             prime_buffer.push(frame);
         }
-        fq_inner.process_queue(&mut prime_buffer);
+        fq_inner
+            .process_queue(&mut prime_buffer)
+            .expect("failed to process fill queue");
         fq_inner
             .maybe_wake(socket_inner.fd())
             .expect("failed to wake fill queue");
@@ -605,7 +607,8 @@ mod tests {
         for frame in buffer.drain(..8) {
             prime_buffer.push(frame);
         }
-        fq.process_queue(&mut prime_buffer);
+        fq.process_queue(&mut prime_buffer)
+            .expect("failed to process fill queue");
 
         // Try to receive with no packets pending
         let mut recv_buffer = BasicFrameBuffer::new(8);
