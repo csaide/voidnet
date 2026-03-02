@@ -2,7 +2,8 @@ use std::cell::UnsafeCell;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
-use std::time::Instant;
+
+use coarsetime::Instant;
 
 use crate::net::checksum::{compute_udp_checksum_from_parts, compute_udp_checksum_v6_from_parts};
 use crate::net::fragment::{FragmentWriter, Packet};
@@ -451,7 +452,7 @@ impl<'sock, 'umem> Future for Echo<'sock, 'umem> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use coarsetime::Duration;
 
     use super::*;
     use crate::net::PmtuCache;

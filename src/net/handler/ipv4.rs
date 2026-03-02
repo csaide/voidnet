@@ -1,5 +1,6 @@
 use std::mem::size_of;
-use std::time::Instant;
+
+use coarsetime::Instant;
 
 use crate::{
     net::PmtuCache,

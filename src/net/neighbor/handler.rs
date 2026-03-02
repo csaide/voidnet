@@ -1,8 +1,6 @@
-use std::{
-    net::IpAddr,
-    time::{Duration, Instant},
-};
+use std::net::IpAddr;
 
+use coarsetime::{Duration, Instant};
 use dashmap::DashMap;
 use getifaddrs::InterfaceFilter;
 
@@ -241,7 +239,7 @@ impl NeighborHandler {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use super::*;
 
     use crate::{
         net::wire::{

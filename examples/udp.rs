@@ -4,10 +4,10 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
 use clap::Parser;
+use coarsetime::Duration;
 
 use futures_util::StreamExt;
 use libvoid::net::{socket::UdpSocket, wire::ip::SocketAddr};

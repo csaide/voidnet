@@ -1,5 +1,4 @@
-use std::time::{Duration, Instant};
-
+use coarsetime::{Duration, Instant};
 use dashmap::DashMap;
 
 use super::wire::ip::IpAddress;
@@ -166,7 +165,7 @@ mod tests {
     #[test]
     fn expired_entry_returns_default() {
         let now = Instant::now();
-        let cache = PmtuCache::with_mtu_and_ttl(1500, Duration::ZERO);
+        let cache = PmtuCache::with_mtu_and_ttl(1500, Duration::from_ticks(0));
         let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
         cache.update(now, addr, 1200);
         assert_eq!(cache.get(now.add(Duration::from_millis(5)), &addr), 1500);
@@ -175,7 +174,7 @@ mod tests {
     #[test]
     fn evict_stale_removes_expired() {
         let now = Instant::now();
-        let cache = PmtuCache::with_mtu_and_ttl(1500, Duration::ZERO);
+        let cache = PmtuCache::with_mtu_and_ttl(1500, Duration::from_ticks(0));
         let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
         cache.update(now, addr, 1200);
         cache.evict_stale(now.add(Duration::from_millis(5)));

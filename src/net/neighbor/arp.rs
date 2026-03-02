@@ -1,5 +1,4 @@
-use std::time::{Duration, Instant};
-
+use coarsetime::{Duration, Instant};
 use dashmap::DashMap;
 
 use crate::{
@@ -127,7 +126,7 @@ pub(super) fn handle_arp<'umem>(
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use super::*;
 
     use crate::{
         net::{
@@ -416,7 +415,7 @@ mod tests {
     #[test]
     fn expired_entry_returns_none() {
         let now = Instant::now();
-        let mut handler = NeighborHandler::new("test0", Duration::ZERO).unwrap();
+        let mut handler = NeighborHandler::new("test0", Duration::from_ticks(0)).unwrap();
         handler.add_local_ipv4(TEST_LOCAL_IP);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);

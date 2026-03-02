@@ -1,7 +1,6 @@
 use std::cell::UnsafeCell;
 use std::rc::Rc;
 use std::task::Poll;
-use std::time::Duration;
 use std::{
     sync::{
         Arc,
@@ -10,6 +9,7 @@ use std::{
     task::Context,
 };
 
+use coarsetime::Duration;
 use futures_util::pin_mut;
 
 use crate::xdp::{
@@ -246,7 +246,7 @@ impl<'umem> LocalRuntime<'umem> {
 
         let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
         while !exit.load(Ordering::Relaxed) {
-            let now = std::time::Instant::now();
+            let now = coarsetime::Instant::recent();
 
             if let Ok(_) = self.socket.recv(&mut buffer) {
                 // SAFETY: single-threaded, no reentrant handler calls.

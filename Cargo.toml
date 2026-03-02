@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 async-io = { version = "2", default-features = false, optional = true }
+coarsetime = { version = "0.1", default-features = false }
 core_affinity = { version = "0.8", default-features = false }
 crossbeam-queue = { version = "0.3", default-features = true }
 crossbeam-utils = { version = "0.8", default-features = true }

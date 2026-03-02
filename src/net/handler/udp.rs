@@ -1,5 +1,6 @@
 use std::fmt;
-use std::time::{Duration, Instant};
+
+use coarsetime::{Duration, Instant};
 
 use crate::net::checksum::{
     fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6, sum_words_carry,

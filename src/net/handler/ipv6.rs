@@ -1,5 +1,6 @@
 use std::mem::size_of;
-use std::time::Instant;
+
+use coarsetime::Instant;
 
 use crate::{
     net::{
@@ -244,6 +245,8 @@ impl Ipv6Handler {
 
 #[cfg(test)]
 mod tests {
+    use coarsetime::Duration;
+
     use super::super::wire::ip::{IpAddress, Ipv6Address};
     use super::*;
     use crate::net::checksum::compute_udp_checksum_v6;
@@ -251,7 +254,6 @@ mod tests {
     use crate::net::wire::ip::NO_NEXT_HEADER;
     use crate::net::wire::udp::UDP_HEADER_LEN;
     use crate::xdp::frame::BasicFrameBuffer;
-    use std::time::Duration;
 
     const REMOTE_IP: Ipv6Address =
         Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);

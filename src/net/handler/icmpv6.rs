@@ -1,4 +1,6 @@
-use std::{mem::size_of, time::Instant};
+use std::mem::size_of;
+
+use coarsetime::Instant;
 
 use crate::{
     net::{NeighborHandler, PmtuCache},
@@ -263,7 +265,8 @@ pub fn send_icmpv6_error<'umem>(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+
+    use coarsetime::Duration;
 
     use super::super::wire::ethernet::MacAddress;
     use super::super::wire::ip::IpAddress;

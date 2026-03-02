@@ -1,5 +1,4 @@
-use std::time::{Duration, Instant};
-
+use coarsetime::{Duration, Instant};
 use dashmap::DashMap;
 
 use crate::{
@@ -362,7 +361,7 @@ fn parse_ndp_link_layer_option(
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use super::*;
 
     use crate::{
         net::{

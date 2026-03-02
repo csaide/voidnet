@@ -1,9 +1,6 @@
-use std::{
-    collections::BTreeMap,
-    hash::Hash,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, hash::Hash};
 
+use coarsetime::{Duration, Instant};
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -605,8 +602,8 @@ mod tests {
         reader.process_ipv4(frame, &mut rx);
         assert_eq!(reader.pending_entries(), 1);
 
-        std::thread::sleep(Duration::from_millis(5));
-        reader.evict_stale(Instant::now(), Duration::ZERO, &mut rx);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        reader.evict_stale(Instant::now(), Duration::from_ticks(0), &mut rx);
         assert_eq!(reader.pending_entries(), 0);
         assert_eq!(rx.num_frames(), 1);
     }
