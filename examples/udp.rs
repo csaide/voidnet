@@ -23,6 +23,8 @@ struct Args {
     base: BaseArgs,
     #[arg(short, long, default_value = "[fc00:dead:cafe:1::1]:8080")]
     local_addr: SocketAddr,
+    #[arg(short, long, default_value = "false")]
+    echo: bool,
 }
 
 impl Deref for Args {
@@ -81,8 +83,12 @@ fn main() {
             while let Some(mut packet) = recv_stream.next().await {
                 stats.update(packet.packet.len(), false);
                 stats.maybe_print();
-                packet.swap_addresses();
-                send.echo_immediate(packet);
+                if args.echo {
+                    packet.swap_addresses();
+                    send.echo_immediate(packet);
+                } else {
+                    send.discard(packet);
+                }
             }
         })
         .expect("Failed to run runtime");

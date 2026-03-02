@@ -1,36 +1,38 @@
-use std::cell::UnsafeCell;
-use std::rc::Rc;
-use std::task::Poll;
 use std::{
+    cell::UnsafeCell,
+    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     task::Context,
+    task::Poll,
 };
 
 use coarsetime::Duration;
 use futures_util::pin_mut;
 
-use crate::xdp::{
-    context::{XdpContext, XdpContextBuilder},
-    error::Result,
-    frame::{BasicFrameBuffer, FrameBuffer},
-    program::AttachMode,
-    socket::{CopyMode, Socket, SocketBuilder},
-    umem::{Umem, UmemBuilder},
-};
 use crate::{
     net::{
         NeighborHandler, PmtuCache,
-        handler::{ipv4::Ipv4Handler, ipv6::Ipv6Handler, udp::UdpHandler},
-        wire::ethernet::{EtherTypes, EthernetFrame},
+        handler::{
+            ethernet::EthernetHandler, ipv4::Ipv4Handler, ipv6::Ipv6Handler, udp::UdpHandler,
+        },
     },
-    xdp::frame::SharedFrameBuffer,
+    xdp::{
+        context::{XdpContext, XdpContextBuilder},
+        error::Result,
+        frame::{BasicFrameBuffer, FrameBuffer, SharedFrameBuffer},
+        program::AttachMode,
+        socket::{CopyMode, Socket, SocketBuilder},
+        umem::{Umem, UmemBuilder},
+    },
 };
 
-use super::context::{RuntimeContext, clear_runtime_context, set_runtime_context};
-use super::waker;
+use super::{
+    context::{RuntimeContext, clear_runtime_context, set_runtime_context},
+    waker,
+};
 
 const DEFAULT_ARP_TTL: Duration = Duration::from_secs(60);
 
@@ -48,6 +50,7 @@ pub struct LocalRuntimeBuilder<'name> {
 }
 
 impl<'name> LocalRuntimeBuilder<'name> {
+    /// Creates a new [`LocalRuntimeBuilder`] with the given interface name and queue number.
     pub fn new(if_name: &'name str, queue: u32) -> Self {
         Self {
             if_name,
@@ -58,78 +61,93 @@ impl<'name> LocalRuntimeBuilder<'name> {
         }
     }
 
+    /// Sets the ARP TTL for the [`LocalRuntime`].
     pub fn arp_ttl(mut self, arp_ttl: Duration) -> Self {
         self.arp_ttl = arp_ttl;
         self
     }
 
+    /// Sets the attach mode for the [`LocalRuntime`].
     pub fn attach_mode(mut self, attach_mode: AttachMode) -> Self {
         self.ctx = self.ctx.attach_mode(attach_mode);
         self
     }
 
+    /// Enables fragmentation for the [`LocalRuntime`].
     pub fn enable_fragmentation(mut self, enable_fragmentation: bool) -> Self {
         self.ctx = self.ctx.enable_fragmentation(enable_fragmentation);
         self.socket = self.socket.enable_fragmentation(enable_fragmentation);
         self
     }
 
+    /// Sets the completion ring size for the [`LocalRuntime`].
     pub fn completion_ring_size(mut self, completion_ring_size: u32) -> Self {
         self.umem = self.umem.completion_ring_size(completion_ring_size);
         self
     }
 
+    /// Sets the fill ring size for the [`LocalRuntime`].
     pub fn fill_ring_size(mut self, fill_ring_size: u32) -> Self {
         self.umem = self.umem.fill_ring_size(fill_ring_size);
         self
     }
 
+    /// Sets the frame size for the [`LocalRuntime`].
     pub fn frame_size(mut self, frame_size: usize) -> Self {
         self.umem = self.umem.frame_size(frame_size);
         self
     }
 
+    /// Enables busy polling for the [`LocalRuntime`].
     pub fn busy_poll(mut self, busy_poll: bool) -> Self {
         self.umem = self.umem.busy_poll(busy_poll);
         self.socket = self.socket.busy_poll(busy_poll);
         self
     }
 
+    /// Sets the busy poll batch size for the [`LocalRuntime`].
     pub fn busy_poll_batch_size(mut self, busy_poll_batch_size: usize) -> Self {
         self.socket = self.socket.busy_poll_batch_size(busy_poll_batch_size);
         self
     }
 
+    /// Sets the busy poll timeout for the [`LocalRuntime`].
     pub fn busy_poll_timeout_us(mut self, busy_poll_timeout_us: i32) -> Self {
         self.socket = self.socket.busy_poll_timeout_us(busy_poll_timeout_us);
         self
     }
 
+    /// Enables huge tables for the [`LocalRuntime`].
     pub fn huge_tables(mut self, huge_tables: bool) -> Self {
         self.umem = self.umem.huge_tables(huge_tables);
         self
     }
 
+    /// Enables unaligned frames for the [`LocalRuntime`].
     pub fn unaligned(mut self, unaligned: bool) -> Self {
         self.umem = self.umem.unaligned(unaligned);
         self
     }
 
+    /// Sets the RX ring size for the [`LocalRuntime`].
     pub fn rx_ring_size(mut self, rx_ring_size: u32) -> Self {
         self.socket = self.socket.rx_ring_size(rx_ring_size);
         self
     }
 
+    /// Sets the TX ring size for the [`LocalRuntime`].
     pub fn tx_ring_size(mut self, tx_ring_size: u32) -> Self {
         self.socket = self.socket.tx_ring_size(tx_ring_size);
         self
     }
 
+    /// Sets the copy mode for the [`LocalRuntime`].
     pub fn copy_mode(mut self, copy_mode: CopyMode) -> Self {
         self.socket = self.socket.copy_mode(copy_mode);
         self
     }
 
+    /// Builds the [`LocalRuntime`].
     pub fn build<'umem>(self) -> Result<LocalRuntime<'umem>> {
         let mut ctx = self.ctx.build()?;
         let umem = self.umem.build()?;
@@ -145,7 +163,7 @@ impl<'name> LocalRuntimeBuilder<'name> {
 /// the protocol stack, poll the user future, and transmit responses.
 pub struct LocalRuntime<'umem> {
     // Overall context for the XDP program, this is used to own the underlying XDP program and socket.
-    _ctx: XdpContext,
+    ctx: XdpContext,
     // Shared memory for reading and writing frames to the network.
     umem: Umem<'umem>,
     // Raw AF_XDP socket for reading and writing frames to the network.
@@ -154,6 +172,8 @@ pub struct LocalRuntime<'umem> {
     neighbor_handler: Rc<NeighborHandler>,
     // Path MTU cache for handling path MTU discovery.
     pmtu: Rc<PmtuCache>,
+    // Ethernet handler is used to handle Ethernet frames.
+    ethernet_handler: EthernetHandler,
     // Main IPv4 protocol handler calls into udp_handler and tcp_handler.
     ipv4_handler: Ipv4Handler,
     // Main IPv6 protocol handler calls into neighbor_handler and udp_handler and tcp_handler.
@@ -171,6 +191,11 @@ pub struct LocalRuntime<'umem> {
 }
 
 impl<'umem> LocalRuntime<'umem> {
+    /// Builder for configuring and constructing a [`LocalRuntime`].
+    ///
+    /// Wraps the underlying XDP context, UMEM, and socket builders with
+    /// sane defaults. All builder methods delegate to the appropriate
+    /// sub-builder so callers only interact with a single API.
     pub fn builder<'name>(if_name: &'name str, queue: u32) -> LocalRuntimeBuilder<'name> {
         LocalRuntimeBuilder::new(if_name, queue)
     }
@@ -198,11 +223,12 @@ impl<'umem> LocalRuntime<'umem> {
         let free_frames = umem.init_buffer::<BasicFrameBuffer>().unwrap().into();
 
         Ok(Self {
-            _ctx: ctx,
+            ctx,
             umem,
             socket,
             neighbor_handler,
             pmtu,
+            ethernet_handler: EthernetHandler,
             ipv4_handler: Ipv4Handler::new(rx_offload, tx_offload),
             ipv6_handler: Ipv6Handler::new(rx_offload, tx_offload),
             udp_handler: Rc::new(UnsafeCell::new(UdpHandler::new(256, rx_offload))),
@@ -229,7 +255,7 @@ impl<'umem> LocalRuntime<'umem> {
             pmtu: self.pmtu.clone(),
             neighbor_handler: self.neighbor_handler.clone(),
             udp_handler: self.udp_handler.clone(),
-            tx_offload: self._ctx.info().tx_offload,
+            tx_offload: self.ctx.info().tx_offload,
         };
         set_runtime_context(&rt_ctx);
 
@@ -262,6 +288,7 @@ impl<'umem> LocalRuntime<'umem> {
                 let udp_handler = unsafe { &mut *self.udp_handler.get() };
                 let Self {
                     neighbor_handler,
+                    ethernet_handler,
                     ipv4_handler,
                     ipv6_handler,
                     pmtu,
@@ -269,43 +296,18 @@ impl<'umem> LocalRuntime<'umem> {
                 } = self;
 
                 for frame in buffer.take_frames() {
-                    let ethernet_frame = EthernetFrame::from_bytes(&frame);
-                    match ethernet_frame.ether_type {
-                        EtherTypes::IPv4 => {
-                            ipv4_handler.handle(
-                                frame,
-                                udp_handler,
-                                pmtu,
-                                now,
-                                &mut self.free_frames,
-                                &mut self.rx_return,
-                                &mut self.tx_return,
-                            );
-                        }
-                        EtherTypes::IPv6 => {
-                            ipv6_handler.handle(
-                                frame,
-                                neighbor_handler,
-                                udp_handler,
-                                pmtu,
-                                now,
-                                &mut self.free_frames,
-                                &mut self.rx_return,
-                                &mut self.tx_return,
-                            );
-                        }
-                        EtherTypes::Arp => {
-                            neighbor_handler.handle_arp(
-                                now,
-                                frame,
-                                &mut self.rx_return,
-                                &mut self.tx_return,
-                            );
-                        }
-                        _ => {
-                            self.rx_return.push(frame);
-                        }
-                    }
+                    ethernet_handler.handle(
+                        frame,
+                        ipv4_handler,
+                        ipv6_handler,
+                        udp_handler,
+                        neighbor_handler,
+                        pmtu,
+                        now,
+                        &mut self.free_frames,
+                        &mut self.rx_return,
+                        &mut self.tx_return,
+                    );
                 }
                 received
             } else {
