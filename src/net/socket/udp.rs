@@ -474,7 +474,7 @@ mod tests {
     use crate::net::PmtuCache;
     use crate::net::handler::udp::UdpHandler;
     use crate::net::wire::ip::Ipv4Address;
-    use crate::rt::context::{RuntimeContext, clear_runtime_context, set_runtime_context};
+    use crate::rt::context::{ContextDropGuard, RuntimeContext};
     use crate::xdp::frame::BasicFrameBuffer;
 
     /// Set up a fake runtime context for testing.
@@ -496,9 +496,10 @@ mod tests {
             udp_handler,
             tx_offload: false,
         };
-        set_runtime_context(&ctx);
-        f();
-        clear_runtime_context();
+        {
+            let _guard = ContextDropGuard::new(ctx);
+            f();
+        }
     }
 
     #[test]

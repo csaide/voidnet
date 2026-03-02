@@ -30,7 +30,7 @@ use crate::{
 };
 
 use super::{
-    context::{RuntimeContext, clear_runtime_context, set_runtime_context},
+    context::{ContextDropGuard, RuntimeContext},
     waker,
 };
 
@@ -43,6 +43,7 @@ const DEFAULT_ARP_TTL: Duration = Duration::from_secs(60);
 /// sub-builder so callers only interact with a single API.
 pub struct LocalRuntimeBuilder<'name> {
     if_name: &'name str,
+    queue: u32,
     ctx: XdpContextBuilder<'name>,
     umem: UmemBuilder,
     socket: SocketBuilder<'name>,
@@ -54,6 +55,7 @@ impl<'name> LocalRuntimeBuilder<'name> {
     pub fn new(if_name: &'name str, queue: u32) -> Self {
         Self {
             if_name,
+            queue,
             ctx: XdpContextBuilder::new(if_name),
             umem: UmemBuilder::new(),
             socket: SocketBuilder::new(if_name, queue),
@@ -152,7 +154,7 @@ impl<'name> LocalRuntimeBuilder<'name> {
         let mut ctx = self.ctx.build()?;
         let umem = self.umem.build()?;
         let socket = self.socket.build(&mut ctx, umem.owner().clone())?;
-        LocalRuntime::new(self.if_name, ctx, umem, socket, self.arp_ttl)
+        LocalRuntime::new(self.if_name, self.queue, ctx, umem, socket, self.arp_ttl)
     }
 }
 
@@ -164,6 +166,8 @@ impl<'name> LocalRuntimeBuilder<'name> {
 pub struct LocalRuntime<'umem> {
     // Overall context for the XDP program, this is used to own the underlying XDP program and socket.
     ctx: XdpContext,
+    // Queue number for the XDP program.
+    _queue: u32,
     // Shared memory for reading and writing frames to the network.
     umem: Umem<'umem>,
     // Raw AF_XDP socket for reading and writing frames to the network.
@@ -202,6 +206,7 @@ impl<'umem> LocalRuntime<'umem> {
 
     fn new(
         if_name: &str,
+        queue: u32,
         ctx: XdpContext,
         umem: Umem<'umem>,
         socket: Socket<'umem>,
@@ -224,6 +229,7 @@ impl<'umem> LocalRuntime<'umem> {
 
         Ok(Self {
             ctx,
+            _queue: queue,
             umem,
             socket,
             neighbor_handler,
@@ -247,8 +253,8 @@ impl<'umem> LocalRuntime<'umem> {
     where
         F: Future<Output = ()>,
     {
-        // Set up the thread-local runtime context so UdpSocket::new() can access shared handles.
-        let rt_ctx = RuntimeContext {
+        // Drop guard ensures the context is cleared even on early return/panic.
+        let _guard = ContextDropGuard::new(RuntimeContext {
             free_frames: self.free_frames.clone(),
             tx_return: self.tx_return.clone(),
             rx_return: self.rx_return.clone(),
@@ -256,17 +262,7 @@ impl<'umem> LocalRuntime<'umem> {
             neighbor_handler: self.neighbor_handler.clone(),
             udp_handler: self.udp_handler.clone(),
             tx_offload: self.ctx.info().tx_offload,
-        };
-        set_runtime_context(&rt_ctx);
-
-        // Drop guard ensures the context is cleared even on early return/panic.
-        struct ClearGuard;
-        impl Drop for ClearGuard {
-            fn drop(&mut self) {
-                clear_runtime_context();
-            }
-        }
-        let _guard = ClearGuard;
+        });
 
         // Before we can operate properly we need to seed the kernel with free frames to read into.
         self.umem.maybe_wake_fill_queue(self.socket.fd())?;

@@ -5,6 +5,22 @@ use crate::net::handler::udp::UdpHandler;
 use crate::net::{NeighborHandler, PmtuCache};
 use crate::xdp::frame::SharedFrameBuffer;
 
+pub struct ContextDropGuard;
+
+impl ContextDropGuard {
+    pub fn new<'umem>(ctx: RuntimeContext<'umem>) -> Self {
+        let ctx = Box::into_raw(Box::new(ctx));
+        RT_CTX.with(|c| c.set(ctx as *const ()));
+        Self
+    }
+}
+
+impl Drop for ContextDropGuard {
+    fn drop(&mut self) {
+        RT_CTX.with(|c| c.set(std::ptr::null()));
+    }
+}
+
 thread_local! {
     static RT_CTX: Cell<*const ()> = const { Cell::new(std::ptr::null()) };
 }
@@ -25,16 +41,6 @@ pub(crate) struct RuntimeContext<'umem> {
     pub udp_handler: Rc<UnsafeCell<UdpHandler<'umem>>>,
     /// TX checksum offload.
     pub tx_offload: bool,
-}
-
-/// Set the runtime context for the current thread.
-pub(crate) fn set_runtime_context<'umem>(ctx: &RuntimeContext<'umem>) {
-    RT_CTX.with(|c| c.set(ctx as *const RuntimeContext<'umem> as *const ()));
-}
-
-/// Clear the runtime context for the current thread.
-pub(crate) fn clear_runtime_context() {
-    RT_CTX.with(|c| c.set(std::ptr::null()));
 }
 
 /// Called by `UdpSocket::new()` to access the current runtime context.
