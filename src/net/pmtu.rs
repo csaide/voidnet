@@ -22,6 +22,7 @@ const DEFAULT_PMTU_TTL: Duration = Duration::from_secs(600);
 /// Entries expire after a configurable TTL (default 10 minutes per
 /// RFC 1191). Expired entries are treated as absent (the default MTU is
 /// returned) and can be removed in bulk via [`evict_stale`](Self::evict_stale).
+#[derive(Debug)]
 pub struct PmtuCache {
     /// PMTU table mappings for destination IP addresses.
     table: DashMap<IpAddress, (u32, Instant)>,

@@ -291,9 +291,24 @@ impl From<std::net::IpAddr> for IpAddress {
     }
 }
 
+impl From<IpAddress> for std::net::IpAddr {
+    fn from(addr: IpAddress) -> Self {
+        match addr {
+            IpAddress::V4(v4) => std::net::IpAddr::V4(v4.into()),
+            IpAddress::V6(v6) => std::net::IpAddr::V6(v6.into()),
+        }
+    }
+}
+
 impl From<std::net::Ipv4Addr> for IpAddress {
     fn from(addr: std::net::Ipv4Addr) -> Self {
         Self::V4(addr.into())
+    }
+}
+
+impl From<std::net::Ipv6Addr> for IpAddress {
+    fn from(addr: std::net::Ipv6Addr) -> Self {
+        Self::V6(addr.into())
     }
 }
 
@@ -312,6 +327,48 @@ impl Display for IpAddress {
             IpAddress::V4(v4) => write!(f, "{}", v4),
             IpAddress::V6(v6) => write!(f, "{}", v6),
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub struct SocketAddr {
+    pub ip: IpAddress,
+    pub port: u16,
+}
+
+impl SocketAddr {
+    pub fn new(ip: IpAddress, port: u16) -> Self {
+        Self { ip, port }
+    }
+}
+
+impl From<std::net::SocketAddr> for SocketAddr {
+    fn from(addr: std::net::SocketAddr) -> Self {
+        Self {
+            ip: addr.ip().into(),
+            port: addr.port(),
+        }
+    }
+}
+
+impl From<SocketAddr> for std::net::SocketAddr {
+    fn from(addr: SocketAddr) -> Self {
+        std::net::SocketAddr::new(addr.ip.into(), addr.port)
+    }
+}
+
+impl FromStr for SocketAddr {
+    type Err = std::io::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let addr = std::net::SocketAddr::from_str(s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        Ok(addr.into())
+    }
+}
+
+impl Display for SocketAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.ip, self.port)
     }
 }
 

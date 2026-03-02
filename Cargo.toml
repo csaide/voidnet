@@ -10,7 +10,7 @@ crossbeam-queue = { version = "0.3", default-features = true }
 crossbeam-utils = { version = "0.8", default-features = true }
 dashmap = { version = "6.1", default-features = false }
 errno = { version = "0.3", default-features = false }
-futures-core = { version = "0.3", default-features = false, optional = true }
+futures-core = { version = "0.3", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getifaddrs = { version = "0.6", default-features = false }
 libc = { version = "0.2", default-features = false }
@@ -38,7 +38,7 @@ tokio = { version = "1.40", features = ["full"] }
 
 [features]
 default = []
-async = ["dep:futures-core"]
+async = []
 local = ["async"]
 smol = ["dep:async-io", "async"]
 tokio = ["dep:tokio", "async"]

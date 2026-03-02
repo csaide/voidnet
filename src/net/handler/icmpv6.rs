@@ -271,7 +271,7 @@ mod tests {
     use crate::net::pmtu::PmtuCache;
     use crate::xdp::frame::BasicFrameBuffer;
 
-    const SRC_MAC: [u8; 6] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01];
+    const SRC_MAC: [u8; 6] = MacAddress::zero().octets;
     const DST_MAC: [u8; 6] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x02];
     const REMOTE_IP: Ipv6Address =
         Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
@@ -380,9 +380,7 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler =
-            NeighborHandler::new("test", MacAddress::from(SRC_MAC), Duration::from_secs(60))
-                .unwrap();
+        let mut neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
         handle_icmpv6(
             frame,
             icmpv6_offset,
@@ -444,9 +442,7 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler =
-            NeighborHandler::new("test", MacAddress::from(SRC_MAC), Duration::from_secs(60))
-                .unwrap();
+        let mut neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
         handle_icmpv6(
             frame,
             icmpv6_offset,
@@ -479,9 +475,7 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler =
-            NeighborHandler::new("test", MacAddress::from(SRC_MAC), Duration::from_secs(60))
-                .unwrap();
+        let mut neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
         handle_icmpv6(
             frame,
             icmpv6_offset,
@@ -508,9 +502,7 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler =
-            NeighborHandler::new("test", MacAddress::from(SRC_MAC), Duration::from_secs(60))
-                .unwrap();
+        let mut neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
         handle_icmpv6(
             frame,
             icmpv6_offset,
@@ -549,9 +541,7 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler =
-            NeighborHandler::new("test", MacAddress::from(SRC_MAC), Duration::from_secs(60))
-                .unwrap();
+        let mut neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
         handle_icmpv6(
             frame,
             icmpv6_offset,
@@ -612,9 +602,7 @@ mod tests {
         let mut pmtu = PmtuCache::new();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler =
-            NeighborHandler::new("test", MacAddress::from(SRC_MAC), Duration::from_secs(60))
-                .unwrap();
+        let mut neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
         handle_icmpv6(
             frame,
             icmpv6_offset,

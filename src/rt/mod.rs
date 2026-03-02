@@ -1,4 +1,5 @@
 mod affinity;
+pub(crate) mod context;
 mod local;
 mod thread;
 pub(crate) mod waker;

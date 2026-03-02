@@ -28,6 +28,7 @@ use super::{
 /// Maintains an internal neighbor cache that maps protocol addresses to
 /// hardware (MAC) addresses with a configurable TTL. Incoming ARP traffic
 /// (both requests and replies) automatically populates the cache.
+#[derive(Debug)]
 pub struct NeighborHandler {
     local_mac: MacAddress,
     local_ipv4: Vec<Ipv4Address>,
@@ -38,14 +39,19 @@ pub struct NeighborHandler {
 
 impl NeighborHandler {
     /// Creates a new handler bound to the given MAC and IPv4 address.
-    pub fn new(if_name: &str, local_mac: MacAddress, ttl: Duration) -> Result<Self> {
+    pub fn new(if_name: &str, ttl: Duration) -> Result<Self> {
         let mut local_ipv4 = Vec::new();
         let mut local_ipv6 = Vec::new();
+        let mut local_mac = MacAddress::zero();
+
         let addresses = InterfaceFilter::new().name(if_name).get()?;
         for addr in addresses {
-            let ip_addr = match addr.address.ip_addr() {
-                Some(ip_addr) => ip_addr,
-                None => continue,
+            if let Some(mac) = addr.address.mac_addr() {
+                local_mac = MacAddress::from(mac);
+                continue;
+            }
+            let Some(ip_addr) = addr.address.ip_addr() else {
+                continue;
             };
             match ip_addr {
                 IpAddr::V4(ip_addr) => {
@@ -63,6 +69,11 @@ impl NeighborHandler {
             table: DashMap::new(),
             ttl,
         })
+    }
+
+    /// Sets the local MAC address.
+    pub fn set_local_mac(&mut self, mac: MacAddress) {
+        self.local_mac = mac;
     }
 
     /// Registers a local IPv6 address for NDP response.
@@ -241,8 +252,8 @@ mod tests {
         xdp::frame::{BasicFrameBuffer, Frame, FrameBuffer},
     };
 
-    use crate::net::wire::arp::ArpFrame;
     use super::NeighborHandler;
+    use crate::net::wire::arp::ArpFrame;
 
     const TEST_LOCAL_MAC: MacAddress = MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
     const TEST_LOCAL_IP: Ipv4Address = Ipv4Address::new([192, 168, 1, 1]);
@@ -253,7 +264,8 @@ mod tests {
         Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
     fn new_handler() -> NeighborHandler {
-        let mut nh = NeighborHandler::new("test0", TEST_LOCAL_MAC, TEST_TTL).unwrap();
+        let mut nh = NeighborHandler::new("test0", TEST_TTL).unwrap();
+        nh.set_local_mac(TEST_LOCAL_MAC);
         nh.add_local_ipv4(TEST_LOCAL_IP);
         nh.add_local_ipv6(TEST_LOCAL_IPV6);
         nh
@@ -325,8 +337,9 @@ mod tests {
     fn lookup_unknown_v6_returns_none() {
         let now = Instant::now();
         let handler = new_handler();
-        let unknown =
-            IpAddress::V6(Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 99]));
+        let unknown = IpAddress::V6(Ipv6Address::new([
+            0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 99,
+        ]));
         assert!(handler.lookup(now, &unknown).is_none());
     }
 
@@ -359,7 +372,11 @@ mod tests {
         handler.handle_arp(now, frame, &mut rx, &mut tx);
 
         let future = now + TEST_TTL + Duration::from_secs(1);
-        assert!(handler.lookup(future, &IpAddress::V4(TEST_REMOTE_IP)).is_none());
+        assert!(
+            handler
+                .lookup(future, &IpAddress::V4(TEST_REMOTE_IP))
+                .is_none()
+        );
     }
 
     #[test]
@@ -405,7 +422,7 @@ mod tests {
     fn evict_stale_selectively_removes_only_expired() {
         let now = Instant::now();
         let short_ttl = Duration::from_secs(10);
-        let mut handler = NeighborHandler::new("test0", TEST_LOCAL_MAC, short_ttl).unwrap();
+        let mut handler = NeighborHandler::new("test0", short_ttl).unwrap();
         handler.add_local_ipv4(TEST_LOCAL_IP);
 
         let mut rx = BasicFrameBuffer::new(4);
@@ -437,7 +454,7 @@ mod tests {
     #[test]
     fn add_local_ip_v4_enables_arp_response() {
         let now = Instant::now();
-        let mut handler = NeighborHandler::new("test0", TEST_LOCAL_MAC, TEST_TTL).unwrap();
+        let mut handler = NeighborHandler::new("test0", TEST_TTL).unwrap();
 
         let new_ip = Ipv4Address::new([10, 0, 0, 1]);
         handler.add_local_ip(IpAddress::V4(new_ip));
@@ -456,7 +473,7 @@ mod tests {
     #[test]
     fn add_local_ipv4_dedup_does_not_break_responses() {
         let now = Instant::now();
-        let mut handler = NeighborHandler::new("test0", TEST_LOCAL_MAC, TEST_TTL).unwrap();
+        let mut handler = NeighborHandler::new("test0", TEST_TTL).unwrap();
         handler.add_local_ipv4(TEST_LOCAL_IP);
         handler.add_local_ipv4(TEST_LOCAL_IP); // duplicate
 

@@ -1,27 +1,30 @@
+use std::cell::UnsafeCell;
+use std::pin::Pin;
+use std::rc::Rc;
 use std::task::{Context, Poll};
 use std::time::Instant;
-use std::{pin::Pin, rc::Rc};
 
+use crate::net::checksum::{compute_udp_checksum_from_parts, compute_udp_checksum_v6_from_parts};
 use crate::net::fragment::{FragmentWriter, Packet};
-use crate::net::handler::udp::ReceivedUdpPacket;
+use crate::net::handler::udp::{BindError, ReceivedUdpPacket, UdpHandler};
 use crate::net::wire::ethernet::MacAddress;
 use crate::net::wire::ip::{IpAddress, Ipv4Address, Ipv6Address};
-use crate::net::checksum::{
-    compute_udp_checksum_from_parts, compute_udp_checksum_v6_from_parts,
-};
 use crate::net::wire::udp::{UDP_HEADER_LEN, UdpHeader};
 use crate::net::{NeighborHandler, PmtuCache};
+use crate::rt::context::with_runtime_context;
 use crate::xdp::error::WouldBlock;
 use crate::xdp::frame::{FrameBuffer, SharedFrameBuffer};
 
 use super::LocalQueue;
 
 const DEFAULT_MTU: u32 = 1500;
+const DEFAULT_SOCKET_RX_CAPACITY: usize = 256;
 
 /// A user-facing UDP socket handle.
 ///
-/// Obtained via `LocalRuntime::bind_udp()`. The handler pushes received
-/// packets into `rx_queue`; a future TX path will drain `tx_queue`.
+/// Created via `UdpSocket::new()` inside a `LocalRuntime::run()` closure,
+/// then bound to an address and port via `bind()`.
+#[derive(Debug)]
 pub struct UdpSocket<'umem> {
     local_addr: IpAddress,
     local_port: u16,
@@ -31,74 +34,69 @@ pub struct UdpSocket<'umem> {
     rx_return: SharedFrameBuffer<'umem>,
     pmtu: Rc<PmtuCache>,
     neighbor_handler: Rc<NeighborHandler>,
+    handler: Rc<UnsafeCell<UdpHandler<'umem>>>,
 }
 
 impl<'umem> UdpSocket<'umem> {
-    pub(crate) fn new(
-        local_addr: IpAddress,
-        local_port: u16,
-        rx_queue: LocalQueue<ReceivedUdpPacket<'umem>>,
-        free_frames: SharedFrameBuffer<'umem>,
-        rx_return: SharedFrameBuffer<'umem>,
-        tx_return: SharedFrameBuffer<'umem>,
-        pmtu: Rc<PmtuCache>,
-        neighbor_handler: Rc<NeighborHandler>,
-    ) -> Self {
-        Self {
-            local_addr,
-            local_port,
-            rx_queue,
-            free_frames,
-            rx_return,
-            tx_return,
-            pmtu,
-            neighbor_handler,
+    /// Create a new bound UDP socket.
+    ///
+    /// Must be called inside a `LocalRuntime::run()` closure. Panics otherwise.
+    pub fn new(addr: IpAddress, port: u16) -> Result<Self, BindError> {
+        with_runtime_context(|ctx| {
+            let handler = unsafe { &mut *ctx.udp_handler.get() };
+            let rx_queue = handler.bind(addr, port, DEFAULT_SOCKET_RX_CAPACITY)?;
+            Ok(Self {
+                local_addr: addr,
+                local_port: port,
+                rx_queue: rx_queue,
+                free_frames: ctx.free_frames.clone(),
+                tx_return: ctx.tx_return.clone(),
+                rx_return: ctx.rx_return.clone(),
+                pmtu: ctx.pmtu.clone(),
+                neighbor_handler: ctx.neighbor_handler.clone(),
+                handler: ctx.udp_handler.clone(),
+            })
+        })
+    }
+
+    /// Close this socket, unbinding from the address/port and draining queued packets.
+    pub fn close(&mut self) {
+        // SAFETY: single-threaded, no reentrant handler calls.
+        let handler = unsafe { &mut *self.handler.get() };
+        handler.unbind(self.local_addr, self.local_port);
+        // Drain any queued packets back to rx_return.
+        while let Some(pkt) = self.rx_queue.pop() {
+            pkt.packet.drain_to(&mut self.rx_return);
         }
     }
 
+    /// Returns the local address of this socket.
     pub fn local_addr(&self) -> IpAddress {
         self.local_addr
     }
 
+    /// Returns the local port of this socket.
     pub fn local_port(&self) -> u16 {
         self.local_port
     }
 
-    pub fn discard_packet(&mut self, packet: ReceivedUdpPacket<'umem>) {
-        packet.packet.drain_to(&mut self.rx_return);
-    }
-
-    pub fn send_packet_fast(&mut self, packet: ReceivedUdpPacket<'umem>) -> u32 {
-        let payload_len = packet.packet.len() as u32;
-        packet.packet.drain_to(&mut self.tx_return);
-        payload_len
-    }
-
-    /// Send a received packet back out by draining its frames to the TX path.
-    ///
-    /// Typically used after [`ReceivedUdpPacket::swap_addresses`] to echo
-    /// packets back to the sender without allocating new frames.
+    /// Receive a packet. Returns a future that resolves when a packet is available.
     #[inline(always)]
-    pub fn send_packet(
-        &mut self,
-        packet: ReceivedUdpPacket<'umem>,
-    ) -> UdpSendPacketFuture<'_, 'umem> {
-        let payload_len = packet.packet.len() as u32;
-        UdpSendPacketFuture {
-            tx_return: &mut self.tx_return,
-            pkt: packet.packet,
-            payload_len,
+    pub fn recv_from(&self) -> RecvFrom<'_, 'umem> {
+        RecvFrom {
+            rx_queue: &self.rx_queue,
         }
     }
 
+    /// Send a payload to a destination address and port.
     #[inline(always)]
     pub fn send_to<'buf>(
         &mut self,
         dst_addr: IpAddress,
         dst_port: u16,
         payload: &'buf [u8],
-    ) -> UdpSendToFuture<'_, 'buf, 'umem> {
-        UdpSendToFuture {
+    ) -> SendTo<'_, 'buf, 'umem> {
+        SendTo {
             free_frames: &mut self.free_frames,
             rx_return: &mut self.rx_return,
             tx_return: &mut self.tx_return,
@@ -113,22 +111,170 @@ impl<'umem> UdpSocket<'umem> {
         }
     }
 
+    /// Echo a received packet back with backpressure (async).
+    ///
+    /// The caller should have already called `swap_addresses()` on the packet.
     #[inline(always)]
-    pub fn recv_from(&self) -> UdpRecvFromFuture<'_, 'umem> {
-        UdpRecvFromFuture {
-            rx_queue: &self.rx_queue,
+    pub fn echo(&mut self, packet: ReceivedUdpPacket<'umem>) -> Echo<'_, 'umem> {
+        let payload_len = packet.packet.len() as u32;
+        Echo {
+            tx_return: &mut self.tx_return,
+            pkt: packet.packet,
+            payload_len,
+        }
+    }
+
+    /// Echo a received packet back immediately without backpressure (sync).
+    ///
+    /// The caller should have already called `swap_addresses()` on the packet.
+    #[inline(always)]
+    pub fn echo_immediate(&mut self, packet: ReceivedUdpPacket<'umem>) -> u32 {
+        let payload_len = packet.packet.len() as u32;
+        packet.packet.drain_to(&mut self.tx_return);
+        payload_len
+    }
+
+    /// Discard a received packet, returning its frames to the kernel.
+    #[inline(always)]
+    pub fn discard(&mut self, packet: ReceivedUdpPacket<'umem>) {
+        packet.packet.drain_to(&mut self.rx_return);
+    }
+
+    /// Split into separate receive and send halves for concurrent use.
+    pub fn split(&mut self) -> (RecvHalf<'_, 'umem>, SendHalf<'_, 'umem>) {
+        let rx_queue = &self.rx_queue;
+        let recv = RecvHalf { rx_queue };
+        let send = SendHalf {
+            free_frames: &mut self.free_frames,
+            tx_return: &mut self.tx_return,
+            rx_return: &mut self.rx_return,
+            pmtu: &self.pmtu,
+            neighbor_handler: &self.neighbor_handler,
+            src_addr: self.local_addr,
+            src_port: self.local_port,
+        };
+        (recv, send)
+    }
+}
+
+impl<'umem> Drop for UdpSocket<'umem> {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+/// Receive half of a split `UdpSocket`.
+pub struct RecvHalf<'sock, 'umem> {
+    rx_queue: &'sock LocalQueue<ReceivedUdpPacket<'umem>>,
+}
+
+impl<'sock, 'umem> RecvHalf<'sock, 'umem> {
+    #[inline(always)]
+    pub fn recv_from(&self) -> RecvFrom<'_, 'umem> {
+        RecvFrom {
+            rx_queue: self.rx_queue,
+        }
+    }
+
+    #[inline(always)]
+    pub fn recv_stream(&self) -> RecvStream<'_, 'umem> {
+        RecvStream {
+            rx_queue: self.rx_queue,
         }
     }
 }
 
-/// Future returned by [`UdpSocket::send_to`].
-///
-/// Designed for the `LocalRuntime`'s busy-poll model: the runtime
-/// repeatedly polls this future from a packet-processing loop using a
-/// no-op waker (see `rt/local.rs` and `rt/waker.rs`). Waker
-/// registration is intentionally omitted because wake-ups are driven
-/// by the polling loop, not by I/O readiness notifications.
-pub struct UdpSendToFuture<'sock, 'buf, 'umem> {
+/// Send half of a split `UdpSocket`.
+pub struct SendHalf<'sock, 'umem> {
+    free_frames: &'sock mut SharedFrameBuffer<'umem>,
+    tx_return: &'sock mut SharedFrameBuffer<'umem>,
+    rx_return: &'sock mut SharedFrameBuffer<'umem>,
+    pmtu: &'sock PmtuCache,
+    neighbor_handler: &'sock NeighborHandler,
+    src_addr: IpAddress,
+    src_port: u16,
+}
+
+impl<'sock, 'umem> SendHalf<'sock, 'umem> {
+    #[inline(always)]
+    pub fn send_to<'buf>(
+        &mut self,
+        dst_addr: IpAddress,
+        dst_port: u16,
+        payload: &'buf [u8],
+    ) -> SendTo<'_, 'buf, 'umem> {
+        SendTo {
+            free_frames: &mut self.free_frames,
+            rx_return: &mut self.rx_return,
+            tx_return: &mut self.tx_return,
+            pmtu: self.pmtu,
+            neighbor_handler: self.neighbor_handler,
+            pkt: Packet::Empty,
+            src_addr: self.src_addr,
+            src_port: self.src_port,
+            dst_addr,
+            dst_port,
+            payload,
+        }
+    }
+
+    #[inline(always)]
+    pub fn echo(&mut self, packet: ReceivedUdpPacket<'umem>) -> Echo<'_, 'umem> {
+        let payload_len = packet.packet.len() as u32;
+        Echo {
+            tx_return: &mut self.tx_return,
+            pkt: packet.packet,
+            payload_len,
+        }
+    }
+
+    #[inline(always)]
+    pub fn echo_immediate(&mut self, packet: ReceivedUdpPacket<'umem>) -> u32 {
+        let payload_len = packet.packet.len() as u32;
+        packet.packet.drain_to(&mut self.tx_return);
+        payload_len
+    }
+
+    #[inline(always)]
+    pub fn discard(&mut self, packet: ReceivedUdpPacket<'umem>) {
+        packet.packet.drain_to(&mut self.rx_return);
+    }
+}
+
+/// Future returned by `recv_from()`.
+pub struct RecvFrom<'sock, 'umem> {
+    rx_queue: &'sock LocalQueue<ReceivedUdpPacket<'umem>>,
+}
+
+impl<'sock, 'umem> Future for RecvFrom<'sock, 'umem> {
+    type Output = ReceivedUdpPacket<'umem>;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.get_mut().rx_queue.pop() {
+            Some(packet) => Poll::Ready(packet),
+            None => Poll::Pending,
+        }
+    }
+}
+
+/// Stream that yields received UDP packets.
+pub struct RecvStream<'sock, 'umem> {
+    rx_queue: &'sock LocalQueue<ReceivedUdpPacket<'umem>>,
+}
+
+impl<'sock, 'umem> futures_core::Stream for RecvStream<'sock, 'umem> {
+    type Item = ReceivedUdpPacket<'umem>;
+
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.get_mut().rx_queue.pop() {
+            Some(packet) => Poll::Ready(Some(packet)),
+            None => Poll::Pending,
+        }
+    }
+}
+
+/// Future returned by `send_to()`.
+pub struct SendTo<'sock, 'buf, 'umem> {
     free_frames: &'sock mut SharedFrameBuffer<'umem>,
     rx_return: &'sock mut SharedFrameBuffer<'umem>,
     tx_return: &'sock mut SharedFrameBuffer<'umem>,
@@ -142,10 +288,9 @@ pub struct UdpSendToFuture<'sock, 'buf, 'umem> {
     payload: &'buf [u8],
 }
 
-impl<'sock, 'buf, 'umem> UdpSendToFuture<'sock, 'buf, 'umem> {
+impl<'sock, 'buf, 'umem> SendTo<'sock, 'buf, 'umem> {
     fn prepare_udp_packet(&mut self) -> Result<Packet<'umem>, WouldBlock> {
         let now = Instant::now();
-        // Step 1: MAC address resolution.
         let dst_mac = match self.neighbor_handler.lookup(now, &self.dst_addr) {
             Some(mac) => mac,
             None => {
@@ -170,7 +315,6 @@ impl<'sock, 'buf, 'umem> UdpSendToFuture<'sock, 'buf, 'umem> {
                         );
                     }
                     _ => {
-                        // Mismatched address families — return frame and error.
                         self.rx_return.push(frame);
                     }
                 }
@@ -257,7 +401,7 @@ impl<'sock, 'buf, 'umem> UdpSendToFuture<'sock, 'buf, 'umem> {
     }
 }
 
-impl<'sock, 'buf, 'umem> Future for UdpSendToFuture<'sock, 'buf, 'umem> {
+impl<'sock, 'buf, 'umem> Future for SendTo<'sock, 'buf, 'umem> {
     type Output = u32;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -281,18 +425,14 @@ impl<'sock, 'buf, 'umem> Future for UdpSendToFuture<'sock, 'buf, 'umem> {
     }
 }
 
-/// Future returned by [`UdpSocket::send_packet`].
-///
-/// Waits until the TX return path has enough capacity for the packet's
-/// frames, then drains them. No preparation step is needed since the
-/// frames are already built.
-pub struct UdpSendPacketFuture<'sock, 'umem> {
+/// Future returned by `echo()`.
+pub struct Echo<'sock, 'umem> {
     tx_return: &'sock mut SharedFrameBuffer<'umem>,
     pkt: Packet<'umem>,
     payload_len: u32,
 }
 
-impl<'sock, 'umem> Future for UdpSendPacketFuture<'sock, 'umem> {
+impl<'sock, 'umem> Future for Echo<'sock, 'umem> {
     type Output = u32;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -309,66 +449,75 @@ impl<'sock, 'umem> Future for UdpSendPacketFuture<'sock, 'umem> {
     }
 }
 
-/// Future returned by [`UdpSocket::recv_from`].
-///
-/// Designed for the `LocalRuntime`'s busy-poll model: the runtime
-/// repeatedly polls this future from a packet-processing loop using a
-/// no-op waker. Waker registration is intentionally omitted because
-/// wake-ups are driven by the polling loop, not by I/O readiness
-/// notifications.
-pub struct UdpRecvFromFuture<'sock, 'umem> {
-    rx_queue: &'sock LocalQueue<ReceivedUdpPacket<'umem>>,
-}
-
-impl<'sock, 'umem> Future for UdpRecvFromFuture<'sock, 'umem> {
-    type Output = ReceivedUdpPacket<'umem>;
-
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        match this.rx_queue.pop() {
-            Some(packet) => Poll::Ready(packet),
-            None => Poll::Pending,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::net::wire::ethernet::MacAddress;
+    use crate::net::PmtuCache;
+    use crate::net::handler::udp::UdpHandler;
     use crate::net::wire::ip::Ipv4Address;
+    use crate::rt::context::{RuntimeContext, clear_runtime_context, set_runtime_context};
     use crate::xdp::frame::BasicFrameBuffer;
 
-    #[test]
-    fn accessors() {
-        let rx = LocalQueue::new(128);
-        let free_frames = BasicFrameBuffer::new(128).into();
-        let tx_return = BasicFrameBuffer::new(128).into();
-        let rx_return = BasicFrameBuffer::new(128).into();
-        let addr = IpAddress::V4(Ipv4Address::new([192, 168, 1, 1]));
+    /// Set up a fake runtime context for testing.
+    fn with_test_context<F: FnOnce()>(f: F) {
+        let free_frames: SharedFrameBuffer = BasicFrameBuffer::new(128).into();
+        let tx_return: SharedFrameBuffer = BasicFrameBuffer::new(128).into();
+        let rx_return: SharedFrameBuffer = BasicFrameBuffer::new(128).into();
         let pmtu = Rc::new(PmtuCache::new());
-        let neighbor_handler = Rc::new(
-            NeighborHandler::new(
-                "test0",
-                MacAddress::new([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-                Duration::from_secs(60),
-            )
-            .unwrap(),
-        );
-        let sock = UdpSocket::new(
-            addr,
-            5000,
-            rx,
+        let neighbor_handler =
+            Rc::new(NeighborHandler::new("test0", Duration::from_secs(60)).unwrap());
+        let udp_handler = Rc::new(UnsafeCell::new(UdpHandler::new(256)));
+
+        let ctx = RuntimeContext {
             free_frames,
-            rx_return,
             tx_return,
+            rx_return,
             pmtu,
             neighbor_handler,
-        );
+            udp_handler,
+        };
+        set_runtime_context(&ctx);
+        f();
+        clear_runtime_context();
+    }
 
-        assert_eq!(sock.local_addr(), addr);
-        assert_eq!(sock.local_port(), 5000);
+    #[test]
+    fn new_and_accessors() {
+        with_test_context(|| {
+            let sock = UdpSocket::new(IpAddress::V4(Ipv4Address::unspecified()), 0).unwrap();
+            assert_eq!(sock.local_addr(), IpAddress::V4(Ipv4Address::unspecified()));
+            assert_eq!(sock.local_port(), 0);
+        });
+    }
+
+    #[test]
+    fn bind_and_close_lifecycle() {
+        with_test_context(|| {
+            let addr = IpAddress::V4(Ipv4Address::new([192, 168, 1, 1]));
+            let mut sock = UdpSocket::new(addr, 5000).unwrap();
+
+            assert_eq!(sock.local_addr(), addr);
+            assert_eq!(sock.local_port(), 5000);
+
+            sock.close();
+        });
+    }
+
+    #[test]
+    fn double_bind_returns_address_in_use() {
+        with_test_context(|| {
+            let addr = IpAddress::V4(Ipv4Address::new([192, 168, 1, 1]));
+            let _sock = UdpSocket::new(addr, 5000).unwrap();
+            let err = UdpSocket::new(addr, 5000).unwrap_err();
+            assert_eq!(err, BindError::AddressInUse);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "UdpSocket::new() called outside of LocalRuntime::run()")]
+    fn new_panics_outside_runtime() {
+        let _ = UdpSocket::new(IpAddress::V4(Ipv4Address::unspecified()), 0).unwrap();
     }
 }

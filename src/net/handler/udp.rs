@@ -1,15 +1,15 @@
 use std::fmt;
 use std::time::{Duration, Instant};
 
+use crate::net::checksum::{
+    fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6, sum_words_carry,
+    verify_udp_checksum, verify_udp_checksum_v6,
+};
 use crate::net::fragment::{FragmentReader, Packet};
 use crate::net::socket::LocalQueue;
 use crate::net::wire::ethernet::EthernetFrame;
 use crate::net::wire::ip::{
     EXT_FRAGMENT, FRAGMENT_EXT_LEN, IPV6_HEADER_LEN, IpAddress, Ipv4Header, Ipv6Header,
-};
-use crate::net::checksum::{
-    fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6, sum_words_carry,
-    verify_udp_checksum, verify_udp_checksum_v6,
 };
 use crate::net::wire::udp::{UDP_HEADER_LEN, UdpHeader};
 use crate::xdp::frame::{Frame, FrameBuffer};
@@ -164,6 +164,23 @@ impl<'umem> UdpHandler<'umem> {
         }
 
         Ok(rx_queue)
+    }
+
+    /// Unbind a previously bound socket from (addr, port).
+    ///
+    /// If `addr` is the unspecified address, removes the wildcard binding for that port.
+    /// Otherwise removes the matching explicit IP binding. Cleans up the port entry
+    /// entirely if no bindings remain.
+    pub fn unbind(&mut self, addr: IpAddress, port: u16) {
+        if let Some((_, pb)) = self.bindings.iter_mut().find(|(p, _)| *p == port) {
+            if addr.is_unspecified() {
+                pb.wildcard = None;
+            } else {
+                pb.explicit.retain(|(a, _)| *a != addr);
+            }
+        }
+        self.bindings
+            .retain(|(_, pb)| !pb.explicit.is_empty() || pb.wildcard.is_some());
     }
 
     /// Called by `Ipv4Handler` for UDP frames/fragments.
@@ -1018,5 +1035,75 @@ mod tests {
         let udp = unsafe { UdpHeader::from_bytes_at(frame, udp_off) };
         assert_eq!(udp.src_port(), 53);
         assert_eq!(udp.dst_port(), 12345);
+    }
+
+    // -- unbind tests --
+
+    #[test]
+    fn unbind_explicit_removes_binding() {
+        let mut handler = UdpHandler::new(256);
+        handler.bind(IpAddress::V4(LOCAL_IPV4), 5000, 128).unwrap();
+
+        handler.unbind(IpAddress::V4(LOCAL_IPV4), 5000);
+
+        // Should be able to re-bind the same address.
+        handler.bind(IpAddress::V4(LOCAL_IPV4), 5000, 128).unwrap();
+    }
+
+    #[test]
+    fn unbind_wildcard_removes_binding() {
+        let mut handler = UdpHandler::new(256);
+        handler
+            .bind(IpAddress::V4(Ipv4Address::unspecified()), 5000, 128)
+            .unwrap();
+
+        handler.unbind(IpAddress::V4(Ipv4Address::unspecified()), 5000);
+
+        // Should be able to re-bind wildcard.
+        handler
+            .bind(IpAddress::V4(Ipv4Address::unspecified()), 5000, 128)
+            .unwrap();
+    }
+
+    #[test]
+    fn unbind_cleans_up_empty_port_entry() {
+        let mut handler = UdpHandler::new(256);
+        handler.bind(IpAddress::V4(LOCAL_IPV4), 5000, 128).unwrap();
+
+        handler.unbind(IpAddress::V4(LOCAL_IPV4), 5000);
+
+        // Port entry should be removed — no routing should happen.
+        let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 5000, b"hello");
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+        let mut rx = BasicFrameBuffer::new(4);
+        handler.process_ipv4(frame, &mut rx);
+        assert_eq!(rx.num_frames(), 1, "packet should be returned, not routed");
+    }
+
+    #[test]
+    fn unbind_preserves_other_bindings_on_same_port() {
+        let other_ip = Ipv4Address::new([10, 0, 0, 99]);
+        let mut handler = UdpHandler::new(256);
+        handler.bind(IpAddress::V4(LOCAL_IPV4), 5000, 128).unwrap();
+        let other_q = handler.bind(IpAddress::V4(other_ip), 5000, 128).unwrap();
+
+        // Unbind only LOCAL_IPV4.
+        handler.unbind(IpAddress::V4(LOCAL_IPV4), 5000);
+
+        // other_ip binding should still work.
+        let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, other_ip, 12345, 5000, b"hello");
+        let len = buf.len();
+        let frame = Frame::new(0, &mut buf, len, false);
+        let mut rx = BasicFrameBuffer::new(4);
+        handler.process_ipv4(frame, &mut rx);
+        assert_eq!(other_q.len(), 1);
+    }
+
+    #[test]
+    fn unbind_nonexistent_is_noop() {
+        let mut handler = UdpHandler::new(256);
+        // Should not panic.
+        handler.unbind(IpAddress::V4(LOCAL_IPV4), 5000);
     }
 }

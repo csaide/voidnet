@@ -388,7 +388,8 @@ mod tests {
         Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 
     fn new_handler() -> NeighborHandler {
-        let mut nh = NeighborHandler::new("test0", TEST_LOCAL_MAC, TEST_TTL).unwrap();
+        let mut nh = NeighborHandler::new("test0", TEST_TTL).unwrap();
+        nh.set_local_mac(TEST_LOCAL_MAC);
         nh.add_local_ipv4(TEST_LOCAL_IP);
         nh.add_local_ipv6(TEST_LOCAL_IPV6);
         nh

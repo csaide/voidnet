@@ -3,6 +3,7 @@ use std::time::Instant;
 use crate::net::wire::ethernet::MacAddress;
 
 /// A neighbor entry representation.
+#[derive(Debug)]
 pub(super) struct NeighborEntry {
     mac: MacAddress,
     expires_at: Instant,

@@ -148,8 +148,9 @@ mod tests {
     const TEST_TTL: Duration = Duration::from_secs(60);
 
     fn new_handler() -> NeighborHandler {
-        let mut nh = NeighborHandler::new("test0", TEST_LOCAL_MAC, TEST_TTL).unwrap();
+        let mut nh = NeighborHandler::new("test0", TEST_TTL).unwrap();
         nh.add_local_ipv4(TEST_LOCAL_IP);
+        nh.set_local_mac(TEST_LOCAL_MAC);
         nh
     }
 
@@ -415,7 +416,7 @@ mod tests {
     #[test]
     fn expired_entry_returns_none() {
         let now = Instant::now();
-        let mut handler = NeighborHandler::new("test0", TEST_LOCAL_MAC, Duration::ZERO).unwrap();
+        let mut handler = NeighborHandler::new("test0", Duration::ZERO).unwrap();
         handler.add_local_ipv4(TEST_LOCAL_IP);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);

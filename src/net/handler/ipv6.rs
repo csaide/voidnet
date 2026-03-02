@@ -244,12 +244,11 @@ impl Ipv6Handler {
 
 #[cfg(test)]
 mod tests {
-    use super::super::wire::ethernet::MacAddress;
     use super::super::wire::ip::{IpAddress, Ipv6Address};
     use super::*;
+    use crate::net::checksum::compute_udp_checksum_v6;
     use crate::net::pmtu::PmtuCache;
     use crate::net::wire::ip::NO_NEXT_HEADER;
-    use crate::net::checksum::compute_udp_checksum_v6;
     use crate::net::wire::udp::UDP_HEADER_LEN;
     use crate::xdp::frame::BasicFrameBuffer;
     use std::time::Duration;
@@ -258,14 +257,13 @@ mod tests {
         Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     const LOCAL_IP: Ipv6Address =
         Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-    const TEST_MAC: MacAddress = MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
 
     fn new_handler() -> Ipv6Handler {
         Ipv6Handler::new()
     }
 
     fn new_neighbor_handler() -> NeighborHandler {
-        NeighborHandler::new("test0", TEST_MAC, Duration::from_secs(60)).unwrap()
+        NeighborHandler::new("test0", Duration::from_secs(60)).unwrap()
     }
 
     fn new_udp_handler<'umem>() -> UdpHandler<'umem> {

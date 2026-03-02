@@ -9,6 +9,7 @@ use crate::xdp::frame::{BasicFrameBuffer, FrameBuffer};
 
 use super::Frame;
 
+#[derive(Debug)]
 pub struct SharedFrameBuffer<'umem> {
     inner: Rc<UnsafeCell<BasicFrameBuffer<'umem>>>,
 }

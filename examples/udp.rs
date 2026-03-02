@@ -9,6 +9,8 @@ use std::{
 
 use clap::Parser;
 
+use futures_util::StreamExt;
+use libvoid::net::{socket::UdpSocket, wire::ip::SocketAddr};
 use libvoid::rt::LocalRuntime;
 
 mod common;
@@ -19,6 +21,8 @@ use common::{BaseArgs, Stats};
 struct Args {
     #[command(flatten)]
     base: BaseArgs,
+    #[arg(short, long, default_value = "[fc00:dead:cafe:1::1]:8080")]
+    local_addr: SocketAddr,
 }
 
 impl Deref for Args {
@@ -39,27 +43,23 @@ fn main() {
     let mut stats = Stats::new();
     let args = Args::parse();
 
-    let mut runtime = LocalRuntime::builder(
-        &args.if_name,
-        args.queue,
-        [0xe2, 0x9a, 0x1b, 0xd4, 0xa7, 0x1c],
-    )
-    .arp_ttl(Duration::from_secs(1200))
-    .attach_mode(args.attach_mode)
-    .enable_fragmentation(args.enable_fragmentation)
-    .completion_ring_size(args.completion_ring_size)
-    .fill_ring_size(args.fill_ring_size)
-    .frame_size(args.frame_size)
-    .busy_poll(args.busy_poll)
-    .busy_poll_batch_size(args.busy_poll_batch_size)
-    .busy_poll_timeout_us(args.busy_poll_timeout_us)
-    .huge_tables(args.huge_tables)
-    .unaligned(args.unaligned)
-    .rx_ring_size(args.rx_ring_size)
-    .tx_ring_size(args.tx_ring_size)
-    .copy_mode(args.copy_mode)
-    .build()
-    .expect("Failed to create runtime");
+    let mut runtime = LocalRuntime::builder(&args.if_name, args.queue)
+        .arp_ttl(Duration::from_secs(1200))
+        .attach_mode(args.attach_mode)
+        .enable_fragmentation(args.enable_fragmentation)
+        .completion_ring_size(args.completion_ring_size)
+        .fill_ring_size(args.fill_ring_size)
+        .frame_size(args.frame_size)
+        .busy_poll(args.busy_poll)
+        .busy_poll_batch_size(args.busy_poll_batch_size)
+        .busy_poll_timeout_us(args.busy_poll_timeout_us)
+        .huge_tables(args.huge_tables)
+        .unaligned(args.unaligned)
+        .rx_ring_size(args.rx_ring_size)
+        .tx_ring_size(args.tx_ring_size)
+        .copy_mode(args.copy_mode)
+        .build()
+        .expect("Failed to create runtime");
 
     let exit = Arc::new(AtomicBool::new(false));
     ctrlc::set_handler({
@@ -70,29 +70,18 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let addr = "fc00:dead:cafe:1::1"
-        .parse()
-        .expect("Failed to parse IPv6 address");
-    let mut socket = runtime
-        .bind_udp(addr, 8080)
-        .expect("Failed to bind UDP socket");
-
     runtime
         .run(exit, async move {
-            println!("Listening on {:?}:8080", addr);
+            let mut socket =
+                UdpSocket::new(args.local_addr.ip, args.local_addr.port).expect("Failed to bind");
+            println!("Listening on {}:8080", args.local_addr);
 
-            loop {
-                let mut packet = socket.recv_from().await;
-
-                // Just some monitoring to see how fast we can recieve/send packets.
+            let (recv, mut send) = socket.split();
+            let mut recv_stream = recv.recv_stream();
+            while let Some(packet) = recv_stream.next().await {
                 stats.update(packet.packet.len(), false);
                 stats.maybe_print();
-
-                // Swap the addresses so we can send the packet back to the sender.
-                packet.swap_addresses();
-
-                // Send the packet back to the sender.
-                socket.send_packet_fast(packet);
+                send.discard(packet);
             }
         })
         .expect("Failed to run runtime");

@@ -1,3 +1,4 @@
+use std::cell::UnsafeCell;
 use std::rc::Rc;
 use std::task::Poll;
 use std::time::Duration;
@@ -23,15 +24,12 @@ use crate::{
     net::{
         NeighborHandler, PmtuCache,
         handler::{ipv4::Ipv4Handler, ipv6::Ipv6Handler, udp::UdpHandler},
-        socket::UdpSocket,
-        wire::{
-            ethernet::{EtherTypes, EthernetFrame, MacAddress},
-            ip::IpAddress,
-        },
+        wire::ethernet::{EtherTypes, EthernetFrame},
     },
     xdp::frame::SharedFrameBuffer,
 };
 
+use super::context::{RuntimeContext, clear_runtime_context, set_runtime_context};
 use super::waker;
 
 const DEFAULT_ARP_TTL: Duration = Duration::from_secs(60);
@@ -46,18 +44,16 @@ pub struct LocalRuntimeBuilder<'name> {
     ctx: XdpContextBuilder<'name>,
     umem: UmemBuilder,
     socket: SocketBuilder<'name>,
-    local_mac: [u8; 6],
     arp_ttl: Duration,
 }
 
 impl<'name> LocalRuntimeBuilder<'name> {
-    pub fn new(if_name: &'name str, queue: u32, local_mac: [u8; 6]) -> Self {
+    pub fn new(if_name: &'name str, queue: u32) -> Self {
         Self {
             if_name,
             ctx: XdpContextBuilder::new(if_name),
             umem: UmemBuilder::new(),
             socket: SocketBuilder::new(if_name, queue),
-            local_mac,
             arp_ttl: DEFAULT_ARP_TTL,
         }
     }
@@ -138,18 +134,9 @@ impl<'name> LocalRuntimeBuilder<'name> {
         let mut ctx = self.ctx.build()?;
         let umem = self.umem.build()?;
         let socket = self.socket.build(&mut ctx, umem.owner().clone())?;
-        LocalRuntime::new(
-            self.if_name,
-            ctx,
-            umem,
-            socket,
-            self.local_mac,
-            self.arp_ttl,
-        )
+        LocalRuntime::new(self.if_name, ctx, umem, socket, self.arp_ttl)
     }
 }
-
-const DEFAULT_SOCKET_RX_CAPACITY: usize = 256;
 
 /// Single-threaded packet processing runtime with integrated protocol handlers.
 ///
@@ -172,7 +159,7 @@ pub struct LocalRuntime<'umem> {
     // Main IPv6 protocol handler calls into neighbor_handler and udp_handler and tcp_handler.
     ipv6_handler: Ipv6Handler,
     // UDP handler is used to bind and send UDP packets, handling things like fragmentation and reassembly.
-    udp_handler: UdpHandler<'umem>,
+    udp_handler: Rc<UnsafeCell<UdpHandler<'umem>>>,
     // Set of empty ready to go frame structs that can be used for building outbound packets.
     free_frames: SharedFrameBuffer<'umem>,
     // Frames that are filled and ready to be sent to the network.
@@ -184,12 +171,8 @@ pub struct LocalRuntime<'umem> {
 }
 
 impl<'umem> LocalRuntime<'umem> {
-    pub fn builder<'name>(
-        if_name: &'name str,
-        queue: u32,
-        local_mac: [u8; 6],
-    ) -> LocalRuntimeBuilder<'name> {
-        LocalRuntimeBuilder::new(if_name, queue, local_mac)
+    pub fn builder<'name>(if_name: &'name str, queue: u32) -> LocalRuntimeBuilder<'name> {
+        LocalRuntimeBuilder::new(if_name, queue)
     }
 
     fn new(
@@ -197,15 +180,10 @@ impl<'umem> LocalRuntime<'umem> {
         ctx: XdpContext,
         umem: Umem<'umem>,
         socket: Socket<'umem>,
-        local_mac: [u8; 6],
         arp_ttl: Duration,
     ) -> Result<Self> {
         let mtu = ctx.info().mtu;
-        let neighbor_handler = Rc::new(NeighborHandler::new(
-            if_name,
-            MacAddress::from(local_mac),
-            arp_ttl,
-        )?);
+        let neighbor_handler = Rc::new(NeighborHandler::new(if_name, arp_ttl)?);
         let pmtu = Rc::new(PmtuCache::with_mtu(mtu));
 
         let tx_return = BasicFrameBuffer::new(umem.num_frames()).into();
@@ -220,30 +198,12 @@ impl<'umem> LocalRuntime<'umem> {
             pmtu,
             ipv4_handler: Ipv4Handler::new(),
             ipv6_handler: Ipv6Handler::new(),
-            udp_handler: UdpHandler::new(256),
+            udp_handler: Rc::new(UnsafeCell::new(UdpHandler::new(256))),
             free_frames,
             tx_return,
             rx_return,
             evict_counter: 0,
         })
-    }
-
-    /// Bind a UDP socket to the given address and port.
-    pub fn bind_udp(&mut self, addr: IpAddress, port: u16) -> Result<UdpSocket<'umem>> {
-        let rx_queue = self
-            .udp_handler
-            .bind(addr, port, DEFAULT_SOCKET_RX_CAPACITY)
-            .map_err(|e| crate::xdp::error::Error::Other(e.to_string()))?;
-        Ok(UdpSocket::new(
-            addr,
-            port,
-            rx_queue,
-            self.free_frames.clone(),
-            self.rx_return.clone(),
-            self.tx_return.clone(),
-            self.pmtu.clone(),
-            self.neighbor_handler.clone(),
-        ))
     }
 
     /// Runs the event loop until `exit` is set or `fut` completes.
@@ -254,9 +214,27 @@ impl<'umem> LocalRuntime<'umem> {
     where
         F: Future<Output = ()>,
     {
-        // Before we can operate properly we need to seed the kernel with free frames to read into, this logic
-        // will take as many frames as it can from the free_frames buffer and submit them to the kernel. Note the logic
-        // ensures there will be a set of frames still present here equaling the number of slots in the completion (send) ring.
+        // Set up the thread-local runtime context so UdpSocket::new() can access shared handles.
+        let rt_ctx = RuntimeContext {
+            free_frames: self.free_frames.clone(),
+            tx_return: self.tx_return.clone(),
+            rx_return: self.rx_return.clone(),
+            pmtu: self.pmtu.clone(),
+            neighbor_handler: self.neighbor_handler.clone(),
+            udp_handler: self.udp_handler.clone(),
+        };
+        set_runtime_context(&rt_ctx);
+
+        // Drop guard ensures the context is cleared even on early return/panic.
+        struct ClearGuard;
+        impl Drop for ClearGuard {
+            fn drop(&mut self) {
+                clear_runtime_context();
+            }
+        }
+        let _guard = ClearGuard;
+
+        // Before we can operate properly we need to seed the kernel with free frames to read into.
         self.umem.maybe_wake_fill_queue(self.socket.fd())?;
         self.umem
             .process_fill_queue(&mut self.free_frames)
@@ -266,23 +244,18 @@ impl<'umem> LocalRuntime<'umem> {
         let mut cx = Context::from_waker(&waker);
         pin_mut!(fut);
 
-        // We need a storage container for the incoming frames, this will be used to store the frames
-        // that are read from the network while the runtime is processing them.
         let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
         while !exit.load(Ordering::Relaxed) {
             let now = std::time::Instant::now();
 
-            // We only drive the network read logic if we have new network frames to process.
-            //
-            // This will return with 1 > N frames in the success case, as soon as possible. If there are no frames it will return an error,
-            // at this point we would have blocked so execute the runtime loop again but don't bother processing the frames.
             if let Ok(_) = self.socket.recv(&mut buffer) {
+                // SAFETY: single-threaded, no reentrant handler calls.
+                let udp_handler = unsafe { &mut *self.udp_handler.get() };
                 let Self {
                     neighbor_handler,
                     ipv4_handler,
                     ipv6_handler,
                     pmtu,
-                    udp_handler,
                     ..
                 } = self;
 
@@ -321,39 +294,31 @@ impl<'umem> LocalRuntime<'umem> {
                             );
                         }
                         _ => {
-                            // Unsupported ethertype, return the frame to the kernel.
                             self.rx_return.push(frame);
                         }
                     }
                 }
             }
 
-            // Drive the user future, we aren't using wakers here, because in reality we don't
-            // _actually_ have readiness due to the fact that the futures in use here are just
-            // vectors of frames that can't fail. We are designed to be as low latency as possible,
-            // the indirection of having a waker call just to add this back into play is unnecessary.
             if let Poll::Ready(_) = fut.as_mut().poll(&mut cx) {
                 return Ok(());
             }
 
-            // Periodically evict stale entries (~every 1024 iterations).
             self.evict_counter = self.evict_counter.wrapping_add(1);
             if self.evict_counter & 0x3FF == 0 {
-                self.udp_handler
-                    .evict_stale(now, Duration::from_secs(30), &mut self.rx_return);
+                // SAFETY: single-threaded, no reentrant handler calls.
+                let udp_handler = unsafe { &mut *self.udp_handler.get() };
+                udp_handler.evict_stale(now, Duration::from_secs(30), &mut self.rx_return);
                 self.neighbor_handler.evict_stale(now);
                 self.pmtu.evict_stale(now);
             }
 
-            // Handle the frames ready to send this will push all of them into the socket for transmission.
             while self.tx_return.num_frames() > 0 {
                 self.socket.maybe_wake()?;
-
                 let _ = self.socket.send(&mut self.tx_return);
                 let _ = self.umem.process_completion_queue(&mut self.rx_return);
             }
 
-            // Now refill the fill queue with frames to read into, the rest of the frames get pushed back into the free_frames buffer.
             let _ = self.umem.process_fill_queue(&mut self.rx_return);
             self.umem.maybe_wake_fill_queue(self.socket.fd())?;
 
