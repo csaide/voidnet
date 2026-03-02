@@ -273,7 +273,6 @@ fn handle_neighbor_advertisement<'umem>(
     rx_return: &mut impl FrameBuffer<'umem>,
 ) {
     if icmpv6_len < NDP_MIN_NS_NA_LEN {
-        eprintln!("ndp: NA too short ({} bytes)", icmpv6_len);
         rx_return.push(frame);
         return;
     }
@@ -307,7 +306,6 @@ fn handle_router_advertisement<'umem>(
     rx_return: &mut impl FrameBuffer<'umem>,
 ) {
     if icmpv6_len < NDP_MIN_RA_LEN {
-        eprintln!("ndp: RA too short ({} bytes)", icmpv6_len);
         rx_return.push(frame);
         return;
     }

@@ -121,9 +121,9 @@ pub fn handle_icmpv6<'umem>(
 
             rx_return.push(frame);
         }
-        Icmpv6Types::RouterSolicitation
-        | Icmpv6Types::RouterAdvertisement
-        | Icmpv6Types::NeighborSolicitation => {
+        Icmpv6Types::RouterAdvertisement
+        | Icmpv6Types::NeighborSolicitation
+        | Icmpv6Types::NeighborAdvertisement => {
             neighbor_handler.handle_ndp(
                 now,
                 frame,

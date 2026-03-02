@@ -76,7 +76,7 @@ fn main() {
         .run(exit, async move {
             let mut socket =
                 UdpSocket::new(args.local_addr.ip, args.local_addr.port).expect("Failed to bind");
-            println!("Listening on {}:8080", args.local_addr);
+            println!("Listening on {}", args.local_addr);
 
             let (recv, mut send) = socket.split();
             let mut recv_stream = recv.recv_stream();

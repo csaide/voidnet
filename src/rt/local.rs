@@ -279,35 +279,36 @@ impl<'umem> LocalRuntime<'umem> {
         let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
         let mut now = coarsetime::Instant::now();
         while !exit.load(Ordering::Relaxed) {
-            let received = if let Ok(received) = self.socket.recv(&mut buffer) {
-                // SAFETY: single-threaded, no reentrant handler calls.
-                let udp_handler = unsafe { &mut *self.udp_handler.get() };
-                let Self {
-                    neighbor_handler,
-                    ethernet_handler,
-                    ipv4_handler,
-                    ipv6_handler,
-                    pmtu,
-                    ..
-                } = self;
-
-                for frame in buffer.take_frames() {
-                    ethernet_handler.handle(
-                        frame,
-                        ipv4_handler,
-                        ipv6_handler,
-                        udp_handler,
+            let received = match self.socket.recv(&mut buffer) {
+                Err(_) => 0,
+                Ok(received) => {
+                    // SAFETY: single-threaded, no reentrant handler calls.
+                    let udp_handler = unsafe { &mut *self.udp_handler.get() };
+                    let Self {
                         neighbor_handler,
                         pmtu,
-                        now,
-                        &mut self.free_frames,
-                        &mut self.rx_return,
-                        &mut self.tx_return,
-                    );
+                        ethernet_handler,
+                        ipv4_handler,
+                        ipv6_handler,
+                        ..
+                    } = self;
+
+                    for frame in buffer.take_frames() {
+                        ethernet_handler.handle(
+                            frame,
+                            ipv4_handler,
+                            ipv6_handler,
+                            udp_handler,
+                            neighbor_handler,
+                            pmtu,
+                            now,
+                            &mut self.free_frames,
+                            &mut self.rx_return,
+                            &mut self.tx_return,
+                        );
+                    }
+                    received
                 }
-                received
-            } else {
-                0
             };
 
             if let Poll::Ready(_) = fut.as_mut().poll(&mut cx) {
