@@ -139,7 +139,7 @@ impl Producer<Init> {
     ///     return nb;
     /// }
     /// ```
-    #[inline(always)]
+    // #[inline(always)]
     pub fn reserve(&mut self, batch_size: u32) -> (u32, u32) {
         if self.nb_free(batch_size) < batch_size {
             return (0, 0);
@@ -181,7 +181,7 @@ impl Producer<Init> {
     /// 	return &addrs[idx & fill->mask];
     /// }
     /// ```
-    #[inline(always)]
+    // #[inline(always)]
     pub fn fill_addr(&mut self, index: u32) -> *mut u64 {
         unsafe { (self.ring.ring as *mut u64).add((index & self.ring.mask) as usize) }
     }
@@ -219,7 +219,7 @@ impl Producer<Init> {
     /// 	return *r->flags & XDP_RING_NEED_WAKEUP;
     /// }
     /// ```
-    #[inline(always)]
+    // #[inline(always)]
     pub fn needs_wakeup(&self) -> bool {
         unsafe { *self.ring.flags & XDP_RING_NEED_WAKEUP != 0 }
     }

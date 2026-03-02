@@ -33,6 +33,8 @@ pub struct NeighborHandler {
     local_ipv6: Vec<Ipv6Address>,
     table: DashMap<IpAddress, NeighborEntry>,
     ttl: Duration,
+    rx_offload: bool,
+    tx_offload: bool,
 }
 
 impl NeighborHandler {
@@ -66,7 +68,15 @@ impl NeighborHandler {
             local_ipv6,
             table: DashMap::new(),
             ttl,
+            rx_offload: false,
+            tx_offload: false,
         })
+    }
+
+    /// Sets the checksum offload flags.
+    pub fn set_offload(&mut self, rx_offload: bool, tx_offload: bool) {
+        self.rx_offload = rx_offload;
+        self.tx_offload = tx_offload;
     }
 
     /// Sets the local MAC address.
@@ -170,6 +180,7 @@ impl NeighborHandler {
             self.local_mac,
             source_ip,
             target_ip,
+            self.tx_offload,
             frame,
             rx_return,
             tx_return,
@@ -228,6 +239,8 @@ impl NeighborHandler {
             &self.table,
             &self.local_ipv6,
             self.local_mac,
+            self.rx_offload,
+            self.tx_offload,
             frame,
             icmpv6_offset,
             icmpv6_len,

@@ -38,6 +38,8 @@ pub fn handle_icmpv6<'umem>(
     neighbor_handler: &NeighborHandler,
     pmtu: &PmtuCache,
     now: Instant,
+    rx_offload: bool,
+    tx_offload: bool,
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {
@@ -52,8 +54,9 @@ pub fn handle_icmpv6<'umem>(
 
     let icmpv6_end = icmpv6_offset + icmpv6_len;
 
-    if compute_icmpv6_checksum(&src_addr, &dst_addr, &frame[icmpv6_offset..icmpv6_end])
-        != [0x00, 0x00]
+    if !rx_offload
+        && compute_icmpv6_checksum(&src_addr, &dst_addr, &frame[icmpv6_offset..icmpv6_end])
+            != [0x00, 0x00]
     {
         rx_return.push(frame);
         return;
@@ -89,12 +92,14 @@ pub fn handle_icmpv6<'umem>(
             let icmpv6 = Icmpv6Header::from_bytes_at_mut(&mut frame, icmpv6_offset);
             icmpv6.icmp_type = Icmpv6Types::EchoReply;
             icmpv6.checksum = [0, 0];
-            let cksum = compute_icmpv6_checksum(
-                &dst_addr, // new src = old dst
-                &src_addr, // new dst = old src
-                &frame[icmpv6_offset..icmpv6_end],
-            );
-            Icmpv6Header::from_bytes_at_mut(&mut frame, icmpv6_offset).checksum = cksum;
+            if !tx_offload {
+                let cksum = compute_icmpv6_checksum(
+                    &dst_addr, // new src = old dst
+                    &src_addr, // new dst = old src
+                    &frame[icmpv6_offset..icmpv6_end],
+                );
+                Icmpv6Header::from_bytes_at_mut(&mut frame, icmpv6_offset).checksum = cksum;
+            }
 
             tx_return.push(frame);
         }
@@ -159,6 +164,7 @@ pub fn send_icmpv6_error<'umem>(
     body: [u8; 4],
     orig_upper_protocol: u8,
     orig_upper_offset: usize,
+    tx_offload: bool,
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {
@@ -252,13 +258,15 @@ pub fn send_icmpv6_error<'umem>(
     }
 
     // Compute and write ICMPv6 checksum (over pseudo-header + message).
-    let icmp_end = icmp_start + icmpv6_msg_len;
-    let cksum = compute_icmpv6_checksum(
-        &dst_addr, // new src
-        &src_addr, // new dst
-        &frame[icmp_start..icmp_end],
-    );
-    Icmpv6Header::from_bytes_at_mut(&mut frame, icmp_start).checksum = cksum;
+    if !tx_offload {
+        let icmp_end = icmp_start + icmpv6_msg_len;
+        let cksum = compute_icmpv6_checksum(
+            &dst_addr, // new src
+            &src_addr, // new dst
+            &frame[icmp_start..icmp_end],
+        );
+        Icmpv6Header::from_bytes_at_mut(&mut frame, icmp_start).checksum = cksum;
+    }
 
     tx_return.push(frame);
 }
@@ -391,6 +399,8 @@ mod tests {
             &mut neighbor_handler,
             &mut PmtuCache::new(),
             now,
+            false,
+            false,
             &mut rx,
             &mut tx,
         );
@@ -453,6 +463,8 @@ mod tests {
             &mut neighbor_handler,
             &mut PmtuCache::new(),
             now,
+            false,
+            false,
             &mut rx,
             &mut tx,
         );
@@ -486,6 +498,8 @@ mod tests {
             &mut neighbor_handler,
             &mut PmtuCache::new(),
             now,
+            false,
+            false,
             &mut rx,
             &mut tx,
         );
@@ -513,6 +527,8 @@ mod tests {
             &mut neighbor_handler,
             &mut PmtuCache::new(),
             now,
+            false,
+            false,
             &mut rx,
             &mut tx,
         );
@@ -552,6 +568,8 @@ mod tests {
             &mut neighbor_handler,
             &mut PmtuCache::new(),
             now,
+            false,
+            false,
             &mut rx,
             &mut tx,
         );
@@ -613,6 +631,8 @@ mod tests {
             &mut neighbor_handler,
             &mut pmtu,
             now,
+            false,
+            false,
             &mut rx,
             &mut tx,
         );
@@ -647,6 +667,7 @@ mod tests {
             [0; 4],
             99,
             upper_offset,
+            false,
             &mut rx,
             &mut tx,
         );
@@ -702,6 +723,7 @@ mod tests {
             1280u32.to_be_bytes(),
             17,
             upper_offset,
+            false,
             &mut rx,
             &mut tx,
         );
@@ -734,6 +756,7 @@ mod tests {
             6u32.to_be_bytes(),
             99,
             upper_offset,
+            false,
             &mut rx,
             &mut tx,
         );
@@ -766,6 +789,7 @@ mod tests {
                 [0; 4],
                 proto,
                 upper_offset,
+                false,
                 &mut rx,
                 &mut tx,
             );
@@ -830,6 +854,7 @@ mod tests {
             1280u32.to_be_bytes(),
             17,
             upper_offset,
+            false,
             &mut rx,
             &mut tx,
         );
@@ -855,6 +880,7 @@ mod tests {
             6u32.to_be_bytes(),
             99,
             upper_offset,
+            false,
             &mut rx,
             &mut tx,
         );
@@ -880,6 +906,7 @@ mod tests {
             [0; 4],
             IpProtocols::IcmpV6,
             upper_offset,
+            false,
             &mut rx,
             &mut tx,
         );

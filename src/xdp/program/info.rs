@@ -29,6 +29,10 @@ pub struct XdpInfo {
     ///
     /// Note this is an additional field that we use in this library, its not part of the original xdp_info struct in libxdp.
     pub mtu: u32,
+    /// Whether the XDP program supports RX checksum offloading.
+    pub rx_offload: bool,
+    /// Whether the XDP program supports TX checksum offloading.
+    pub tx_offload: bool,
 }
 
 impl XdpInfo {
@@ -121,6 +125,8 @@ impl std::fmt::Debug for XdpInfo {
             .field("attach_mode", &self.attach_mode)
             .field("max_fragments", &self.xdp_zc_max_segs)
             .field("mtu", &self.mtu)
+            .field("rx_offload", &self.rx_offload)
+            .field("tx_offload", &self.tx_offload)
             .field("features", &features)
             .finish()
     }

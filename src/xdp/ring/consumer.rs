@@ -132,7 +132,7 @@ impl Consumer<Init> {
     ///     return entries;
     /// }
     /// ```
-    #[inline(always)]
+    // #[inline(always)]
     pub fn peek(&mut self, batch_size: u32) -> (u32, u32) {
         let mut idx: u32 = 0;
         let entries = self.nb_avail(batch_size);
@@ -159,7 +159,7 @@ impl Consumer<Init> {
     ///     return &descs[idx & rx->mask];
     /// }
     /// ```
-    #[inline(always)]
+    // #[inline(always)]
     pub fn rx_desc(&mut self, index: u32) -> &xdp_desc {
         unsafe { &*(self.ring.ring as *const xdp_desc).add((index & self.ring.mask) as usize) }
     }
@@ -197,7 +197,7 @@ impl Consumer<Init> {
     ///     __atomic_store_n(cons->consumer, *cons->consumer + nb, __ATOMIC_RELEASE);
     /// }
     /// ```
-    #[inline(always)]
+    // #[inline(always)]
     pub fn release(&mut self, count: u32) {
         unsafe {
             AtomicU32::from_ptr(self.ring.consumer)

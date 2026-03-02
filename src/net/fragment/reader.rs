@@ -645,7 +645,7 @@ mod tests {
         }
 
         let packet = FragmentWriter::fragment_ipv4(
-            src_mac, dst_mac, src_ip, dst_ip, 64, &transport, &payload, 1500, &mut free,
+            src_mac, dst_mac, src_ip, dst_ip, 64, &transport, &payload, 1500, false, &mut free,
         )
         .unwrap();
 
@@ -746,7 +746,7 @@ mod tests {
         }
 
         let packet = FragmentWriter::fragment_ipv4(
-            src_mac, dst_mac, src_ip, dst_ip, 64, &transport, payload, 1500, &mut free,
+            src_mac, dst_mac, src_ip, dst_ip, 64, &transport, payload, 1500, false, &mut free,
         )
         .unwrap();
 

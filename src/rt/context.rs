@@ -16,6 +16,7 @@ pub(crate) struct RuntimeContext<'umem> {
     pub pmtu: Rc<PmtuCache>,
     pub neighbor_handler: Rc<NeighborHandler>,
     pub udp_handler: Rc<UnsafeCell<UdpHandler<'umem>>>,
+    pub tx_offload: bool,
 }
 
 pub(crate) fn set_runtime_context<'umem>(ctx: &RuntimeContext<'umem>) {

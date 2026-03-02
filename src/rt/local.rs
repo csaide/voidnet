@@ -182,8 +182,15 @@ impl<'umem> LocalRuntime<'umem> {
         socket: Socket<'umem>,
         arp_ttl: Duration,
     ) -> Result<Self> {
-        let mtu = ctx.info().mtu;
-        let neighbor_handler = Rc::new(NeighborHandler::new(if_name, arp_ttl)?);
+        let info = ctx.info();
+        println!("info: {:?}", info);
+        let mtu = info.mtu;
+        let rx_offload = info.rx_offload;
+        let tx_offload = info.tx_offload;
+
+        let mut neighbor_handler = NeighborHandler::new(if_name, arp_ttl)?;
+        neighbor_handler.set_offload(rx_offload, tx_offload);
+        let neighbor_handler = Rc::new(neighbor_handler);
         let pmtu = Rc::new(PmtuCache::with_mtu(mtu));
 
         let tx_return = BasicFrameBuffer::new(umem.num_frames()).into();
@@ -196,9 +203,9 @@ impl<'umem> LocalRuntime<'umem> {
             socket,
             neighbor_handler,
             pmtu,
-            ipv4_handler: Ipv4Handler::new(),
-            ipv6_handler: Ipv6Handler::new(),
-            udp_handler: Rc::new(UnsafeCell::new(UdpHandler::new(256))),
+            ipv4_handler: Ipv4Handler::new(rx_offload, tx_offload),
+            ipv6_handler: Ipv6Handler::new(rx_offload, tx_offload),
+            udp_handler: Rc::new(UnsafeCell::new(UdpHandler::new(256, rx_offload))),
             free_frames,
             tx_return,
             rx_return,
@@ -222,6 +229,7 @@ impl<'umem> LocalRuntime<'umem> {
             pmtu: self.pmtu.clone(),
             neighbor_handler: self.neighbor_handler.clone(),
             udp_handler: self.udp_handler.clone(),
+            tx_offload: self._ctx.info().tx_offload,
         };
         set_runtime_context(&rt_ctx);
 
@@ -245,9 +253,8 @@ impl<'umem> LocalRuntime<'umem> {
         pin_mut!(fut);
 
         let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
+        let mut now = coarsetime::Instant::now();
         while !exit.load(Ordering::Relaxed) {
-            let now = coarsetime::Instant::recent();
-
             if let Ok(_) = self.socket.recv(&mut buffer) {
                 // SAFETY: single-threaded, no reentrant handler calls.
                 let udp_handler = unsafe { &mut *self.udp_handler.get() };
@@ -308,9 +315,18 @@ impl<'umem> LocalRuntime<'umem> {
             if self.evict_counter & 0x3FF == 0 {
                 // SAFETY: single-threaded, no reentrant handler calls.
                 let udp_handler = unsafe { &mut *self.udp_handler.get() };
+
+                // Evict stale UDP fragments.
                 udp_handler.evict_stale(now, Duration::from_secs(30), &mut self.rx_return);
+
+                // Evict stale neighbor entries.
                 self.neighbor_handler.evict_stale(now);
+
+                // Evict stale PMTU entries.
                 self.pmtu.evict_stale(now);
+
+                // Update our current timestamp.
+                now = coarsetime::Instant::now();
             }
 
             while self.tx_return.num_frames() > 0 {
@@ -319,8 +335,9 @@ impl<'umem> LocalRuntime<'umem> {
                 let _ = self.umem.process_completion_queue(&mut self.rx_return);
             }
 
-            let _ = self.umem.process_fill_queue(&mut self.rx_return);
-            self.umem.maybe_wake_fill_queue(self.socket.fd())?;
+            while let Err(_) = self.umem.process_fill_queue(&mut self.rx_return) {
+                self.umem.maybe_wake_fill_queue(self.socket.fd())?;
+            }
 
             for frame in self.rx_return.take_frames() {
                 self.free_frames.push(frame);

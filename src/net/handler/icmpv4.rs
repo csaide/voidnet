@@ -26,6 +26,8 @@ pub fn handle_icmpv4<'umem>(
     mut frame: Frame<'umem>,
     pmtu: &PmtuCache,
     now: Instant,
+    rx_offload: bool,
+    tx_offload: bool,
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {
@@ -41,7 +43,7 @@ pub fn handle_icmpv4<'umem>(
 
     let icmp_end = payload_offset + payload_len;
 
-    if compute_ipv4_checksum(&frame[payload_offset..icmp_end]) != [0x00, 0x00] {
+    if !rx_offload && compute_ipv4_checksum(&frame[payload_offset..icmp_end]) != [0x00, 0x00] {
         rx_return.push(frame);
         return;
     }
@@ -71,14 +73,18 @@ pub fn handle_icmpv4<'umem>(
             ip.src_addr = ip.dst_addr;
             ip.dst_addr = tmp_addr;
             ip.ttl = 64;
-            ip.fill_checksum();
+            if !tx_offload {
+                ip.fill_checksum();
+            }
 
             // Set ICMP type to Echo Reply and recompute checksum.
             let icmp = Icmpv4Header::from_bytes_at_mut(&mut frame, payload_offset);
             icmp.icmp_type = Icmpv4Types::EchoReply;
             icmp.checksum = [0, 0];
-            let cksum = compute_ipv4_checksum(&frame[payload_offset..icmp_end]);
-            Icmpv4Header::from_bytes_at_mut(&mut frame, payload_offset).checksum = cksum;
+            if !tx_offload {
+                let cksum = compute_ipv4_checksum(&frame[payload_offset..icmp_end]);
+                Icmpv4Header::from_bytes_at_mut(&mut frame, payload_offset).checksum = cksum;
+            }
 
             tx_return.push(frame);
         }
@@ -124,6 +130,7 @@ pub fn send_destination_unreachable<'umem>(
     mut frame: Frame<'umem>,
     code: u8,
     next_hop_mtu: u16,
+    tx_offload: bool,
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {
@@ -200,7 +207,9 @@ pub fn send_destination_unreachable<'umem>(
         pkt.ipv4.header_checksum = [0, 0];
         pkt.ipv4.src_addr = dst_addr; // our address
         pkt.ipv4.dst_addr = src_addr; // original sender
-        pkt.ipv4.fill_checksum();
+        if !tx_offload {
+            pkt.ipv4.fill_checksum();
+        }
 
         // Build the ICMP header.
         pkt.icmpv4.icmp_type = Icmpv4Types::DestinationUnreachable;
@@ -218,9 +227,11 @@ pub fn send_destination_unreachable<'umem>(
     frame[payload_start..payload_start + save_len].copy_from_slice(&saved[..save_len]);
 
     // Compute and write ICMP checksum.
-    let icmp_end = icmp_start + icmp_total_len;
-    let cksum = compute_ipv4_checksum(&frame[icmp_start..icmp_end]);
-    Icmpv4Header::from_bytes_at_mut(&mut frame, icmp_start).checksum = cksum;
+    if !tx_offload {
+        let icmp_end = icmp_start + icmp_total_len;
+        let cksum = compute_ipv4_checksum(&frame[icmp_start..icmp_end]);
+        Icmpv4Header::from_bytes_at_mut(&mut frame, icmp_start).checksum = cksum;
+    }
 
     tx_return.push(frame);
 }
@@ -345,7 +356,7 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), now, &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut PmtuCache::new(), now, false, false, &mut rx, &mut tx);
 
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
@@ -400,7 +411,7 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), now, &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut PmtuCache::new(), now, false, false, &mut rx, &mut tx);
         assert_rejected(&rx, &tx);
     }
 
@@ -421,7 +432,7 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), now, &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut PmtuCache::new(), now, false, false, &mut rx, &mut tx);
         assert_rejected(&rx, &tx);
     }
 
@@ -443,7 +454,7 @@ mod tests {
         let frame = Frame::new(0, &mut buf, echo.len(), false);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), now, &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut PmtuCache::new(), now, false, false, &mut rx, &mut tx);
         assert_rejected(&rx, &tx);
 
         // Multicast destination
@@ -461,7 +472,7 @@ mod tests {
         let frame = Frame::new(0, &mut buf, echo.len(), false);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), now, &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut PmtuCache::new(), now, false, false, &mut rx, &mut tx);
         assert_rejected(&rx, &tx);
     }
 
@@ -488,7 +499,7 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut PmtuCache::new(), now, &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut PmtuCache::new(), now, false, false, &mut rx, &mut tx);
         assert_rejected(&rx, &tx);
     }
 
@@ -508,7 +519,7 @@ mod tests {
         let frame = Frame::new(0, &mut buf, data.len(), false);
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
+        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, false, &mut rx, &mut tx);
 
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
@@ -562,6 +573,7 @@ mod tests {
             frame,
             Icmpv4Codes::FragmentationNeeded,
             1280,
+            false,
             &mut rx,
             &mut tx,
         );
@@ -585,6 +597,7 @@ mod tests {
                 frame,
                 Icmpv4Codes::ProtocolUnreachable,
                 0,
+                false,
                 &mut rx,
                 &mut tx,
             );
@@ -662,7 +675,7 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, &mut rx, &mut tx);
+        send_destination_unreachable(frame, Icmpv4Codes::ProtocolUnreachable, 0, false, &mut rx, &mut tx);
         assert_eq!(rx.num_frames(), 0);
         assert_eq!(tx.num_frames(), 1);
     }
@@ -710,7 +723,7 @@ mod tests {
         let mut pmtu = PmtuCache::new();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut pmtu, now, &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut pmtu, now, false, false, &mut rx, &mut tx);
 
         // Frame goes to rx (not an echo request)
         assert_eq!(rx.num_frames(), 1);

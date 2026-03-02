@@ -37,7 +37,7 @@ impl<'umem> FillQueue<'umem> {
     /// Possibly wakes the fill queue, so the kernel continues to process incoming packets.
     ///
     /// This is done by first checking the needs wakeup flag, given its set we fire a empty recvfrom on the supplied fd.
-    #[inline(always)]
+    // #[inline(always)]
     pub fn maybe_wake(&self, fd: c_int) -> Result<()> {
         if self.busy_poll || self.ring.needs_wakeup() {
             let ret = unsafe { recvfrom(fd, null_mut(), 0, MSG_DONTWAIT, null_mut(), null_mut()) };
@@ -55,7 +55,7 @@ impl<'umem> FillQueue<'umem> {
     }
 
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
-    #[inline(always)]
+    // #[inline(always)]
     pub fn process_queue<B: FrameBuffer<'umem>>(&mut self, mut batch: B) -> NonBlocking<u32> {
         let batch_size = batch.num_frames().min(self.ring.size() as usize);
         let (mut idx, ready) = self.ring.reserve(batch_size as u32);

@@ -1,4 +1,4 @@
-use std::{ffi::CString, os::raw::c_void, ptr::null};
+use std::{ffi::CString, io::Cursor, os::raw::c_void, ptr::null};
 
 use errno::errno;
 use libc::if_nametoindex;
@@ -9,20 +9,93 @@ use libxdp_sys::{
     xdp_program__from_bpf_obj, xdp_program__set_xdp_frags_support,
 };
 use neli::{
+    FromBytesWithInput, Size,
     consts::{
         nl::NlmF,
         rtnl::{Ifla, RtAddrFamily, Rtm},
         socket::NlFamily,
     },
+    genl::{AttrTypeBuilder, Genlmsghdr, GenlmsghdrBuilder, NlattrBuilder},
     nl::NlPayload,
     router::synchronous::NlRouter,
     rtnl::{Ifinfomsg, IfinfomsgBuilder},
+    types::{Buffer, GenlBuffer},
     utils::Groups,
 };
 
 use crate::xdp::error::{Error, Result, get_xdp_error_message};
 
 use super::{AttachMode, Map, XdpInfo};
+
+/// Ethtool generic netlink constants defined in a submodule to avoid conflicts
+/// with the crate-level `Result` type alias that the `neli_enum` proc macro
+/// generated code would otherwise resolve to.
+mod ethtool_nl {
+    use neli::{
+        consts::genl::{Cmd, NlAttrType},
+        neli_enum,
+    };
+
+    /// Ethtool generic netlink command IDs (from linux/ethtool_netlink.h).
+    #[neli_enum(serialized_type = "u8")]
+    pub enum EthtoolCmd {
+        FeaturesGet = 11,
+    }
+    impl Cmd for EthtoolCmd {}
+
+    /// Ethtool FEATURES request/reply attributes.
+    #[neli_enum(serialized_type = "u16")]
+    pub enum EthtoolAttrFeatures {
+        Unspec = 0,
+        Header = 1,
+        Hw = 2,
+        Wanted = 3,
+        Active = 4,
+        Nochange = 5,
+    }
+    impl NlAttrType for EthtoolAttrFeatures {}
+
+    /// Ethtool request header attributes.
+    #[neli_enum(serialized_type = "u16")]
+    pub enum EthtoolAttrHeader {
+        Unspec = 0,
+        DevIndex = 1,
+        DevName = 2,
+        Flags = 3,
+    }
+    impl NlAttrType for EthtoolAttrHeader {}
+
+    /// Bitset container attributes.
+    #[neli_enum(serialized_type = "u16")]
+    pub enum EthtoolAttrBitset {
+        Unspec = 0,
+        Nomask = 1,
+        Size = 2,
+        Bits = 3,
+        Value = 4,
+        Mask = 5,
+    }
+    impl NlAttrType for EthtoolAttrBitset {}
+
+    /// Bitset bits array attributes.
+    #[neli_enum(serialized_type = "u16")]
+    pub enum EthtoolAttrBitsetBits {
+        Unspec = 0,
+        Bit = 1,
+    }
+    impl NlAttrType for EthtoolAttrBitsetBits {}
+
+    /// Individual bitset bit attributes.
+    #[neli_enum(serialized_type = "u16")]
+    pub enum EthtoolAttrBitsetBit {
+        Unspec = 0,
+        Index = 1,
+        Name = 2,
+        Value = 3,
+    }
+    impl NlAttrType for EthtoolAttrBitsetBit {}
+}
+use ethtool_nl::*;
 
 /// A wrapper around a raw [xdp_program] object, this exposes a safe API for creating and attaching XDP programs.
 pub struct XdpProgram {
@@ -92,6 +165,10 @@ impl XdpProgram {
         }
 
         info.mtu = get_mtu(if_index)?;
+
+        let (rx_offload, tx_offload) = get_checksum_offload(if_index)?;
+        info.rx_offload = rx_offload;
+        info.tx_offload = tx_offload;
 
         Ok(Self {
             program,
@@ -203,4 +280,114 @@ fn get_mtu(if_index: i32) -> Result<u32> {
         }
     }
     Err(Error::GetMtu(format!("Interface {} not found", if_index)))
+}
+
+/// Queries the ethtool generic netlink interface to determine whether RX and TX
+/// checksum offloading are enabled for the given network interface.
+///
+/// Returns `(rx_offload, tx_offload)` where each is `true` if the corresponding
+/// checksum offload is active on the hardware.
+fn get_checksum_offload(if_index: i32) -> Result<(bool, bool)> {
+    let (router, _) = NlRouter::connect(NlFamily::Generic, None, Groups::empty())
+        .map_err(|e| Error::GetChecksumOffload(e.to_string()))?;
+
+    let family_id = router
+        .resolve_genl_family("ethtool")
+        .map_err(|e| Error::GetChecksumOffload(e.to_string()))?;
+
+    // Build nested header with the device interface index.
+    let header_attrs: GenlBuffer<EthtoolAttrHeader, Buffer> = [NlattrBuilder::default()
+        .nla_type(
+            AttrTypeBuilder::default()
+                .nla_type(EthtoolAttrHeader::DevIndex)
+                .build()
+                .map_err(|e| Error::GetChecksumOffload(e.to_string()))?,
+        )
+        .nla_payload(if_index as u32)
+        .build()
+        .map_err(|e| Error::GetChecksumOffload(e.to_string()))?]
+    .into_iter()
+    .collect();
+
+    // Build the FEATURES_GET request with the nested header.
+    let attrs: GenlBuffer<EthtoolAttrFeatures, Buffer> = [NlattrBuilder::default()
+        .nla_type(
+            AttrTypeBuilder::default()
+                .nla_type(EthtoolAttrFeatures::Header)
+                .nla_nested(true)
+                .build()
+                .map_err(|e| Error::GetChecksumOffload(e.to_string()))?,
+        )
+        .nla_payload(header_attrs)
+        .build()
+        .map_err(|e| Error::GetChecksumOffload(e.to_string()))?]
+    .into_iter()
+    .collect();
+
+    let msg = GenlmsghdrBuilder::default()
+        .cmd(EthtoolCmd::FeaturesGet)
+        .version(1)
+        .attrs(attrs)
+        .build()
+        .map_err(|e| Error::GetChecksumOffload(e.to_string()))?;
+
+    let recv = router
+        .send::<_, _, u16, Genlmsghdr<EthtoolCmd, EthtoolAttrFeatures>>(
+            family_id,
+            NlmF::REQUEST,
+            NlPayload::Payload(msg),
+        )
+        .map_err(|e| Error::GetChecksumOffload(e.to_string()))?;
+
+    let mut rx_offload = false;
+    let mut tx_offload = false;
+
+    for response in recv {
+        let mut response = response.map_err(|e| Error::GetChecksumOffload(e.to_string()))?;
+
+        if let Some(payload) = response.get_payload() {
+            let features_handle = payload.attrs().get_attr_handle();
+
+            // Parse the ACTIVE features bitset (verbose format with named bits).
+            let active_handle = features_handle
+                .get_nested_attributes::<EthtoolAttrBitset>(EthtoolAttrFeatures::Active)
+                .map_err(|e| Error::GetChecksumOffload(e.to_string()))?;
+
+            // Get the BITS array within the bitset.
+            let bits_handle = active_handle
+                .get_nested_attributes::<EthtoolAttrBitsetBits>(EthtoolAttrBitset::Bits)
+                .map_err(|e| Error::GetChecksumOffload(e.to_string()))?;
+
+            // Iterate through each BIT entry looking for checksum features.
+            for bit_attr in bits_handle.iter() {
+                let payload = bit_attr.nla_payload();
+                let nested = GenlBuffer::<EthtoolAttrBitsetBit, Buffer>::from_bytes_with_input(
+                    &mut Cursor::new(payload.as_ref()),
+                    payload.unpadded_size(),
+                )
+                .map_err(|e| Error::GetChecksumOffload(e.to_string()))?;
+                let bit_handle = nested.get_attr_handle();
+
+                if let Some(name_attr) = bit_handle.get_attribute(EthtoolAttrBitsetBit::Name) {
+                    let name_bytes = name_attr.nla_payload().as_ref();
+                    let name = std::str::from_utf8(
+                        name_bytes.split(|&b| b == 0).next().unwrap_or(name_bytes),
+                    )
+                    .unwrap_or("");
+
+                    match name {
+                        "rx-checksum" => rx_offload = true,
+                        "tx-checksum-ip-generic" => tx_offload = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if let Some(err) = response.get_err() {
+            return Err(Error::GetChecksumOffload(err.to_string()));
+        }
+    }
+
+    Ok((rx_offload, tx_offload))
 }

@@ -110,13 +110,15 @@ struct PortBindings<'umem> {
 pub struct UdpHandler<'umem> {
     fragment_reader: FragmentReader<'umem>,
     bindings: Vec<(u16, PortBindings<'umem>)>,
+    rx_offload: bool,
 }
 
 impl<'umem> UdpHandler<'umem> {
-    pub fn new(max_reassembly_entries: usize) -> Self {
+    pub fn new(max_reassembly_entries: usize, rx_offload: bool) -> Self {
         Self {
             fragment_reader: FragmentReader::new(max_reassembly_entries),
             bindings: Vec::new(),
+            rx_offload,
         }
     }
 
@@ -206,57 +208,61 @@ impl<'umem> UdpHandler<'umem> {
                     return;
                 }
 
-                let valid = match &reassembled.packet {
-                    Packet::Single(f) => {
-                        let available = f.len() - udp_offset;
-                        if available < udp_len {
-                            false
-                        } else {
-                            verify_udp_checksum(
-                                &ip.src_addr,
-                                &ip.dst_addr,
-                                &f[udp_offset..udp_offset + udp_len],
-                            )
-                        }
-                    }
-                    Packet::Multi(fs) => {
-                        // Zero checksum means "no checksum" for IPv4.
-                        if fs[0][udp_offset + 6] == 0 && fs[0][udp_offset + 7] == 0 {
-                            true
-                        } else {
-                            let mut sum: u64 = 0;
-                            let mut pending: Option<u8> = None;
-                            let mut total: usize = 0;
-
-                            let slice = &fs[0][udp_offset..];
-                            total += slice.len();
-                            (sum, pending) = sum_words_carry(slice, sum, pending);
-
-                            for f in &fs[1..] {
-                                let fip = Ipv4Header::from_bytes(f);
-                                let slice = &f[fip.payload_offset()..];
-                                total += slice.len();
-                                (sum, pending) = sum_words_carry(slice, sum, pending);
-                            }
-
-                            if let Some(hi) = pending {
-                                sum += (hi as u64) << 8;
-                            }
-
-                            if total < udp_len {
+                let valid = if self.rx_offload {
+                    true
+                } else {
+                    match &reassembled.packet {
+                        Packet::Single(f) => {
+                            let available = f.len() - udp_offset;
+                            if available < udp_len {
                                 false
                             } else {
-                                sum += pseudo_header_sum_v4(
+                                verify_udp_checksum(
                                     &ip.src_addr,
                                     &ip.dst_addr,
-                                    17, // UDP
-                                    total as u16,
-                                );
-                                fold_and_verify(sum, 0x0000)
+                                    &f[udp_offset..udp_offset + udp_len],
+                                )
                             }
                         }
+                        Packet::Multi(fs) => {
+                            // Zero checksum means "no checksum" for IPv4.
+                            if fs[0][udp_offset + 6] == 0 && fs[0][udp_offset + 7] == 0 {
+                                true
+                            } else {
+                                let mut sum: u64 = 0;
+                                let mut pending: Option<u8> = None;
+                                let mut total: usize = 0;
+
+                                let slice = &fs[0][udp_offset..];
+                                total += slice.len();
+                                (sum, pending) = sum_words_carry(slice, sum, pending);
+
+                                for f in &fs[1..] {
+                                    let fip = Ipv4Header::from_bytes(f);
+                                    let slice = &f[fip.payload_offset()..];
+                                    total += slice.len();
+                                    (sum, pending) = sum_words_carry(slice, sum, pending);
+                                }
+
+                                if let Some(hi) = pending {
+                                    sum += (hi as u64) << 8;
+                                }
+
+                                if total < udp_len {
+                                    false
+                                } else {
+                                    sum += pseudo_header_sum_v4(
+                                        &ip.src_addr,
+                                        &ip.dst_addr,
+                                        17, // UDP
+                                        total as u16,
+                                    );
+                                    fold_and_verify(sum, 0x0000)
+                                }
+                            }
+                        }
+                        Packet::Empty => return,
                     }
-                    Packet::Empty => return,
                 };
 
                 (
@@ -309,11 +315,13 @@ impl<'umem> UdpHandler<'umem> {
                     rx_return.push(frame);
                     return;
                 }
-                if !verify_udp_checksum_v6(
-                    &src_addr,
-                    &dst_addr,
-                    &frame[udp_offset..udp_offset + udp_len],
-                ) {
+                if !self.rx_offload
+                    && !verify_udp_checksum_v6(
+                        &src_addr,
+                        &dst_addr,
+                        &frame[udp_offset..udp_offset + udp_len],
+                    )
+                {
                     rx_return.push(frame);
                     return;
                 }
@@ -359,57 +367,61 @@ impl<'umem> UdpHandler<'umem> {
                             return;
                         }
 
-                        let valid = match &reassembled.packet {
-                            Packet::Single(f) => {
-                                let available = f.len() - udp_start;
-                                if available < udp_len {
-                                    false
-                                } else {
-                                    verify_udp_checksum_v6(
-                                        &ip.src_addr,
-                                        &ip.dst_addr,
-                                        &f[udp_start..udp_start + udp_len],
-                                    )
-                                }
-                            }
-                            Packet::Multi(fs) => {
-                                let data_start = frag_off + FRAGMENT_EXT_LEN;
-                                // IPv6 does not allow zero checksum.
-                                if fs[0][data_start + 6] == 0 && fs[0][data_start + 7] == 0 {
-                                    false
-                                } else {
-                                    let mut sum: u64 = 0;
-                                    let mut pending: Option<u8> = None;
-                                    let mut total: usize = 0;
-
-                                    let slice = &fs[0][data_start..];
-                                    total += slice.len();
-                                    (sum, pending) = sum_words_carry(slice, sum, pending);
-
-                                    for f in &fs[1..] {
-                                        let slice = &f[data_start..];
-                                        total += slice.len();
-                                        (sum, pending) = sum_words_carry(slice, sum, pending);
-                                    }
-
-                                    if let Some(hi) = pending {
-                                        sum += (hi as u64) << 8;
-                                    }
-
-                                    if total < udp_len {
+                        let valid = if self.rx_offload {
+                            true
+                        } else {
+                            match &reassembled.packet {
+                                Packet::Single(f) => {
+                                    let available = f.len() - udp_start;
+                                    if available < udp_len {
                                         false
                                     } else {
-                                        sum += pseudo_header_sum_v6(
+                                        verify_udp_checksum_v6(
                                             &ip.src_addr,
                                             &ip.dst_addr,
-                                            17, // UDP
-                                            total as u32,
-                                        );
-                                        fold_and_verify(sum, 0x0000)
+                                            &f[udp_start..udp_start + udp_len],
+                                        )
                                     }
                                 }
+                                Packet::Multi(fs) => {
+                                    let data_start = frag_off + FRAGMENT_EXT_LEN;
+                                    // IPv6 does not allow zero checksum.
+                                    if fs[0][data_start + 6] == 0 && fs[0][data_start + 7] == 0 {
+                                        false
+                                    } else {
+                                        let mut sum: u64 = 0;
+                                        let mut pending: Option<u8> = None;
+                                        let mut total: usize = 0;
+
+                                        let slice = &fs[0][data_start..];
+                                        total += slice.len();
+                                        (sum, pending) = sum_words_carry(slice, sum, pending);
+
+                                        for f in &fs[1..] {
+                                            let slice = &f[data_start..];
+                                            total += slice.len();
+                                            (sum, pending) = sum_words_carry(slice, sum, pending);
+                                        }
+
+                                        if let Some(hi) = pending {
+                                            sum += (hi as u64) << 8;
+                                        }
+
+                                        if total < udp_len {
+                                            false
+                                        } else {
+                                            sum += pseudo_header_sum_v6(
+                                                &ip.src_addr,
+                                                &ip.dst_addr,
+                                                17, // UDP
+                                                total as u32,
+                                            );
+                                            fold_and_verify(sum, 0x0000)
+                                        }
+                                    }
+                                }
+                                Packet::Empty => return,
                             }
-                            Packet::Empty => return,
                         };
 
                         (
@@ -591,14 +603,14 @@ mod tests {
 
     #[test]
     fn bind_returns_shared_queues() {
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 5000, 128).unwrap();
         assert!(rx_queue.is_empty());
     }
 
     #[test]
     fn duplicate_bind_returns_address_in_use() {
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         handler.bind(IpAddress::V4(LOCAL_IPV4), 5000, 128).unwrap();
         let err = handler
             .bind(IpAddress::V4(LOCAL_IPV4), 5000, 128)
@@ -610,7 +622,7 @@ mod tests {
     fn process_ipv4_routes_to_bound_socket() {
         let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
 
         let len = buf.len();
@@ -627,7 +639,7 @@ mod tests {
     fn process_ipv4_no_bound_socket_returns_frames() {
         let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
 
         let len = buf.len();
         let frame = Frame::new(0, &mut buf, len, false);
@@ -642,7 +654,7 @@ mod tests {
         let mut buf1 = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"first");
         let mut buf2 = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"second");
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 1).unwrap();
 
         let len1 = buf1.len();
@@ -664,7 +676,7 @@ mod tests {
     fn process_ipv6_routes_to_bound_socket() {
         let mut buf = build_ipv6_udp_frame(REMOTE_IPV6, LOCAL_IPV6, 12345, 53, b"hello");
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let rx_queue = handler.bind(IpAddress::V6(LOCAL_IPV6), 53, 128).unwrap();
 
         let len = buf.len();
@@ -682,7 +694,7 @@ mod tests {
     fn process_ipv6_no_bound_socket_returns_frames() {
         let mut buf = build_ipv6_udp_frame(REMOTE_IPV6, LOCAL_IPV6, 12345, 53, b"hello");
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
 
         let len = buf.len();
         let frame = Frame::new(0, &mut buf, len, false);
@@ -698,7 +710,7 @@ mod tests {
     fn rx_queue_receives_routed_packet() {
         let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
 
         let len = buf.len();
@@ -718,7 +730,7 @@ mod tests {
 
     #[test]
     fn evict_stale_delegates_correctly() {
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let mut rx = BasicFrameBuffer::new(4);
 
         handler.evict_stale(Instant::now(), Duration::from_secs(30), &mut rx);
@@ -729,7 +741,7 @@ mod tests {
     fn wildcard_bind_receives_packets() {
         let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let rx_queue = handler
             .bind(IpAddress::V4(Ipv4Address::unspecified()), 53, 128)
             .unwrap();
@@ -748,7 +760,7 @@ mod tests {
     fn explicit_bind_takes_priority_over_wildcard() {
         let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let wildcard_q = handler
             .bind(IpAddress::V4(Ipv4Address::unspecified()), 53, 128)
             .unwrap();
@@ -770,7 +782,7 @@ mod tests {
         let other_ip = Ipv4Address::new([10, 0, 0, 99]);
         let mut buf = build_ipv4_udp_frame(REMOTE_IPV4, LOCAL_IPV4, 12345, 53, b"hello");
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let wildcard_q = handler
             .bind(IpAddress::V4(Ipv4Address::unspecified()), 53, 128)
             .unwrap();
@@ -788,7 +800,7 @@ mod tests {
 
     #[test]
     fn duplicate_wildcard_bind_returns_address_in_use() {
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         handler
             .bind(IpAddress::V4(Ipv4Address::unspecified()), 53, 128)
             .unwrap();
@@ -807,7 +819,7 @@ mod tests {
         let udp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
         buf[udp_off + 6] ^= 0xFF;
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
 
         let len = buf.len();
@@ -828,7 +840,7 @@ mod tests {
         buf[udp_off + 6] = 0;
         buf[udp_off + 7] = 0;
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
 
         let len = buf.len();
@@ -853,7 +865,7 @@ mod tests {
         buf[udp_off + 6] = 0;
         buf[udp_off + 7] = 0;
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let rx_queue = handler.bind(IpAddress::V6(LOCAL_IPV6), 53, 128).unwrap();
 
         let len = buf.len();
@@ -878,7 +890,7 @@ mod tests {
         let udp_off = ETH_HEADER_LEN + IPV6_HEADER_LEN;
         buf[udp_off + 6] ^= 0xFF;
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let rx_queue = handler.bind(IpAddress::V6(LOCAL_IPV6), 53, 128).unwrap();
 
         let len = buf.len();
@@ -900,7 +912,7 @@ mod tests {
         buf[udp_off + 4] = 0;
         buf[udp_off + 5] = 4;
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
 
         let len = buf.len();
@@ -921,7 +933,7 @@ mod tests {
         buf[udp_off + 4] = 0;
         buf[udp_off + 5] = 100;
 
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
 
         let len = buf.len();
@@ -1042,7 +1054,7 @@ mod tests {
 
     #[test]
     fn unbind_explicit_removes_binding() {
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         handler.bind(IpAddress::V4(LOCAL_IPV4), 5000, 128).unwrap();
 
         handler.unbind(IpAddress::V4(LOCAL_IPV4), 5000);
@@ -1053,7 +1065,7 @@ mod tests {
 
     #[test]
     fn unbind_wildcard_removes_binding() {
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         handler
             .bind(IpAddress::V4(Ipv4Address::unspecified()), 5000, 128)
             .unwrap();
@@ -1068,7 +1080,7 @@ mod tests {
 
     #[test]
     fn unbind_cleans_up_empty_port_entry() {
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         handler.bind(IpAddress::V4(LOCAL_IPV4), 5000, 128).unwrap();
 
         handler.unbind(IpAddress::V4(LOCAL_IPV4), 5000);
@@ -1085,7 +1097,7 @@ mod tests {
     #[test]
     fn unbind_preserves_other_bindings_on_same_port() {
         let other_ip = Ipv4Address::new([10, 0, 0, 99]);
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         handler.bind(IpAddress::V4(LOCAL_IPV4), 5000, 128).unwrap();
         let other_q = handler.bind(IpAddress::V4(other_ip), 5000, 128).unwrap();
 
@@ -1103,7 +1115,7 @@ mod tests {
 
     #[test]
     fn unbind_nonexistent_is_noop() {
-        let mut handler = UdpHandler::new(256);
+        let mut handler = UdpHandler::new(256, false);
         // Should not panic.
         handler.unbind(IpAddress::V4(LOCAL_IPV4), 5000);
     }

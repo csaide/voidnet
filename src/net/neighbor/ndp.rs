@@ -21,6 +21,7 @@ pub(super) fn resolve_v6<'umem>(
     local_mac: MacAddress,
     source_ip: Ipv6Address,
     target_ip: Ipv6Address,
+    tx_offload: bool,
     mut frame: Frame<'umem>,
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
@@ -69,7 +70,9 @@ pub(super) fn resolve_v6<'umem>(
     pkt.ns.opt_mac = local_mac;
 
     // Compute checksum.
-    pkt.ns.checksum = compute_icmpv6_checksum(&source_ip, &sol_mcast, pkt.ns.as_bytes());
+    if !tx_offload {
+        pkt.ns.checksum = compute_icmpv6_checksum(&source_ip, &sol_mcast, pkt.ns.as_bytes());
+    }
 
     // Push the frame to the TX buffer for transmission.
     tx_return.push(frame);
@@ -81,6 +84,8 @@ pub(super) fn handle_ndp<'umem>(
     table: &DashMap<IpAddress, NeighborEntry>,
     local_ipv6: &[Ipv6Address],
     local_mac: MacAddress,
+    rx_offload: bool,
+    tx_offload: bool,
     frame: Frame<'umem>,
     icmpv6_offset: usize,
     icmpv6_len: usize,
@@ -95,7 +100,7 @@ pub(super) fn handle_ndp<'umem>(
     let icmpv6_end = icmpv6_offset + icmpv6_len;
 
     // Validate checksum.
-    {
+    if !rx_offload {
         let ip = Ipv6Header::from_bytes(&frame);
         let src_addr = ip.src_addr;
         let dst_addr = ip.dst_addr;
@@ -117,6 +122,7 @@ pub(super) fn handle_ndp<'umem>(
                 table,
                 local_ipv6,
                 local_mac,
+                tx_offload,
                 frame,
                 icmpv6_offset,
                 icmpv6_len,
@@ -159,6 +165,7 @@ fn handle_neighbor_solicitation<'umem>(
     table: &DashMap<IpAddress, NeighborEntry>,
     local_ipv6: &[Ipv6Address],
     local_mac: MacAddress,
+    tx_offload: bool,
     mut frame: Frame<'umem>,
     icmpv6_offset: usize,
     icmpv6_len: usize,
@@ -249,7 +256,10 @@ fn handle_neighbor_solicitation<'umem>(
     pkt.na.opt_type = 2; // Target Link-Layer Address
     pkt.na.opt_len = 1; // 1 unit of 8 bytes
     pkt.na.opt_mac = local_mac;
-    pkt.na.checksum = compute_icmpv6_checksum(&target_addr, &reply_dst_addr, pkt.na.as_bytes());
+    if !tx_offload {
+        pkt.na.checksum =
+            compute_icmpv6_checksum(&target_addr, &reply_dst_addr, pkt.na.as_bytes());
+    }
 
     tx_return.push(frame);
 }

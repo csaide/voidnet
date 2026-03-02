@@ -59,6 +59,8 @@ pub enum Error {
     QueryXdpFeatures(Errno),
     #[error("failed while getting MTU: {0}")]
     GetMtu(String),
+    #[error("failed to query checksum offload capabilities: {0}")]
+    GetChecksumOffload(String),
     #[error("fragmentation not supported by the network interface")]
     FragmentationNotSupported,
     #[error("zero copy not supported by the network interface")]

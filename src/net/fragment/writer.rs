@@ -41,6 +41,7 @@ impl FragmentWriter {
         transport: &impl TransportHeader,
         payload: &[u8],
         mtu: u32,
+        tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
     ) -> NonBlocking<Packet<'umem>> {
         let transport_header_len = transport.header_len();
@@ -75,7 +76,9 @@ impl FragmentWriter {
                     ip.header_checksum = [0, 0];
                     ip.src_addr = src_ip;
                     ip.dst_addr = dst_ip;
-                    ip.fill_checksum();
+                    if !tx_offload {
+                        ip.fill_checksum();
+                    }
                 },
             );
         }
@@ -119,7 +122,9 @@ impl FragmentWriter {
                 ip.header_checksum = [0, 0];
                 ip.src_addr = src_ip;
                 ip.dst_addr = dst_ip;
-                ip.fill_checksum();
+                if !tx_offload {
+                    ip.fill_checksum();
+                }
             },
         )
     }
@@ -326,7 +331,7 @@ mod tests {
         let transport = make_udp_transport(payload.len());
 
         let result = FragmentWriter::fragment_ipv4(
-            SRC_MAC, DST_MAC, SRC_V4, DST_V4, 64, &transport, payload, 1500, &mut free,
+            SRC_MAC, DST_MAC, SRC_V4, DST_V4, 64, &transport, payload, 1500, false, &mut free,
         );
 
         let packet = result.expect("should succeed");
@@ -377,7 +382,7 @@ mod tests {
         let transport = make_udp_transport(payload.len());
 
         let result = FragmentWriter::fragment_ipv4(
-            SRC_MAC, DST_MAC, SRC_V4, DST_V4, 64, &transport, &payload, 1500, &mut free,
+            SRC_MAC, DST_MAC, SRC_V4, DST_V4, 64, &transport, &payload, 1500, false, &mut free,
         );
 
         let packet = result.expect("should succeed");
@@ -540,6 +545,7 @@ mod tests {
             &transport,
             b"Hello, World!",
             1500,
+            false,
             &mut free,
         );
         assert_eq!(result.unwrap_err(), WouldBlock);
@@ -554,7 +560,7 @@ mod tests {
         let transport = make_udp_transport(payload.len());
 
         let result = FragmentWriter::fragment_ipv4(
-            SRC_MAC, DST_MAC, SRC_V4, DST_V4, 64, &transport, &payload, 1500, &mut free,
+            SRC_MAC, DST_MAC, SRC_V4, DST_V4, 64, &transport, &payload, 1500, false, &mut free,
         );
         assert_eq!(result.unwrap_err(), WouldBlock);
     }
@@ -608,7 +614,7 @@ mod tests {
         let payload = b"test";
 
         let result = FragmentWriter::fragment_ipv4(
-            SRC_MAC, DST_MAC, SRC_V4, DST_V4, 128, &transport, payload, 1500, &mut free,
+            SRC_MAC, DST_MAC, SRC_V4, DST_V4, 128, &transport, payload, 1500, false, &mut free,
         );
 
         match result.unwrap() {
@@ -645,6 +651,7 @@ mod tests {
             &transport,
             &[],
             1500,
+            false,
             &mut free,
         );
 

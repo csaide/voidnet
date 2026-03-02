@@ -36,6 +36,7 @@ pub struct UdpSocket<'umem> {
     pmtu: Rc<PmtuCache>,
     neighbor_handler: Rc<NeighborHandler>,
     handler: Rc<UnsafeCell<UdpHandler<'umem>>>,
+    tx_offload: bool,
 }
 
 impl<'umem> UdpSocket<'umem> {
@@ -56,6 +57,7 @@ impl<'umem> UdpSocket<'umem> {
                 pmtu: ctx.pmtu.clone(),
                 neighbor_handler: ctx.neighbor_handler.clone(),
                 handler: ctx.udp_handler.clone(),
+                tx_offload: ctx.tx_offload,
             })
         })
     }
@@ -109,6 +111,7 @@ impl<'umem> UdpSocket<'umem> {
             dst_addr,
             dst_port,
             payload,
+            tx_offload: self.tx_offload,
         }
     }
 
@@ -153,6 +156,7 @@ impl<'umem> UdpSocket<'umem> {
             neighbor_handler: &self.neighbor_handler,
             src_addr: self.local_addr,
             src_port: self.local_port,
+            tx_offload: self.tx_offload,
         };
         (recv, send)
     }
@@ -194,6 +198,7 @@ pub struct SendHalf<'sock, 'umem> {
     neighbor_handler: &'sock NeighborHandler,
     src_addr: IpAddress,
     src_port: u16,
+    tx_offload: bool,
 }
 
 impl<'sock, 'umem> SendHalf<'sock, 'umem> {
@@ -216,6 +221,7 @@ impl<'sock, 'umem> SendHalf<'sock, 'umem> {
             dst_addr,
             dst_port,
             payload,
+            tx_offload: self.tx_offload,
         }
     }
 
@@ -287,6 +293,7 @@ pub struct SendTo<'sock, 'buf, 'umem> {
     dst_addr: IpAddress,
     dst_port: u16,
     payload: &'buf [u8],
+    tx_offload: bool,
 }
 
 impl<'sock, 'buf, 'umem> SendTo<'sock, 'buf, 'umem> {
@@ -346,14 +353,18 @@ impl<'sock, 'buf, 'umem> SendTo<'sock, 'buf, 'umem> {
         pmtu: u32,
     ) -> Result<Packet<'umem>, WouldBlock> {
         let udp_len = (UDP_HEADER_LEN + self.payload.len()) as u16;
-        let checksum = compute_udp_checksum_from_parts(
-            &src_ip,
-            &dst_ip,
-            self.src_port,
-            self.dst_port,
-            udp_len,
-            self.payload,
-        );
+        let checksum = if self.tx_offload {
+            [0, 0]
+        } else {
+            compute_udp_checksum_from_parts(
+                &src_ip,
+                &dst_ip,
+                self.src_port,
+                self.dst_port,
+                udp_len,
+                self.payload,
+            )
+        };
         let transport = UdpHeader::new(self.src_port, self.dst_port, udp_len, checksum);
 
         FragmentWriter::fragment_ipv4(
@@ -365,6 +376,7 @@ impl<'sock, 'buf, 'umem> SendTo<'sock, 'buf, 'umem> {
             &transport,
             self.payload,
             pmtu,
+            self.tx_offload,
             &mut self.free_frames,
         )
     }
@@ -378,14 +390,18 @@ impl<'sock, 'buf, 'umem> SendTo<'sock, 'buf, 'umem> {
         pmtu: u32,
     ) -> Result<Packet<'umem>, WouldBlock> {
         let udp_len = (UDP_HEADER_LEN + self.payload.len()) as u16;
-        let checksum = compute_udp_checksum_v6_from_parts(
-            &src_ip,
-            &dst_ip,
-            self.src_port,
-            self.dst_port,
-            udp_len,
-            self.payload,
-        );
+        let checksum = if self.tx_offload {
+            [0, 0]
+        } else {
+            compute_udp_checksum_v6_from_parts(
+                &src_ip,
+                &dst_ip,
+                self.src_port,
+                self.dst_port,
+                udp_len,
+                self.payload,
+            )
+        };
         let transport = UdpHeader::new(self.src_port, self.dst_port, udp_len, checksum);
 
         FragmentWriter::fragment_ipv6(
@@ -469,7 +485,7 @@ mod tests {
         let pmtu = Rc::new(PmtuCache::new());
         let neighbor_handler =
             Rc::new(NeighborHandler::new("test0", Duration::from_secs(60)).unwrap());
-        let udp_handler = Rc::new(UnsafeCell::new(UdpHandler::new(256)));
+        let udp_handler = Rc::new(UnsafeCell::new(UdpHandler::new(256, false)));
 
         let ctx = RuntimeContext {
             free_frames,
@@ -478,6 +494,7 @@ mod tests {
             pmtu,
             neighbor_handler,
             udp_handler,
+            tx_offload: false,
         };
         set_runtime_context(&ctx);
         f();
