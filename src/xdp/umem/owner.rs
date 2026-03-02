@@ -145,11 +145,11 @@ impl<'umem> Drop for UmemOwner<'umem> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::xdp::context::XdpContext;
-    use crate::xdp::frame::BasicFrameBuffer;
-    use crate::xdp::umem::Umem;
     use std::thread;
+
+    use crate::xdp::{context::XdpContext, frame::BasicFrameBuffer, umem::Umem};
+
+    use super::*;
 
     fn create_umem<'umem>(
         num_frames: usize,

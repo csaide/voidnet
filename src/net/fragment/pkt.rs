@@ -166,14 +166,13 @@ impl<'umem> ExactSizeIterator for PacketIntoIter<'umem> {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::xdp::frame::Frame;
+
+    use super::*;
 
     fn make_frame(buf: &mut [u8], len: usize) -> Frame<'_> {
         Frame::new(0, buf, len, false)
     }
-
-    // --- Packet::num_frames ---
 
     #[test]
     fn single_num_frames() {
@@ -189,8 +188,6 @@ mod tests {
         let pkt = Packet::Multi(frames);
         assert_eq!(pkt.num_frames(), 3);
     }
-
-    // --- Packet::frames (borrowing iterator) ---
 
     #[test]
     fn frames_iter_single() {
@@ -216,8 +213,6 @@ mod tests {
             assert_eq!(f[0], i as u8);
         }
     }
-
-    // --- Packet::frames_mut (mutable borrowing iterator) ---
 
     #[test]
     fn frames_mut_single() {
@@ -264,8 +259,6 @@ mod tests {
         assert_eq!(iter.size_hint(), (3, Some(3)));
     }
 
-    // --- Packet::into_frames (consuming iterator) ---
-
     #[test]
     fn into_frames_single() {
         let mut buf = [0u8; 64];
@@ -288,8 +281,6 @@ mod tests {
         assert_eq!(collected[0][0], 0x01);
         assert_eq!(collected[1][0], 0x02);
     }
-
-    // --- ExactSizeIterator (size_hint + len) ---
 
     #[test]
     fn frames_iter_exact_size() {

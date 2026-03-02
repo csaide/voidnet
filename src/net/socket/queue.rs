@@ -1,10 +1,11 @@
-use std::cell::UnsafeCell;
-use std::collections::VecDeque;
-use std::collections::vec_deque::Drain;
-use std::fmt;
-use std::ops::RangeBounds;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{
+    cell::UnsafeCell,
+    collections::{VecDeque, vec_deque::Drain},
+    fmt,
+    ops::RangeBounds,
+    rc::Rc,
+    sync::Arc,
+};
 
 use crossbeam_queue::ArrayQueue;
 
@@ -19,6 +20,7 @@ pub struct SharedQueue<T> {
 }
 
 impl<T> SharedQueue<T> {
+    /// Create a new shared queue with the given capacity.
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: Arc::new(ArrayQueue::new(capacity)),
@@ -30,18 +32,22 @@ impl<T> SharedQueue<T> {
         self.inner.force_push(item)
     }
 
+    /// Pop an item. Returns the oldest item if the queue was not empty.
     pub fn pop(&self) -> Option<T> {
         self.inner.pop()
     }
 
+    /// Returns the number of items in the queue.
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
+    /// Returns true if the queue is empty.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
 
+    /// Returns the capacity of the queue.
     pub fn capacity(&self) -> usize {
         self.inner.capacity()
     }
@@ -76,6 +82,7 @@ pub struct LocalQueue<T> {
 }
 
 impl<T> LocalQueue<T> {
+    /// Create a new local queue with the given capacity.
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: Rc::new(UnsafeCell::new(VecDeque::with_capacity(capacity))),
@@ -96,26 +103,31 @@ impl<T> LocalQueue<T> {
         evicted
     }
 
+    /// Pop an item. Returns the oldest item if the queue was not empty.
     #[inline(always)]
     pub fn pop(&self) -> Option<T> {
         unsafe { &mut *self.inner.get() }.pop_front()
     }
 
+    /// Drain a range of items. Returns an iterator over the drained items.
     #[inline(always)]
     pub fn drain<R: RangeBounds<usize>>(&self, range: R) -> Drain<'_, T> {
         unsafe { &mut *self.inner.get() }.drain(range)
     }
 
+    /// Returns the number of items in the queue.
     #[inline(always)]
     pub fn len(&self) -> usize {
         unsafe { &*self.inner.get() }.len()
     }
 
+    /// Returns true if the queue is empty.
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
         unsafe { &*self.inner.get() }.is_empty()
     }
 
+    /// Returns the capacity of the queue.
     #[inline(always)]
     pub fn capacity(&self) -> usize {
         self.capacity
@@ -220,8 +232,6 @@ mod tests {
         assert_eq!(q.pop(), Some(13));
         assert!(q.is_empty());
     }
-
-    // -- LocalQueue tests --
 
     #[test]
     fn local_push_and_pop() {

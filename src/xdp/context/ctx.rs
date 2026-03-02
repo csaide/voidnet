@@ -169,8 +169,9 @@ impl XdpContext {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::xdp::test_utils::TestVethPair;
+
+    use super::*;
 
     /// Tests that XdpContext can be created with default attach mode and fragmentation enabled.
     #[test]

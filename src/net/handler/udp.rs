@@ -2,18 +2,24 @@ use std::fmt;
 
 use coarsetime::{Duration, Instant};
 
-use crate::net::checksum::{
-    fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6, sum_words_carry,
-    verify_udp_checksum, verify_udp_checksum_v6,
+use crate::{
+    net::{
+        checksum::{
+            fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6, sum_words_carry,
+            verify_udp_checksum, verify_udp_checksum_v6,
+        },
+        fragment::{FragmentReader, Packet},
+        socket::LocalQueue,
+        wire::{
+            ethernet::EthernetFrame,
+            ip::{
+                EXT_FRAGMENT, FRAGMENT_EXT_LEN, IPV6_HEADER_LEN, IpAddress, Ipv4Header, Ipv6Header,
+            },
+            udp::{UDP_HEADER_LEN, UdpHeader},
+        },
+    },
+    xdp::frame::{Frame, FrameBuffer},
 };
-use crate::net::fragment::{FragmentReader, Packet};
-use crate::net::socket::LocalQueue;
-use crate::net::wire::ethernet::EthernetFrame;
-use crate::net::wire::ip::{
-    EXT_FRAGMENT, FRAGMENT_EXT_LEN, IPV6_HEADER_LEN, IpAddress, Ipv4Header, Ipv6Header,
-};
-use crate::net::wire::udp::{UDP_HEADER_LEN, UdpHeader};
-use crate::xdp::frame::{Frame, FrameBuffer};
 
 /// A completed received UDP packet, ready for delivery to user space.
 #[derive(Debug)]
@@ -497,15 +503,21 @@ impl<'umem> UdpHandler<'umem> {
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        net::{
+            checksum::{compute_ipv4_checksum, compute_udp_checksum, compute_udp_checksum_v6},
+            wire::{
+                ip::{
+                    IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, IpProtocols, Ipv4Address,
+                    Ipv6Address,
+                },
+                udp::UDP_HEADER_LEN,
+            },
+        },
+        xdp::frame::{BasicFrameBuffer, Frame},
+    };
+
     use super::*;
-    use crate::net::checksum::{
-        compute_ipv4_checksum, compute_udp_checksum, compute_udp_checksum_v6,
-    };
-    use crate::net::wire::ip::{
-        IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, Ipv4Address, Ipv6Address,
-    };
-    use crate::net::wire::udp::UDP_HEADER_LEN;
-    use crate::xdp::frame::{BasicFrameBuffer, Frame};
 
     const LOCAL_IPV4: Ipv4Address = Ipv4Address::new([192, 168, 1, 1]);
     const REMOTE_IPV4: Ipv4Address = Ipv4Address::new([10, 0, 0, 2]);
@@ -569,7 +581,6 @@ mod tests {
         dst_port: u16,
         payload: &[u8],
     ) -> Vec<u8> {
-        use crate::net::wire::ip::IpProtocols;
         let payload_len = (UDP_HEADER_LEN + payload.len()) as u16;
         let mut buf = vec![0u8; ETH_HEADER_LEN + IPV6_HEADER_LEN + UDP_HEADER_LEN + payload.len()];
 

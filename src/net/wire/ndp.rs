@@ -118,8 +118,9 @@ pub const ALL_NODES_MULTICAST: Ipv6Address =
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::net::wire::ip::IPV6_HEADER_LEN;
+
+    use super::*;
 
     #[test]
     fn ndp_ns_message_layout() {

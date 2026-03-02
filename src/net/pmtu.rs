@@ -100,8 +100,9 @@ impl PmtuCache {
 mod tests {
     use std::ops::Add;
 
-    use super::*;
     use crate::net::wire::ip::{Ipv4Address, Ipv6Address};
+
+    use super::*;
 
     #[test]
     fn insert_and_get_ipv4() {

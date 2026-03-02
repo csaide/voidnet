@@ -1,19 +1,18 @@
-use std::mem::size_of;
-
 use coarsetime::Instant;
 
 use crate::{
-    net::PmtuCache,
+    net::{
+        PmtuCache,
+        checksum::verify_ipv4_checksum,
+        wire::{
+            ethernet::EthernetFrame,
+            icmpv4::Icmpv4Codes,
+            ip::{IPV4_MIN_FRAME_LEN, IpProtocols, Ipv4Header},
+        },
+    },
     xdp::frame::{Frame, FrameBuffer},
 };
 
-use crate::net::checksum::verify_ipv4_checksum;
-
-use super::wire::{
-    ethernet::EthernetFrame,
-    icmpv4::Icmpv4Codes,
-    ip::{IPV4_MIN_FRAME_LEN, IpProtocols, Ipv4Header},
-};
 use super::{icmpv4, udp::UdpHandler};
 
 /// Layer-3 handler for incoming IPv4 frames.
@@ -118,14 +117,18 @@ impl Ipv4Handler {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::net::checksum::{compute_ipv4_checksum, compute_udp_checksum};
-    use crate::net::{
-        pmtu::PmtuCache,
-        wire::ip::{IPV4_MIN_HEADER_LEN, IpAddress, Ipv4Address},
-        wire::udp::UDP_HEADER_LEN,
+    use crate::{
+        net::{
+            checksum::{compute_ipv4_checksum, compute_udp_checksum},
+            wire::{
+                ip::{IPV4_MIN_HEADER_LEN, IpAddress, Ipv4Address},
+                udp::UDP_HEADER_LEN,
+            },
+        },
+        xdp::frame::BasicFrameBuffer,
     };
-    use crate::xdp::frame::BasicFrameBuffer;
+
+    use super::*;
 
     const REMOTE_IP: Ipv4Address = Ipv4Address::new([10, 0, 0, 2]);
     const LOCAL_IP: Ipv4Address = Ipv4Address::new([192, 168, 1, 1]);

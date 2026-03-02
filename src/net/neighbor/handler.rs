@@ -252,19 +252,15 @@ impl NeighborHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use crate::{
         net::wire::{
-            arp::{ARP_FRAME_LEN, ArpHardwareTypes, ArpOperations, ArpPacket},
+            arp::{ARP_FRAME_LEN, ArpFrame, ArpHardwareTypes, ArpOperations, ArpPacket},
             ethernet::{EtherTypes, EthernetFrame, MacAddress},
-            ip::{IpAddress, Ipv4Address, Ipv6Address},
         },
-        xdp::frame::{BasicFrameBuffer, Frame, FrameBuffer},
+        xdp::frame::BasicFrameBuffer,
     };
 
-    use super::NeighborHandler;
-    use crate::net::wire::arp::ArpFrame;
+    use super::*;
 
     const TEST_LOCAL_MAC: MacAddress = MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
     const TEST_LOCAL_IP: Ipv4Address = Ipv4Address::new([192, 168, 1, 1]);

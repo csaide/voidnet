@@ -1,9 +1,15 @@
-use std::cell::{Cell, UnsafeCell};
-use std::rc::Rc;
+use std::{
+    cell::{Cell, UnsafeCell},
+    rc::Rc,
+};
 
-use crate::net::handler::udp::UdpHandler;
-use crate::net::{NeighborHandler, PmtuCache};
-use crate::xdp::frame::SharedFrameBuffer;
+use crate::{
+    net::{
+        handler::udp::UdpHandler,
+        {NeighborHandler, PmtuCache},
+    },
+    xdp::frame::SharedFrameBuffer,
+};
 
 pub struct ContextDropGuard;
 

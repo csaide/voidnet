@@ -362,11 +362,13 @@ fn setup_busy_poll(fd: c_int, busy_poll_timeout_us: i32, batch_size: usize) -> R
 mod tests {
     use std::time::{Duration, Instant};
 
-    use crate::xdp::context::XdpContext;
-    use crate::xdp::frame::{BasicFrameBuffer, FrameBuffer};
-    use crate::xdp::program::AttachMode;
-    use crate::xdp::test_utils::TestVethPair;
-    use crate::xdp::umem::Umem;
+    use crate::xdp::{
+        context::XdpContext,
+        frame::{BasicFrameBuffer, FrameBuffer},
+        program::AttachMode,
+        test_utils::TestVethPair,
+        umem::Umem,
+    };
 
     use super::*;
 

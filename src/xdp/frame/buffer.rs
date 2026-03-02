@@ -211,9 +211,12 @@ impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for futures_util::lock::Mu
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{
+        VecDeque,
+        vec_deque::{Drain, Iter, IterMut},
+    };
+
     use super::*;
-    use std::collections::VecDeque;
-    use std::collections::vec_deque::{Drain, Iter, IterMut};
 
     struct MockFrameBuffer<'umem> {
         frames: VecDeque<Frame<'umem>>,

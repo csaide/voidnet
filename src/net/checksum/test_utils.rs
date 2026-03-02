@@ -1,9 +1,11 @@
-use crate::net::wire::ip::{IpProtocols, Ipv4Address, Ipv6Address};
-use crate::net::wire::tcp::TCP_HEADER_LEN;
+use crate::net::wire::{
+    ip::{IpProtocols, Ipv4Address, Ipv6Address},
+    tcp::TCP_HEADER_LEN,
+};
 
 use super::{
-    checksum_to_bytes, fold_and_verify, fold_checksum, pseudo_header_sum_v4,
-    pseudo_header_sum_v6, sum_words,
+    checksum_to_bytes, fold_and_verify, fold_checksum, pseudo_header_sum_v4, pseudo_header_sum_v6,
+    sum_words,
 };
 
 /// Computes the UDP checksum over the IPv4 pseudo-header and full UDP segment.

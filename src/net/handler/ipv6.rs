@@ -1,23 +1,21 @@
-use std::mem::size_of;
-
 use coarsetime::Instant;
 
 use crate::{
     net::{
         NeighborHandler, PmtuCache,
-        wire::ip::{EXT_AH, NO_NEXT_HEADER},
+        wire::{
+            ethernet::EthernetFrame,
+            icmpv6::{Icmpv6Codes, Icmpv6Types},
+            ip::{
+                EXT_AH, EXT_DESTINATION, EXT_FRAGMENT, EXT_HOP_BY_HOP, EXT_ROUTING,
+                FRAGMENT_EXT_LEN, IPV6_HEADER_LEN, IPV6_MIN_FRAME_LEN, IpProtocols, Ipv6Header,
+                NO_NEXT_HEADER,
+            },
+        },
     },
     xdp::frame::{Frame, FrameBuffer},
 };
 
-use super::wire::{
-    ethernet::EthernetFrame,
-    icmpv6::{Icmpv6Codes, Icmpv6Types},
-    ip::{
-        EXT_DESTINATION, EXT_FRAGMENT, EXT_HOP_BY_HOP, EXT_ROUTING, FRAGMENT_EXT_LEN,
-        IPV6_HEADER_LEN, IPV6_MIN_FRAME_LEN, IpProtocols, Ipv6Header,
-    },
-};
 use super::{icmpv6, udp::UdpHandler};
 
 /// Result of walking IPv6 extension headers.
@@ -256,13 +254,16 @@ impl Ipv6Handler {
 mod tests {
     use coarsetime::Duration;
 
-    use super::super::wire::ip::{IpAddress, Ipv6Address};
+    use crate::{
+        net::checksum::{compute_icmpv6_checksum, compute_udp_checksum_v6},
+        net::wire::{
+            ip::{IpAddress, Ipv6Address},
+            udp::UDP_HEADER_LEN,
+        },
+        xdp::frame::BasicFrameBuffer,
+    };
+
     use super::*;
-    use crate::net::checksum::compute_udp_checksum_v6;
-    use crate::net::pmtu::PmtuCache;
-    use crate::net::wire::ip::NO_NEXT_HEADER;
-    use crate::net::wire::udp::UDP_HEADER_LEN;
-    use crate::xdp::frame::BasicFrameBuffer;
 
     const REMOTE_IP: Ipv6Address =
         Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
@@ -646,9 +647,6 @@ mod tests {
 
     #[test]
     fn icmpv6_echo_request_generates_reply() {
-        use super::super::wire::icmpv6::Icmpv6Types;
-        use crate::net::checksum::compute_icmpv6_checksum;
-
         let eth_len = size_of::<EthernetFrame>();
         let icmpv6_len = 16;
         let frame_len = eth_len + IPV6_HEADER_LEN + icmpv6_len;

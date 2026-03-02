@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, hash::Hash};
+use std::{
+    collections::{BTreeMap, btree_map::Entry},
+    hash::Hash,
+};
 
 use coarsetime::{Duration, Instant};
 use rustc_hash::FxHashMap;
@@ -67,7 +70,6 @@ impl<'umem> ReassemblyEntry<'umem> {
         more_fragments: bool,
         frame: Frame<'umem>,
     ) -> Option<Frame<'umem>> {
-        use std::collections::btree_map::Entry;
         match self.fragments.entry(offset) {
             Entry::Occupied(_) => Some(frame), // duplicate
             Entry::Vacant(entry) => {
@@ -300,12 +302,19 @@ impl<'umem> FragmentReader<'umem> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::net::wire::{
-        ethernet::EthernetFrame,
-        ip::{IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpProtocols},
+    use crate::{
+        net::{
+            fragment::FragmentWriter,
+            wire::{
+                ethernet::{EthernetFrame, MacAddress},
+                ip::{IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpProtocols},
+                udp::UdpHeader,
+            },
+        },
+        xdp::frame::{BasicFrameBuffer, Frame},
     };
-    use crate::xdp::frame::{BasicFrameBuffer, Frame};
+
+    use super::*;
 
     const ETH_LEN: usize = size_of::<EthernetFrame>();
     const SRC_V4: [u8; 4] = [192, 168, 1, 1];
@@ -370,8 +379,6 @@ mod tests {
     }
 
     const FRAG_OFF: usize = ETH_LEN + IPV6_HEADER_LEN;
-
-    // --- IPv4 reassembly ---
 
     #[test]
     fn ipv4_two_fragment_reassembly() {
@@ -472,8 +479,6 @@ mod tests {
         assert_eq!(reader.pending_entries(), 2); // two separate entries
     }
 
-    // --- IPv6 reassembly ---
-
     #[test]
     fn ipv6_two_fragment_reassembly() {
         let mut reader = FragmentReader::new(16);
@@ -568,8 +573,6 @@ mod tests {
         assert_eq!(rx.num_frames(), 1);
     }
 
-    // --- pending_entries ---
-
     #[test]
     fn pending_entries_counts_both() {
         let mut reader = FragmentReader::new(16);
@@ -588,8 +591,6 @@ mod tests {
 
         assert_eq!(reader.pending_entries(), 2);
     }
-
-    // --- evict_stale ---
 
     #[test]
     fn evict_stale_returns_frames() {
@@ -623,13 +624,8 @@ mod tests {
         assert_eq!(rx.num_frames(), 0);
     }
 
-    // --- Roundtrip: FragmentWriter -> FragmentReader ---
-
     #[test]
     fn ipv4_roundtrip() {
-        use super::super::writer::FragmentWriter;
-        use crate::net::wire::{ethernet::MacAddress, udp::UdpHeader};
-
         let src_mac = MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
         let dst_mac = MacAddress::new([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
         let src_ip = Ipv4Address::new(SRC_V4);
@@ -678,9 +674,6 @@ mod tests {
 
     #[test]
     fn ipv6_roundtrip() {
-        use super::super::writer::FragmentWriter;
-        use crate::net::wire::{ethernet::MacAddress, udp::UdpHeader};
-
         let src_mac = MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
         let dst_mac = MacAddress::new([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
         let src_ip = Ipv6Address::new(SRC_V6);
@@ -728,9 +721,6 @@ mod tests {
 
     #[test]
     fn ipv4_single_frame_roundtrip() {
-        use super::super::writer::FragmentWriter;
-        use crate::net::wire::{ethernet::MacAddress, udp::UdpHeader};
-
         let src_mac = MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
         let dst_mac = MacAddress::new([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
         let src_ip = Ipv4Address::new(SRC_V4);

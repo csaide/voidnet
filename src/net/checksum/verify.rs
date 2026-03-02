@@ -1,8 +1,12 @@
-use crate::net::wire::ip::{IpProtocols, Ipv4Address, Ipv6Address};
-use crate::net::wire::udp::UDP_HEADER_LEN;
+use crate::net::wire::{
+    ip::{IpProtocols, Ipv4Address, Ipv6Address},
+    udp::UDP_HEADER_LEN,
+};
 
-use super::common::{fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6, sum_words};
-use super::compute::compute_ipv4_checksum;
+use super::{
+    common::{fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6, sum_words},
+    compute::compute_ipv4_checksum,
+};
 
 /// Verifies the IPv4 header checksum.
 ///
@@ -68,8 +72,9 @@ pub fn verify_udp_checksum_v6(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::net::checksum::test_utils::*;
+
+    use super::*;
 
     #[test]
     fn ipv4_checksum_verify_valid() {

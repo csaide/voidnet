@@ -1,20 +1,30 @@
-use std::cell::UnsafeCell;
-use std::pin::Pin;
-use std::rc::Rc;
-use std::task::{Context, Poll};
+use std::{
+    cell::UnsafeCell,
+    pin::Pin,
+    rc::Rc,
+    task::{Context, Poll},
+};
 
 use coarsetime::Instant;
 
-use crate::net::checksum::{compute_udp_checksum_from_parts, compute_udp_checksum_v6_from_parts};
-use crate::net::fragment::{FragmentWriter, Packet};
-use crate::net::handler::udp::{BindError, ReceivedUdpPacket, UdpHandler};
-use crate::net::wire::ethernet::MacAddress;
-use crate::net::wire::ip::{IpAddress, Ipv4Address, Ipv6Address};
-use crate::net::wire::udp::{UDP_HEADER_LEN, UdpHeader};
-use crate::net::{NeighborHandler, PmtuCache};
-use crate::rt::context::with_runtime_context;
-use crate::xdp::error::WouldBlock;
-use crate::xdp::frame::{FrameBuffer, SharedFrameBuffer};
+use crate::{
+    net::{
+        NeighborHandler, PmtuCache,
+        checksum::{compute_udp_checksum_from_parts, compute_udp_checksum_v6_from_parts},
+        fragment::{FragmentWriter, Packet},
+        handler::udp::{BindError, ReceivedUdpPacket, UdpHandler},
+        wire::{
+            ethernet::MacAddress,
+            ip::{IpAddress, Ipv4Address, Ipv6Address},
+            udp::{UDP_HEADER_LEN, UdpHeader},
+        },
+    },
+    rt::context::with_runtime_context,
+    xdp::{
+        error::WouldBlock,
+        frame::{FrameBuffer, SharedFrameBuffer},
+    },
+};
 
 use super::LocalQueue;
 
@@ -174,6 +184,7 @@ pub struct RecvHalf<'sock, 'umem> {
 }
 
 impl<'sock, 'umem> RecvHalf<'sock, 'umem> {
+    /// Receive a packet. Returns a future that resolves when a packet is available.
     #[inline(always)]
     pub fn recv_from(&self) -> RecvFrom<'_, 'umem> {
         RecvFrom {
@@ -181,6 +192,7 @@ impl<'sock, 'umem> RecvHalf<'sock, 'umem> {
         }
     }
 
+    /// Receive a stream of packets. Returns a stream that yields packets as they are received.
     #[inline(always)]
     pub fn recv_stream(&self) -> RecvStream<'_, 'umem> {
         RecvStream {
@@ -202,6 +214,7 @@ pub struct SendHalf<'sock, 'umem> {
 }
 
 impl<'sock, 'umem> SendHalf<'sock, 'umem> {
+    /// Send a payload to a destination address and port.
     #[inline(always)]
     pub fn send_to<'buf>(
         &mut self,
@@ -225,6 +238,7 @@ impl<'sock, 'umem> SendHalf<'sock, 'umem> {
         }
     }
 
+    /// Echo a received packet back with backpressure (async).
     #[inline(always)]
     pub fn echo(&mut self, packet: ReceivedUdpPacket<'umem>) -> Echo<'_, 'umem> {
         let payload_len = packet.packet.len() as u32;
@@ -235,6 +249,7 @@ impl<'sock, 'umem> SendHalf<'sock, 'umem> {
         }
     }
 
+    /// Echo a received packet back immediately without backpressure (sync).
     #[inline(always)]
     pub fn echo_immediate(&mut self, packet: ReceivedUdpPacket<'umem>) -> u32 {
         let payload_len = packet.packet.len() as u32;
@@ -242,6 +257,7 @@ impl<'sock, 'umem> SendHalf<'sock, 'umem> {
         payload_len
     }
 
+    /// Discard a received packet, returning its frames to the kernel.
     #[inline(always)]
     pub fn discard(&mut self, packet: ReceivedUdpPacket<'umem>) {
         packet.packet.drain_to(&mut self.rx_return);
@@ -470,12 +486,12 @@ impl<'sock, 'umem> Future for Echo<'sock, 'umem> {
 mod tests {
     use coarsetime::Duration;
 
+    use crate::{
+        rt::context::{ContextDropGuard, RuntimeContext},
+        xdp::frame::BasicFrameBuffer,
+    };
+
     use super::*;
-    use crate::net::PmtuCache;
-    use crate::net::handler::udp::UdpHandler;
-    use crate::net::wire::ip::Ipv4Address;
-    use crate::rt::context::{ContextDropGuard, RuntimeContext};
-    use crate::xdp::frame::BasicFrameBuffer;
 
     /// Set up a fake runtime context for testing.
     fn with_test_context<F: FnOnce()>(f: F) {

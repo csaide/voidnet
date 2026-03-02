@@ -302,11 +302,12 @@ impl<'umem> Umem<'umem> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::xdp::{
         flags::AF_XDP_RESERVED,
         frame::{BasicFrameBuffer, FrameBuffer},
     };
+
+    use super::*;
 
     #[test]
     fn test_builder_defaults() {

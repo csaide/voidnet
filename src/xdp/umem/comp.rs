@@ -51,11 +51,9 @@ impl<'umem> Deref for CompletionQueue<'umem> {
 
 #[cfg(test)]
 mod tests {
+    use crate::xdp::{context::XdpContext, frame::BasicFrameBuffer, umem::Umem};
+
     use super::*;
-    use crate::xdp::context::XdpContext;
-    use crate::xdp::frame::{BasicFrameBuffer, FrameBuffer};
-    use crate::xdp::umem::Umem;
-    use std::sync::Arc;
 
     struct TestContext {
         _ctx: XdpContext,

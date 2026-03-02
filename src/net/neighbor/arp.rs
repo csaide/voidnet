@@ -126,8 +126,6 @@ pub(super) fn handle_arp<'umem>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use crate::{
         net::{
             neighbor::NeighborHandler,
@@ -139,6 +137,8 @@ mod tests {
         },
         xdp::frame::{BasicFrameBuffer, Frame, FrameBuffer},
     };
+
+    use super::*;
 
     const TEST_LOCAL_MAC: MacAddress = MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
     const TEST_LOCAL_IP: Ipv4Address = Ipv4Address::new([192, 168, 1, 1]);

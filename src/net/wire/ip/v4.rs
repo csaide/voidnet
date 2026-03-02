@@ -195,8 +195,9 @@ impl Display for Ipv4Header {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::net::checksum::verify_ipv4_checksum;
+
+    use super::*;
 
     fn sample_header() -> Ipv4Header {
         Ipv4Header {

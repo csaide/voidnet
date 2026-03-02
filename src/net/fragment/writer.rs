@@ -12,9 +12,7 @@ use crate::{
     },
 };
 
-use super::pkt::Packet;
-
-use super::{id, plan::FragmentPlan, transport::TransportHeader};
+use super::{id, pkt::Packet, plan::FragmentPlan, transport::TransportHeader};
 
 const ETH_HEADER_LEN: usize = size_of::<EthernetFrame>();
 
@@ -293,12 +291,15 @@ impl FragmentWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::net::checksum::compute_ipv4_checksum;
-    use crate::net::wire::ip::IpProtocols;
-    use crate::xdp::frame::{BasicFrameBuffer, Frame};
+    use crate::{
+        net::{
+            checksum::compute_ipv4_checksum,
+            wire::{ip::IpProtocols, udp::UdpHeader},
+        },
+        xdp::frame::{BasicFrameBuffer, Frame},
+    };
 
-    use crate::net::wire::udp::UdpHeader;
+    use super::*;
 
     const SRC_MAC: MacAddress = MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
     const DST_MAC: MacAddress = MacAddress::new([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);

@@ -257,8 +257,7 @@ fn handle_neighbor_solicitation<'umem>(
     pkt.na.opt_len = 1; // 1 unit of 8 bytes
     pkt.na.opt_mac = local_mac;
     if !tx_offload {
-        pkt.na.checksum =
-            compute_icmpv6_checksum(&target_addr, &reply_dst_addr, pkt.na.as_bytes());
+        pkt.na.checksum = compute_icmpv6_checksum(&target_addr, &reply_dst_addr, pkt.na.as_bytes());
     }
 
     tx_return.push(frame);
@@ -371,20 +370,15 @@ fn parse_ndp_link_layer_option(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use crate::{
         net::{
-            checksum::compute_icmpv6_checksum,
             neighbor::NeighborHandler,
-            wire::{
-                ethernet::{EthernetFrame, MacAddress},
-                ip::{IPV6_HEADER_LEN, IpProtocols, Ipv4Address, Ipv6Address, Ipv6Header},
-                ndp::NDP_NS_FRAME_LEN,
-            },
+            wire::ip::{IPV6_HEADER_LEN, Ipv4Address},
         },
-        xdp::frame::{BasicFrameBuffer, Frame, FrameBuffer},
+        xdp::frame::BasicFrameBuffer,
     };
+
+    use super::*;
 
     const TEST_LOCAL_MAC: MacAddress = MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
     const TEST_LOCAL_IP: Ipv4Address = Ipv4Address::new([192, 168, 1, 1]);

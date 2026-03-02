@@ -62,13 +62,21 @@ impl EthernetHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::net::checksum::{compute_ipv4_checksum, compute_udp_checksum};
-    use crate::net::wire::ethernet::{EtherType, MacAddress, write_ethernet_header};
-    use crate::net::wire::ip::{IPV4_MIN_HEADER_LEN, Ipv4Address};
-    use crate::net::wire::udp::UDP_HEADER_LEN;
-    use crate::xdp::frame::BasicFrameBuffer;
     use coarsetime::Duration;
+
+    use crate::{
+        net::{
+            checksum::{compute_ipv4_checksum, compute_udp_checksum},
+            wire::{
+                ethernet::{EtherType, MacAddress, write_ethernet_header},
+                ip::{IPV4_MIN_HEADER_LEN, Ipv4Address},
+                udp::UDP_HEADER_LEN,
+            },
+        },
+        xdp::frame::BasicFrameBuffer,
+    };
+
+    use super::*;
 
     const SRC_IP: Ipv4Address = Ipv4Address::new([10, 0, 0, 1]);
     const DST_IP: Ipv4Address = Ipv4Address::new([10, 0, 0, 2]);

@@ -79,9 +79,9 @@ pub fn compute_icmpv6_checksum(
 
 #[cfg(test)]
 mod tests {
+    use crate::net::{checksum::test_utils::*, wire::udp::UDP_HEADER_LEN};
+
     use super::*;
-    use crate::net::checksum::test_utils::*;
-    use crate::net::wire::udp::UDP_HEADER_LEN;
 
     #[test]
     fn ipv4_checksum_compute_and_verify() {

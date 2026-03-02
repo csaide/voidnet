@@ -3,19 +3,19 @@ use std::mem::size_of;
 use coarsetime::Instant;
 
 use crate::{
-    net::{NeighborHandler, PmtuCache},
-    xdp::frame::{Frame, FrameBuffer},
-};
-
-use crate::net::checksum::compute_icmpv6_checksum;
-
-use super::wire::{
-    ethernet::EthernetFrame,
-    icmpv6::{
-        ICMPV6_HEADER_LEN, Icmpv6Codes, Icmpv6Frame, Icmpv6Header, Icmpv6Types, MAX_ERROR_PAYLOAD,
-        is_icmpv6_error,
+    net::{
+        NeighborHandler, PmtuCache,
+        checksum::compute_icmpv6_checksum,
+        wire::{
+            ethernet::EthernetFrame,
+            icmpv6::{
+                ICMPV6_HEADER_LEN, Icmpv6Codes, Icmpv6Frame, Icmpv6Header, Icmpv6Types,
+                MAX_ERROR_PAYLOAD, is_icmpv6_error,
+            },
+            ip::{IPV6_HEADER_LEN, IpProtocols, Ipv6Address, Ipv6Header},
+        },
     },
-    ip::{IPV6_HEADER_LEN, IpProtocols, Ipv6Address, Ipv6Header},
+    xdp::frame::{Frame, FrameBuffer},
 };
 
 /// Processes an incoming ICMPv6 packet.
@@ -273,14 +273,14 @@ pub fn send_icmpv6_error<'umem>(
 
 #[cfg(test)]
 mod tests {
-
     use coarsetime::Duration;
 
-    use super::super::wire::ethernet::MacAddress;
-    use super::super::wire::ip::IpAddress;
+    use crate::{
+        net::wire::{ethernet::MacAddress, ip::IpAddress},
+        xdp::frame::BasicFrameBuffer,
+    };
+
     use super::*;
-    use crate::net::pmtu::PmtuCache;
-    use crate::xdp::frame::BasicFrameBuffer;
 
     const SRC_MAC: [u8; 6] = MacAddress::zero().octets;
     const DST_MAC: [u8; 6] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x02];

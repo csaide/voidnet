@@ -249,8 +249,6 @@ mod tests {
         assert_eq!(IPV6_MIN_FRAME_LEN, 54);
     }
 
-    // --- Ipv6FragmentHeader ---
-
     #[test]
     fn fragment_header_layout() {
         assert_eq!(FRAGMENT_EXT_LEN, 8);
