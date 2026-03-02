@@ -78,10 +78,11 @@ fn main() {
 
             let (recv, mut send) = socket.split();
             let mut recv_stream = recv.recv_stream();
-            while let Some(packet) = recv_stream.next().await {
+            while let Some(mut packet) = recv_stream.next().await {
                 stats.update(packet.packet.len(), false);
                 stats.maybe_print();
-                send.discard(packet);
+                packet.swap_addresses();
+                send.echo_immediate(packet);
             }
         })
         .expect("Failed to run runtime");

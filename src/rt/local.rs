@@ -248,6 +248,8 @@ impl<'umem> LocalRuntime<'umem> {
             .process_fill_queue(&mut self.free_frames)
             .expect("failed to process fill queue");
 
+        let expected_free_frames = self.free_frames.num_frames();
+
         let waker = waker();
         let mut cx = Context::from_waker(&waker);
         pin_mut!(fut);
@@ -255,7 +257,7 @@ impl<'umem> LocalRuntime<'umem> {
         let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
         let mut now = coarsetime::Instant::now();
         while !exit.load(Ordering::Relaxed) {
-            if let Ok(_) = self.socket.recv(&mut buffer) {
+            let received = if let Ok(received) = self.socket.recv(&mut buffer) {
                 // SAFETY: single-threaded, no reentrant handler calls.
                 let udp_handler = unsafe { &mut *self.udp_handler.get() };
                 let Self {
@@ -305,19 +307,25 @@ impl<'umem> LocalRuntime<'umem> {
                         }
                     }
                 }
-            }
+                received
+            } else {
+                0
+            };
 
             if let Poll::Ready(_) = fut.as_mut().poll(&mut cx) {
                 return Ok(());
             }
 
             self.evict_counter = self.evict_counter.wrapping_add(1);
-            if self.evict_counter & 0x3FF == 0 {
-                // SAFETY: single-threaded, no reentrant handler calls.
-                let udp_handler = unsafe { &mut *self.udp_handler.get() };
-
+            if self.evict_counter & 65535 == 0 {
                 // Evict stale UDP fragments.
-                udp_handler.evict_stale(now, Duration::from_secs(30), &mut self.rx_return);
+                //
+                // SAFETY: single-threaded, no reentrant handler calls.
+                unsafe { &mut *self.udp_handler.get() }.evict_stale(
+                    now,
+                    Duration::from_secs(30),
+                    &mut self.rx_return,
+                );
 
                 // Evict stale neighbor entries.
                 self.neighbor_handler.evict_stale(now);
@@ -329,19 +337,38 @@ impl<'umem> LocalRuntime<'umem> {
                 now = coarsetime::Instant::now();
             }
 
+            let expected_size = self.tx_return.num_frames() + self.rx_return.num_frames();
+
+            // We have frames to send, so send them.
             while self.tx_return.num_frames() > 0 {
-                self.socket.maybe_wake()?;
-                let _ = self.socket.send(&mut self.tx_return);
-                let _ = self.umem.process_completion_queue(&mut self.rx_return);
+                if let Err(_) = self.socket.send(&mut self.tx_return) {
+                    self.socket.maybe_wake()?;
+                    let _ = self.umem.process_completion_queue(&mut self.rx_return);
+                }
             }
 
-            while let Err(_) = self.umem.process_fill_queue(&mut self.rx_return) {
-                self.umem.maybe_wake_fill_queue(self.socket.fd())?;
+            // Fully flush the writes from above.
+            while self.rx_return.num_frames() < expected_size as usize {
+                if let Err(_) = self.umem.process_completion_queue(&mut self.rx_return) {
+                    self.socket.maybe_wake()?;
+                }
             }
 
-            for frame in self.rx_return.take_frames() {
-                self.free_frames.push(frame);
+            // Take care of refilling our free frames.
+            while self.rx_return.num_frames() > received as usize {
+                self.free_frames.push(self.rx_return.pop().unwrap());
             }
+
+            // Anything left goes back to the fill queue.
+            while self.rx_return.num_frames() > 0 {
+                if let Err(_) = self.umem.process_fill_queue(&mut self.rx_return) {
+                    self.umem.maybe_wake_fill_queue(self.socket.fd())?;
+                }
+            }
+
+            debug_assert_eq!(self.rx_return.num_frames(), 0);
+            debug_assert_eq!(self.tx_return.num_frames(), 0);
+            debug_assert_eq!(self.free_frames.num_frames(), expected_free_frames);
         }
 
         Ok(())
