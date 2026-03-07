@@ -190,6 +190,19 @@ impl TcpHandler {
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
+        self.process_ipv4_with_now(frame, Instant::now(), neighbor_handler, free_frames, rx_return, tx_return);
+    }
+
+    /// Process an incoming IPv4 TCP segment with an explicit timestamp.
+    pub fn process_ipv4_with_now<'umem>(
+        &mut self,
+        frame: Frame<'umem>,
+        now: Instant,
+        neighbor_handler: &NeighborHandler,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
         let ip = Ipv4Header::from_bytes(&frame);
         let src_addr = ip.src_addr;
         let dst_addr = ip.dst_addr;
@@ -246,7 +259,7 @@ impl TcpHandler {
         let dst_mac = EthernetFrame::from_bytes(&frame).src_mac;
 
         self.process_segment(
-            frame, incoming_src, incoming_dst,
+            frame, now, incoming_src, incoming_dst,
             src_port, dst_port, seg_seq, seg_ack, seg_flags, seg_wnd, seg_len,
             &opt_buf[..opt_len], tcp_offset, header_len,
             src_mac, dst_mac,
@@ -259,6 +272,20 @@ impl TcpHandler {
         &mut self,
         frame: Frame<'umem>,
         tcp_offset: usize,
+        neighbor_handler: &NeighborHandler,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        self.process_ipv6_with_now(frame, tcp_offset, Instant::now(), neighbor_handler, free_frames, rx_return, tx_return);
+    }
+
+    /// Process an incoming IPv6 TCP segment with an explicit timestamp.
+    pub fn process_ipv6_with_now<'umem>(
+        &mut self,
+        frame: Frame<'umem>,
+        tcp_offset: usize,
+        now: Instant,
         neighbor_handler: &NeighborHandler,
         free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
@@ -316,7 +343,7 @@ impl TcpHandler {
         let dst_mac = EthernetFrame::from_bytes(&frame).src_mac;
 
         self.process_segment(
-            frame, incoming_src, incoming_dst,
+            frame, now, incoming_src, incoming_dst,
             src_port, dst_port, seg_seq, seg_ack, seg_flags, seg_wnd, seg_len,
             &opt_buf[..opt_len], tcp_offset, header_len,
             src_mac, dst_mac,
@@ -329,6 +356,7 @@ impl TcpHandler {
     fn process_segment<'umem>(
         &mut self,
         frame: Frame<'umem>,
+        now: Instant,
         incoming_src: IpAddress,
         incoming_dst: IpAddress,
         src_port: u16,
@@ -376,7 +404,7 @@ impl TcpHandler {
                     let payload_offset = tcp_offset + tcp_header_len;
                     let payload_len = frame.len().saturating_sub(payload_offset);
                     self.process_established(
-                        idx, frame, seg_seq, seg_ack, seg_flags, seg_wnd,
+                        idx, frame, now, seg_seq, seg_ack, seg_flags, seg_wnd,
                         payload_offset, payload_len,
                         src_mac, dst_mac,
                         free_frames, rx_return, tx_return,
@@ -762,6 +790,7 @@ impl TcpHandler {
         &mut self,
         idx: usize,
         frame: Frame<'umem>,
+        now: Instant,
         seg_seq: u32,
         seg_ack: u32,
         seg_flags: u8,
@@ -810,6 +839,29 @@ impl TcpHandler {
                 }
 
                 tcb.dup_ack_count = 0;
+
+                // RTT measurement (RFC 6298).
+                if let Some(send_time) = tcb.last_send_time {
+                    let rtt_ms = now.duration_since(send_time).as_millis();
+
+                    match tcb.srtt {
+                        None => {
+                            // First measurement (RFC 6298 §2.2).
+                            tcb.srtt = Some(rtt_ms);
+                            tcb.rttvar = rtt_ms / 2;
+                        }
+                        Some(srtt) => {
+                            // Subsequent measurements (RFC 6298 §2.3).
+                            let diff = if rtt_ms > srtt { rtt_ms - srtt } else { srtt - rtt_ms };
+                            tcb.rttvar = (3 * tcb.rttvar + diff) / 4;
+                            tcb.srtt = Some((7 * srtt + rtt_ms) / 8);
+                        }
+                    }
+                    let srtt = tcb.srtt.unwrap();
+                    // RTO = SRTT + 4 * RTTVAR, clamped to [1000ms, 60_000ms].
+                    tcb.rto = (srtt + 4 * tcb.rttvar).max(1000).min(60_000);
+                    tcb.last_send_time = None; // consumed
+                }
 
                 // Update send window.
                 tcb.snd_wnd = seg_wnd;
@@ -1095,6 +1147,7 @@ impl TcpHandler {
             );
 
             tcb.snd_nxt = tcb.snd_nxt.wrapping_add(to_send as u32);
+            tcb.last_send_time = Some(now);
 
             // Set retransmit timer if not already running.
             if tcb.retransmit_deadline.is_none() {
@@ -1857,5 +1910,54 @@ mod tests {
         assert_eq!(tcb.cwnd, tcb.eff_snd_mss as u32, "cwnd should be 1 MSS after RTO");
         assert!(tcb.ssthresh < cwnd_before, "ssthresh should be reduced");
         assert_eq!(tcb.rto_backoff, 1, "rto_backoff should be incremented");
+    }
+
+    #[test]
+    fn rtt_estimation_updates_rto() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Send data.
+        handler.connections[0].send_buffer.write(b"test data");
+        handler.connections[0].snd_wnd = 65535;
+        let send_time = coarsetime::Instant::now();
+        handler.poll_send(send_time, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Verify last_send_time is set.
+        assert!(handler.connections[0].last_send_time.is_some(), "last_send_time should be set after poll_send");
+
+        // ACK the data.
+        let new_ack = server_iss.wrapping_add(1).wrapping_add(9); // ISS+1 + 9 bytes
+        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, new_ack, flags::ACK, 65535, &[]);
+        let ack_len = ack.len();
+        let recv_time = coarsetime::Instant::now();
+        handler.process_ipv4_with_now(Frame::new(5, leak(ack), ack_len, false), recv_time, &nh, &mut free, &mut rx, &mut tx);
+
+        // Verify RTT was measured.
+        let tcb = &handler.connections[0];
+        assert!(tcb.srtt.is_some(), "srtt should be set after first RTT measurement");
+        assert!(tcb.last_send_time.is_none(), "last_send_time should be consumed");
+        // RTO should be at least 1000ms (the minimum clamp).
+        assert!(tcb.rto >= 1000, "rto should be at least 1000ms");
+        assert!(tcb.rto <= 60_000, "rto should be at most 60000ms");
     }
 }
