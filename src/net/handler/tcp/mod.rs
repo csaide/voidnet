@@ -1411,6 +1411,35 @@ impl TcpHandler {
             return;
         }
 
+        // Step 4: SYN check (RFC 5961 — challenge ACK for SYN in synchronized state).
+        if seg_flags & flags::SYN != 0 {
+            let tcb = &self.connections[idx];
+            let ts = if tcb.ts_enabled {
+                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                Some((tsval, tcb.ts_recent))
+            } else {
+                None
+            };
+            SegmentBuilder::build_ack(
+                tcb.id.local_addr,
+                tcb.id.remote_addr,
+                tcb.id.local_port,
+                tcb.id.remote_port,
+                tcb.snd_nxt,
+                tcb.rcv_nxt,
+                tcb.advertised_window(),
+                ack_flags,
+                ts,
+                src_mac,
+                dst_mac,
+                self.tx_offload,
+                free_frames,
+                tx_return,
+            );
+            rx_return.push(frame);
+            return;
+        }
+
         // Update ts_recent from incoming segment.
         {
             let tcb = &mut self.connections[idx];
@@ -2579,6 +2608,35 @@ impl TcpHandler {
                 return;
             }
             // In-window but not exact: send challenge ACK, drop segment.
+            let tcb = &self.connections[idx];
+            let ts = if tcb.ts_enabled {
+                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                Some((tsval, tcb.ts_recent))
+            } else {
+                None
+            };
+            SegmentBuilder::build_ack(
+                tcb.id.local_addr,
+                tcb.id.remote_addr,
+                tcb.id.local_port,
+                tcb.id.remote_port,
+                tcb.snd_nxt,
+                tcb.rcv_nxt,
+                tcb.advertised_window(),
+                flags::ACK,
+                ts,
+                src_mac,
+                dst_mac,
+                self.tx_offload,
+                free_frames,
+                tx_return,
+            );
+            rx_return.push(frame);
+            return;
+        }
+
+        // Step 4: SYN check (RFC 5961 — challenge ACK for SYN in synchronized state).
+        if seg_flags & flags::SYN != 0 {
             let tcb = &self.connections[idx];
             let ts = if tcb.ts_enabled {
                 let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
@@ -9810,6 +9868,61 @@ mod tests {
         assert!(
             tx.num_frames() > 0,
             "challenge ACK should be sent for in-window non-exact RST"
+        );
+    }
+
+    #[test]
+    fn syn_in_established_sends_challenge_ack() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        // Send a SYN segment to the established connection.
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001, // seq = rcv_nxt (in-window)
+            server_iss.wrapping_add(1),
+            flags::SYN | flags::ACK,
+            65535,
+            &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(50, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // (1) Connection must NOT be reset — it should still be Established.
+        assert_eq!(
+            handler.connections.len(),
+            1,
+            "SYN in Established must not destroy the connection"
+        );
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+
+        // (2) A challenge ACK should have been sent.
+        assert!(
+            tx.num_frames() > 0,
+            "challenge ACK should be sent for SYN in Established (RFC 5961)"
+        );
+
+        // (3) No data should have been processed (rcv_nxt unchanged).
+        assert_eq!(
+            handler.connections[0].rcv_nxt, 1001,
+            "rcv_nxt must not advance when SYN is received in Established"
         );
     }
 }
