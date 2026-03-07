@@ -7338,11 +7338,16 @@ mod tests {
 
         // Set ts_recent to 1000 and ts_recent_age to > 24 days ago.
         handler.connections[0].ts_recent = 1000;
-        // Set ts_recent_age far in the past by using a very old Instant.
-        // coarsetime::Instant(0) represents the epoch of the coarse clock.
+        // Set ts_recent_age far in the past using a fixed tick value.
         handler.connections[0].ts_recent_age = coarsetime::Instant::from_ticks(0);
 
         while tx.pop().is_some() {}
+
+        // Construct a `now` that is guaranteed to be 25 days after ts_recent_age(0),
+        // regardless of system uptime. This ensures the PAWS staleness check sees
+        // > 24 days elapsed and accepts the segment despite old TSval.
+        let twenty_five_days = coarsetime::Duration::from_secs(25 * 24 * 60 * 60);
+        let now = coarsetime::Instant::from_ticks(0) + twenty_five_days;
 
         // Send a segment with old TSval=999, but ts_recent_age is stale (> 24 days).
         // The PAWS check should accept the segment despite old timestamp.
@@ -7360,8 +7365,9 @@ mod tests {
             b"Hello",
         );
         let data_len = data.len();
-        handler.process_ipv4(
+        handler.process_ipv4_with_now(
             Frame::new(2, leak(data), data_len, false),
+            now,
             &nh,
             &mut free,
             &mut rx,
