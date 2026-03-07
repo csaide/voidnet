@@ -901,6 +901,43 @@ impl TcpHandler {
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
+        // Fast retransmit pass — independent of timer expiry.
+        // Triggered by 3 duplicate ACKs on established connections.
+        for tcb in &mut self.connections {
+            if tcb.state != TcpState::Established || tcb.dup_ack_count < 3 {
+                continue;
+            }
+
+            let retransmit_len = tcb.send_buffer.available().min(tcb.eff_snd_mss as usize);
+            if retransmit_len == 0 {
+                continue;
+            }
+
+            let id = tcb.id;
+            let dst_mac = neighbor_handler
+                .lookup(now, &id.remote_addr)
+                .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+
+            let mut payload = vec![0u8; retransmit_len];
+            tcb.send_buffer.peek_at(0, &mut payload);
+            let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
+
+            SegmentBuilder::build_data(
+                id.local_addr, id.remote_addr,
+                id.local_port, id.remote_port,
+                tcb.snd_una, tcb.rcv_nxt, window,
+                &payload,
+                src_mac, dst_mac,
+                self.tx_offload, free_frames, tx_return,
+            );
+
+            // Fast recovery: halve cwnd.
+            tcb.ssthresh = (tcb.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
+            tcb.cwnd = tcb.ssthresh;
+            tcb.dup_ack_count = 0;
+        }
+
+        // RTO retransmit pass — timer-based.
         let mut to_remove = Vec::new();
 
         for (idx, tcb) in self.connections.iter_mut().enumerate() {
@@ -956,13 +993,39 @@ impl TcpHandler {
                         self.tx_offload, free_frames, tx_return,
                     );
                 }
+                TcpState::Established => {
+                    let retransmit_len = tcb.send_buffer.available().min(tcb.eff_snd_mss as usize);
+                    if retransmit_len > 0 {
+                        let mut payload = vec![0u8; retransmit_len];
+                        tcb.send_buffer.peek_at(0, &mut payload);
+                        let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
+                        SegmentBuilder::build_data(
+                            id.local_addr, id.remote_addr,
+                            id.local_port, id.remote_port,
+                            tcb.snd_una, tcb.rcv_nxt, window,
+                            &payload,
+                            src_mac, dst_mac,
+                            self.tx_offload, free_frames, tx_return,
+                        );
+                    }
+                    // Back to slow start.
+                    tcb.ssthresh = (tcb.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
+                    tcb.cwnd = tcb.eff_snd_mss as u32;
+                    tcb.rto_backoff += 1;
+                    tcb.retransmit_deadline = Some(now + coarsetime::Duration::from_millis(tcb.rto << tcb.rto_backoff));
+                }
                 _ => continue,
             }
 
-            // Exponential backoff.
-            tcb.rto_backoff += 1;
-            let rto = INITIAL_RTO_MS << tcb.rto_backoff;
-            tcb.retransmit_deadline = Some(now + coarsetime::Duration::from_millis(rto));
+            // Exponential backoff for SYN/SYN-ACK states.
+            match tcb.state {
+                TcpState::SynSent | TcpState::SynReceived => {
+                    tcb.rto_backoff += 1;
+                    let rto = INITIAL_RTO_MS << tcb.rto_backoff;
+                    tcb.retransmit_deadline = Some(now + coarsetime::Duration::from_millis(rto));
+                }
+                _ => {} // Established handles its own backoff above.
+            }
         }
 
         // Remove timed-out connections (in reverse order to preserve indices).
@@ -1076,6 +1139,11 @@ impl TcpHandler {
     /// Get a reference to the connection for a given ConnectionId.
     pub fn get_connection(&self, id: &ConnectionId) -> Option<&Tcb> {
         self.connections.iter().find(|c| c.id == *id)
+    }
+
+    /// Get a mutable reference to the connection for a given ConnectionId.
+    pub fn get_connection_mut(&mut self, id: &ConnectionId) -> Option<&mut Tcb> {
+        self.connections.iter_mut().find(|c| c.id == *id)
     }
 
     /// Remove a connection by ConnectionId (used by TcpStream::close).
