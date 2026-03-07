@@ -1400,6 +1400,20 @@ impl TcpHandler {
                     tcb.persist_deadline = None;
                     tcb.persist_backoff = 0;
                 }
+
+                // Parse and merge SACK blocks into scoreboard.
+                if tcb.sack_enabled {
+                    let (blocks, count) = crate::net::wire::tcp::parse_sack_blocks(options);
+                    for i in 0..count {
+                        if let Some((left, right)) = blocks[i] {
+                            tcb.sack_scoreboard.insert(left, right.wrapping_sub(left));
+                        }
+                    }
+                    // Prune scoreboard entries below snd_una (already ACKed cumulatively).
+                    let snd_una = tcb.snd_una;
+                    tcb.sack_scoreboard
+                        .retain(|&start, _| !crate::net::wire::tcp::seq_lt(start, snd_una));
+                }
             } else if seg_ack == snd_una && payload_len == 0 {
                 // Duplicate ACK.
                 let tcb = &mut self.connections[idx];
@@ -1422,6 +1436,16 @@ impl TcpHandler {
                 if tcb.snd_wnd > 0 && tcb.persist_deadline.is_some() {
                     tcb.persist_deadline = None;
                     tcb.persist_backoff = 0;
+                }
+
+                // Parse SACK blocks on duplicate ACKs too.
+                if tcb.sack_enabled {
+                    let (blocks, count) = crate::net::wire::tcp::parse_sack_blocks(options);
+                    for i in 0..count {
+                        if let Some((left, right)) = blocks[i] {
+                            tcb.sack_scoreboard.insert(left, right.wrapping_sub(left));
+                        }
+                    }
                 }
             }
         }
@@ -1889,6 +1913,7 @@ impl TcpHandler {
                     // Back to slow start.
                     tcb.ssthresh = (tcb.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
                     tcb.cwnd = tcb.eff_snd_mss as u32;
+                    tcb.sack_scoreboard.clear();
                     tcb.rto_backoff += 1;
                     tcb.retransmit_deadline =
                         Some(now + coarsetime::Duration::from_millis(tcb.rto << tcb.rto_backoff));
@@ -7632,5 +7657,251 @@ mod tests {
         assert_eq!(count, 1, "one SACK block expected");
         // Block should cover the OOO range: [1011, 1016).
         assert_eq!(blocks[0], Some((1011, 1016)));
+    }
+
+    /// Helper: establish a connection with SACK enabled, returning server_iss.
+    fn establish_connection_with_sack(
+        handler: &mut TcpHandler,
+        nh: &NeighborHandler,
+        free: &mut BasicFrameBuffer<'static>,
+        rx: &mut BasicFrameBuffer<'static>,
+        tx: &mut BasicFrameBuffer<'static>,
+    ) -> u32 {
+        use crate::net::wire::tcp::options as tcp_options;
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let sack_perm_opts = [tcp_options::SACK_PERMITTED, 2];
+        let syn_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &sack_perm_opts,
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            nh, free, rx, tx,
+        );
+        assert!(handler.connections[0].sack_enabled);
+        let server_iss = handler.connections[0].iss;
+        while tx.pop().is_some() {}
+
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            nh, free, rx, tx,
+        );
+        while tx.pop().is_some() {}
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+        server_iss
+    }
+
+    #[test]
+    fn sack_blocks_update_scoreboard_on_ack() {
+        use crate::net::wire::tcp::write_sack_option;
+
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let server_iss =
+            establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        // Put data in the send buffer and advance snd_nxt to simulate sent data.
+        let tcb = &mut handler.connections[0];
+        tcb.send_buffer.write(&[0u8; 100]);
+        tcb.snd_nxt = tcb.snd_una.wrapping_add(100);
+
+        // Build an ACK that advances snd_una by 10, with SACK blocks for [30..50) and [70..90).
+        let snd_una = tcb.snd_una;
+        let new_ack = snd_una.wrapping_add(10);
+        let sack_left1 = snd_una.wrapping_add(30);
+        let sack_right1 = snd_una.wrapping_add(50);
+        let sack_left2 = snd_una.wrapping_add(70);
+        let sack_right2 = snd_una.wrapping_add(90);
+
+        let mut opts = [0u8; 20];
+        let written = write_sack_option(&mut opts, &[(sack_left1, sack_right1), (sack_left2, sack_right2)]);
+
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, new_ack,
+            flags::ACK, 65535, &opts[..written],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(ack_data), ack_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+
+        let tcb = &handler.connections[0];
+        assert_eq!(tcb.snd_una, new_ack, "snd_una should advance");
+        assert_eq!(tcb.sack_scoreboard.len(), 2, "two SACK blocks in scoreboard");
+        assert_eq!(tcb.sack_scoreboard.get(&sack_left1), Some(&20));
+        assert_eq!(tcb.sack_scoreboard.get(&sack_left2), Some(&20));
+    }
+
+    #[test]
+    fn sack_scoreboard_pruned_on_cumulative_ack_advance() {
+        use crate::net::wire::tcp::write_sack_option;
+
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let server_iss =
+            establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        let tcb = &mut handler.connections[0];
+        tcb.send_buffer.write(&[0u8; 200]);
+        tcb.snd_nxt = tcb.snd_una.wrapping_add(200);
+        let snd_una = tcb.snd_una;
+
+        // First ACK: advance by 10, SACK blocks at [30..50) and [100..120).
+        let ack1 = snd_una.wrapping_add(10);
+        let sack_left1 = snd_una.wrapping_add(30);
+        let sack_right1 = snd_una.wrapping_add(50);
+        let sack_left2 = snd_una.wrapping_add(100);
+        let sack_right2 = snd_una.wrapping_add(120);
+
+        let mut opts = [0u8; 20];
+        let written = write_sack_option(&mut opts, &[(sack_left1, sack_right1), (sack_left2, sack_right2)]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, ack1,
+            flags::ACK, 65535, &opts[..written],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(ack_data), ack_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        assert_eq!(handler.connections[0].sack_scoreboard.len(), 2);
+
+        // Second ACK: advance cumulative ACK past the first SACK block (to 50).
+        // Include the second block again.
+        let ack2 = snd_una.wrapping_add(50);
+        let mut opts2 = [0u8; 12];
+        let written2 = write_sack_option(&mut opts2, &[(sack_left2, sack_right2)]);
+        let ack_data2 = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, ack2,
+            flags::ACK, 65535, &opts2[..written2],
+        );
+        let ack_len2 = ack_data2.len();
+        handler.process_ipv4(
+            Frame::new(3, leak(ack_data2), ack_len2, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+
+        let tcb = &handler.connections[0];
+        assert_eq!(tcb.snd_una, ack2);
+        // The first block (start=snd_una+30) should be pruned since 30 < 50.
+        assert!(!tcb.sack_scoreboard.contains_key(&sack_left1), "old block should be pruned");
+        // The second block should remain.
+        assert_eq!(tcb.sack_scoreboard.len(), 1, "only second block remains");
+        assert!(tcb.sack_scoreboard.contains_key(&sack_left2));
+    }
+
+    #[test]
+    fn sack_blocks_updated_on_dup_ack() {
+        use crate::net::wire::tcp::write_sack_option;
+
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let server_iss =
+            establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        let tcb = &mut handler.connections[0];
+        tcb.send_buffer.write(&[0u8; 100]);
+        tcb.snd_nxt = tcb.snd_una.wrapping_add(100);
+        let snd_una = tcb.snd_una;
+
+        // Send a duplicate ACK (same ack number, no payload) with SACK block.
+        let sack_left = snd_una.wrapping_add(20);
+        let sack_right = snd_una.wrapping_add(40);
+        let mut opts = [0u8; 12];
+        let written = write_sack_option(&mut opts, &[(sack_left, sack_right)]);
+
+        let dup_ack = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_una,
+            flags::ACK, 65535, &opts[..written],
+        );
+        let dup_len = dup_ack.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(dup_ack), dup_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+
+        let tcb = &handler.connections[0];
+        assert_eq!(tcb.dup_ack_count, 1);
+        assert_eq!(tcb.sack_scoreboard.len(), 1);
+        assert_eq!(tcb.sack_scoreboard.get(&sack_left), Some(&20));
+    }
+
+    #[test]
+    fn sack_scoreboard_cleared_on_rto() {
+        use crate::net::wire::tcp::write_sack_option;
+
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let server_iss =
+            establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        let tcb = &mut handler.connections[0];
+        tcb.send_buffer.write(&[0u8; 100]);
+        tcb.snd_nxt = tcb.snd_una.wrapping_add(100);
+        let snd_una = tcb.snd_una;
+
+        // Send a dup ACK with SACK blocks to populate the scoreboard.
+        let sack_left = snd_una.wrapping_add(20);
+        let sack_right = snd_una.wrapping_add(40);
+        let mut opts = [0u8; 12];
+        let written = write_sack_option(&mut opts, &[(sack_left, sack_right)]);
+
+        let dup_ack = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_una,
+            flags::ACK, 65535, &opts[..written],
+        );
+        let dup_len = dup_ack.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(dup_ack), dup_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        assert_eq!(handler.connections[0].sack_scoreboard.len(), 1);
+
+        // Set up RTO: arm the retransmit deadline in the past.
+        let now = coarsetime::Instant::now();
+        handler.connections[0].retransmit_deadline = Some(now);
+        handler.connections[0].rto_backoff = 0;
+
+        // Trigger poll_timers, which should fire the RTO and clear the scoreboard.
+        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        assert!(
+            handler.connections[0].sack_scoreboard.is_empty(),
+            "scoreboard should be cleared on RTO"
+        );
     }
 }
