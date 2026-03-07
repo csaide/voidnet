@@ -3618,4 +3618,41 @@ mod tests {
         assert_eq!(tcb.ack_delay_count, 0, "ack_delay_count should be cleared");
         assert!(tcb.delayed_ack_deadline.is_none(), "delayed_ack_deadline should be cleared");
     }
+
+    #[test]
+    fn shutdown_sets_pending_fin() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+        let mut tx = BasicFrameBuffer::new(16);
+
+        for i in 0..8 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake to reach Established.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+
+        // Verify pending_fin is initially false.
+        assert!(!handler.connections[0].pending_fin, "pending_fin should start false");
+
+        // Call initiate_close (the handler method that shutdown() delegates to).
+        let conn_id = handler.connections[0].id;
+        handler.initiate_close(&conn_id);
+
+        // Verify pending_fin is now true.
+        assert!(handler.connections[0].pending_fin, "pending_fin should be true after initiate_close");
+
+        // Verify connection is still Established (FIN not yet sent).
+        assert_eq!(handler.connections[0].state, TcpState::Established, "state should remain Established until poll_send");
+    }
 }

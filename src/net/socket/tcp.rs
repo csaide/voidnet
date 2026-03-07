@@ -164,6 +164,7 @@ pub struct TcpStream {
     event_queue: LocalQueue<TcpEvent>,
     handler: Rc<UnsafeCell<TcpHandler>>,
     closed: bool,
+    write_closed: bool,
 }
 
 impl TcpStream {
@@ -286,6 +287,7 @@ impl TcpStream {
             event_queue,
             handler,
             closed: false,
+            write_closed: false,
         }
     }
 
@@ -322,6 +324,7 @@ impl TcpStream {
             conn_id: self.conn_id,
             data,
             written: 0,
+            write_closed: self.write_closed || self.closed,
         }
     }
 
@@ -344,6 +347,19 @@ impl TcpStream {
             return;
         }
         self.closed = true;
+        let handler = unsafe { &mut *self.handler.get() };
+        handler.initiate_close(&self.conn_id);
+    }
+
+    /// Shut down the write side of this connection (half-close).
+    ///
+    /// Sends FIN to the remote peer but keeps the read side open.
+    /// Subsequent writes will return 0. Reads continue until remote FIN.
+    pub fn shutdown(&mut self) {
+        if self.write_closed || self.closed {
+            return;
+        }
+        self.write_closed = true;
         let handler = unsafe { &mut *self.handler.get() };
         handler.initiate_close(&self.conn_id);
     }
@@ -396,6 +412,7 @@ impl Future for Connect {
                 event_queue: this.event_queue.clone(),
                 handler: this.handler.clone(),
                 closed: false,
+                write_closed: false,
             })),
             Some(TcpEvent::ConnectionRefused) => Poll::Ready(Err(TcpError::ConnectionRefused)),
             Some(TcpEvent::Timeout) => Poll::Ready(Err(TcpError::Timeout)),
@@ -412,6 +429,7 @@ pub struct TcpWrite<'stream> {
     conn_id: ConnectionId,
     data: &'stream [u8],
     written: usize,
+    write_closed: bool,
 }
 
 impl<'stream> Future for TcpWrite<'stream> {
@@ -419,6 +437,9 @@ impl<'stream> Future for TcpWrite<'stream> {
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
+        if this.write_closed {
+            return Poll::Ready(0);
+        }
         let handler = unsafe { &mut *this.handler.get() };
         if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
             let remaining = &this.data[this.written..];
