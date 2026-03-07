@@ -16,7 +16,8 @@ use crate::{
     net::{
         NeighborHandler, PmtuCache,
         handler::{
-            ethernet::EthernetHandler, ipv4::Ipv4Handler, ipv6::Ipv6Handler, udp::UdpHandler,
+            ethernet::EthernetHandler, ipv4::Ipv4Handler, ipv6::Ipv6Handler,
+            tcp::TcpHandler, udp::UdpHandler,
         },
     },
     xdp::{
@@ -184,6 +185,8 @@ pub struct LocalRuntime<'umem> {
     ipv6_handler: Ipv6Handler,
     // UDP handler is used to bind and send UDP packets, handling things like fragmentation and reassembly.
     udp_handler: Rc<UnsafeCell<UdpHandler<'umem>>>,
+    // TCP handler manages TCP connections and the TCP state machine.
+    tcp_handler: Rc<UnsafeCell<TcpHandler>>,
     // Set of empty ready to go frame structs that can be used for building outbound packets.
     free_frames: SharedFrameBuffer<'umem>,
     // Frames that are filled and ready to be sent to the network.
@@ -238,6 +241,7 @@ impl<'umem> LocalRuntime<'umem> {
             ipv4_handler: Ipv4Handler::new(rx_offload, tx_offload),
             ipv6_handler: Ipv6Handler::new(rx_offload, tx_offload),
             udp_handler: Rc::new(UnsafeCell::new(UdpHandler::new(256, rx_offload))),
+            tcp_handler: Rc::new(UnsafeCell::new(TcpHandler::new(rx_offload, tx_offload))),
             free_frames,
             tx_return,
             rx_return,
@@ -261,6 +265,7 @@ impl<'umem> LocalRuntime<'umem> {
             pmtu: self.pmtu.clone(),
             neighbor_handler: self.neighbor_handler.clone(),
             udp_handler: self.udp_handler.clone(),
+            tcp_handler: self.tcp_handler.clone(),
             tx_offload: self.ctx.info().tx_offload,
         });
 
@@ -284,6 +289,7 @@ impl<'umem> LocalRuntime<'umem> {
                 Ok(received) => {
                     // SAFETY: single-threaded, no reentrant handler calls.
                     let udp_handler = unsafe { &mut *self.udp_handler.get() };
+                    let tcp_handler = unsafe { &mut *self.tcp_handler.get() };
                     let Self {
                         neighbor_handler,
                         pmtu,
@@ -299,6 +305,7 @@ impl<'umem> LocalRuntime<'umem> {
                             ipv4_handler,
                             ipv6_handler,
                             udp_handler,
+                            tcp_handler,
                             neighbor_handler,
                             pmtu,
                             now,
@@ -315,6 +322,32 @@ impl<'umem> LocalRuntime<'umem> {
                 return Ok(());
             }
 
+            // Drive TCP retransmission timers every iteration.
+            {
+                // SAFETY: single-threaded, no reentrant handler calls.
+                let tcp_handler = unsafe { &mut *self.tcp_handler.get() };
+                tcp_handler.poll_timers(
+                    now,
+                    self.neighbor_handler.local_mac(),
+                    &self.neighbor_handler,
+                    &mut self.free_frames,
+                    &mut self.tx_return,
+                );
+            }
+
+            // Drive TCP data segment transmission.
+            {
+                // SAFETY: single-threaded, no reentrant handler calls.
+                let tcp_handler = unsafe { &mut *self.tcp_handler.get() };
+                tcp_handler.poll_send(
+                    now,
+                    self.neighbor_handler.local_mac(),
+                    &self.neighbor_handler,
+                    &mut self.free_frames,
+                    &mut self.tx_return,
+                );
+            }
+
             self.evict_counter = self.evict_counter.wrapping_add(1);
             if self.evict_counter & 65535 == 0 {
                 // Evict stale UDP fragments.
@@ -323,6 +356,14 @@ impl<'umem> LocalRuntime<'umem> {
                 unsafe { &mut *self.udp_handler.get() }.evict_stale(
                     now,
                     Duration::from_secs(30),
+                    &mut self.rx_return,
+                );
+
+                // Evict stale TCP connections (e.g. TIME-WAIT).
+                //
+                // SAFETY: single-threaded, no reentrant handler calls.
+                unsafe { &mut *self.tcp_handler.get() }.evict_stale(
+                    now,
                     &mut self.rx_return,
                 );
 
