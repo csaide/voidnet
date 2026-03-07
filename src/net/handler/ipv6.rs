@@ -133,6 +133,7 @@ pub(crate) fn walk_extension_headers(
 pub struct Ipv6Handler {
     rx_offload: bool,
     tx_offload: bool,
+    pub ipv6_tcp_fragments_dropped: u64,
 }
 
 impl Ipv6Handler {
@@ -140,6 +141,7 @@ impl Ipv6Handler {
         Self {
             rx_offload,
             tx_offload,
+            ipv6_tcp_fragments_dropped: 0,
         }
     }
 
@@ -247,6 +249,7 @@ impl Ipv6Handler {
                     udp_handler.process_ipv6(frame, Some(offset), 0, rx_return);
                 } else if frag_next_header == IpProtocols::Tcp {
                     // TCP does not yet support fragment reassembly; drop to rx_return.
+                    self.ipv6_tcp_fragments_dropped += 1;
                     rx_return.push(frame);
                 } else {
                     rx_return.push(frame);
@@ -916,6 +919,41 @@ mod tests {
             &mut rx,
             &mut tx,
         );
+        assert_eq!(rx.num_frames(), 1);
+        assert_eq!(tx.num_frames(), 0);
+    }
+
+    #[test]
+    fn fragmented_tcp_increments_drop_counter() {
+        let mut data =
+            build_ipv6_with_fragment(REMOTE_IP, LOCAL_IP, IpProtocols::Tcp, 0, true, &[0; 20]);
+
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut udp = new_udp_handler();
+        let mut tcp = new_tcp_handler();
+        let mut free = BasicFrameBuffer::new(4);
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+
+        assert_eq!(handler.ipv6_tcp_fragments_dropped, 0);
+
+        let len = data.len();
+        let frame = Frame::new(0, &mut data, len, false);
+
+        handler.handle(
+            frame,
+            &nh,
+            &mut udp,
+            &mut tcp,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        assert_eq!(handler.ipv6_tcp_fragments_dropped, 1);
         assert_eq!(rx.num_frames(), 1);
         assert_eq!(tx.num_frames(), 0);
     }
