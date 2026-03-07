@@ -990,6 +990,27 @@ impl TcpHandler {
             }
         }
 
+        // Step 4: Process FIN flag.
+        if seg_flags & flags::FIN != 0 {
+            let tcb = &mut self.connections[idx];
+            tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1); // FIN consumes one sequence number
+            tcb.state = TcpState::CloseWait;
+            tcb.event_queue.push(TcpEvent::RemoteClose);
+
+            // Send ACK for FIN.
+            let id = tcb.id;
+            let snd_nxt = tcb.snd_nxt;
+            let new_rcv_nxt = tcb.rcv_nxt;
+            let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
+            SegmentBuilder::build_ack(
+                id.local_addr, id.remote_addr,
+                id.local_port, id.remote_port,
+                snd_nxt, new_rcv_nxt, window,
+                src_mac, dst_mac,
+                self.tx_offload, free_frames, tx_return,
+            );
+        }
+
         // Always return incoming frame to rx_return.
         rx_return.push(frame);
     }
@@ -2050,5 +2071,77 @@ mod tests {
         let total = free.num_frames() + rx.num_frames() + tx.num_frames();
         // We started with initial_total free frames and injected 3 incoming frames.
         assert_eq!(total, initial_total + 3, "all frames accounted for");
+    }
+
+    #[test]
+    fn established_receives_fin_transitions_to_close_wait() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Remote sends FIN.
+        let fin_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK | flags::FIN, 65535, &[]);
+        let fin_len = fin_data.len();
+        handler.process_ipv4(Frame::new(2, leak(fin_data), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        assert_eq!(handler.connections[0].state, TcpState::CloseWait);
+        assert_eq!(handler.connections[0].rcv_nxt, 1002); // 1001 + FIN=1
+        assert_eq!(tx.num_frames(), 1, "ACK for FIN sent");
+    }
+
+    #[test]
+    fn established_receives_fin_with_data() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Remote sends data + FIN piggybacked.
+        let payload = b"goodbye";
+        let fin_data = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001, server_iss.wrapping_add(1),
+            flags::ACK | flags::FIN, 65535, &[], payload,
+        );
+        let fin_len = fin_data.len();
+        handler.process_ipv4(Frame::new(2, leak(fin_data), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        assert_eq!(handler.connections[0].state, TcpState::CloseWait);
+        assert_eq!(handler.connections[0].recv_buffer.available(), payload.len());
+        // rcv_nxt = 1001 + 7 bytes data + 1 FIN = 1009
+        assert_eq!(handler.connections[0].rcv_nxt, 1001 + payload.len() as u32 + 1);
     }
 }
