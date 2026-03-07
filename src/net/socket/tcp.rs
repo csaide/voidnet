@@ -347,6 +347,26 @@ impl TcpStream {
         let handler = unsafe { &mut *self.handler.get() };
         handler.initiate_close(&self.conn_id);
     }
+
+    /// Enable or disable the Nagle algorithm (TCP_NODELAY).
+    ///
+    /// When `nodelay` is `true`, small segments are sent immediately
+    /// without waiting for outstanding ACKs. Default is `false` (Nagle enabled).
+    pub fn set_nodelay(&self, nodelay: bool) {
+        let handler = unsafe { &mut *self.handler.get() };
+        if let Some(tcb) = handler.get_connection_mut(&self.conn_id) {
+            tcb.nagle_enabled = !nodelay;
+        }
+    }
+
+    /// Returns whether TCP_NODELAY is set (Nagle disabled).
+    pub fn nodelay(&self) -> bool {
+        let handler = unsafe { &*self.handler.get() };
+        handler
+            .get_connection(&self.conn_id)
+            .map(|tcb| !tcb.nagle_enabled)
+            .unwrap_or(false)
+    }
 }
 
 impl Drop for TcpStream {
