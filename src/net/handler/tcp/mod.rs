@@ -55,6 +55,8 @@ pub(crate) struct ListenEntry {
     pub keep_alive_interval_ms: u64,
     pub keep_alive_count: u8,
     pub linger: Option<u64>,
+    pub timestamps: bool,
+    pub sack: bool,
 }
 
 /// Check segment acceptability per RFC 9293 §3.10.7.4.
@@ -145,6 +147,8 @@ impl TcpHandler {
             keep_alive_interval_ms: config.keep_alive_interval_ms,
             keep_alive_count: config.keep_alive_count,
             linger: config.linger,
+            timestamps: config.timestamps,
+            sack: config.sack,
         });
         Ok(accept_queue)
     }
@@ -268,6 +272,14 @@ impl TcpHandler {
             keep_alive_probes_sent: 0,
             linger: config.linger,
             linger_deadline: None,
+            ts_enabled: false,
+            ts_recent: 0,
+            ts_recent_age: Instant::now(),
+            ts_offset: Instant::now(),
+            sack_enabled: false,
+            sack_scoreboard: BTreeMap::new(),
+            persist_deadline: None,
+            persist_backoff: 0,
         };
 
         // Send SYN.
@@ -802,6 +814,14 @@ impl TcpHandler {
                 keep_alive_probes_sent: 0,
                 linger: listener.linger,
                 linger_deadline: None,
+                ts_enabled: false,
+                ts_recent: 0,
+                ts_recent_age: Instant::now(),
+                ts_offset: Instant::now(),
+                sack_enabled: false,
+                sack_scoreboard: BTreeMap::new(),
+                persist_deadline: None,
+                persist_backoff: 0,
             };
 
             // Send SYN-ACK.

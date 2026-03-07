@@ -100,6 +100,10 @@ pub struct TcpConfig {
     pub keep_alive_count: u8,
     /// SO_LINGER setting. None = off (default), Some(0) = RST, Some(ms) = timeout.
     pub linger: Option<u64>,
+    /// Enable TCP timestamps (RFC 7323). Default: true.
+    pub timestamps: bool,
+    /// Enable SACK (RFC 2018). Default: true.
+    pub sack: bool,
 }
 
 impl Default for TcpConfig {
@@ -116,6 +120,8 @@ impl Default for TcpConfig {
             keep_alive_interval_ms: 75_000,
             keep_alive_count: 9,
             linger: None,
+            timestamps: true,
+            sack: true,
         }
     }
 }
@@ -236,6 +242,28 @@ pub struct Tcb {
     // --- Linger ---
     pub linger: Option<u64>,
     pub linger_deadline: Option<Instant>,
+
+    // --- Timestamps (RFC 7323) ---
+    /// Whether timestamps were negotiated.
+    pub ts_enabled: bool,
+    /// Most recent TSval received from peer.
+    pub ts_recent: u32,
+    /// When ts_recent was last updated.
+    pub ts_recent_age: Instant,
+    /// Base instant for deriving our monotonic timestamp clock.
+    pub ts_offset: Instant,
+
+    // --- SACK ---
+    /// Whether SACK was negotiated.
+    pub sack_enabled: bool,
+    /// Scoreboard: byte ranges the peer has confirmed receiving (left_edge -> right_edge).
+    pub sack_scoreboard: BTreeMap<u32, u32>,
+
+    // --- Zero-window probing ---
+    /// Deadline for next zero-window probe.
+    pub persist_deadline: Option<Instant>,
+    /// Exponential backoff counter for persist probes (cap at 6).
+    pub persist_backoff: u8,
 }
 
 impl Tcb {
@@ -336,6 +364,14 @@ mod tests {
             keep_alive_probes_sent: 0,
             linger: None,
             linger_deadline: None,
+            ts_enabled: false,
+            ts_recent: 0,
+            ts_recent_age: Instant::now(),
+            ts_offset: Instant::now(),
+            sack_enabled: false,
+            sack_scoreboard: BTreeMap::new(),
+            persist_deadline: None,
+            persist_backoff: 0,
         }
     }
 
