@@ -1173,7 +1173,7 @@ impl TcpHandler {
                 }
 
                 // Update send window.
-                tcb.snd_wnd = seg_wnd;
+                tcb.snd_wnd = tcb.scale_incoming_window(seg_wnd);
                 tcb.snd_wl1 = seg_seq;
                 tcb.snd_wl2 = seg_ack;
             } else if seg_ack == snd_una && payload_len == 0 {
@@ -1936,7 +1936,7 @@ impl TcpHandler {
                         // number but has no corresponding data in the send buffer).
                         let buf_advance = bytes_acked.min(tcb.send_buffer.available());
                         tcb.send_buffer.advance(buf_advance);
-                        tcb.snd_wnd = seg_wnd;
+                        tcb.snd_wnd = tcb.scale_incoming_window(seg_wnd);
                     }
                 }
 

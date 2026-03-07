@@ -251,4 +251,118 @@ impl Tcb {
         }
         len
     }
+
+    /// Compute the window value to advertise in outgoing segments.
+    /// Downscales by `rcv_wscale` if window scaling is enabled.
+    #[inline]
+    pub fn advertised_window(&self) -> u16 {
+        let free = self.recv_buffer.free_space();
+        if self.wscale_enabled {
+            (free >> self.rcv_wscale as usize).min(u16::MAX as usize) as u16
+        } else {
+            free.min(u16::MAX as usize) as u16
+        }
+    }
+
+    /// Scale an incoming window value by `snd_wscale`.
+    /// Only call after SYN exchange (Established onward).
+    #[inline]
+    pub fn scale_incoming_window(&self, raw_wnd: u32) -> u32 {
+        if self.wscale_enabled {
+            raw_wnd << self.snd_wscale as u32
+        } else {
+            raw_wnd
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::ring_buffer::RingBuffer;
+
+    fn make_tcb(wscale_enabled: bool, snd_wscale: u8, rcv_wscale: u8, recv_buf_size: usize) -> Tcb {
+        Tcb {
+            id: ConnectionId {
+                local_addr: IpAddress::V4(crate::net::wire::ip::Ipv4Address { octets: [127, 0, 0, 1] }),
+                local_port: 1234,
+                remote_addr: IpAddress::V4(crate::net::wire::ip::Ipv4Address { octets: [127, 0, 0, 1] }),
+                remote_port: 5678,
+            },
+            state: TcpState::Established,
+            from_passive_open: false,
+            iss: 0,
+            snd_una: 0,
+            snd_nxt: 0,
+            snd_wnd: 0,
+            snd_wl1: 0,
+            snd_wl2: 0,
+            irs: 0,
+            rcv_nxt: 0,
+            rcv_wnd: 0,
+            snd_mss: DEFAULT_RCV_MSS,
+            rcv_mss: DEFAULT_RCV_MSS,
+            eff_snd_mss: DEFAULT_RCV_MSS,
+            snd_wscale,
+            rcv_wscale,
+            wscale_enabled,
+            retransmit_deadline: None,
+            rto_backoff: 0,
+            event_queue: LocalQueue::new(16),
+            send_buffer: RingBuffer::new(1024),
+            recv_buffer: RingBuffer::new(recv_buf_size),
+            ooo_ranges: BTreeMap::new(),
+            cwnd: 0,
+            ssthresh: 0,
+            dup_ack_count: 0,
+            srtt: None,
+            rttvar: 0,
+            rto: 1000,
+            last_send_time: None,
+            pending_fin: false,
+            fin_seq: None,
+            time_wait_deadline: None,
+            time_wait_duration: 60_000,
+            ack_pending: false,
+            delayed_ack_deadline: None,
+            ack_delay_count: 0,
+            delayed_ack_ms: DEFAULT_DELAYED_ACK_MS,
+            nagle_enabled: true,
+            keep_alive_enabled: false,
+            keep_alive_idle_ms: 7_200_000,
+            keep_alive_interval_ms: 75_000,
+            keep_alive_count: 9,
+            last_activity: Instant::now(),
+            keep_alive_probes_sent: 0,
+            linger: None,
+            linger_deadline: None,
+        }
+    }
+
+    #[test]
+    fn advertised_window_no_scaling() {
+        // recv_buffer capacity 1024, all free → capped at 1024 (fits in u16)
+        let tcb = make_tcb(false, 0, 0, 1024);
+        assert_eq!(tcb.advertised_window(), 1024);
+    }
+
+    #[test]
+    fn advertised_window_with_scaling() {
+        // recv_buffer capacity 1024, rcv_wscale = 2 → 1024 >> 2 = 256
+        let tcb = make_tcb(true, 0, 2, 1024);
+        assert_eq!(tcb.advertised_window(), 256);
+    }
+
+    #[test]
+    fn scale_incoming_window_no_scaling() {
+        let tcb = make_tcb(false, 0, 0, 1024);
+        assert_eq!(tcb.scale_incoming_window(500), 500);
+    }
+
+    #[test]
+    fn scale_incoming_window_with_scaling() {
+        // snd_wscale = 3 → 500 << 3 = 4000
+        let tcb = make_tcb(true, 3, 0, 1024);
+        assert_eq!(tcb.scale_incoming_window(500), 4000);
+    }
 }
