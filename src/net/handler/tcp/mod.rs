@@ -1498,14 +1498,32 @@ impl TcpHandler {
                 tcb.recv_buffer.write_at(offset, payload);
                 tcb.ooo_ranges.insert(seg_seq, payload_len as u32);
 
-                // Send duplicate ACK (with current rcv_nxt).
+                // Send duplicate ACK (with current rcv_nxt) and SACK blocks.
                 let ts = if tcb.ts_enabled {
                     let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
                     Some((tsval, tcb.ts_recent))
                 } else {
                     None
                 };
-                SegmentBuilder::build_ack(
+
+                let max_blocks = if tcb.ts_enabled { 3 } else { 4 };
+                let mut sack_blocks: Vec<(u32, u32)> = Vec::new();
+                if tcb.sack_enabled {
+                    // Most recently received range first (per RFC 2018 §3).
+                    sack_blocks
+                        .push((seg_seq, seg_seq.wrapping_add(payload_len as u32)));
+                    for (&start, &len) in tcb.ooo_ranges.iter().rev() {
+                        if sack_blocks.len() >= max_blocks {
+                            break;
+                        }
+                        let end = start.wrapping_add(len);
+                        if start != seg_seq {
+                            sack_blocks.push((start, end));
+                        }
+                    }
+                }
+
+                SegmentBuilder::build_ack_with_sack(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
                     tcb.id.local_port,
@@ -1514,6 +1532,7 @@ impl TcpHandler {
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
                     ts,
+                    &sack_blocks,
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -7503,5 +7522,115 @@ mod tests {
             handler.connections[0].persist_backoff, 0,
             "persist_backoff should be reset"
         );
+    }
+
+    #[test]
+    fn ooo_data_sends_sack_blocks_in_dup_ack() {
+        use crate::net::wire::tcp::{options as tcp_options, parse_sack_blocks};
+
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake with SACK_PERMITTED in SYN options.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let sack_perm_opts = [tcp_options::SACK_PERMITTED, 2];
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &sack_perm_opts,
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert!(
+            handler.connections[0].sack_enabled,
+            "SACK should be negotiated"
+        );
+        let server_iss = handler.connections[0].iss;
+        // Drain SYN-ACK.
+        while tx.pop().is_some() {}
+
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+
+        // Send out-of-order segment: seq=1011, 5 bytes (gap from 1001..1011).
+        let ooo_seg = build_tcp_frame_with_payload(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1011,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            b"world",
+        );
+        let ooo_len = ooo_seg.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(ooo_seg), ooo_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // Should have emitted a dup ACK with SACK blocks.
+        assert_eq!(tx.num_frames(), 1, "OOO data triggers dup ACK");
+        let ack_frame = tx.pop().unwrap();
+
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&ack_frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::ACK);
+        assert_eq!(tcp.ack_num(), 1001, "dup ACK has original rcv_nxt");
+
+        // Parse SACK blocks from the TCP options.
+        let data_off_bytes = (tcp.data_offset() as usize) * 4;
+        let opt_len = data_off_bytes - TCP_HEADER_LEN;
+        assert!(opt_len > 0, "options should be present");
+        let opt_start = tcp_offset + TCP_HEADER_LEN;
+        let tcp_opts = &ack_frame[opt_start..opt_start + opt_len];
+        let (blocks, count) = parse_sack_blocks(tcp_opts);
+        assert_eq!(count, 1, "one SACK block expected");
+        // Block should cover the OOO range: [1011, 1016).
+        assert_eq!(blocks[0], Some((1011, 1016)));
     }
 }

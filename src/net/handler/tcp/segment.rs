@@ -7,7 +7,8 @@ use crate::net::{
         },
         tcp::{
             TCP_HEADER_LEN, TcpHeader, flags, options, write_mss_option,
-            write_sack_permitted_option, write_timestamp_option, write_window_scale_option,
+            write_sack_option, write_sack_permitted_option, write_timestamp_option,
+            write_window_scale_option,
         },
     },
 };
@@ -280,6 +281,87 @@ impl SegmentBuilder {
         } else {
             &[]
         };
+
+        match (local_addr, remote_addr) {
+            (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
+                Self::build_ipv4_segment(
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    seq,
+                    ack,
+                    flags::ACK,
+                    window,
+                    tcp_options,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+            }
+            (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
+                Self::build_ipv6_segment(
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    seq,
+                    ack,
+                    flags::ACK,
+                    window,
+                    tcp_options,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Build a pure ACK segment with optional SACK blocks.
+    ///
+    /// When `sack_blocks` is empty this behaves identically to `build_ack`.
+    /// SACK blocks are encoded per RFC 2018 using `write_sack_option`.
+    #[inline]
+    pub fn build_ack_with_sack<'umem>(
+        local_addr: IpAddress,
+        remote_addr: IpAddress,
+        local_port: u16,
+        remote_port: u16,
+        seq: u32,
+        ack: u32,
+        window: u16,
+        timestamp: Option<(u32, u32)>,
+        sack_blocks: &[(u32, u32)],
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        tx_offload: bool,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        // Max options: NOP(1) + NOP(1) + TS(10) + SACK(2 + 4*8) = 44, but TCP
+        // options are capped at 40 bytes. With timestamps (12 bytes) we have 28
+        // bytes left = room for 3 SACK blocks (2 + 3*8 = 26). Without timestamps
+        // we can fit 4 blocks (2 + 4*8 = 34).
+        let mut opt_buf = [0u8; 40];
+        let mut opt_len = 0usize;
+
+        if let Some((tsval, tsecr)) = timestamp {
+            opt_buf[0] = options::NOP;
+            opt_buf[1] = options::NOP;
+            opt_len = 2 + write_timestamp_option(&mut opt_buf[2..], tsval, tsecr);
+        }
+
+        if !sack_blocks.is_empty() {
+            opt_len += write_sack_option(&mut opt_buf[opt_len..], sack_blocks);
+        }
+
+        let tcp_options = &opt_buf[..opt_len];
 
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
@@ -997,5 +1079,169 @@ mod tests {
         );
 
         assert_eq!(tx.num_frames(), 0, "no segment built");
+    }
+
+    #[test]
+    fn build_ack_with_sack_blocks_ipv4() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        let sack_blocks = [(2000u32, 2500u32), (3000u32, 3500u32)];
+        let src_mac = MacAddress::new([0xAA; 6]);
+        let dst_mac = MacAddress::new([0xBB; 6]);
+
+        SegmentBuilder::build_ack_with_sack(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            8080,
+            80,
+            1000,
+            500,
+            65535,
+            None,
+            &sack_blocks,
+            src_mac,
+            dst_mac,
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "ACK+SACK segment built");
+        assert_eq!(free.num_frames(), 0, "free frame consumed");
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::ACK);
+        assert_eq!(tcp.seq_num(), 1000);
+        assert_eq!(tcp.ack_num(), 500);
+
+        // data_offset should indicate options are present.
+        // SACK option: 2 + 2*8 = 18 bytes, padded to 20.
+        // TCP header = 20 + 20 = 40, data_offset = 10.
+        assert_eq!(tcp.data_offset(), 10);
+
+        // Verify SACK option bytes: kind=5, len=18, then two (left,right) pairs.
+        let opt_start = tcp_offset + TCP_HEADER_LEN;
+        assert_eq!(frame[opt_start], 5); // SACK kind
+        assert_eq!(frame[opt_start + 1], 18); // SACK length: 2 + 2*8
+        // First block: left=2000, right=2500.
+        assert_eq!(
+            u32::from_be_bytes([
+                frame[opt_start + 2],
+                frame[opt_start + 3],
+                frame[opt_start + 4],
+                frame[opt_start + 5]
+            ]),
+            2000
+        );
+        assert_eq!(
+            u32::from_be_bytes([
+                frame[opt_start + 6],
+                frame[opt_start + 7],
+                frame[opt_start + 8],
+                frame[opt_start + 9]
+            ]),
+            2500
+        );
+
+        // Verify TCP checksum.
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_ack_with_sack_and_timestamp_ipv4() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        let sack_blocks = [(5000u32, 5100u32)];
+
+        SegmentBuilder::build_ack_with_sack(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            8080,
+            80,
+            1000,
+            500,
+            65535,
+            Some((100, 200)),
+            &sack_blocks,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "ACK+TS+SACK segment built");
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::ACK);
+
+        // Options: NOP(1)+NOP(1)+TS(10) + SACK(2+1*8=10) = 22, padded to 24.
+        // data_offset = (20 + 24) / 4 = 11.
+        assert_eq!(tcp.data_offset(), 11);
+
+        // Verify timestamp: NOP, NOP, kind=8, len=10.
+        let opt_start = tcp_offset + TCP_HEADER_LEN;
+        assert_eq!(frame[opt_start], 1); // NOP
+        assert_eq!(frame[opt_start + 1], 1); // NOP
+        assert_eq!(frame[opt_start + 2], 8); // TS kind
+        assert_eq!(frame[opt_start + 3], 10); // TS len
+
+        // SACK follows at offset 12.
+        assert_eq!(frame[opt_start + 12], 5); // SACK kind
+        assert_eq!(frame[opt_start + 13], 10); // SACK len: 2 + 1*8
+
+        // Verify TCP checksum.
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_ack_with_empty_sack_blocks() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        SegmentBuilder::build_ack_with_sack(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            8080,
+            80,
+            1000,
+            500,
+            65535,
+            None,
+            &[],
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "plain ACK segment built");
+
+        let frame = tx.pop().unwrap();
+        // No options: ETH(14) + IPv4(20) + TCP(20) = 54.
+        assert_eq!(frame.len(), 54);
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.data_offset(), 5); // No options.
     }
 }
