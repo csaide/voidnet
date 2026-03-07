@@ -57,6 +57,27 @@ pub(crate) struct ListenEntry {
     pub linger: Option<u64>,
 }
 
+/// Check segment acceptability per RFC 9293 §3.10.7.4.
+#[inline]
+fn is_segment_acceptable(seg_seq: u32, seg_len: u32, rcv_nxt: u32, rcv_wnd: u32) -> bool {
+    use crate::net::wire::tcp::{seq_le, seq_lt};
+
+    if seg_len == 0 {
+        if rcv_wnd == 0 {
+            seg_seq == rcv_nxt
+        } else {
+            seq_le(rcv_nxt, seg_seq) && seq_lt(seg_seq, rcv_nxt.wrapping_add(rcv_wnd))
+        }
+    } else if rcv_wnd == 0 {
+        false
+    } else {
+        let seg_end = seg_seq.wrapping_add(seg_len - 1);
+        let wnd_end = rcv_nxt.wrapping_add(rcv_wnd);
+        (seq_le(rcv_nxt, seg_seq) && seq_lt(seg_seq, wnd_end))
+            || (seq_le(rcv_nxt, seg_end) && seq_lt(seg_end, wnd_end))
+    }
+}
+
 /// TCP protocol handler.
 ///
 /// Manages the connection table, listener table, and dispatches
@@ -1120,6 +1141,32 @@ impl TcpHandler {
             return;
         }
 
+        // Segment acceptability check (RFC 9293 §3.10.7.4).
+        {
+            let tcb = &self.connections[idx];
+            let seg_len = Tcb::seg_len(payload_len, seg_flags);
+            let rcv_wnd = tcb.recv_buffer.free_space() as u32;
+            if !is_segment_acceptable(seg_seq, seg_len, tcb.rcv_nxt, rcv_wnd) {
+                // Out-of-window: send ACK (unless RST, already handled above).
+                SegmentBuilder::build_ack(
+                    tcb.id.local_addr,
+                    tcb.id.remote_addr,
+                    tcb.id.local_port,
+                    tcb.id.remote_port,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
+                    tcb.advertised_window(),
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+                rx_return.push(frame);
+                return;
+            }
+        }
+
         // Step 2: ACK processing.
         if seg_flags & flags::ACK != 0 {
             let tcb = &self.connections[idx];
@@ -1898,6 +1945,32 @@ impl TcpHandler {
             self.connections.remove(idx);
             rx_return.push(frame);
             return;
+        }
+
+        // Segment acceptability check (RFC 9293 §3.10.7.4).
+        {
+            let tcb = &self.connections[idx];
+            let seg_len = Tcb::seg_len(payload_len, seg_flags);
+            let rcv_wnd = tcb.recv_buffer.free_space() as u32;
+            if !is_segment_acceptable(seg_seq, seg_len, tcb.rcv_nxt, rcv_wnd) {
+                // Out-of-window: send ACK (unless RST, already handled above).
+                SegmentBuilder::build_ack(
+                    tcb.id.local_addr,
+                    tcb.id.remote_addr,
+                    tcb.id.local_port,
+                    tcb.id.remote_port,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
+                    tcb.advertised_window(),
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+                rx_return.push(frame);
+                return;
+            }
         }
 
         match state {
@@ -6539,5 +6612,36 @@ mod tests {
             Some(TcpEvent::Reset),
             "TcpEvent::Reset should be emitted for linger(0) abort"
         );
+    }
+
+    #[test]
+    fn segment_acceptability_zero_len_zero_wnd() {
+        assert!(is_segment_acceptable(100, 0, 100, 0));
+        assert!(!is_segment_acceptable(101, 0, 100, 0));
+    }
+
+    #[test]
+    fn segment_acceptability_zero_len_nonzero_wnd() {
+        assert!(is_segment_acceptable(100, 0, 100, 1000));
+        assert!(is_segment_acceptable(1099, 0, 100, 1000));
+        assert!(!is_segment_acceptable(1100, 0, 100, 1000));
+        assert!(!is_segment_acceptable(99, 0, 100, 1000));
+    }
+
+    #[test]
+    fn segment_acceptability_nonzero_len_zero_wnd() {
+        assert!(!is_segment_acceptable(100, 10, 100, 0));
+    }
+
+    #[test]
+    fn segment_acceptability_nonzero_len_nonzero_wnd() {
+        // Start in window
+        assert!(is_segment_acceptable(100, 10, 100, 1000));
+        // End in window (start slightly before)
+        assert!(is_segment_acceptable(95, 10, 100, 1000));
+        // Completely outside
+        assert!(!is_segment_acceptable(1200, 10, 100, 1000));
+        // Completely before
+        assert!(!is_segment_acceptable(80, 10, 100, 1000));
     }
 }
