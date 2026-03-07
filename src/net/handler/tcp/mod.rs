@@ -1404,10 +1404,8 @@ impl TcpHandler {
                 // Parse and merge SACK blocks into scoreboard.
                 if tcb.sack_enabled {
                     let (blocks, count) = crate::net::wire::tcp::parse_sack_blocks(options);
-                    for i in 0..count {
-                        if let Some((left, right)) = blocks[i] {
-                            tcb.sack_scoreboard.insert(left, right.wrapping_sub(left));
-                        }
+                    for (left, right) in blocks.iter().take(count).flatten() {
+                        tcb.sack_scoreboard.insert(*left, right.wrapping_sub(*left));
                     }
                     // Prune scoreboard entries below snd_una (already ACKed cumulatively).
                     let snd_una = tcb.snd_una;
@@ -1441,10 +1439,8 @@ impl TcpHandler {
                 // Parse SACK blocks on duplicate ACKs too.
                 if tcb.sack_enabled {
                     let (blocks, count) = crate::net::wire::tcp::parse_sack_blocks(options);
-                    for i in 0..count {
-                        if let Some((left, right)) = blocks[i] {
-                            tcb.sack_scoreboard.insert(left, right.wrapping_sub(left));
-                        }
+                    for (left, right) in blocks.iter().take(count).flatten() {
+                        tcb.sack_scoreboard.insert(*left, right.wrapping_sub(*left));
                     }
                 }
             }
@@ -1534,8 +1530,7 @@ impl TcpHandler {
                 let mut sack_blocks: Vec<(u32, u32)> = Vec::new();
                 if tcb.sack_enabled {
                     // Most recently received range first (per RFC 2018 §3).
-                    sack_blocks
-                        .push((seg_seq, seg_seq.wrapping_add(payload_len as u32)));
+                    sack_blocks.push((seg_seq, seg_seq.wrapping_add(payload_len as u32)));
                     for (&start, &len) in tcb.ooo_ranges.iter().rev() {
                         if sack_blocks.len() >= max_blocks {
                             break;
@@ -1752,29 +1747,30 @@ impl TcpHandler {
 
             // Determine retransmit offset: use SACK scoreboard gaps when available.
             let snd_una = tcb.snd_una;
-            let (retransmit_offset, retransmit_seq) =
-                if tcb.sack_enabled && !tcb.sack_scoreboard.is_empty() {
-                    let mut gap_start = snd_una;
-                    let mut found = None;
-                    for (&sack_start, &sack_len) in &tcb.sack_scoreboard {
-                        if seq_lt(gap_start, sack_start) {
-                            let gap_size = sack_start.wrapping_sub(gap_start) as usize;
-                            let len = gap_size.min(tcb.eff_snd_mss as usize);
-                            found = Some((gap_start.wrapping_sub(snd_una) as usize, gap_start, len));
-                            break;
-                        }
-                        let sack_end = sack_start.wrapping_add(sack_len);
-                        if seq_lt(gap_start, sack_end) {
-                            gap_start = sack_end;
-                        }
+            let (retransmit_offset, retransmit_seq) = if tcb.sack_enabled
+                && !tcb.sack_scoreboard.is_empty()
+            {
+                let mut gap_start = snd_una;
+                let mut found = None;
+                for (&sack_start, &sack_len) in &tcb.sack_scoreboard {
+                    if seq_lt(gap_start, sack_start) {
+                        let gap_size = sack_start.wrapping_sub(gap_start) as usize;
+                        let len = gap_size.min(tcb.eff_snd_mss as usize);
+                        found = Some((gap_start.wrapping_sub(snd_una) as usize, gap_start, len));
+                        break;
                     }
-                    match found {
-                        Some((offset, seq, _)) => (offset, seq),
-                        None => (0, snd_una),
+                    let sack_end = sack_start.wrapping_add(sack_len);
+                    if seq_lt(gap_start, sack_end) {
+                        gap_start = sack_end;
                     }
-                } else {
-                    (0, snd_una)
-                };
+                }
+                match found {
+                    Some((offset, seq, _)) => (offset, seq),
+                    None => (0, snd_una),
+                }
+            } else {
+                (0, snd_una)
+            };
 
             let retransmit_len = tcb.send_buffer.available().min(tcb.eff_snd_mss as usize);
             if retransmit_len == 0 {
@@ -1786,7 +1782,9 @@ impl TcpHandler {
                 .lookup(now, &id.remote_addr)
                 .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
 
-            let payload = tcb.send_buffer.peek_slices(retransmit_offset, retransmit_len);
+            let payload = tcb
+                .send_buffer
+                .peek_slices(retransmit_offset, retransmit_len);
 
             let ts = if tcb.ts_enabled {
                 let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
@@ -2067,46 +2065,47 @@ impl TcpHandler {
             }
 
             // B. Send 1-byte probe when persist deadline expires.
-            if let Some(deadline) = tcb.persist_deadline {
-                if now >= deadline && send_window == 0 && data_available > 0 {
-                    let mut probe = [0u8; 1];
-                    tcb.send_buffer.peek_at(bytes_in_flight, &mut probe);
+            if let Some(deadline) = tcb.persist_deadline
+                && now >= deadline
+                && send_window == 0
+                && data_available > 0
+            {
+                let mut probe = [0u8; 1];
+                tcb.send_buffer.peek_at(bytes_in_flight, &mut probe);
 
-                    let dst_mac = neighbor_handler
-                        .lookup(now, &tcb.id.remote_addr)
-                        .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                let dst_mac = neighbor_handler
+                    .lookup(now, &tcb.id.remote_addr)
+                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
 
-                    let ts = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                        Some((tsval, tcb.ts_recent))
-                    } else {
-                        None
-                    };
-                    SegmentBuilder::build_data(
-                        tcb.id.local_addr,
-                        tcb.id.remote_addr,
-                        tcb.id.local_port,
-                        tcb.id.remote_port,
-                        tcb.snd_nxt,
-                        tcb.rcv_nxt,
-                        tcb.advertised_window(),
-                        &probe,
-                        ts,
-                        src_mac,
-                        dst_mac,
-                        self.tx_offload,
-                        free_frames,
-                        tx_return,
-                    );
+                let ts = if tcb.ts_enabled {
+                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                    Some((tsval, tcb.ts_recent))
+                } else {
+                    None
+                };
+                SegmentBuilder::build_data(
+                    tcb.id.local_addr,
+                    tcb.id.remote_addr,
+                    tcb.id.local_port,
+                    tcb.id.remote_port,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
+                    tcb.advertised_window(),
+                    &probe,
+                    ts,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
+                );
 
-                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+                tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
 
-                    // Schedule next probe with exponential backoff, capped at 60s.
-                    let backoff_ms = (tcb.rto << tcb.persist_backoff).min(60_000);
-                    tcb.persist_deadline =
-                        Some(now + coarsetime::Duration::from_millis(backoff_ms));
-                    tcb.persist_backoff = tcb.persist_backoff.saturating_add(1).min(6);
-                }
+                // Schedule next probe with exponential backoff, capped at 60s.
+                let backoff_ms = (tcb.rto << tcb.persist_backoff).min(60_000);
+                tcb.persist_deadline = Some(now + coarsetime::Duration::from_millis(backoff_ms));
+                tcb.persist_backoff = tcb.persist_backoff.saturating_add(1).min(6);
             }
 
             // Check linger deadline — if expired, abort with RST.
@@ -7430,22 +7429,43 @@ mod tests {
     ) -> u32 {
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
         let syn_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
         );
         let syn_len = syn_data.len();
         handler.process_ipv4(
             Frame::new(0, leak(syn_data), syn_len, false),
-            nh, free, rx, tx,
+            nh,
+            free,
+            rx,
+            tx,
         );
         let server_iss = handler.connections[0].iss;
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
             Frame::new(1, leak(ack_data), ack_len, false),
-            nh, free, rx, tx,
+            nh,
+            free,
+            rx,
+            tx,
         );
         while tx.pop().is_some() {}
         server_iss
@@ -7493,8 +7513,7 @@ mod tests {
             free.push(alloc_free_frame(100 + i));
         }
 
-        let server_iss =
-            establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
         // Write data, set window to 0.
         handler.connections[0].send_buffer.write(b"Hello");
@@ -7535,8 +7554,7 @@ mod tests {
             free.push(alloc_free_frame(100 + i));
         }
 
-        let server_iss =
-            establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
         // Write data, set window to 0, arm persist timer.
         handler.connections[0].send_buffer.write(b"Hello");
@@ -7701,25 +7719,46 @@ mod tests {
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
         let sack_perm_opts = [tcp_options::SACK_PERMITTED, 2];
         let syn_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &sack_perm_opts,
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &sack_perm_opts,
         );
         let syn_len = syn_data.len();
         handler.process_ipv4(
             Frame::new(0, leak(syn_data), syn_len, false),
-            nh, free, rx, tx,
+            nh,
+            free,
+            rx,
+            tx,
         );
         assert!(handler.connections[0].sack_enabled);
         let server_iss = handler.connections[0].iss;
         while tx.pop().is_some() {}
 
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
             Frame::new(1, leak(ack_data), ack_len, false),
-            nh, free, rx, tx,
+            nh,
+            free,
+            rx,
+            tx,
         );
         while tx.pop().is_some() {}
         assert_eq!(handler.connections[0].state, TcpState::Established);
@@ -7756,21 +7795,38 @@ mod tests {
         let sack_right2 = snd_una.wrapping_add(90);
 
         let mut opts = [0u8; 20];
-        let written = write_sack_option(&mut opts, &[(sack_left1, sack_right1), (sack_left2, sack_right2)]);
+        let written = write_sack_option(
+            &mut opts,
+            &[(sack_left1, sack_right1), (sack_left2, sack_right2)],
+        );
 
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, new_ack,
-            flags::ACK, 65535, &opts[..written],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            new_ack,
+            flags::ACK,
+            65535,
+            &opts[..written],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
             Frame::new(2, leak(ack_data), ack_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
 
         let tcb = &handler.connections[0];
         assert_eq!(tcb.snd_una, new_ack, "snd_una should advance");
-        assert_eq!(tcb.sack_scoreboard.len(), 2, "two SACK blocks in scoreboard");
+        assert_eq!(
+            tcb.sack_scoreboard.len(),
+            2,
+            "two SACK blocks in scoreboard"
+        );
         assert_eq!(tcb.sack_scoreboard.get(&sack_left1), Some(&20));
         assert_eq!(tcb.sack_scoreboard.get(&sack_left2), Some(&20));
     }
@@ -7804,15 +7860,28 @@ mod tests {
         let sack_right2 = snd_una.wrapping_add(120);
 
         let mut opts = [0u8; 20];
-        let written = write_sack_option(&mut opts, &[(sack_left1, sack_right1), (sack_left2, sack_right2)]);
+        let written = write_sack_option(
+            &mut opts,
+            &[(sack_left1, sack_right1), (sack_left2, sack_right2)],
+        );
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, ack1,
-            flags::ACK, 65535, &opts[..written],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            ack1,
+            flags::ACK,
+            65535,
+            &opts[..written],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
             Frame::new(2, leak(ack_data), ack_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         assert_eq!(handler.connections[0].sack_scoreboard.len(), 2);
 
@@ -7822,19 +7891,32 @@ mod tests {
         let mut opts2 = [0u8; 12];
         let written2 = write_sack_option(&mut opts2, &[(sack_left2, sack_right2)]);
         let ack_data2 = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, ack2,
-            flags::ACK, 65535, &opts2[..written2],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            ack2,
+            flags::ACK,
+            65535,
+            &opts2[..written2],
         );
         let ack_len2 = ack_data2.len();
         handler.process_ipv4(
             Frame::new(3, leak(ack_data2), ack_len2, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
 
         let tcb = &handler.connections[0];
         assert_eq!(tcb.snd_una, ack2);
         // The first block (start=snd_una+30) should be pruned since 30 < 50.
-        assert!(!tcb.sack_scoreboard.contains_key(&sack_left1), "old block should be pruned");
+        assert!(
+            !tcb.sack_scoreboard.contains_key(&sack_left1),
+            "old block should be pruned"
+        );
         // The second block should remain.
         assert_eq!(tcb.sack_scoreboard.len(), 1, "only second block remains");
         assert!(tcb.sack_scoreboard.contains_key(&sack_left2));
@@ -7868,13 +7950,23 @@ mod tests {
         let written = write_sack_option(&mut opts, &[(sack_left, sack_right)]);
 
         let dup_ack = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_una,
-            flags::ACK, 65535, &opts[..written],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            snd_una,
+            flags::ACK,
+            65535,
+            &opts[..written],
         );
         let dup_len = dup_ack.len();
         handler.process_ipv4(
             Frame::new(2, leak(dup_ack), dup_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
 
         let tcb = &handler.connections[0];
@@ -7911,13 +8003,23 @@ mod tests {
         let written = write_sack_option(&mut opts, &[(sack_left, sack_right)]);
 
         let dup_ack = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_una,
-            flags::ACK, 65535, &opts[..written],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            snd_una,
+            flags::ACK,
+            65535,
+            &opts[..written],
         );
         let dup_len = dup_ack.len();
         handler.process_ipv4(
             Frame::new(2, leak(dup_ack), dup_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         assert_eq!(handler.connections[0].sack_scoreboard.len(), 1);
 
@@ -7985,7 +8087,10 @@ mod tests {
         assert_eq!(tcb.dup_ack_count, 0, "dup_ack_count should be reset");
         // cwnd should be halved.
         assert!(tcb.cwnd < cwnd_before, "cwnd should have been halved");
-        assert_eq!(tcb.cwnd, tcb.ssthresh, "cwnd should equal ssthresh after fast recovery");
+        assert_eq!(
+            tcb.cwnd, tcb.ssthresh,
+            "cwnd should equal ssthresh after fast recovery"
+        );
     }
 
     #[test]
@@ -8022,11 +8127,17 @@ mod tests {
         handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
         // Verify a segment was emitted.
-        assert!(tx.pop().is_some(), "expected a retransmitted segment from snd_una");
+        assert!(
+            tx.pop().is_some(),
+            "expected a retransmitted segment from snd_una"
+        );
 
         let tcb = &handler.connections[0];
         assert_eq!(tcb.dup_ack_count, 0, "dup_ack_count should be reset");
         assert!(tcb.cwnd < cwnd_before, "cwnd should have been halved");
-        assert_eq!(tcb.cwnd, tcb.ssthresh, "cwnd should equal ssthresh after fast recovery");
+        assert_eq!(
+            tcb.cwnd, tcb.ssthresh,
+            "cwnd should equal ssthresh after fast recovery"
+        );
     }
 }

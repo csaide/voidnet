@@ -403,7 +403,7 @@ pub fn parse_sack_blocks(options: &[u8]) -> ([Option<(u32, u32)>; 4], usize) {
                 let data_len = len - 2;
                 let num_blocks = data_len / 8;
                 let count = num_blocks.min(4);
-                for b in 0..count {
+                for (b, block) in blocks.iter_mut().take(count).enumerate() {
                     let off = i + 2 + b * 8;
                     let left = u32::from_be_bytes([
                         options[off],
@@ -417,7 +417,7 @@ pub fn parse_sack_blocks(options: &[u8]) -> ([Option<(u32, u32)>; 4], usize) {
                         options[off + 6],
                         options[off + 7],
                     ]);
-                    blocks[b] = Some((left, right));
+                    *block = Some((left, right));
                 }
                 return (blocks, count);
             }
