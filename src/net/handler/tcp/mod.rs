@@ -1270,32 +1270,42 @@ impl TcpHandler {
             if can_send > 0 && data_available > 0 {
                 let to_send = can_send.min(data_available).min(tcb.eff_snd_mss as usize);
 
-                // Peek the data from the send buffer (don't advance — held until ACKed).
-                // TODO: use stack buffer to avoid allocation
-                let mut payload = vec![0u8; to_send];
-                tcb.send_buffer.peek_at(bytes_in_flight, &mut payload);
+                // Nagle algorithm: hold small segments when data is in flight.
+                if tcb.nagle_enabled && bytes_in_flight > 0 && to_send < tcb.eff_snd_mss as usize {
+                    // Don't send — wait for outstanding ACK.
+                } else {
+                    // Peek the data from the send buffer (don't advance — held until ACKed).
+                    // TODO: use stack buffer to avoid allocation
+                    let mut payload = vec![0u8; to_send];
+                    tcb.send_buffer.peek_at(bytes_in_flight, &mut payload);
 
-                let dst_mac = neighbor_handler
-                    .lookup(now, &tcb.id.remote_addr)
-                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                    let dst_mac = neighbor_handler
+                        .lookup(now, &tcb.id.remote_addr)
+                        .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
 
-                let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
+                    let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
 
-                SegmentBuilder::build_data(
-                    tcb.id.local_addr, tcb.id.remote_addr,
-                    tcb.id.local_port, tcb.id.remote_port,
-                    tcb.snd_nxt, tcb.rcv_nxt, window,
-                    &payload,
-                    src_mac, dst_mac,
-                    self.tx_offload, free_frames, tx_return,
-                );
+                    SegmentBuilder::build_data(
+                        tcb.id.local_addr, tcb.id.remote_addr,
+                        tcb.id.local_port, tcb.id.remote_port,
+                        tcb.snd_nxt, tcb.rcv_nxt, window,
+                        &payload,
+                        src_mac, dst_mac,
+                        self.tx_offload, free_frames, tx_return,
+                    );
 
-                tcb.snd_nxt = tcb.snd_nxt.wrapping_add(to_send as u32);
-                tcb.last_send_time = Some(now);
+                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(to_send as u32);
+                    tcb.last_send_time = Some(now);
 
-                // Set retransmit timer if not already running.
-                if tcb.retransmit_deadline.is_none() {
-                    tcb.retransmit_deadline = Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                    // Set retransmit timer if not already running.
+                    if tcb.retransmit_deadline.is_none() {
+                        tcb.retransmit_deadline = Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                    }
+
+                    // Piggyback: data segment carries ACK, so clear delayed ACK state.
+                    tcb.ack_pending = false;
+                    tcb.ack_delay_count = 0;
+                    tcb.delayed_ack_deadline = None;
                 }
             }
 
@@ -3346,5 +3356,240 @@ mod tests {
         assert!(!tcb.ack_pending);
         assert_eq!(tcb.ack_delay_count, 0);
         assert!(tcb.delayed_ack_deadline.is_none());
+    }
+
+    /// Helper: perform active open handshake via connect + SYN-ACK processing.
+    /// Returns the client ISS (so the caller knows snd_una/snd_nxt base).
+    fn active_open_handshake(
+        handler: &mut TcpHandler,
+        nh: &NeighborHandler,
+        free: &mut BasicFrameBuffer<'static>,
+        rx: &mut BasicFrameBuffer<'static>,
+        tx: &mut BasicFrameBuffer<'static>,
+    ) -> u32 {
+        let src_mac = crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        let dst_mac = crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+        // connect sends SYN.
+        let _event_queue = handler.connect(
+            IpAddress::V4(LOCAL_IP), 5000,
+            IpAddress::V4(REMOTE_IP), 80,
+            src_mac, dst_mac,
+            free, tx,
+        ).unwrap();
+        while tx.pop().is_some() {} // consume SYN frame
+
+        let client_iss = handler.connections[0].iss;
+
+        // Feed SYN-ACK from the remote.
+        let syn_ack = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 80, 5000,
+            2000, client_iss.wrapping_add(1),
+            flags::SYN | flags::ACK, 65535, &[],
+        );
+        let syn_ack_len = syn_ack.len();
+        handler.process_ipv4(
+            Frame::new(50, leak(syn_ack), syn_ack_len, false),
+            nh, free, rx, tx,
+        );
+        while tx.pop().is_some() {} // consume ACK frame
+
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+        handler.connections[0].snd_wnd = 65535;
+
+        client_iss
+    }
+
+    /// Helper: perform active open handshake with custom TcpConfig.
+    fn active_open_handshake_with_config(
+        handler: &mut TcpHandler,
+        nh: &NeighborHandler,
+        config: TcpConfig,
+        free: &mut BasicFrameBuffer<'static>,
+        rx: &mut BasicFrameBuffer<'static>,
+        tx: &mut BasicFrameBuffer<'static>,
+    ) -> u32 {
+        let src_mac = crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        let dst_mac = crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+        let _event_queue = handler.connect_with_config(
+            IpAddress::V4(LOCAL_IP), 5000,
+            IpAddress::V4(REMOTE_IP), 80,
+            src_mac, dst_mac, config,
+            free, tx,
+        ).unwrap();
+        while tx.pop().is_some() {}
+
+        let client_iss = handler.connections[0].iss;
+
+        let syn_ack = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 80, 5000,
+            2000, client_iss.wrapping_add(1),
+            flags::SYN | flags::ACK, 65535, &[],
+        );
+        let syn_ack_len = syn_ack.len();
+        handler.process_ipv4(
+            Frame::new(50, leak(syn_ack), syn_ack_len, false),
+            nh, free, rx, tx,
+        );
+        while tx.pop().is_some() {}
+
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+        handler.connections[0].snd_wnd = 65535;
+
+        client_iss
+    }
+
+    #[test]
+    fn nagle_holds_small_data_when_bytes_in_flight() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // 1. Complete handshake via active open.
+        let _iss = active_open_handshake(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        // 2. Write small data.
+        handler.connections[0].send_buffer.write(b"hello");
+
+        // 3. poll_send — first send goes (nothing in flight).
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert_eq!(tx.num_frames(), 1, "first small segment should send");
+
+        // 4. Pop tx frame.
+        while tx.pop().is_some() {}
+
+        // 5. Write more small data — bytes still in flight (unACKed).
+        handler.connections[0].send_buffer.write(b"world");
+
+        // 6. poll_send — Nagle holds it.
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert_eq!(tx.num_frames(), 0, "Nagle should hold small data when bytes in flight");
+    }
+
+    #[test]
+    fn nagle_allows_full_mss_even_with_bytes_in_flight() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        // Allocate frames large enough for MSS-sized segments (ETH+IP+TCP+536 = 590).
+        for i in 0..16 {
+            free.push(Frame::new(100 + i, leak(vec![0u8; 1024]), 1024, false));
+        }
+
+        // 1. Complete handshake via active open.
+        let _iss = active_open_handshake(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        // 2. Write small data, send it (creates bytes_in_flight), pop tx.
+        handler.connections[0].send_buffer.write(b"hi");
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+
+        // 3. Write MSS-worth of data.
+        let mss = handler.connections[0].eff_snd_mss as usize;
+        let mss_data = vec![0xAA; mss];
+        handler.connections[0].send_buffer.write(&mss_data);
+
+        // 4. poll_send — full MSS always sends even with bytes in flight.
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert_eq!(tx.num_frames(), 1, "full MSS segment should send even with bytes in flight");
+    }
+
+    #[test]
+    fn tcp_no_delay_sends_small_data_immediately() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // 1. Complete handshake with tcp_no_delay.
+        let config = TcpConfig { tcp_no_delay: true, ..Default::default() };
+        let _iss = active_open_handshake_with_config(
+            &mut handler, &nh, config, &mut free, &mut rx, &mut tx,
+        );
+
+        // Verify nagle is disabled.
+        assert!(!handler.connections[0].nagle_enabled, "nagle should be disabled with tcp_no_delay");
+
+        // 2. Write small data, poll_send (first send), pop tx.
+        handler.connections[0].send_buffer.write(b"hello");
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert_eq!(tx.num_frames(), 1);
+        while tx.pop().is_some() {}
+
+        // 3. Write more small data while first is in flight.
+        handler.connections[0].send_buffer.write(b"world");
+
+        // 4. poll_send — TCP_NODELAY bypasses Nagle.
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert_eq!(tx.num_frames(), 1, "TCP_NODELAY should bypass Nagle and send immediately");
+    }
+
+    #[test]
+    fn data_send_clears_delayed_ack() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // 1. Complete handshake via passive open (listener).
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // 2. Receive in-order data — ack_pending becomes true.
+        let data_seg = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], b"incoming data",
+        );
+        let data_len = data_seg.len();
+        handler.process_ipv4(Frame::new(2, leak(data_seg), data_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {} // consume any immediate ACK frames
+
+        assert!(handler.connections[0].ack_pending, "ack_pending should be true after receiving data");
+
+        // 3. Write data to send buffer.
+        handler.connections[0].send_buffer.write(b"reply data");
+        handler.connections[0].snd_wnd = 65535;
+
+        // 4. poll_send — sends data (piggybacks ACK).
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert!(tx.num_frames() >= 1, "data segment should be sent");
+
+        // 5. Verify delayed ACK state is cleared.
+        let tcb = &handler.connections[0];
+        assert!(!tcb.ack_pending, "ack_pending should be cleared after data send");
+        assert_eq!(tcb.ack_delay_count, 0, "ack_delay_count should be cleared");
+        assert!(tcb.delayed_ack_deadline.is_none(), "delayed_ack_deadline should be cleared");
     }
 }
