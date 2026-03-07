@@ -90,6 +90,16 @@ pub struct TcpConfig {
     pub tcp_no_delay: bool,
     /// Maximum delay for ACKs in milliseconds. Default: 40.
     pub delayed_ack_ms: u64,
+    /// Enable TCP keep-alive probes. Default: false.
+    pub keep_alive: bool,
+    /// Idle time before first keep-alive probe in milliseconds. Default: 7200000 (2 hours).
+    pub keep_alive_idle_ms: u64,
+    /// Interval between keep-alive probes in milliseconds. Default: 75000 (75 seconds).
+    pub keep_alive_interval_ms: u64,
+    /// Max probes before aborting connection. Default: 9.
+    pub keep_alive_count: u8,
+    /// SO_LINGER setting. None = off (default), Some(0) = RST, Some(ms) = timeout.
+    pub linger: Option<u64>,
 }
 
 impl Default for TcpConfig {
@@ -101,6 +111,11 @@ impl Default for TcpConfig {
             time_wait_duration_ms: 60_000,
             tcp_no_delay: false,
             delayed_ack_ms: DEFAULT_DELAYED_ACK_MS,
+            keep_alive: false,
+            keep_alive_idle_ms: 7_200_000,
+            keep_alive_interval_ms: 75_000,
+            keep_alive_count: 9,
+            linger: None,
         }
     }
 }
@@ -209,6 +224,18 @@ pub struct Tcb {
     // --- Nagle algorithm ---
     /// When true, the Nagle algorithm gates small sends. Disabled by TCP_NODELAY.
     pub nagle_enabled: bool,
+
+    // --- Keep-alive ---
+    pub keep_alive_enabled: bool,
+    pub keep_alive_idle_ms: u64,
+    pub keep_alive_interval_ms: u64,
+    pub keep_alive_count: u8,
+    pub last_activity: Instant,
+    pub keep_alive_probes_sent: u8,
+
+    // --- Linger ---
+    pub linger: Option<u64>,
+    pub linger_deadline: Option<Instant>,
 }
 
 impl Tcb {

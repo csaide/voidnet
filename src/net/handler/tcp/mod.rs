@@ -47,6 +47,11 @@ pub(crate) struct ListenEntry {
     pub time_wait_duration: u64,
     pub tcp_no_delay: bool,
     pub delayed_ack_ms: u64,
+    pub keep_alive: bool,
+    pub keep_alive_idle_ms: u64,
+    pub keep_alive_interval_ms: u64,
+    pub keep_alive_count: u8,
+    pub linger: Option<u64>,
 }
 
 /// TCP protocol handler.
@@ -111,6 +116,11 @@ impl TcpHandler {
             time_wait_duration: config.time_wait_duration_ms,
             tcp_no_delay: config.tcp_no_delay,
             delayed_ack_ms: config.delayed_ack_ms,
+            keep_alive: config.keep_alive,
+            keep_alive_idle_ms: config.keep_alive_idle_ms,
+            keep_alive_interval_ms: config.keep_alive_interval_ms,
+            keep_alive_count: config.keep_alive_count,
+            linger: config.linger,
         });
         Ok(accept_queue)
     }
@@ -217,6 +227,14 @@ impl TcpHandler {
             ack_delay_count: 0,
             delayed_ack_ms: DEFAULT_DELAYED_ACK_MS,
             nagle_enabled: !config.tcp_no_delay,
+            keep_alive_enabled: config.keep_alive,
+            keep_alive_idle_ms: config.keep_alive_idle_ms,
+            keep_alive_interval_ms: config.keep_alive_interval_ms,
+            keep_alive_count: config.keep_alive_count,
+            last_activity: Instant::now(),
+            keep_alive_probes_sent: 0,
+            linger: config.linger,
+            linger_deadline: None,
         };
 
         // Send SYN.
@@ -617,6 +635,14 @@ impl TcpHandler {
                 ack_delay_count: 0,
                 delayed_ack_ms: listener.delayed_ack_ms,
                 nagle_enabled: !listener.tcp_no_delay,
+                keep_alive_enabled: listener.keep_alive,
+                keep_alive_idle_ms: listener.keep_alive_idle_ms,
+                keep_alive_interval_ms: listener.keep_alive_interval_ms,
+                keep_alive_count: listener.keep_alive_count,
+                last_activity: Instant::now(),
+                keep_alive_probes_sent: 0,
+                linger: listener.linger,
+                linger_deadline: None,
             };
 
             // Send SYN-ACK.
