@@ -1288,16 +1288,6 @@ impl TcpHandler {
             flags::ACK
         };
 
-        // Step 1: RST check.
-        if seg_flags & flags::RST != 0 {
-            self.connections[idx].event_queue.push(TcpEvent::Reset);
-            let id = self.connections[idx].id;
-            self.decrement_syn_received(&id);
-            self.connections.remove(idx);
-            rx_return.push(frame);
-            return;
-        }
-
         // PAWS check (RFC 7323 §5).
         if self.connections[idx].ts_enabled
             && let Some((tsval, _)) = parse_timestamp(options)
@@ -1306,11 +1296,15 @@ impl TcpHandler {
             // Check if TSval is older than ts_recent.
             // Use signed comparison for wraparound.
             let ts_diff = tsval.wrapping_sub(tcb.ts_recent) as i32;
-            if ts_diff < 0 && seg_flags & flags::RST == 0 {
+            if ts_diff < 0 {
                 // Check staleness: if ts_recent is older than 24 days, accept anyway.
                 let staleness = now.duration_since(tcb.ts_recent_age).as_millis();
                 if staleness < 24 * 24 * 60 * 60 * 1000 {
-                    // Reject: send ACK and drop.
+                    // Reject: send ACK and drop (unless RST, which is silently dropped).
+                    if seg_flags & flags::RST != 0 {
+                        rx_return.push(frame);
+                        return;
+                    }
                     let tcb = &self.connections[idx];
                     let ts = if tcb.ts_enabled {
                         let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
@@ -1346,7 +1340,11 @@ impl TcpHandler {
             let seg_len = Tcb::seg_len(payload_len, seg_flags);
             let rcv_wnd = tcb.recv_buffer.free_space() as u32;
             if !is_segment_acceptable(seg_seq, seg_len, tcb.rcv_nxt, rcv_wnd) {
-                // Out-of-window: send ACK (unless RST, already handled above).
+                // Out-of-window: send ACK (unless RST, which is silently dropped).
+                if seg_flags & flags::RST != 0 {
+                    rx_return.push(frame);
+                    return;
+                }
                 let ts = if tcb.ts_enabled {
                     let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
                     Some((tsval, tcb.ts_recent))
@@ -1372,6 +1370,45 @@ impl TcpHandler {
                 rx_return.push(frame);
                 return;
             }
+        }
+
+        // Step 2: RST check (RFC 5961).
+        if seg_flags & flags::RST != 0 {
+            if seg_seq == self.connections[idx].rcv_nxt {
+                // Exact match: reset connection.
+                self.connections[idx].event_queue.push(TcpEvent::Reset);
+                let id = self.connections[idx].id;
+                self.decrement_syn_received(&id);
+                self.connections.remove(idx);
+                rx_return.push(frame);
+                return;
+            }
+            // In-window but not exact: send challenge ACK, drop segment.
+            let tcb = &self.connections[idx];
+            let ts = if tcb.ts_enabled {
+                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                Some((tsval, tcb.ts_recent))
+            } else {
+                None
+            };
+            SegmentBuilder::build_ack(
+                tcb.id.local_addr,
+                tcb.id.remote_addr,
+                tcb.id.local_port,
+                tcb.id.remote_port,
+                tcb.snd_nxt,
+                tcb.rcv_nxt,
+                tcb.advertised_window(),
+                ack_flags,
+                ts,
+                src_mac,
+                dst_mac,
+                self.tx_offload,
+                free_frames,
+                tx_return,
+            );
+            rx_return.push(frame);
+            return;
         }
 
         // Update ts_recent from incoming segment.
@@ -2446,28 +2483,20 @@ impl TcpHandler {
     ) {
         let state = self.connections[idx].state;
 
-        // RST check — abort all states except TimeWait.
-        if seg_flags & flags::RST != 0 {
-            if state == TcpState::TimeWait {
-                // Ignore RST in TIME-WAIT (prevents RST attacks).
-                rx_return.push(frame);
-                return;
-            }
-            self.connections[idx].event_queue.push(TcpEvent::Reset);
-            self.connections.remove(idx);
-            rx_return.push(frame);
-            return;
-        }
-
         // PAWS check (RFC 7323 §5).
         if self.connections[idx].ts_enabled
             && let Some((tsval, _)) = parse_timestamp(options)
         {
             let tcb = &self.connections[idx];
             let ts_diff = tsval.wrapping_sub(tcb.ts_recent) as i32;
-            if ts_diff < 0 && seg_flags & flags::RST == 0 {
+            if ts_diff < 0 {
                 let staleness = now.duration_since(tcb.ts_recent_age).as_millis();
                 if staleness < 24 * 24 * 60 * 60 * 1000 {
+                    // Reject: silently drop RST, send ACK for others.
+                    if seg_flags & flags::RST != 0 {
+                        rx_return.push(frame);
+                        return;
+                    }
                     let tcb = &self.connections[idx];
                     let ts = if tcb.ts_enabled {
                         let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
@@ -2503,7 +2532,11 @@ impl TcpHandler {
             let seg_len = Tcb::seg_len(payload_len, seg_flags);
             let rcv_wnd = tcb.recv_buffer.free_space() as u32;
             if !is_segment_acceptable(seg_seq, seg_len, tcb.rcv_nxt, rcv_wnd) {
-                // Out-of-window: send ACK (unless RST, already handled above).
+                // Out-of-window: silently drop RST, send ACK for others.
+                if seg_flags & flags::RST != 0 {
+                    rx_return.push(frame);
+                    return;
+                }
                 let ts = if tcb.ts_enabled {
                     let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
                     Some((tsval, tcb.ts_recent))
@@ -2529,6 +2562,48 @@ impl TcpHandler {
                 rx_return.push(frame);
                 return;
             }
+        }
+
+        // RST check (RFC 5961) — after sequence validation.
+        if seg_flags & flags::RST != 0 {
+            if state == TcpState::TimeWait {
+                // Ignore RST in TIME-WAIT (prevents RST attacks).
+                rx_return.push(frame);
+                return;
+            }
+            if seg_seq == self.connections[idx].rcv_nxt {
+                // Exact match: reset connection.
+                self.connections[idx].event_queue.push(TcpEvent::Reset);
+                self.connections.remove(idx);
+                rx_return.push(frame);
+                return;
+            }
+            // In-window but not exact: send challenge ACK, drop segment.
+            let tcb = &self.connections[idx];
+            let ts = if tcb.ts_enabled {
+                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                Some((tsval, tcb.ts_recent))
+            } else {
+                None
+            };
+            SegmentBuilder::build_ack(
+                tcb.id.local_addr,
+                tcb.id.remote_addr,
+                tcb.id.local_port,
+                tcb.id.remote_port,
+                tcb.snd_nxt,
+                tcb.rcv_nxt,
+                tcb.advertised_window(),
+                flags::ACK,
+                ts,
+                src_mac,
+                dst_mac,
+                self.tx_offload,
+                free_frames,
+                tx_return,
+            );
+            rx_return.push(frame);
+            return;
         }
 
         match state {
@@ -7308,7 +7383,7 @@ mod tests {
     }
 
     #[test]
-    fn paws_accepts_rst_with_old_timestamp() {
+    fn paws_drops_rst_with_old_timestamp() {
         let mut handler = new_handler();
         let nh = new_neighbor_handler();
         let mut free = BasicFrameBuffer::new(16);
@@ -7371,7 +7446,8 @@ mod tests {
 
         while tx.pop().is_some() {}
 
-        // Send RST with old TSval=999 — RST should bypass PAWS.
+        // Send RST with old TSval=999 — RST should be silently dropped by PAWS
+        // (RFC 5961: RST is no longer exempt from PAWS to prevent replayed RST attacks).
         let old_ts_opt = build_ts_option(999, 0);
         let rst_data = build_tcp_frame(
             REMOTE_IP,
@@ -7393,12 +7469,13 @@ mod tests {
             &mut tx,
         );
 
-        // RST should have been processed — connection removed.
+        // RST with old timestamp should be silently dropped — connection survives.
         assert_eq!(
             handler.connections.len(),
-            0,
-            "RST should bypass PAWS and remove connection"
+            1,
+            "RST with old timestamp should be dropped by PAWS"
         );
+        assert_eq!(handler.connections[0].state, TcpState::Established);
     }
 
     #[test]
@@ -9640,6 +9717,99 @@ mod tests {
         assert_eq!(
             handler.connections[0].rcv_nxt, 1012,
             "rcv_nxt should advance by 1 for the FIN"
+        );
+    }
+
+    #[test]
+    fn rst_outside_window_is_dropped() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        // rcv_nxt is 1001, window is 65535 → valid range [1001, 66536).
+        // Send RST with seq far outside the window.
+        let rst_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            999_999, // way outside window
+            server_iss.wrapping_add(1),
+            flags::RST | flags::ACK,
+            0,
+            &[],
+        );
+        let rst_len = rst_data.len();
+        handler.process_ipv4(
+            Frame::new(50, leak(rst_data), rst_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // Connection must survive — out-of-window RST should be silently dropped.
+        assert_eq!(
+            handler.connections.len(),
+            1,
+            "out-of-window RST must not reset the connection"
+        );
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+    }
+
+    #[test]
+    fn rst_in_window_but_not_exact_sends_challenge_ack() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        // rcv_nxt is 1001. Send RST with seq = 1005 (in-window but not exact).
+        let rst_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1005, // in-window but != rcv_nxt (1001)
+            server_iss.wrapping_add(1),
+            flags::RST | flags::ACK,
+            0,
+            &[],
+        );
+        let rst_len = rst_data.len();
+        handler.process_ipv4(
+            Frame::new(50, leak(rst_data), rst_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // Connection must survive — in-window non-exact RST triggers challenge ACK.
+        assert_eq!(
+            handler.connections.len(),
+            1,
+            "in-window non-exact RST must not reset the connection"
+        );
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+
+        // A challenge ACK should have been sent.
+        assert!(
+            tx.num_frames() > 0,
+            "challenge ACK should be sent for in-window non-exact RST"
         );
     }
 }
