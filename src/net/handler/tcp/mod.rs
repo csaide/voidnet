@@ -400,6 +400,10 @@ impl TcpHandler {
         let seg_data_len = frame.len() - tcp_offset - header_len;
         let seg_len = Tcb::seg_len(seg_data_len, seg_flags);
 
+        // IPv4 ToS byte is at ethernet header length + 1.
+        // ECN bits are the low 2 bits of the ToS byte.
+        let ecn_bits = frame[std::mem::size_of::<EthernetFrame>() + 1] & 0x03;
+
         let incoming_src = IpAddress::V4(src_addr);
         let incoming_dst = IpAddress::V4(dst_addr);
         let src_mac = neighbor_handler.local_mac();
@@ -421,6 +425,7 @@ impl TcpHandler {
             &opt_buf[..opt_len],
             tcp_offset,
             header_len,
+            ecn_bits,
             src_mac,
             dst_mac,
             free_frames,
@@ -508,6 +513,9 @@ impl TcpHandler {
         let seg_data_len = frame.len() - tcp_offset - header_len;
         let seg_len = Tcb::seg_len(seg_data_len, seg_flags);
 
+        // IPv6 TC ECN bits: (frame_data[ETH_LEN + 1] >> 4) & 0x03
+        let ecn_bits = (frame[std::mem::size_of::<EthernetFrame>() + 1] >> 4) & 0x03;
+
         let incoming_src = IpAddress::V6(src_addr);
         let incoming_dst = IpAddress::V6(dst_addr);
         let src_mac = neighbor_handler.local_mac();
@@ -528,6 +536,7 @@ impl TcpHandler {
             &opt_buf[..opt_len],
             tcp_offset,
             header_len,
+            ecn_bits,
             src_mac,
             dst_mac,
             free_frames,
@@ -554,6 +563,7 @@ impl TcpHandler {
         options: &[u8],
         tcp_offset: usize,
         tcp_header_len: usize,
+        ecn_bits: u8,
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
         free_frames: &mut impl FrameBuffer<'umem>,
@@ -617,6 +627,7 @@ impl TcpHandler {
                         payload_offset,
                         payload_len,
                         options,
+                        ecn_bits,
                         src_mac,
                         dst_mac,
                         free_frames,
@@ -1236,6 +1247,7 @@ impl TcpHandler {
         payload_offset: usize,
         payload_len: usize,
         options: &[u8],
+        ecn_bits: u8,
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
         free_frames: &mut impl FrameBuffer<'umem>,
@@ -1243,6 +1255,12 @@ impl TcpHandler {
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         use crate::net::wire::tcp::{seq_le, seq_lt};
+
+        // ECN CE detection: if ECN is enabled and CE codepoint (0b11) is received,
+        // record it so we can signal ECE back to the sender.
+        if self.connections[idx].ecn_enabled && ecn_bits == 0x03 {
+            self.connections[idx].ecn_ce_received = true;
+        }
 
         // Step 1: RST check.
         if seg_flags & flags::RST != 0 {
@@ -1821,6 +1839,7 @@ impl TcpHandler {
                 tcb.advertised_window(),
                 payload,
                 flags::ACK,
+                false, // retransmits don't get ECT per RFC 3168 §6.1.5
                 ts,
                 src_mac,
                 dst_mac,
@@ -1949,6 +1968,7 @@ impl TcpHandler {
                             tcb.advertised_window(),
                             payload,
                             flags::ACK,
+                            false, // retransmits don't get ECT per RFC 3168 §6.1.5
                             ts,
                             src_mac,
                             dst_mac,
@@ -2060,6 +2080,7 @@ impl TcpHandler {
                         tcb.advertised_window(),
                         payload,
                         data_flags,
+                        tcb.ecn_enabled,
                         ts,
                         src_mac,
                         dst_mac,
@@ -8513,6 +8534,175 @@ mod tests {
         assert!(
             handler.connections[0].ecn_enabled,
             "ecn_enabled should remain true after handshake"
+        );
+    }
+
+    #[test]
+    fn ecn_ect_set_on_outgoing_data() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake via listen path.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        // Enable ECN on the connection.
+        handler.connections[0].ecn_enabled = true;
+        handler.connections[0].snd_wnd = 65535;
+
+        // Write data into the send buffer.
+        let payload = b"Hello ECN!";
+        handler.connections[0].send_buffer.write(payload);
+
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        assert_eq!(tx.num_frames(), 1, "should have one data segment");
+        let frame = tx.pop().unwrap();
+        // IPv4 ToS byte is at ETH_HEADER_LEN + 1.
+        let tos_byte = frame[ETH_HEADER_LEN + 1];
+        assert_eq!(tos_byte, 0x02, "ECT(0) should be set in ToS byte");
+    }
+
+    #[test]
+    fn ecn_ect_not_set_on_retransmit() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        // Enable ECN and send data.
+        handler.connections[0].ecn_enabled = true;
+        handler.connections[0].snd_wnd = 65535;
+        handler.connections[0].send_buffer.write(b"RTO test data");
+
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        // Drain the initial data segment.
+        while tx.pop().is_some() {}
+
+        // Expire the retransmit timer to trigger RTO retransmit.
+        handler.connections[0].retransmit_deadline = Some(now);
+        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        assert_eq!(tx.num_frames(), 1, "should have one retransmit segment");
+        let frame = tx.pop().unwrap();
+        let tos_byte = frame[ETH_HEADER_LEN + 1];
+        assert_eq!(tos_byte, 0x00, "ECT should NOT be set on RTO retransmit");
+    }
+
+    #[test]
+    fn ecn_ce_detected_on_incoming() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        // Enable ECN on the connection.
+        handler.connections[0].ecn_enabled = true;
+        assert!(!handler.connections[0].ecn_ce_received, "CE should not be set yet");
+
+        // Build a data segment with CE mark (ToS = 0x03) in the IP header.
+        let mut data_frame = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], b"hello",
+        );
+        // Set CE codepoint in IPv4 ToS byte: ECN bits = 0b11 = 0x03.
+        data_frame[ETH_HEADER_LEN + 1] = 0x03;
+        // Recompute IPv4 header checksum after modifying ToS.
+        let ip_cksum = compute_ipv4_checksum(&data_frame[ETH_HEADER_LEN..ETH_HEADER_LEN + 20]);
+        data_frame[ETH_HEADER_LEN + 10] = ip_cksum[0];
+        data_frame[ETH_HEADER_LEN + 11] = ip_cksum[1];
+
+        let data_len = data_frame.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(data_frame), data_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+
+        assert!(
+            handler.connections[0].ecn_ce_received,
+            "ecn_ce_received should be true after receiving CE-marked segment"
         );
     }
 }

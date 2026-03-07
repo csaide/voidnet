@@ -561,6 +561,7 @@ impl SegmentBuilder {
         window: u16,
         payload: (&[u8], &[u8]),
         tcp_flags: u8,
+        ecn_ect: bool,
         timestamp: Option<(u32, u32)>,
         src_mac: MacAddress,
         dst_mac: MacAddress,
@@ -592,6 +593,7 @@ impl SegmentBuilder {
                     window,
                     payload,
                     tcp_options,
+                    ecn_ect,
                     src_mac,
                     dst_mac,
                     tx_offload,
@@ -611,6 +613,7 @@ impl SegmentBuilder {
                     window,
                     payload,
                     tcp_options,
+                    ecn_ect,
                     src_mac,
                     dst_mac,
                     tx_offload,
@@ -979,6 +982,7 @@ impl SegmentBuilder {
         window: u16,
         payload: (&[u8], &[u8]),
         tcp_options: &[u8],
+        ecn_ect: bool,
         src_mac: MacAddress,
         dst_mac: MacAddress,
         tx_offload: bool,
@@ -1011,6 +1015,9 @@ impl SegmentBuilder {
             let ip = &mut frame[ETH_LEN..ETH_LEN + IPV4_MIN_HEADER_LEN];
             ip.fill(0);
             ip[0] = 0x45; // version=4, ihl=5
+            if ecn_ect {
+                ip[1] = 0x02; // ECT(0) in ToS byte
+            }
             ip[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
             ip[6] = 0x40; // Don't Fragment
             ip[8] = 64; // TTL
@@ -1077,6 +1084,7 @@ impl SegmentBuilder {
         window: u16,
         payload: (&[u8], &[u8]),
         tcp_options: &[u8],
+        ecn_ect: bool,
         src_mac: MacAddress,
         dst_mac: MacAddress,
         tx_offload: bool,
@@ -1109,6 +1117,9 @@ impl SegmentBuilder {
             let ip = &mut frame[ETH_LEN..ETH_LEN + IPV6_HEADER_LEN];
             ip.fill(0);
             ip[0] = 0x60; // version=6
+            if ecn_ect {
+                ip[1] |= 0x20; // ECT(0) in Traffic Class low bits
+            }
             ip[4..6].copy_from_slice(&ipv6_payload_len.to_be_bytes());
             ip[6] = IpProtocols::Tcp; // Next Header
             ip[7] = 64; // Hop Limit
@@ -1497,6 +1508,7 @@ mod tests {
             65535,
             (b"hel", b"lo"),
             flags::ACK,
+            false,
             None,
             MacAddress::broadcast(),
             MacAddress::broadcast(),
