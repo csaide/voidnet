@@ -15,7 +15,10 @@ use crate::{
         wire::{
             ethernet::EthernetFrame,
             ip::{IpAddress, Ipv4Header, Ipv6Header},
-            tcp::{TCP_HEADER_LEN, TcpHeader, flags, parse_mss, parse_window_scale},
+            tcp::{
+                TCP_HEADER_LEN, TcpHeader, flags, parse_mss, parse_sack_permitted,
+                parse_timestamp, parse_window_scale,
+            },
         },
     },
     xdp::frame::{Frame, FrameBuffer},
@@ -272,17 +275,22 @@ impl TcpHandler {
             keep_alive_probes_sent: 0,
             linger: config.linger,
             linger_deadline: None,
-            ts_enabled: false,
+            ts_enabled: config.timestamps,
             ts_recent: 0,
             ts_recent_age: Instant::now(),
             ts_offset: Instant::now(),
-            sack_enabled: false,
+            sack_enabled: config.sack,
             sack_scoreboard: BTreeMap::new(),
             persist_deadline: None,
             persist_backoff: 0,
         };
 
         // Send SYN.
+        let ts_opt = if config.timestamps {
+            Some((0u32, 0u32))
+        } else {
+            None
+        };
         SegmentBuilder::build_syn(
             local_addr,
             remote_addr,
@@ -292,6 +300,8 @@ impl TcpHandler {
             DEFAULT_RCV_WND,
             DEFAULT_RCV_MSS,
             DEFAULT_RCV_WSCALE,
+            ts_opt,
+            config.sack,
             src_mac,
             dst_mac,
             self.tx_offload,
@@ -749,9 +759,16 @@ impl TcpHandler {
             let iss = self.isn_generator.generate(&id);
             let peer_mss = parse_mss(options).unwrap_or(536);
             let peer_wscale = parse_window_scale(options);
+            let peer_ts = parse_timestamp(options);
+            let peer_sack = parse_sack_permitted(options);
 
             let wscale_enabled = peer_wscale.is_some();
             let snd_wscale = peer_wscale.unwrap_or(0);
+
+            // Negotiate timestamps and SACK.
+            let ts_enabled = listener.timestamps && peer_ts.is_some();
+            let sack_enabled = listener.sack && peer_sack;
+            let peer_tsval = peer_ts.map(|(v, _)| v).unwrap_or(0);
 
             let send_buffer_size = listener.send_buffer_size;
             let recv_buffer_size = listener.recv_buffer_size;
@@ -814,11 +831,11 @@ impl TcpHandler {
                 keep_alive_probes_sent: 0,
                 linger: listener.linger,
                 linger_deadline: None,
-                ts_enabled: false,
-                ts_recent: 0,
+                ts_enabled,
+                ts_recent: if ts_enabled { peer_tsval } else { 0 },
                 ts_recent_age: Instant::now(),
                 ts_offset: Instant::now(),
-                sack_enabled: false,
+                sack_enabled,
                 sack_scoreboard: BTreeMap::new(),
                 persist_deadline: None,
                 persist_backoff: 0,
@@ -827,6 +844,11 @@ impl TcpHandler {
             // Send SYN-ACK.
             let wscale_opt = if wscale_enabled {
                 Some(DEFAULT_RCV_WSCALE)
+            } else {
+                None
+            };
+            let ts_opt = if ts_enabled {
+                Some((0u32, peer_tsval))
             } else {
                 None
             };
@@ -840,6 +862,8 @@ impl TcpHandler {
                 DEFAULT_RCV_WND,
                 DEFAULT_RCV_MSS,
                 wscale_opt,
+                ts_opt,
+                sack_enabled,
                 src_mac,
                 dst_mac,
                 self.tx_offload,
@@ -1054,6 +1078,22 @@ impl TcpHandler {
                 tcb.wscale_enabled = true;
             }
 
+            // Timestamp negotiation.
+            if tcb.ts_enabled {
+                if let Some((peer_tsval, _)) = parse_timestamp(options) {
+                    tcb.ts_recent = peer_tsval;
+                    tcb.ts_recent_age = Instant::now();
+                } else {
+                    tcb.ts_enabled = false; // peer doesn't support
+                }
+            }
+            // SACK negotiation.
+            if tcb.sack_enabled {
+                if !parse_sack_permitted(options) {
+                    tcb.sack_enabled = false;
+                }
+            }
+
             if seg_flags & flags::ACK != 0 {
                 // Our SYN was ACKed.
                 tcb.snd_una = seg_ack;
@@ -1103,6 +1143,15 @@ impl TcpHandler {
                 } else {
                     None
                 };
+                let now = Instant::now();
+                let ts_opt = if tcb.ts_enabled {
+                    let tsval = now
+                        .duration_since(tcb.ts_offset)
+                        .as_millis() as u32;
+                    Some((tsval, tcb.ts_recent))
+                } else {
+                    None
+                };
                 SegmentBuilder::build_syn_ack(
                     id.local_addr,
                     id.remote_addr,
@@ -1113,6 +1162,8 @@ impl TcpHandler {
                     DEFAULT_RCV_WND,
                     tcb.rcv_mss,
                     wscale_opt,
+                    ts_opt,
+                    tcb.sack_enabled,
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -1564,6 +1615,14 @@ impl TcpHandler {
 
             match tcb.state {
                 TcpState::SynSent => {
+                    let ts_opt = if tcb.ts_enabled {
+                        let tsval = now
+                            .duration_since(tcb.ts_offset)
+                            .as_millis() as u32;
+                        Some((tsval, 0u32))
+                    } else {
+                        None
+                    };
                     SegmentBuilder::build_syn(
                         id.local_addr,
                         id.remote_addr,
@@ -1573,6 +1632,8 @@ impl TcpHandler {
                         DEFAULT_RCV_WND,
                         DEFAULT_RCV_MSS,
                         DEFAULT_RCV_WSCALE,
+                        ts_opt,
+                        tcb.sack_enabled,
                         src_mac,
                         dst_mac,
                         self.tx_offload,
@@ -1586,6 +1647,14 @@ impl TcpHandler {
                     } else {
                         None
                     };
+                    let ts_opt = if tcb.ts_enabled {
+                        let tsval = now
+                            .duration_since(tcb.ts_offset)
+                            .as_millis() as u32;
+                        Some((tsval, tcb.ts_recent))
+                    } else {
+                        None
+                    };
                     SegmentBuilder::build_syn_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -1596,6 +1665,8 @@ impl TcpHandler {
                         DEFAULT_RCV_WND,
                         tcb.rcv_mss,
                         wscale_opt,
+                        ts_opt,
+                        tcb.sack_enabled,
                         src_mac,
                         dst_mac,
                         self.tx_offload,

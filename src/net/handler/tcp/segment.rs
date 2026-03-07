@@ -6,7 +6,8 @@ use crate::net::{
             IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, IpProtocols, Ipv4Address, Ipv6Address,
         },
         tcp::{
-            TCP_HEADER_LEN, TcpHeader, flags, options, write_mss_option, write_window_scale_option,
+            TCP_HEADER_LEN, TcpHeader, flags, options, write_mss_option,
+            write_sack_permitted_option, write_timestamp_option, write_window_scale_option,
         },
     },
 };
@@ -108,18 +109,30 @@ impl SegmentBuilder {
         window: u16,
         mss: u16,
         wscale: u8,
+        timestamp: Option<(u32, u32)>,
+        sack_permitted: bool,
         src_mac: MacAddress,
         dst_mac: MacAddress,
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        // Build options: MSS (4 bytes) + NOP (1) + Window Scale (3) = 8 bytes
-        let mut opt_buf = [0u8; 8];
+        // Max options: MSS(4) + NOP(1) + WSCALE(3) + NOP(1) + NOP(1) + TS(10) + SACK_PERM(2) = 22, pad to 24
+        let mut opt_buf = [0u8; 24];
         let mut opt_len = write_mss_option(&mut opt_buf, mss);
         opt_buf[opt_len] = options::NOP;
         opt_len += 1;
         opt_len += write_window_scale_option(&mut opt_buf[opt_len..], wscale);
+        if let Some((tsval, tsecr)) = timestamp {
+            opt_buf[opt_len] = options::NOP;
+            opt_len += 1;
+            opt_buf[opt_len] = options::NOP;
+            opt_len += 1;
+            opt_len += write_timestamp_option(&mut opt_buf[opt_len..], tsval, tsecr);
+        }
+        if sack_permitted {
+            opt_len += write_sack_permitted_option(&mut opt_buf[opt_len..]);
+        }
 
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
@@ -174,18 +187,30 @@ impl SegmentBuilder {
         window: u16,
         mss: u16,
         wscale: Option<u8>,
+        timestamp: Option<(u32, u32)>,
+        sack_permitted: bool,
         src_mac: MacAddress,
         dst_mac: MacAddress,
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        let mut opt_buf = [0u8; 8];
+        let mut opt_buf = [0u8; 24];
         let mut opt_len = write_mss_option(&mut opt_buf, mss);
         if let Some(shift) = wscale {
             opt_buf[opt_len] = options::NOP;
             opt_len += 1;
             opt_len += write_window_scale_option(&mut opt_buf[opt_len..], shift);
+        }
+        if let Some((tsval, tsecr)) = timestamp {
+            opt_buf[opt_len] = options::NOP;
+            opt_len += 1;
+            opt_buf[opt_len] = options::NOP;
+            opt_len += 1;
+            opt_len += write_timestamp_option(&mut opt_buf[opt_len..], tsval, tsecr);
+        }
+        if sack_permitted {
+            opt_len += write_sack_permitted_option(&mut opt_buf[opt_len..]);
         }
 
         match (local_addr, remote_addr) {
