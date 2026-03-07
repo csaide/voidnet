@@ -976,7 +976,13 @@ impl TcpHandler {
                 tcb.snd_wl2 = seg_ack;
             } else if seg_ack == snd_una && payload_len == 0 {
                 // Duplicate ACK.
-                self.connections[idx].dup_ack_count += 1;
+                let tcb = &mut self.connections[idx];
+                tcb.dup_ack_count += 1;
+                // Keep-alive probe responses arrive as duplicate ACKs — reset timer.
+                if tcb.keep_alive_enabled && tcb.keep_alive_probes_sent > 0 {
+                    tcb.last_activity = now;
+                    tcb.keep_alive_probes_sent = 0;
+                }
             }
         }
 
@@ -4187,29 +4193,11 @@ mod tests {
             recv_now, &nh, &mut free, &mut rx, &mut tx,
         );
 
-        // The ACK is a duplicate ACK (seg_ack == snd_una, no data), so keep_alive_probes_sent
-        // is NOT reset by the new-ACK path. But last_activity IS updated by the data path
-        // only if there's payload. For a pure duplicate ACK with no data, neither path fires.
-        // To properly test recovery, send a data segment instead.
-
-        // Send a data segment from remote to trigger activity reset.
-        let payload = b"keepalive-recovery";
-        let data_seg = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            rcv_nxt, snd_una,
-            flags::ACK, 65535, &[], payload,
-        );
-        let data_seg_len = data_seg.len();
-        coarsetime::Instant::update();
-        let data_now = coarsetime::Instant::now();
-        handler.process_ipv4_with_now(
-            Frame::new(11, leak(data_seg), data_seg_len, false),
-            data_now, &nh, &mut free, &mut rx, &mut tx,
-        );
-
-        // Verify probes_sent reset and last_activity updated.
+        // The ACK is a duplicate ACK (seg_ack == snd_una, no data).
+        // Keep-alive probe responses are duplicate ACKs — the fix in process_established
+        // resets keep_alive_probes_sent when a dup ACK arrives and probes are outstanding.
         let tcb = &handler.connections[0];
-        assert_eq!(tcb.keep_alive_probes_sent, 0, "probes_sent should be reset after receiving data");
+        assert_eq!(tcb.keep_alive_probes_sent, 0, "probes_sent should be reset by dup ACK probe response");
         assert!(tcb.last_activity >= activity_before, "last_activity should be updated");
     }
 
