@@ -383,6 +383,43 @@ impl TcpStream {
             .map(|tcb| !tcb.nagle_enabled)
             .unwrap_or(false)
     }
+
+    /// Enable or disable TCP keep-alive probes.
+    pub fn set_keepalive(&self, enabled: bool) {
+        let handler = unsafe { &mut *self.handler.get() };
+        if let Some(tcb) = handler.get_connection_mut(&self.conn_id) {
+            tcb.keep_alive_enabled = enabled;
+        }
+    }
+
+    /// Returns whether TCP keep-alive is enabled.
+    pub fn keepalive(&self) -> bool {
+        let handler = unsafe { &*self.handler.get() };
+        handler
+            .get_connection(&self.conn_id)
+            .map(|tcb| tcb.keep_alive_enabled)
+            .unwrap_or(false)
+    }
+
+    /// Set the SO_LINGER option.
+    ///
+    /// - `None`: default graceful close
+    /// - `Some(0)`: hard RST on close
+    /// - `Some(ms)`: graceful close with timeout in milliseconds
+    pub fn set_linger(&self, linger: Option<u64>) {
+        let handler = unsafe { &mut *self.handler.get() };
+        if let Some(tcb) = handler.get_connection_mut(&self.conn_id) {
+            tcb.linger = linger;
+        }
+    }
+
+    /// Returns the current SO_LINGER setting.
+    pub fn linger(&self) -> Option<u64> {
+        let handler = unsafe { &*self.handler.get() };
+        handler
+            .get_connection(&self.conn_id)
+            .and_then(|tcb| tcb.linger)
+    }
 }
 
 impl Drop for TcpStream {
