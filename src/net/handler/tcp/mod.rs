@@ -931,6 +931,10 @@ impl TcpHandler {
                 tcb.snd_una = seg_ack;
                 tcb.send_buffer.advance(bytes_acked);
 
+                // Reset keep-alive timer on activity.
+                tcb.last_activity = now;
+                tcb.keep_alive_probes_sent = 0;
+
                 // Congestion control.
                 let eff_mss = tcb.eff_snd_mss as u32;
                 if tcb.cwnd < tcb.ssthresh {
@@ -987,6 +991,10 @@ impl TcpHandler {
                 let tcb = &mut self.connections[idx];
                 tcb.recv_buffer.write(payload);
                 tcb.rcv_nxt = rcv_nxt.wrapping_add(payload_len as u32);
+
+                // Reset keep-alive timer on received data.
+                tcb.last_activity = now;
+                tcb.keep_alive_probes_sent = 0;
 
                 // Drain contiguous OOO ranges.
                 loop {
@@ -1322,6 +1330,10 @@ impl TcpHandler {
 
                     tcb.snd_nxt = tcb.snd_nxt.wrapping_add(to_send as u32);
                     tcb.last_send_time = Some(now);
+
+                    // Reset keep-alive timer on sent data.
+                    tcb.last_activity = now;
+                    tcb.keep_alive_probes_sent = 0;
 
                     // Set retransmit timer if not already running.
                     if tcb.retransmit_deadline.is_none() {
@@ -3654,5 +3666,51 @@ mod tests {
 
         // Verify connection is still Established (FIN not yet sent).
         assert_eq!(handler.connections[0].state, TcpState::Established, "state should remain Established until poll_send");
+    }
+
+    #[test]
+    fn keep_alive_activity_resets_probe_timer() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+        let mut tx = BasicFrameBuffer::new(16);
+
+        for i in 0..8 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake to reach Established.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+
+        // Simulate stale keep-alive state: set probes sent to 5.
+        let old_activity = handler.connections[0].last_activity;
+        handler.connections[0].keep_alive_probes_sent = 5;
+
+        // Clear tx from handshake.
+        while tx.pop().is_some() {}
+
+        // Send a data segment to the established connection.
+        let payload = b"keepalive-reset";
+        let data = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], payload,
+        );
+        let data_len = data.len();
+        handler.process_ipv4(Frame::new(2, leak(data), data_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        // Verify keep-alive probes were reset.
+        let tcb = &handler.connections[0];
+        assert_eq!(tcb.keep_alive_probes_sent, 0, "keep_alive_probes_sent should be reset to 0 on data receipt");
+        assert!(tcb.last_activity >= old_activity, "last_activity should be updated on data receipt");
     }
 }
