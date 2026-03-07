@@ -19,7 +19,6 @@ use crate::{
         },
     },
     rt::context::with_runtime_context,
-    xdp::frame::SharedFrameBuffer,
 };
 
 use super::LocalQueue;
@@ -336,20 +335,17 @@ impl TcpStream {
         }
     }
 
-    /// Close this connection (sends RST for now; proper FIN deferred).
+    /// Initiate graceful close of this connection.
+    ///
+    /// Sets a flag on the TCB; the runtime's `poll_send` will drain
+    /// any remaining send buffer data and then send FIN on the next tick.
     pub fn close(&mut self) {
         if self.closed {
             return;
         }
         self.closed = true;
         let handler = unsafe { &mut *self.handler.get() };
-        handler.remove_connection(
-            &self.conn_id,
-            MacAddress::zero(), // placeholder — proper MAC resolution deferred
-            MacAddress::zero(),
-            &mut SharedFrameBuffer::from(crate::xdp::frame::BasicFrameBuffer::new(0)),
-            &mut SharedFrameBuffer::from(crate::xdp::frame::BasicFrameBuffer::new(0)),
-        );
+        handler.initiate_close(&self.conn_id);
     }
 }
 
@@ -436,6 +432,8 @@ impl<'stream> Future for TcpRead<'stream> {
             let n = tcb.recv_buffer.read(this.buf);
             if n > 0 {
                 Poll::Ready(n)
+            } else if tcb.state.is_remote_closed() {
+                Poll::Ready(0) // EOF — remote has sent FIN and buffer is drained
             } else {
                 Poll::Pending
             }
