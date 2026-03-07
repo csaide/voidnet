@@ -926,8 +926,12 @@ impl TcpHandler {
 
         // Step 1: Check sequence number acceptability.
         // For SYN-RECEIVED with no data, we expect seg_seq == rcv_nxt.
-        // Simplified check: accept if seg_seq == rcv_nxt.
-        if seg_seq != tcb.rcv_nxt {
+        // For simultaneous open, the peer's SYN-ACK has seg_seq == IRS (the
+        // SYN occupies that sequence number) while rcv_nxt == IRS+1, so we
+        // also accept seg_seq == rcv_nxt - 1 when the SYN flag is set.
+        let seq_ok = seg_seq == tcb.rcv_nxt
+            || (seg_flags & flags::SYN != 0 && seg_seq.wrapping_add(1) == tcb.rcv_nxt);
+        if !seq_ok {
             // Out of window — if not RST, send challenge ACK.
             if seg_flags & flags::RST == 0 {
                 let tcb = &self.connections[idx];
@@ -975,7 +979,10 @@ impl TcpHandler {
         }
 
         // Step 3: Check SYN (duplicate SYN in synchronized state).
-        if seg_flags & flags::SYN != 0 {
+        // A bare SYN (without ACK) is a duplicate — send challenge ACK.
+        // A SYN-ACK is expected during simultaneous open — fall through to
+        // step 5 so the ACK is processed and we transition to ESTABLISHED.
+        if seg_flags & flags::SYN != 0 && seg_flags & flags::ACK == 0 {
             // Send challenge ACK per RFC 5961.
             let tcb = &self.connections[idx];
             let ts = if tcb.ts_enabled {
@@ -1022,9 +1029,17 @@ impl TcpHandler {
                 tcb.retransmit_deadline = None;
                 tcb.rto_backoff = 0;
 
-                // Push ConnectionId to listener's accept_queue.
-                self.push_to_accept_queue(&id);
-                self.decrement_syn_received(&id);
+                let from_passive = tcb.from_passive_open;
+                if from_passive {
+                    // Push ConnectionId to listener's accept_queue.
+                    self.push_to_accept_queue(&id);
+                    self.decrement_syn_received(&id);
+                } else {
+                    // Simultaneous open — notify the active opener.
+                    self.connections[idx]
+                        .event_queue
+                        .push(TcpEvent::Connected);
+                }
             } else {
                 // Bad ACK → send RST.
                 SegmentBuilder::build_rst(
@@ -2745,6 +2760,7 @@ mod tests {
         net::{
             checksum::{compute_ipv4_checksum, compute_tcp_checksum},
             wire::{
+                ethernet::MacAddress,
                 ip::{IPV4_MIN_HEADER_LEN, IpAddress, IpProtocols, Ipv4Address},
                 tcp::{TCP_HEADER_LEN, TcpHeader, flags},
             },
@@ -9029,6 +9045,158 @@ mod tests {
         assert!(
             !handler.connections[0].ecn_ce_received,
             "ecn_ce_received should be cleared after receiving CWR"
+        );
+    }
+
+    #[test]
+    fn simultaneous_open_both_reach_established() {
+        // Two handlers representing side A and side B.
+        let mut handler_a = new_handler();
+        let mut handler_b = new_handler();
+        let nh = new_neighbor_handler();
+
+        let ip_a = Ipv4Address::new([10, 0, 0, 1]);
+        let ip_b = Ipv4Address::new([10, 0, 0, 2]);
+        let port_a: u16 = 5000;
+        let port_b: u16 = 6000;
+        let mac_a = MacAddress::new([0xAA, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        let mac_b = MacAddress::new([0xBB, 0x00, 0x00, 0x00, 0x00, 0x02]);
+
+        let mut free_a = BasicFrameBuffer::new(16);
+        let mut free_b = BasicFrameBuffer::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+        let mut tx = BasicFrameBuffer::new(16);
+
+        for i in 0..8 {
+            free_a.push(alloc_free_frame(200 + i));
+            free_b.push(alloc_free_frame(300 + i));
+        }
+
+        // Both sides initiate active open (connect).
+        let events_a = handler_a
+            .connect(
+                IpAddress::V4(ip_a),
+                port_a,
+                IpAddress::V4(ip_b),
+                port_b,
+                mac_a,
+                mac_b,
+                &mut free_a,
+                &mut tx,
+            )
+            .unwrap();
+        // Discard the SYN frame emitted by connect — we'll build frames manually.
+        while tx.pop().is_some() {}
+
+        let events_b = handler_b
+            .connect(
+                IpAddress::V4(ip_b),
+                port_b,
+                IpAddress::V4(ip_a),
+                port_a,
+                mac_b,
+                mac_a,
+                &mut free_b,
+                &mut tx,
+            )
+            .unwrap();
+        while tx.pop().is_some() {}
+
+        assert_eq!(handler_a.connections[0].state, TcpState::SynSent);
+        assert_eq!(handler_b.connections[0].state, TcpState::SynSent);
+
+        let iss_a = handler_a.connections[0].iss;
+        let iss_b = handler_b.connections[0].iss;
+
+        // Step 1: Feed side B's SYN to handler A.
+        // B sent SYN with seq=ISS_B, no ACK. A should transition to SynReceived.
+        let syn_b = build_tcp_frame(
+            ip_b, ip_a, port_b, port_a,
+            iss_b, 0, flags::SYN, 65535,
+            &[0x02, 0x04, 0x05, 0xB4], // MSS=1460
+        );
+        let syn_b_len = syn_b.len();
+        handler_a.process_ipv4(
+            Frame::new(10, leak(syn_b), syn_b_len, false),
+            &nh, &mut free_a, &mut rx, &mut tx,
+        );
+        assert_eq!(
+            handler_a.connections[0].state,
+            TcpState::SynReceived,
+            "A should transition to SynReceived on receiving B's SYN"
+        );
+        // A emits a SYN-ACK on tx.
+        assert!(tx.num_frames() >= 1, "A should emit SYN-ACK");
+        while tx.pop().is_some() {}
+        while rx.pop().is_some() {}
+
+        // Step 2: Feed side A's SYN to handler B.
+        let syn_a = build_tcp_frame(
+            ip_a, ip_b, port_a, port_b,
+            iss_a, 0, flags::SYN, 65535,
+            &[0x02, 0x04, 0x05, 0xB4],
+        );
+        let syn_a_len = syn_a.len();
+        handler_b.process_ipv4(
+            Frame::new(11, leak(syn_a), syn_a_len, false),
+            &nh, &mut free_b, &mut rx, &mut tx,
+        );
+        assert_eq!(
+            handler_b.connections[0].state,
+            TcpState::SynReceived,
+            "B should transition to SynReceived on receiving A's SYN"
+        );
+        assert!(tx.num_frames() >= 1, "B should emit SYN-ACK");
+        while tx.pop().is_some() {}
+        while rx.pop().is_some() {}
+
+        // Step 3: Feed B's SYN-ACK to handler A.
+        // B's SYN-ACK: seq=ISS_B, ack=ISS_A+1, flags=SYN|ACK.
+        let syn_ack_b = build_tcp_frame(
+            ip_b, ip_a, port_b, port_a,
+            iss_b, iss_a.wrapping_add(1),
+            flags::SYN | flags::ACK, 65535,
+            &[0x02, 0x04, 0x05, 0xB4],
+        );
+        let syn_ack_b_len = syn_ack_b.len();
+        handler_a.process_ipv4(
+            Frame::new(12, leak(syn_ack_b), syn_ack_b_len, false),
+            &nh, &mut free_a, &mut rx, &mut tx,
+        );
+        assert_eq!(
+            handler_a.connections[0].state,
+            TcpState::Established,
+            "A should transition to Established on receiving B's SYN-ACK"
+        );
+        while tx.pop().is_some() {}
+        while rx.pop().is_some() {}
+
+        // Step 4: Feed A's SYN-ACK to handler B.
+        let syn_ack_a = build_tcp_frame(
+            ip_a, ip_b, port_a, port_b,
+            iss_a, iss_b.wrapping_add(1),
+            flags::SYN | flags::ACK, 65535,
+            &[0x02, 0x04, 0x05, 0xB4],
+        );
+        let syn_ack_a_len = syn_ack_a.len();
+        handler_b.process_ipv4(
+            Frame::new(13, leak(syn_ack_a), syn_ack_a_len, false),
+            &nh, &mut free_b, &mut rx, &mut tx,
+        );
+        assert_eq!(
+            handler_b.connections[0].state,
+            TcpState::Established,
+            "B should transition to Established on receiving A's SYN-ACK"
+        );
+
+        // Verify both sides emitted Connected events.
+        assert!(
+            events_a.pop().is_some(),
+            "A should have a Connected event"
+        );
+        assert!(
+            events_b.pop().is_some(),
+            "B should have a Connected event"
         );
     }
 }
