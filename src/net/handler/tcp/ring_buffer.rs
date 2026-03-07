@@ -63,6 +63,50 @@ impl RingBuffer {
         to_write
     }
 
+    /// Write bytes at an arbitrary offset from `head`. Does NOT advance `tail` or `len`.
+    /// Used by the receive side for out-of-order segments — the caller is responsible
+    /// for tracking which ranges are filled and advancing via `commit()` when contiguous.
+    #[inline]
+    pub fn write_at(&mut self, offset: usize, data: &[u8]) {
+        let pos = (self.head.wrapping_add(offset)) & self.mask;
+        let first = data.len().min(self.buf.len() - pos);
+        self.buf[pos..pos + first].copy_from_slice(&data[..first]);
+        if first < data.len() {
+            self.buf[..data.len() - first].copy_from_slice(&data[first..]);
+        }
+    }
+
+    /// Read bytes at an arbitrary offset from `head` without advancing `head`.
+    /// Used by the send side for retransmission.
+    #[inline]
+    pub fn peek_at(&self, offset: usize, buf: &mut [u8]) {
+        let len = buf.len();
+        let pos = (self.head.wrapping_add(offset)) & self.mask;
+        let first = len.min(self.buf.len() - pos);
+        buf[..first].copy_from_slice(&self.buf[pos..pos + first]);
+        if first < len {
+            buf[first..].copy_from_slice(&self.buf[..len - first]);
+        }
+    }
+
+    /// Advance `head` by `n` bytes, freeing space. Used when bytes are ACKed (send)
+    /// or consumed by `TcpStream::read()` (receive).
+    #[inline]
+    pub fn advance(&mut self, n: usize) {
+        debug_assert!(n <= self.len);
+        self.head = self.head.wrapping_add(n);
+        self.len -= n;
+    }
+
+    /// Advance `tail` and `len` to mark bytes as available for reading.
+    /// Used by the receive side when contiguous data is confirmed.
+    #[inline]
+    pub fn commit(&mut self, n: usize) {
+        debug_assert!(n <= self.free_space());
+        self.tail = self.tail.wrapping_add(n);
+        self.len += n;
+    }
+
     /// Read bytes from the buffer starting at `head`. Returns the number of bytes read.
     /// Advances `head` by the number of bytes read.
     #[inline]
@@ -151,5 +195,81 @@ mod tests {
         let written = rb.write(&[0xAA; 8]);
         assert_eq!(written, 4);
         assert_eq!(rb.available(), 16);
+    }
+
+    #[test]
+    fn write_at_and_peek() {
+        let mut rb = RingBuffer::new(64);
+        // Write at offset 0.
+        rb.write_at(0, b"AAAA");
+        // Write at offset 8 (gap at 4..8).
+        rb.write_at(8, b"CCCC");
+        // Fill the gap.
+        rb.write_at(4, b"BBBB");
+        // write_at doesn't advance len/tail.
+        assert_eq!(rb.available(), 0);
+        // Commit all 12 bytes.
+        rb.commit(12);
+        assert_eq!(rb.available(), 12);
+        // Read and verify.
+        let mut buf = [0u8; 12];
+        let read = rb.read(&mut buf);
+        assert_eq!(read, 12);
+        assert_eq!(&buf, b"AAAABBBBCCCC");
+    }
+
+    #[test]
+    fn write_at_wraps() {
+        let mut rb = RingBuffer::new(16);
+        // Move head to position 12.
+        rb.write(&[0xAA; 12]);
+        let mut discard = [0u8; 12];
+        rb.read(&mut discard);
+        // head=12. write_at offset 2 from head = position 14. Writing 4 bytes wraps.
+        rb.write_at(2, &[0xBB; 4]);
+        // Verify by peeking.
+        let mut buf = [0u8; 4];
+        rb.peek_at(2, &mut buf);
+        assert_eq!(buf, [0xBB; 4]);
+    }
+
+    #[test]
+    fn peek_at_does_not_advance() {
+        let mut rb = RingBuffer::new(64);
+        rb.write(b"hello");
+        let mut buf = [0u8; 5];
+        rb.peek_at(0, &mut buf);
+        assert_eq!(&buf, b"hello");
+        assert_eq!(rb.available(), 5); // unchanged
+        // Peek again at offset 2.
+        let mut buf2 = [0u8; 3];
+        rb.peek_at(2, &mut buf2);
+        assert_eq!(&buf2, b"llo");
+    }
+
+    #[test]
+    fn advance_frees_space() {
+        let mut rb = RingBuffer::new(64);
+        rb.write(b"hello world");
+        rb.advance(5);
+        assert_eq!(rb.available(), 6);
+        assert_eq!(rb.free_space(), 64 - 6);
+        let mut buf = [0u8; 6];
+        rb.read(&mut buf);
+        assert_eq!(&buf, b" world");
+    }
+
+    #[test]
+    fn commit_makes_data_readable() {
+        let mut rb = RingBuffer::new(64);
+        // write_at without commit = no data available.
+        rb.write_at(0, b"test");
+        assert_eq!(rb.available(), 0);
+        // After commit, data is readable.
+        rb.commit(4);
+        assert_eq!(rb.available(), 4);
+        let mut buf = [0u8; 4];
+        rb.read(&mut buf);
+        assert_eq!(&buf, b"test");
     }
 }
