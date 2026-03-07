@@ -43,7 +43,7 @@ impl DerefMut for Args {
 }
 
 fn main() {
-    let mut stats = Stats::new();
+    let mut stats = Stats::new_with_packets_per_print(1_000_000);
     let args = Args::parse();
 
     let mut runtime = LocalRuntime::builder(&args.if_name, args.queue)

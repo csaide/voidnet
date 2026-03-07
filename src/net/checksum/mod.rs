@@ -10,10 +10,14 @@ pub(crate) use common::{
     sum_words, sum_words_carry,
 };
 pub(crate) use compute::{
-    compute_icmpv6_checksum, compute_ipv4_checksum, compute_udp_checksum_from_parts,
+    compute_icmpv6_checksum, compute_ipv4_checksum, compute_tcp_checksum_from_parts,
+    compute_tcp_checksum_v6_from_parts, compute_udp_checksum_from_parts,
     compute_udp_checksum_v6_from_parts,
 };
-pub(crate) use verify::{verify_ipv4_checksum, verify_udp_checksum, verify_udp_checksum_v6};
+pub(crate) use verify::{
+    verify_ipv4_checksum, verify_tcp_checksum, verify_tcp_checksum_v6, verify_udp_checksum,
+    verify_udp_checksum_v6,
+};
 
 #[cfg(test)]
-pub(crate) use test_utils::{compute_udp_checksum, compute_udp_checksum_v6};
+pub(crate) use test_utils::{compute_tcp_checksum, compute_udp_checksum, compute_udp_checksum_v6};

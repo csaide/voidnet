@@ -52,6 +52,36 @@ pub fn compute_udp_checksum_v6_from_parts(
     checksum_to_bytes(fold_checksum(sum))
 }
 
+/// Compute IPv4 TCP checksum without allocating (from header/payload parts).
+#[inline]
+pub fn compute_tcp_checksum_from_parts(
+    src_addr: &Ipv4Address,
+    dst_addr: &Ipv4Address,
+    tcp_header_bytes: &[u8],
+    payload: &[u8],
+) -> [u8; 2] {
+    let tcp_len = (tcp_header_bytes.len() + payload.len()) as u16;
+    let sum = pseudo_header_sum_v4(src_addr, dst_addr, IpProtocols::Tcp, tcp_len)
+        + sum_words(tcp_header_bytes)
+        + sum_words(payload);
+    checksum_to_bytes(fold_checksum(sum))
+}
+
+/// Compute IPv6 TCP checksum without allocating (from header/payload parts).
+#[inline]
+pub fn compute_tcp_checksum_v6_from_parts(
+    src_addr: &Ipv6Address,
+    dst_addr: &Ipv6Address,
+    tcp_header_bytes: &[u8],
+    payload: &[u8],
+) -> [u8; 2] {
+    let tcp_len = (tcp_header_bytes.len() + payload.len()) as u32;
+    let sum = pseudo_header_sum_v6(src_addr, dst_addr, IpProtocols::Tcp, tcp_len)
+        + sum_words(tcp_header_bytes)
+        + sum_words(payload);
+    checksum_to_bytes(fold_checksum(sum))
+}
+
 /// Computes the ICMPv6 checksum per RFC 4443 s2.3.
 ///
 /// The checksum covers an IPv6 pseudo-header (source address,

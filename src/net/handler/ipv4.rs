@@ -13,7 +13,7 @@ use crate::{
     xdp::frame::{Frame, FrameBuffer},
 };
 
-use super::{icmpv4, udp::UdpHandler};
+use super::{icmpv4, tcp::TcpHandler, udp::UdpHandler};
 
 /// Layer-3 handler for incoming IPv4 frames.
 ///
@@ -46,9 +46,11 @@ impl Ipv4Handler {
         &mut self,
         frame: Frame<'umem>,
         udp_handler: &mut UdpHandler<'umem>,
+        tcp_handler: &mut TcpHandler,
+        neighbor_handler: &crate::net::NeighborHandler,
         pmtu: &PmtuCache,
         now: Instant,
-        _free_frames: &mut impl FrameBuffer<'umem>,
+        free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
@@ -103,6 +105,9 @@ impl Ipv4Handler {
                 tx_return,
             ),
             IpProtocols::Udp => udp_handler.process_ipv4(frame, rx_return),
+            IpProtocols::Tcp => tcp_handler.process_ipv4(
+                frame, neighbor_handler, free_frames, rx_return, tx_return,
+            ),
             _ => icmpv4::send_destination_unreachable(
                 frame,
                 Icmpv4Codes::ProtocolUnreachable,
@@ -119,7 +124,9 @@ impl Ipv4Handler {
 mod tests {
     use crate::{
         net::{
+            NeighborHandler,
             checksum::{compute_ipv4_checksum, compute_udp_checksum},
+            handler::tcp::TcpHandler,
             wire::{
                 ip::{IPV4_MIN_HEADER_LEN, IpAddress, Ipv4Address},
                 udp::UDP_HEADER_LEN,
@@ -139,6 +146,14 @@ mod tests {
 
     fn new_udp_handler<'umem>() -> UdpHandler<'umem> {
         UdpHandler::new(256, false)
+    }
+
+    fn new_tcp_handler() -> TcpHandler {
+        TcpHandler::new(false, false)
+    }
+
+    fn new_neighbor_handler() -> NeighborHandler {
+        NeighborHandler::new("test0", coarsetime::Duration::from_secs(60)).unwrap()
     }
 
     /// Builds a minimal valid UDP segment (header only, no payload) with a
@@ -250,9 +265,13 @@ mod tests {
 
         let frame = Frame::new(0, &mut data, 30, false);
 
+        let mut tcp = new_tcp_handler();
+        let nh = new_neighbor_handler();
         handler.handle(
             frame,
             &mut udp,
+            &mut tcp,
+            &nh,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -280,9 +299,13 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut tcp = new_tcp_handler();
+        let nh = new_neighbor_handler();
         handler.handle(
             frame,
             &mut udp,
+            &mut tcp,
+            &nh,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -307,9 +330,13 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut tcp = new_tcp_handler();
+        let nh = new_neighbor_handler();
         handler.handle(
             frame,
             &mut udp,
+            &mut tcp,
+            &nh,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -334,9 +361,13 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut tcp = new_tcp_handler();
+        let nh = new_neighbor_handler();
         handler.handle(
             frame,
             &mut udp,
+            &mut tcp,
+            &nh,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -369,9 +400,13 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut tcp = new_tcp_handler();
+        let nh = new_neighbor_handler();
         handler.handle(
             frame,
             &mut udp,
+            &mut tcp,
+            &nh,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -396,9 +431,13 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut tcp = new_tcp_handler();
+        let nh = new_neighbor_handler();
         handler.handle(
             frame,
             &mut udp,
+            &mut tcp,
+            &nh,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -427,9 +466,13 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut tcp = new_tcp_handler();
+        let nh = new_neighbor_handler();
         handler.handle(
             frame,
             &mut udp,
+            &mut tcp,
+            &nh,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -477,9 +520,13 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
 
         let frame = Frame::new(0, &mut data, frame_len, false);
+        let mut tcp = new_tcp_handler();
+        let nh = new_neighbor_handler();
         handler.handle(
             frame,
             &mut udp,
+            &mut tcp,
+            &nh,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -504,9 +551,13 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut tcp = new_tcp_handler();
+        let nh = new_neighbor_handler();
         handler.handle(
             frame,
             &mut udp,
+            &mut tcp,
+            &nh,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -538,9 +589,13 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut tcp = new_tcp_handler();
+        let nh = new_neighbor_handler();
         handler.handle(
             frame,
             &mut udp,
+            &mut tcp,
+            &nh,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,
@@ -566,9 +621,13 @@ mod tests {
 
         let frame = Frame::new(0, &mut data, raw.len(), false);
 
+        let mut tcp = new_tcp_handler();
+        let nh = new_neighbor_handler();
         handler.handle(
             frame,
             &mut udp,
+            &mut tcp,
+            &nh,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut free,

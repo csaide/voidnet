@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     net::{
-        handler::udp::UdpHandler,
+        handler::{tcp::TcpHandler, udp::UdpHandler},
         {NeighborHandler, PmtuCache},
     },
     xdp::frame::SharedFrameBuffer,
@@ -45,6 +45,8 @@ pub(crate) struct RuntimeContext<'umem> {
     pub neighbor_handler: Rc<NeighborHandler>,
     /// UDP handler is used to bind and send UDP packets, handling things like fragmentation and reassembly.
     pub udp_handler: Rc<UnsafeCell<UdpHandler<'umem>>>,
+    /// TCP handler manages TCP connections and the TCP state machine.
+    pub tcp_handler: Rc<UnsafeCell<TcpHandler>>,
     /// TX checksum offload.
     pub tx_offload: bool,
 }

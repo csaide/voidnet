@@ -502,6 +502,9 @@ mod tests {
         let neighbor_handler =
             Rc::new(NeighborHandler::new("test0", Duration::from_secs(60)).unwrap());
         let udp_handler = Rc::new(UnsafeCell::new(UdpHandler::new(256, false)));
+        let tcp_handler = Rc::new(UnsafeCell::new(
+            crate::net::handler::tcp::TcpHandler::new(false, false),
+        ));
 
         let ctx = RuntimeContext {
             free_frames,
@@ -510,6 +513,7 @@ mod tests {
             pmtu,
             neighbor_handler,
             udp_handler,
+            tcp_handler,
             tx_offload: false,
         };
         {
