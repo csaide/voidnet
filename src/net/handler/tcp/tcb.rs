@@ -31,7 +31,7 @@ impl fmt::Display for ConnectionId {
 }
 
 /// Events delivered to user-facing TCP sockets.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum TcpEvent {
     Connected,
     ConnectionRefused,

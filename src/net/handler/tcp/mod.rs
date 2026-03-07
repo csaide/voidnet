@@ -1124,6 +1124,55 @@ impl TcpHandler {
             }
         }
 
+        // Keep-alive probe pass — send probes for idle established connections.
+        let mut keep_alive_removals: Vec<usize> = Vec::new();
+        for (i, tcb) in self.connections.iter_mut().enumerate() {
+            if tcb.state != TcpState::Established || !tcb.keep_alive_enabled {
+                continue;
+            }
+
+            let idle_ms = now.duration_since(tcb.last_activity).as_millis();
+
+            let probe_threshold = if tcb.keep_alive_probes_sent == 0 {
+                tcb.keep_alive_idle_ms
+            } else {
+                tcb.keep_alive_idle_ms + tcb.keep_alive_interval_ms * tcb.keep_alive_probes_sent as u64
+            };
+
+            if idle_ms >= probe_threshold {
+                if tcb.keep_alive_probes_sent >= tcb.keep_alive_count {
+                    // Max probes exceeded — abort connection.
+                    tcb.event_queue.push(TcpEvent::Timeout);
+                    keep_alive_removals.push(i);
+                    continue;
+                }
+
+                // Send keep-alive probe: seq = snd_una - 1, no data, ACK.
+                let id = tcb.id;
+                let dst_mac = neighbor_handler
+                    .lookup(now, &id.remote_addr)
+                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
+
+                SegmentBuilder::build_ack(
+                    id.local_addr, id.remote_addr,
+                    id.local_port, id.remote_port,
+                    tcb.snd_una.wrapping_sub(1), tcb.rcv_nxt, window,
+                    src_mac, dst_mac,
+                    self.tx_offload, free_frames, tx_return,
+                );
+
+                tcb.keep_alive_probes_sent += 1;
+            }
+        }
+
+        // Remove connections that exceeded keep-alive probes (reverse order).
+        for idx in keep_alive_removals.into_iter().rev() {
+            let id = self.connections[idx].id;
+            self.decrement_syn_received(&id);
+            self.connections.remove(idx);
+        }
+
         // Fast retransmit pass — independent of timer expiry.
         // Triggered by 3 duplicate ACKs on established connections.
         for tcb in &mut self.connections {
@@ -3712,5 +3761,140 @@ mod tests {
         let tcb = &handler.connections[0];
         assert_eq!(tcb.keep_alive_probes_sent, 0, "keep_alive_probes_sent should be reset to 0 on data receipt");
         assert!(tcb.last_activity >= old_activity, "last_activity should be updated on data receipt");
+    }
+
+    #[test]
+    fn keep_alive_probe_sent_after_idle_timeout() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+
+        // Configure keep-alive with short timeouts.
+        {
+            let tcb = &mut handler.connections[0];
+            tcb.keep_alive_enabled = true;
+            tcb.keep_alive_idle_ms = 100;
+            tcb.keep_alive_interval_ms = 50;
+            tcb.keep_alive_count = 3;
+            tcb.ack_pending = false;
+        }
+
+        // Sleep long enough for the idle timeout to expire.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let now = coarsetime::Instant::now();
+
+        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        assert_eq!(handler.connections[0].keep_alive_probes_sent, 1,
+            "one keep-alive probe should have been sent");
+        assert!(tx.num_frames() >= 1, "a probe segment should have been emitted");
+    }
+
+    #[test]
+    fn keep_alive_no_probe_when_disabled() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+
+        // Keep-alive is disabled by default; set ack_pending false to avoid delayed ACK output.
+        handler.connections[0].ack_pending = false;
+
+        // Sleep long enough that it would have triggered if enabled.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let now = coarsetime::Instant::now();
+
+        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        assert_eq!(handler.connections[0].keep_alive_probes_sent, 0,
+            "no probes should be sent when keep-alive is disabled");
+        assert_eq!(tx.num_frames(), 0, "no segments should be emitted");
+    }
+
+    #[test]
+    fn keep_alive_connection_aborted_after_max_probes() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+
+        // Capture event queue before connection is removed.
+        let event_queue = handler.connections[0].event_queue.clone();
+
+        // Configure keep-alive: already sent max probes.
+        {
+            let tcb = &mut handler.connections[0];
+            tcb.keep_alive_enabled = true;
+            tcb.keep_alive_idle_ms = 50;
+            tcb.keep_alive_interval_ms = 25;
+            tcb.keep_alive_count = 2;
+            tcb.keep_alive_probes_sent = 2; // already at max
+            tcb.ack_pending = false;
+        }
+
+        // Sleep past the probe threshold.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let now = coarsetime::Instant::now();
+
+        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        // Connection should be removed.
+        assert!(handler.connections.is_empty(), "connection should be removed after max probes exceeded");
+
+        // Timeout event should have been pushed.
+        let event = event_queue.pop();
+        assert_eq!(event, Some(TcpEvent::Timeout), "TcpEvent::Timeout should be emitted");
     }
 }
