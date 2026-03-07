@@ -21,7 +21,10 @@ use crate::{
     xdp::frame::{Frame, FrameBuffer},
 };
 
+use std::collections::BTreeMap;
+
 use isn::IsnGenerator;
+use ring_buffer::RingBuffer;
 use segment::SegmentBuilder;
 use state::TcpState;
 use tcb::{ConnectionId, Tcb, TcpEvent, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE};
@@ -151,6 +154,16 @@ impl TcpHandler {
             retransmit_deadline: Some(Instant::now() + coarsetime::Duration::from_millis(INITIAL_RTO_MS)),
             rto_backoff: 0,
             event_queue: event_queue.clone(),
+            send_buffer: RingBuffer::new(256 * 1024),
+            recv_buffer: RingBuffer::new(256 * 1024),
+            ooo_ranges: BTreeMap::new(),
+            cwnd: 10 * DEFAULT_RCV_MSS as u32,
+            ssthresh: u32::MAX,
+            dup_ack_count: 0,
+            srtt: None,
+            rttvar: 0,
+            rto: 1000,
+            last_send_time: None,
         };
 
         // Send SYN.
@@ -479,6 +492,16 @@ impl TcpHandler {
                 retransmit_deadline: Some(Instant::now() + coarsetime::Duration::from_millis(INITIAL_RTO_MS)),
                 rto_backoff: 0,
                 event_queue,
+                send_buffer: RingBuffer::new(256 * 1024),
+                recv_buffer: RingBuffer::new(256 * 1024),
+                ooo_ranges: BTreeMap::new(),
+                cwnd: 10 * peer_mss.min(DEFAULT_RCV_MSS) as u32,
+                ssthresh: u32::MAX,
+                dup_ack_count: 0,
+                srtt: None,
+                rttvar: 0,
+                rto: 1000,
+                last_send_time: None,
             };
 
             // Send SYN-ACK.
