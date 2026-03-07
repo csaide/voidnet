@@ -1228,7 +1228,7 @@ impl TcpHandler {
                         tcb.id.remote_port,
                         tcb.snd_nxt,
                         tcb.rcv_nxt,
-                        DEFAULT_RCV_WND,
+                        tcb.advertised_window(),
                         src_mac,
                         dst_mac,
                         self.tx_offload,
@@ -1261,7 +1261,7 @@ impl TcpHandler {
                     tcb.id.remote_port,
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
-                    DEFAULT_RCV_WND,
+                    tcb.advertised_window(),
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -1278,7 +1278,7 @@ impl TcpHandler {
                     tcb.id.remote_port,
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
-                    DEFAULT_RCV_WND,
+                    tcb.advertised_window(),
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -1299,7 +1299,7 @@ impl TcpHandler {
             let id = tcb.id;
             let snd_nxt = tcb.snd_nxt;
             let new_rcv_nxt = tcb.rcv_nxt;
-            let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
+            let window = tcb.advertised_window();
             SegmentBuilder::build_ack(
                 id.local_addr,
                 id.remote_addr,
@@ -1343,8 +1343,6 @@ impl TcpHandler {
                 let dst_mac = neighbor_handler
                     .lookup(now, &id.remote_addr)
                     .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
-                let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
-
                 SegmentBuilder::build_ack(
                     id.local_addr,
                     id.remote_addr,
@@ -1352,7 +1350,7 @@ impl TcpHandler {
                     id.remote_port,
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
-                    window,
+                    tcb.advertised_window(),
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -1394,8 +1392,6 @@ impl TcpHandler {
                 let dst_mac = neighbor_handler
                     .lookup(now, &id.remote_addr)
                     .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
-                let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
-
                 SegmentBuilder::build_ack(
                     id.local_addr,
                     id.remote_addr,
@@ -1403,7 +1399,7 @@ impl TcpHandler {
                     id.remote_port,
                     tcb.snd_una.wrapping_sub(1),
                     tcb.rcv_nxt,
-                    window,
+                    tcb.advertised_window(),
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -1441,7 +1437,6 @@ impl TcpHandler {
 
             let mut payload = vec![0u8; retransmit_len];
             tcb.send_buffer.peek_at(0, &mut payload);
-            let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
 
             SegmentBuilder::build_data(
                 id.local_addr,
@@ -1450,7 +1445,7 @@ impl TcpHandler {
                 id.remote_port,
                 tcb.snd_una,
                 tcb.rcv_nxt,
-                window,
+                tcb.advertised_window(),
                 &payload,
                 src_mac,
                 dst_mac,
@@ -1546,7 +1541,6 @@ impl TcpHandler {
                     if retransmit_len > 0 {
                         let mut payload = vec![0u8; retransmit_len];
                         tcb.send_buffer.peek_at(0, &mut payload);
-                        let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
                         SegmentBuilder::build_data(
                             id.local_addr,
                             id.remote_addr,
@@ -1554,7 +1548,7 @@ impl TcpHandler {
                             id.remote_port,
                             tcb.snd_una,
                             tcb.rcv_nxt,
-                            window,
+                            tcb.advertised_window(),
                             &payload,
                             src_mac,
                             dst_mac,
@@ -1645,8 +1639,6 @@ impl TcpHandler {
                         .lookup(now, &tcb.id.remote_addr)
                         .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
 
-                    let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
-
                     SegmentBuilder::build_data(
                         tcb.id.local_addr,
                         tcb.id.remote_addr,
@@ -1654,7 +1646,7 @@ impl TcpHandler {
                         tcb.id.remote_port,
                         tcb.snd_nxt,
                         tcb.rcv_nxt,
-                        window,
+                        tcb.advertised_window(),
                         &payload,
                         src_mac,
                         dst_mac,
@@ -1729,8 +1721,6 @@ impl TcpHandler {
                     let dst_mac = neighbor_handler
                         .lookup(now, &id.remote_addr)
                         .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
-                    let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
-
                     SegmentBuilder::build_fin_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -1738,7 +1728,7 @@ impl TcpHandler {
                         id.remote_port,
                         tcb.snd_nxt,
                         tcb.rcv_nxt,
-                        window,
+                        tcb.advertised_window(),
                         src_mac,
                         dst_mac,
                         self.tx_offload,
@@ -1975,10 +1965,6 @@ impl TcpHandler {
                     let id = self.connections[idx].id;
                     let snd_nxt = self.connections[idx].snd_nxt;
                     let rcv_nxt = self.connections[idx].rcv_nxt;
-                    let window = self.connections[idx]
-                        .recv_buffer
-                        .free_space()
-                        .min(u16::MAX as usize) as u16;
                     SegmentBuilder::build_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -1986,7 +1972,7 @@ impl TcpHandler {
                         id.remote_port,
                         snd_nxt,
                         rcv_nxt,
-                        window,
+                        self.connections[idx].advertised_window(),
                         src_mac,
                         dst_mac,
                         self.tx_offload,
@@ -2021,7 +2007,6 @@ impl TcpHandler {
                     let id = tcb.id;
                     let snd_nxt = tcb.snd_nxt;
                     let rcv_nxt = tcb.rcv_nxt;
-                    let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
                     SegmentBuilder::build_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -2029,7 +2014,7 @@ impl TcpHandler {
                         id.remote_port,
                         snd_nxt,
                         rcv_nxt,
-                        window,
+                        tcb.advertised_window(),
                         src_mac,
                         dst_mac,
                         self.tx_offload,
@@ -2079,7 +2064,6 @@ impl TcpHandler {
                     let id = tcb.id;
                     let snd_nxt = tcb.snd_nxt;
                     let rcv_nxt = tcb.rcv_nxt;
-                    let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
                     SegmentBuilder::build_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -2087,7 +2071,7 @@ impl TcpHandler {
                         id.remote_port,
                         snd_nxt,
                         rcv_nxt,
-                        window,
+                        tcb.advertised_window(),
                         src_mac,
                         dst_mac,
                         self.tx_offload,
