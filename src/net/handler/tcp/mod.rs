@@ -281,6 +281,9 @@ impl TcpHandler {
             ts_offset: Instant::now(),
             sack_enabled: config.sack,
             sack_scoreboard: BTreeMap::new(),
+            ecn_enabled: false,
+            ecn_ce_received: false,
+            ecn_cwr_sent: false,
             persist_deadline: None,
             persist_backoff: 0,
         };
@@ -841,6 +844,9 @@ impl TcpHandler {
                 ts_offset: now,
                 sack_enabled,
                 sack_scoreboard: BTreeMap::new(),
+                ecn_enabled: false,
+                ecn_ce_received: false,
+                ecn_cwr_sent: false,
                 persist_deadline: None,
                 persist_backoff: 0,
             };

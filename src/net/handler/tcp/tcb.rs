@@ -104,6 +104,8 @@ pub struct TcpConfig {
     pub timestamps: bool,
     /// Enable SACK (RFC 2018). Default: true.
     pub sack: bool,
+    /// Enable ECN (RFC 3168). Default: true.
+    pub ecn: bool,
 }
 
 impl Default for TcpConfig {
@@ -122,6 +124,7 @@ impl Default for TcpConfig {
             linger: None,
             timestamps: true,
             sack: true,
+            ecn: true,
         }
     }
 }
@@ -259,6 +262,14 @@ pub struct Tcb {
     /// Scoreboard: byte ranges the peer has confirmed receiving (left_edge -> right_edge).
     pub sack_scoreboard: BTreeMap<u32, u32>,
 
+    // --- ECN (RFC 3168) ---
+    /// Whether ECN was negotiated for this connection.
+    pub ecn_enabled: bool,
+    /// True when a CE-marked segment has been received and needs to be echoed.
+    pub ecn_ce_received: bool,
+    /// True when CWR has been sent and is awaiting acknowledgment.
+    pub ecn_cwr_sent: bool,
+
     // --- Zero-window probing ---
     /// Deadline for next zero-window probe.
     pub persist_deadline: Option<Instant>,
@@ -370,6 +381,9 @@ mod tests {
             ts_offset: Instant::now(),
             sack_enabled: false,
             sack_scoreboard: BTreeMap::new(),
+            ecn_enabled: false,
+            ecn_ce_received: false,
+            ecn_cwr_sent: false,
             persist_deadline: None,
             persist_backoff: 0,
         }
