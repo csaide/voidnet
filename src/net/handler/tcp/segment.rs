@@ -5,7 +5,9 @@ use crate::net::{
         ip::{
             IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, IpProtocols, Ipv4Address, Ipv6Address,
         },
-        tcp::{TcpHeader, TCP_HEADER_LEN, flags, options, write_mss_option, write_window_scale_option},
+        tcp::{
+            TCP_HEADER_LEN, TcpHeader, flags, options, write_mss_option, write_window_scale_option,
+        },
     },
 };
 use crate::xdp::frame::{Frame, FrameBuffer};
@@ -44,7 +46,11 @@ impl SegmentBuilder {
     ) {
         let (seq, ack, rst_flags) = if incoming_flags & flags::ACK == 0 {
             // ACK off: <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
-            (0u32, incoming_seq.wrapping_add(incoming_seg_len), flags::RST | flags::ACK)
+            (
+                0u32,
+                incoming_seq.wrapping_add(incoming_seg_len),
+                flags::RST | flags::ACK,
+            )
         } else {
             // ACK on: <SEQ=SEG.ACK><CTL=RST>
             (incoming_ack, 0u32, flags::RST)
@@ -53,22 +59,38 @@ impl SegmentBuilder {
         match (incoming_dst_addr, incoming_src_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
                 Self::build_ipv4_segment(
-                    local_ip, remote_ip,
-                    incoming_dst_port, incoming_src_port,
-                    seq, ack, rst_flags, 0,
+                    local_ip,
+                    remote_ip,
+                    incoming_dst_port,
+                    incoming_src_port,
+                    seq,
+                    ack,
+                    rst_flags,
+                    0,
                     &[], // no options
-                    src_mac, dst_mac,
-                    tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
             (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
                 Self::build_ipv6_segment(
-                    local_ip, remote_ip,
-                    incoming_dst_port, incoming_src_port,
-                    seq, ack, rst_flags, 0,
+                    local_ip,
+                    remote_ip,
+                    incoming_dst_port,
+                    incoming_src_port,
+                    seq,
+                    ack,
+                    rst_flags,
+                    0,
                     &[],
-                    src_mac, dst_mac,
-                    tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
             _ => {} // mixed v4/v6 — should not happen
@@ -102,22 +124,38 @@ impl SegmentBuilder {
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
                 Self::build_ipv4_segment(
-                    local_ip, remote_ip,
-                    local_port, remote_port,
-                    iss, 0, flags::SYN, window,
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    iss,
+                    0,
+                    flags::SYN,
+                    window,
                     &opt_buf[..opt_len],
-                    src_mac, dst_mac,
-                    tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
             (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
                 Self::build_ipv6_segment(
-                    local_ip, remote_ip,
-                    local_port, remote_port,
-                    iss, 0, flags::SYN, window,
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    iss,
+                    0,
+                    flags::SYN,
+                    window,
                     &opt_buf[..opt_len],
-                    src_mac, dst_mac,
-                    tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
             _ => {}
@@ -153,22 +191,38 @@ impl SegmentBuilder {
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
                 Self::build_ipv4_segment(
-                    local_ip, remote_ip,
-                    local_port, remote_port,
-                    iss, ack, flags::SYN | flags::ACK, window,
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    iss,
+                    ack,
+                    flags::SYN | flags::ACK,
+                    window,
                     &opt_buf[..opt_len],
-                    src_mac, dst_mac,
-                    tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
             (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
                 Self::build_ipv6_segment(
-                    local_ip, remote_ip,
-                    local_port, remote_port,
-                    iss, ack, flags::SYN | flags::ACK, window,
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    iss,
+                    ack,
+                    flags::SYN | flags::ACK,
+                    window,
                     &opt_buf[..opt_len],
-                    src_mac, dst_mac,
-                    tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
             _ => {}
@@ -194,22 +248,95 @@ impl SegmentBuilder {
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
                 Self::build_ipv4_segment(
-                    local_ip, remote_ip,
-                    local_port, remote_port,
-                    seq, ack, flags::ACK, window,
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    seq,
+                    ack,
+                    flags::ACK,
+                    window,
                     &[],
-                    src_mac, dst_mac,
-                    tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
             (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
                 Self::build_ipv6_segment(
-                    local_ip, remote_ip,
-                    local_port, remote_port,
-                    seq, ack, flags::ACK, window,
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    seq,
+                    ack,
+                    flags::ACK,
+                    window,
                     &[],
-                    src_mac, dst_mac,
-                    tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Build a FIN-ACK segment (no data). Used for graceful connection close.
+    #[inline]
+    pub fn build_fin_ack<'umem>(
+        local_addr: IpAddress,
+        remote_addr: IpAddress,
+        local_port: u16,
+        remote_port: u16,
+        seq: u32,
+        ack: u32,
+        window: u16,
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        tx_offload: bool,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        match (local_addr, remote_addr) {
+            (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
+                Self::build_ipv4_segment(
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    seq,
+                    ack,
+                    flags::ACK | flags::FIN,
+                    window,
+                    &[],
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+            }
+            (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
+                Self::build_ipv6_segment(
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    seq,
+                    ack,
+                    flags::ACK | flags::FIN,
+                    window,
+                    &[],
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
             _ => {}
@@ -236,22 +363,38 @@ impl SegmentBuilder {
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
                 Self::build_ipv4_data_segment(
-                    local_ip, remote_ip,
-                    local_port, remote_port,
-                    seq, ack, flags::ACK, window,
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    seq,
+                    ack,
+                    flags::ACK,
+                    window,
                     payload,
-                    src_mac, dst_mac,
-                    tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
             (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
                 Self::build_ipv6_data_segment(
-                    local_ip, remote_ip,
-                    local_port, remote_port,
-                    seq, ack, flags::ACK, window,
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    seq,
+                    ack,
+                    flags::ACK,
+                    window,
                     payload,
-                    src_mac, dst_mac,
-                    tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
             _ => {}
@@ -305,7 +448,7 @@ impl SegmentBuilder {
             ip[0] = 0x45; // version=4, ihl=5
             ip[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
             ip[6] = 0x40; // Don't Fragment
-            ip[8] = 64;   // TTL
+            ip[8] = 64; // TTL
             ip[9] = IpProtocols::Tcp;
             let src_bytes: [u8; 4] = src_ip.into();
             ip[12..16].copy_from_slice(&src_bytes);
@@ -321,9 +464,17 @@ impl SegmentBuilder {
         // TCP header.
         let tcp_offset = ETH_LEN + IPV4_MIN_HEADER_LEN;
         Self::write_tcp_header(
-            &mut frame, tcp_offset,
-            src_port, dst_port, seq, ack, data_offset, tcp_flags, window,
-            tcp_options, opt_padded_len,
+            &mut frame,
+            tcp_offset,
+            src_port,
+            dst_port,
+            seq,
+            ack,
+            data_offset,
+            tcp_flags,
+            window,
+            tcp_options,
+            opt_padded_len,
         );
 
         // TCP checksum.
@@ -391,9 +542,17 @@ impl SegmentBuilder {
         // TCP header.
         let tcp_offset = ETH_LEN + IPV6_HEADER_LEN;
         Self::write_tcp_header(
-            &mut frame, tcp_offset,
-            src_port, dst_port, seq, ack, data_offset, tcp_flags, window,
-            tcp_options, opt_padded_len,
+            &mut frame,
+            tcp_offset,
+            src_port,
+            dst_port,
+            seq,
+            ack,
+            data_offset,
+            tcp_flags,
+            window,
+            tcp_options,
+            opt_padded_len,
         );
 
         // TCP checksum.
@@ -450,7 +609,7 @@ impl SegmentBuilder {
             ip[0] = 0x45; // version=4, ihl=5
             ip[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
             ip[6] = 0x40; // Don't Fragment
-            ip[8] = 64;   // TTL
+            ip[8] = 64; // TTL
             ip[9] = IpProtocols::Tcp;
             let src_bytes: [u8; 4] = src_ip.into();
             ip[12..16].copy_from_slice(&src_bytes);
@@ -466,9 +625,17 @@ impl SegmentBuilder {
         // TCP header.
         let tcp_offset = ETH_LEN + IPV4_MIN_HEADER_LEN;
         Self::write_tcp_header(
-            &mut frame, tcp_offset,
-            src_port, dst_port, seq, ack, data_offset, tcp_flags, window,
-            &[], 0,
+            &mut frame,
+            tcp_offset,
+            src_port,
+            dst_port,
+            seq,
+            ack,
+            data_offset,
+            tcp_flags,
+            window,
+            &[],
+            0,
         );
 
         // Copy payload.
@@ -478,7 +645,8 @@ impl SegmentBuilder {
         // TCP checksum — must cover header + payload.
         if !tx_offload {
             let checksum = compute_tcp_checksum_from_parts(
-                &src_ip, &dst_ip,
+                &src_ip,
+                &dst_ip,
                 &frame[tcp_offset..tcp_offset + tcp_header_len],
                 payload,
             );
@@ -542,9 +710,17 @@ impl SegmentBuilder {
         // TCP header.
         let tcp_offset = ETH_LEN + IPV6_HEADER_LEN;
         Self::write_tcp_header(
-            &mut frame, tcp_offset,
-            src_port, dst_port, seq, ack, data_offset, tcp_flags, window,
-            &[], 0,
+            &mut frame,
+            tcp_offset,
+            src_port,
+            dst_port,
+            seq,
+            ack,
+            data_offset,
+            tcp_flags,
+            window,
+            &[],
+            0,
         );
 
         // Copy payload.
@@ -554,7 +730,8 @@ impl SegmentBuilder {
         // TCP checksum.
         if !tx_offload {
             let checksum = compute_tcp_checksum_v6_from_parts(
-                &src_ip, &dst_ip,
+                &src_ip,
+                &dst_ip,
                 &frame[tcp_offset..tcp_offset + tcp_header_len],
                 payload,
             );
@@ -580,8 +757,13 @@ impl SegmentBuilder {
         opt_padded_len: usize,
     ) {
         let hdr = TcpHeader::new(
-            src_port, dst_port, seq, ack,
-            data_offset, tcp_flags, window,
+            src_port,
+            dst_port,
+            seq,
+            ack,
+            data_offset,
+            tcp_flags,
+            window,
             [0, 0], // checksum placeholder
             0,      // urgent pointer
         );
@@ -606,9 +788,9 @@ impl SegmentBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xdp::frame::{BasicFrameBuffer, Frame};
-    use crate::net::wire::ip::{Ipv4Address, Ipv6Address, IpAddress, Ipv4Header, IPV4_MIN_HEADER_LEN};
     use crate::net::checksum::verify_tcp_checksum;
+    use crate::net::wire::ip::{IPV4_MIN_HEADER_LEN, IpAddress, Ipv4Address, Ipv4Header};
+    use crate::xdp::frame::{BasicFrameBuffer, Frame};
 
     const ETH_HEADER_LEN: usize = 14;
 
@@ -630,12 +812,17 @@ mod tests {
         SegmentBuilder::build_data(
             IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
             IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
-            8080, 80,
-            1000, 500,
+            8080,
+            80,
+            1000,
+            500,
             65535,
             payload,
-            src_mac, dst_mac,
-            false, &mut free, &mut tx,
+            src_mac,
+            dst_mac,
+            false,
+            &mut free,
+            &mut tx,
         );
 
         assert_eq!(tx.num_frames(), 1, "data segment built");
@@ -652,7 +839,43 @@ mod tests {
         // Verify TCP checksum.
         let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
         let ip = Ipv4Header::from_bytes(&frame);
-        assert!(verify_tcp_checksum(&ip.src_addr, &ip.dst_addr, &frame[tcp_offset..]));
+        assert!(verify_tcp_checksum(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_fin_ack_ipv4() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        SegmentBuilder::build_fin_ack(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            80,
+            12345,
+            5000,
+            3000,
+            65535,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "FIN-ACK segment built");
+        assert_eq!(free.num_frames(), 0, "free frame consumed");
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::ACK | flags::FIN);
+        assert_eq!(tcp.seq_num(), 5000);
+        assert_eq!(tcp.ack_num(), 3000);
     }
 
     #[test]
@@ -667,10 +890,17 @@ mod tests {
         SegmentBuilder::build_data(
             IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
             IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
-            8080, 80, 1000, 500, 65535,
+            8080,
+            80,
+            1000,
+            500,
+            65535,
             b"payload",
-            MacAddress::new([0xAA; 6]), MacAddress::new([0xBB; 6]),
-            false, &mut free, &mut tx,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
         );
 
         assert_eq!(tx.num_frames(), 0, "no segment built");
@@ -685,10 +915,17 @@ mod tests {
         SegmentBuilder::build_data(
             IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
             IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
-            8080, 80, 1000, 500, 65535,
+            8080,
+            80,
+            1000,
+            500,
+            65535,
             b"payload",
-            MacAddress::new([0xAA; 6]), MacAddress::new([0xBB; 6]),
-            false, &mut free, &mut tx,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
         );
 
         assert_eq!(tx.num_frames(), 0, "no segment built");
