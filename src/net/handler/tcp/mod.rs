@@ -1504,7 +1504,64 @@ impl TcpHandler {
                 rx_return.push(frame);
             }
 
-            // Remaining states added in next tasks.
+            TcpState::Closing => {
+                let tcb = &mut self.connections[idx];
+                // Waiting for ACK of our FIN.
+                if seg_flags & flags::ACK != 0 {
+                    if let Some(fin_seq) = tcb.fin_seq {
+                        if crate::net::wire::tcp::seq_lt(fin_seq, seg_ack) {
+                            tcb.snd_una = seg_ack;
+                            tcb.state = TcpState::TimeWait;
+                            tcb.time_wait_deadline = Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
+                            tcb.retransmit_deadline = None;
+                        }
+                    }
+                }
+                rx_return.push(frame);
+            }
+
+            TcpState::LastAck => {
+                // Waiting for ACK of our FIN.
+                if seg_flags & flags::ACK != 0 {
+                    let tcb = &self.connections[idx];
+                    if let Some(fin_seq) = tcb.fin_seq {
+                        if crate::net::wire::tcp::seq_lt(fin_seq, seg_ack) {
+                            self.connections.remove(idx);
+                            rx_return.push(frame);
+                            return;
+                        }
+                    }
+                }
+                rx_return.push(frame);
+            }
+
+            TcpState::TimeWait => {
+                let tcb = &mut self.connections[idx];
+                // FIN retransmit → re-ACK and restart timer.
+                if seg_flags & flags::FIN != 0 {
+                    let id = tcb.id;
+                    let snd_nxt = tcb.snd_nxt;
+                    let rcv_nxt = tcb.rcv_nxt;
+                    let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
+                    SegmentBuilder::build_ack(
+                        id.local_addr, id.remote_addr,
+                        id.local_port, id.remote_port,
+                        snd_nxt, rcv_nxt, window,
+                        src_mac, dst_mac,
+                        self.tx_offload, free_frames, tx_return,
+                    );
+                    tcb.time_wait_deadline = Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
+                }
+                // Everything else (including RST) is ignored — RST handled above.
+                rx_return.push(frame);
+            }
+
+            TcpState::CloseWait => {
+                // Remote already FINed. No new data expected.
+                // Just handle RST (already handled above) and ignore everything else.
+                rx_return.push(frame);
+            }
+
             _ => {
                 rx_return.push(frame);
             }
@@ -2515,5 +2572,141 @@ mod tests {
         assert_eq!(handler.connections[0].state, TcpState::TimeWait);
         assert!(handler.connections[0].time_wait_deadline.is_some());
         assert_eq!(tx.num_frames(), 1, "ACK for remote FIN");
+    }
+
+    #[test]
+    fn simultaneous_close_closing_to_time_wait() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Active close → FinWait1.
+        handler.connections[0].pending_fin = true;
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+        assert_eq!(handler.connections[0].state, TcpState::FinWait1);
+
+        // Simultaneous close: remote sends FIN without ACKing ours → Closing.
+        let fin = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK | flags::FIN, 65535, &[]);
+        let fin_len = fin.len();
+        handler.process_ipv4(Frame::new(3, leak(fin), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(handler.connections[0].state, TcpState::Closing);
+        while tx.pop().is_some() {}
+
+        // Remote ACKs our FIN → TimeWait.
+        let fin_seq = handler.connections[0].fin_seq.unwrap();
+        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1002, fin_seq.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack.len();
+        handler.process_ipv4(Frame::new(4, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(handler.connections[0].state, TcpState::TimeWait);
+    }
+
+    #[test]
+    fn passive_close_last_ack_removes_connection() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Remote sends FIN → CloseWait.
+        let fin = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK | flags::FIN, 65535, &[]);
+        let fin_len = fin.len();
+        handler.process_ipv4(Frame::new(2, leak(fin), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(handler.connections[0].state, TcpState::CloseWait);
+        while tx.pop().is_some() {}
+
+        // We close → pending_fin, poll_send sends FIN → LastAck.
+        handler.connections[0].pending_fin = true;
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+        assert_eq!(handler.connections[0].state, TcpState::LastAck);
+        let fin_seq = handler.connections[0].fin_seq.unwrap();
+
+        // Remote ACKs our FIN → connection removed.
+        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1002, fin_seq.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack.len();
+        handler.process_ipv4(Frame::new(4, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(handler.connections.len(), 0, "connection removed after LastAck");
+    }
+
+    #[test]
+    fn time_wait_ignores_rst() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Full active close → TimeWait.
+        handler.connections[0].pending_fin = true;
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+        let fin_seq = handler.connections[0].fin_seq.unwrap();
+        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, fin_seq.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack.len();
+        handler.process_ipv4(Frame::new(3, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let fin = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, fin_seq.wrapping_add(1), flags::ACK | flags::FIN, 65535, &[]);
+        let fin_len = fin.len();
+        handler.process_ipv4(Frame::new(4, leak(fin), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(handler.connections[0].state, TcpState::TimeWait);
+        while tx.pop().is_some() {}
+
+        // RST in TIME-WAIT should be ignored.
+        let rst = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1002, 0, flags::RST, 0, &[]);
+        let rst_len = rst.len();
+        handler.process_ipv4(Frame::new(5, leak(rst), rst_len, false), &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(handler.connections.len(), 1, "connection NOT removed by RST in TIME-WAIT");
+        assert_eq!(handler.connections[0].state, TcpState::TimeWait);
     }
 }
