@@ -85,16 +85,25 @@ fn main() {
 
                 let mut buf = [0u8; 65535];
                 loop {
-                    let n = stream.read(&mut buf).await;
-                    if n == 0 {
-                        println!(
-                            "Disconnected from {}:{}",
-                            stream.remote_addr(),
-                            stream.remote_port()
-                        );
+                    let n = match stream.read(&mut buf).await {
+                        Ok(0) => {
+                            println!(
+                                "Disconnected from {}:{}",
+                                stream.remote_addr(),
+                                stream.remote_port()
+                            );
+                            break;
+                        }
+                        Ok(n) => n,
+                        Err(e) => {
+                            println!("Read error: {:?}", e);
+                            break;
+                        }
+                    };
+                    if let Err(e) = stream.write(&buf[..n]).await {
+                        println!("Write error: {:?}", e);
                         break;
                     }
-                    stream.write(&buf[..n]).await;
                     stats.update(n, false);
                     stats.maybe_print();
                 }

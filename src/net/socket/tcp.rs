@@ -322,6 +322,7 @@ impl TcpStream {
         TcpWrite {
             handler: &self.handler,
             conn_id: self.conn_id,
+            event_queue: &self.event_queue,
             data,
             written: 0,
             write_closed: self.write_closed || self.closed,
@@ -334,6 +335,7 @@ impl TcpStream {
         TcpRead {
             handler: &self.handler,
             conn_id: self.conn_id,
+            event_queue: &self.event_queue,
             buf,
         }
     }
@@ -464,18 +466,29 @@ impl Future for Connect {
 pub struct TcpWrite<'stream> {
     handler: &'stream Rc<UnsafeCell<TcpHandler>>,
     conn_id: ConnectionId,
+    event_queue: &'stream LocalQueue<TcpEvent>,
     data: &'stream [u8],
     written: usize,
     write_closed: bool,
 }
 
 impl<'stream> Future for TcpWrite<'stream> {
-    type Output = usize;
+    type Output = Result<usize, TcpError>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
+
+        // Check event queue for errors
+        while let Some(event) = this.event_queue.pop() {
+            match event {
+                TcpEvent::Reset => return Poll::Ready(Err(TcpError::Reset)),
+                TcpEvent::Timeout => return Poll::Ready(Err(TcpError::Timeout)),
+                _ => {}
+            }
+        }
+
         if this.write_closed {
-            return Poll::Ready(0);
+            return Poll::Ready(Err(TcpError::NotConnected));
         }
         let handler = unsafe { &mut *this.handler.get() };
         if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
@@ -483,12 +496,12 @@ impl<'stream> Future for TcpWrite<'stream> {
             let n = tcb.send_buffer.write(remaining);
             this.written += n;
             if this.written == this.data.len() {
-                Poll::Ready(this.written)
+                Poll::Ready(Ok(this.written))
             } else {
                 Poll::Pending
             }
         } else {
-            Poll::Ready(0) // connection gone
+            Poll::Ready(Err(TcpError::NotConnected)) // connection gone
         }
     }
 }
@@ -497,26 +510,37 @@ impl<'stream> Future for TcpWrite<'stream> {
 pub struct TcpRead<'stream> {
     handler: &'stream Rc<UnsafeCell<TcpHandler>>,
     conn_id: ConnectionId,
+    event_queue: &'stream LocalQueue<TcpEvent>,
     buf: &'stream mut [u8],
 }
 
 impl<'stream> Future for TcpRead<'stream> {
-    type Output = usize;
+    type Output = Result<usize, TcpError>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
+
+        // Check event queue for errors
+        while let Some(event) = this.event_queue.pop() {
+            match event {
+                TcpEvent::Reset => return Poll::Ready(Err(TcpError::Reset)),
+                TcpEvent::Timeout => return Poll::Ready(Err(TcpError::Timeout)),
+                _ => {}
+            }
+        }
+
         let handler = unsafe { &mut *this.handler.get() };
         if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
             let n = tcb.recv_buffer.read(this.buf);
             if n > 0 {
-                Poll::Ready(n)
+                Poll::Ready(Ok(n))
             } else if tcb.state.is_remote_closed() {
-                Poll::Ready(0) // EOF — remote has sent FIN and buffer is drained
+                Poll::Ready(Ok(0)) // EOF — remote has sent FIN and buffer is drained
             } else {
                 Poll::Pending
             }
         } else {
-            Poll::Ready(0) // connection gone
+            Poll::Ready(Err(TcpError::NotConnected)) // connection gone
         }
     }
 }

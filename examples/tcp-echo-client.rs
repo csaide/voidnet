@@ -102,15 +102,24 @@ fn main() {
             let mut read_buf = vec![0u8; message_size];
 
             loop {
-                stream.write(&payload).await;
+                if let Err(e) = stream.write(&payload).await {
+                    println!("Write error: {:?}", e);
+                    break;
+                }
 
                 let mut total_read = 0;
                 while total_read < message_size {
-                    let n = stream.read(&mut read_buf[total_read..]).await;
-                    if n == 0 {
-                        println!("Server closed connection");
-                        return;
-                    }
+                    let n = match stream.read(&mut read_buf[total_read..]).await {
+                        Ok(0) => {
+                            println!("Server closed connection");
+                            return;
+                        }
+                        Ok(n) => n,
+                        Err(e) => {
+                            println!("Read error: {:?}", e);
+                            return;
+                        }
+                    };
                     total_read += n;
                 }
 
