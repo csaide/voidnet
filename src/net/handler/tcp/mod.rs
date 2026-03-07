@@ -1440,6 +1440,12 @@ impl TcpHandler {
             return;
         }
 
+        // Step 5 preamble: if ACK bit is off, drop segment and return.
+        if seg_flags & flags::ACK == 0 {
+            rx_return.push(frame);
+            return;
+        }
+
         // Update ts_recent from incoming segment.
         {
             let tcb = &mut self.connections[idx];
@@ -2690,6 +2696,12 @@ impl TcpHandler {
                 free_frames,
                 tx_return,
             );
+            rx_return.push(frame);
+            return;
+        }
+
+        // Step 5 preamble: if ACK bit is off, drop segment and return.
+        if seg_flags & flags::ACK == 0 {
             rx_return.push(frame);
             return;
         }
@@ -9953,6 +9965,57 @@ mod tests {
         assert_eq!(
             handler.connections[0].rcv_nxt, 1001,
             "rcv_nxt must not advance when SYN is received in Established"
+        );
+    }
+
+    #[test]
+    fn segment_without_ack_is_dropped() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        let rcv_nxt_before = handler.connections[0].rcv_nxt;
+
+        // Send a data segment with no flags set (ACK bit off).
+        let no_ack_data = build_tcp_frame_with_payload(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001, // seq = rcv_nxt
+            server_iss.wrapping_add(1),
+            0, // no flags at all
+            65535,
+            &[],
+            b"hello",
+        );
+        let no_ack_len = no_ack_data.len();
+        handler.process_ipv4(
+            Frame::new(50, leak(no_ack_data), no_ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // (1) No data should be written to recv_buffer (rcv_nxt unchanged).
+        assert_eq!(
+            handler.connections[0].rcv_nxt, rcv_nxt_before,
+            "rcv_nxt must not advance for segment without ACK"
+        );
+
+        // (2) No response should be sent (tx empty).
+        assert_eq!(
+            tx.num_frames(),
+            0,
+            "no response should be sent for segment without ACK"
         );
     }
 
