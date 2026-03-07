@@ -1748,6 +1748,34 @@ impl TcpHandler {
                 continue;
             }
 
+            use crate::net::wire::tcp::seq_lt;
+
+            // Determine retransmit offset: use SACK scoreboard gaps when available.
+            let snd_una = tcb.snd_una;
+            let (retransmit_offset, retransmit_seq) =
+                if tcb.sack_enabled && !tcb.sack_scoreboard.is_empty() {
+                    let mut gap_start = snd_una;
+                    let mut found = None;
+                    for (&sack_start, &sack_len) in &tcb.sack_scoreboard {
+                        if seq_lt(gap_start, sack_start) {
+                            let gap_size = sack_start.wrapping_sub(gap_start) as usize;
+                            let len = gap_size.min(tcb.eff_snd_mss as usize);
+                            found = Some((gap_start.wrapping_sub(snd_una) as usize, gap_start, len));
+                            break;
+                        }
+                        let sack_end = sack_start.wrapping_add(sack_len);
+                        if seq_lt(gap_start, sack_end) {
+                            gap_start = sack_end;
+                        }
+                    }
+                    match found {
+                        Some((offset, seq, _)) => (offset, seq),
+                        None => (0, snd_una),
+                    }
+                } else {
+                    (0, snd_una)
+                };
+
             let retransmit_len = tcb.send_buffer.available().min(tcb.eff_snd_mss as usize);
             if retransmit_len == 0 {
                 continue;
@@ -1759,7 +1787,7 @@ impl TcpHandler {
                 .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
 
             let mut payload = vec![0u8; retransmit_len];
-            tcb.send_buffer.peek_at(0, &mut payload);
+            tcb.send_buffer.peek_at(retransmit_offset, &mut payload);
 
             let ts = if tcb.ts_enabled {
                 let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
@@ -1772,7 +1800,7 @@ impl TcpHandler {
                 id.remote_addr,
                 id.local_port,
                 id.remote_port,
-                tcb.snd_una,
+                retransmit_seq,
                 tcb.rcv_nxt,
                 tcb.advertised_window(),
                 &payload,
@@ -7903,5 +7931,100 @@ mod tests {
             handler.connections[0].sack_scoreboard.is_empty(),
             "scoreboard should be cleared on RTO"
         );
+    }
+
+    #[test]
+    fn fast_retransmit_uses_sack_gap() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let _server_iss =
+            establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        let tcb = &mut handler.connections[0];
+        // Use a small effective MSS so the retransmit fits in a 256-byte frame.
+        tcb.eff_snd_mss = 100;
+        let mss = tcb.eff_snd_mss as usize;
+
+        // Fill send buffer with 3 MSS worth of distinguishable data.
+        let mut data = vec![0u8; 3 * mss];
+        for (i, byte) in data.iter_mut().enumerate() {
+            *byte = (i / mss) as u8; // 0 for 1st MSS, 1 for 2nd, 2 for 3rd
+        }
+        tcb.send_buffer.write(&data);
+        tcb.snd_nxt = tcb.snd_una.wrapping_add(3 * mss as u32);
+        let snd_una = tcb.snd_una;
+
+        // Add a SACK entry for the 2nd MSS (gap is the 1st MSS).
+        let sack_start = snd_una.wrapping_add(mss as u32);
+        let sack_len = mss as u32;
+        tcb.sack_scoreboard.insert(sack_start, sack_len);
+
+        // Record cwnd before fast retransmit.
+        let cwnd_before = tcb.cwnd;
+
+        // Set dup_ack_count = 3 to trigger fast retransmit.
+        tcb.dup_ack_count = 3;
+
+        let now = coarsetime::Instant::now();
+        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        // Verify a segment was emitted.
+        assert!(tx.pop().is_some(), "expected a retransmitted segment");
+
+        let tcb = &handler.connections[0];
+        // dup_ack_count should be reset.
+        assert_eq!(tcb.dup_ack_count, 0, "dup_ack_count should be reset");
+        // cwnd should be halved.
+        assert!(tcb.cwnd < cwnd_before, "cwnd should have been halved");
+        assert_eq!(tcb.cwnd, tcb.ssthresh, "cwnd should equal ssthresh after fast recovery");
+    }
+
+    #[test]
+    fn fast_retransmit_fallback_when_scoreboard_empty() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let _server_iss =
+            establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        let tcb = &mut handler.connections[0];
+        // Use a small effective MSS so the retransmit fits in a 256-byte frame.
+        tcb.eff_snd_mss = 100;
+        let mss = tcb.eff_snd_mss as usize;
+
+        // Fill send buffer.
+        tcb.send_buffer.write(&vec![0xABu8; 3 * mss]);
+        tcb.snd_nxt = tcb.snd_una.wrapping_add(3 * mss as u32);
+
+        // Record cwnd before.
+        let cwnd_before = tcb.cwnd;
+
+        // Scoreboard is empty; dup_ack_count = 3 triggers fallback.
+        assert!(tcb.sack_scoreboard.is_empty());
+        tcb.dup_ack_count = 3;
+
+        let now = coarsetime::Instant::now();
+        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        // Verify a segment was emitted.
+        assert!(tx.pop().is_some(), "expected a retransmitted segment from snd_una");
+
+        let tcb = &handler.connections[0];
+        assert_eq!(tcb.dup_ack_count, 0, "dup_ack_count should be reset");
+        assert!(tcb.cwnd < cwnd_before, "cwnd should have been halved");
+        assert_eq!(tcb.cwnd, tcb.ssthresh, "cwnd should equal ssthresh after fast recovery");
     }
 }
