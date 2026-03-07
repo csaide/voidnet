@@ -1172,13 +1172,22 @@ impl TcpHandler {
         }
     }
 
-    /// Evict stale connections (placeholder for future timer-based cleanup).
+    /// Evict stale connections whose TIME-WAIT deadline has passed.
     pub fn evict_stale<'umem>(
         &mut self,
-        _now: Instant,
+        now: Instant,
         _rx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        // Placeholder — will be used for TIME-WAIT cleanup in future phases.
+        self.connections.retain(|tcb| {
+            if tcb.state == TcpState::TimeWait {
+                if let Some(deadline) = tcb.time_wait_deadline {
+                    if now >= deadline {
+                        return false; // remove
+                    }
+                }
+            }
+            true // keep
+        });
     }
 
     // --- Data transmission ---
@@ -2708,5 +2717,38 @@ mod tests {
         handler.process_ipv4(Frame::new(5, leak(rst), rst_len, false), &nh, &mut free, &mut rx, &mut tx);
         assert_eq!(handler.connections.len(), 1, "connection NOT removed by RST in TIME-WAIT");
         assert_eq!(handler.connections[0].state, TcpState::TimeWait);
+    }
+
+    #[test]
+    fn time_wait_evicted_after_deadline() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Force into TimeWait state with expired deadline.
+        handler.connections[0].state = TcpState::TimeWait;
+        handler.connections[0].time_wait_deadline = Some(coarsetime::Instant::now());
+
+        // Evict with a time in the future.
+        let future = coarsetime::Instant::now() + coarsetime::Duration::from_secs(120);
+        handler.evict_stale(future, &mut rx);
+        assert_eq!(handler.connections.len(), 0, "TIME-WAIT connection evicted");
     }
 }
