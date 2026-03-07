@@ -1036,9 +1036,7 @@ impl TcpHandler {
                     self.decrement_syn_received(&id);
                 } else {
                     // Simultaneous open — notify the active opener.
-                    self.connections[idx]
-                        .event_queue
-                        .push(TcpEvent::Connected);
+                    self.connections[idx].event_queue.push(TcpEvent::Connected);
                 }
             } else {
                 // Bad ACK → send RST.
@@ -1152,10 +1150,8 @@ impl TcpHandler {
                 tcb.sack_enabled = false;
             }
             // ECN negotiation: confirm only if SYN-ACK has ECE set.
-            if tcb.ecn_enabled {
-                if seg_flags & flags::ECE == 0 {
-                    tcb.ecn_enabled = false;
-                }
+            if tcb.ecn_enabled && seg_flags & flags::ECE == 0 {
+                tcb.ecn_enabled = false;
             }
 
             if seg_flags & flags::ACK != 0 {
@@ -1532,8 +1528,8 @@ impl TcpHandler {
                 // In-order data.
                 let payload = &frame[payload_offset..payload_offset + payload_len];
                 let tcb = &mut self.connections[idx];
-                tcb.recv_buffer.write(payload);
-                tcb.rcv_nxt = rcv_nxt.wrapping_add(payload_len as u32);
+                let written = tcb.recv_buffer.write(payload);
+                tcb.rcv_nxt = rcv_nxt.wrapping_add(written as u32);
 
                 // Reset keep-alive timer on received data.
                 tcb.last_activity = now;
@@ -2564,8 +2560,8 @@ impl TcpHandler {
                 // Process data if present (remote may still be sending).
                 if payload_len > 0 && seg_seq == tcb.rcv_nxt {
                     let payload = &frame[payload_offset..payload_offset + payload_len];
-                    tcb.recv_buffer.write(payload);
-                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
+                    let written = tcb.recv_buffer.write(payload);
+                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(written as u32);
                 }
 
                 // Check for FIN from remote.
@@ -2630,8 +2626,8 @@ impl TcpHandler {
                 // Process data if present (remote still sending).
                 if payload_len > 0 && seg_seq == tcb.rcv_nxt {
                     let payload = &frame[payload_offset..payload_offset + payload_len];
-                    tcb.recv_buffer.write(payload);
-                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
+                    let written = tcb.recv_buffer.write(payload);
+                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(written as u32);
                 }
 
                 // Check for FIN.
@@ -8331,7 +8327,11 @@ mod tests {
         // First poll_send: sends MSS bytes, more data remains -> no PSH.
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
-        assert_eq!(tx.num_frames(), 1, "expected one data segment from first poll");
+        assert_eq!(
+            tx.num_frames(),
+            1,
+            "expected one data segment from first poll"
+        );
 
         let first_frame = tx.pop().unwrap();
         let tcp_flags_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + 13;
@@ -8350,7 +8350,11 @@ mod tests {
         // Second poll_send: sends remaining 100 bytes, no more data -> PSH set.
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
-        assert_eq!(tx.num_frames(), 1, "expected one data segment from second poll");
+        assert_eq!(
+            tx.num_frames(),
+            1,
+            "expected one data segment from second poll"
+        );
         let second_frame = tx.pop().unwrap();
         let second_flags = second_frame[tcp_flags_offset];
         assert!(
@@ -8625,22 +8629,43 @@ mod tests {
         // Complete handshake via listen path.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
         let syn_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
         );
         let syn_len = syn_data.len();
         handler.process_ipv4(
             Frame::new(0, leak(syn_data), syn_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         let server_iss = handler.connections[0].iss;
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
             Frame::new(1, leak(ack_data), ack_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         while tx.pop().is_some() {}
 
@@ -8677,22 +8702,43 @@ mod tests {
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
         let syn_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
         );
         let syn_len = syn_data.len();
         handler.process_ipv4(
             Frame::new(0, leak(syn_data), syn_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         let server_iss = handler.connections[0].iss;
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
             Frame::new(1, leak(ack_data), ack_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         while tx.pop().is_some() {}
 
@@ -8731,34 +8777,65 @@ mod tests {
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
         let syn_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
         );
         let syn_len = syn_data.len();
         handler.process_ipv4(
             Frame::new(0, leak(syn_data), syn_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         let server_iss = handler.connections[0].iss;
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
             Frame::new(1, leak(ack_data), ack_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         while tx.pop().is_some() {}
 
         // Enable ECN on the connection.
         handler.connections[0].ecn_enabled = true;
-        assert!(!handler.connections[0].ecn_ce_received, "CE should not be set yet");
+        assert!(
+            !handler.connections[0].ecn_ce_received,
+            "CE should not be set yet"
+        );
 
         // Build a data segment with CE mark (ToS = 0x03) in the IP header.
         let mut data_frame = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], b"hello",
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            b"hello",
         );
         // Set CE codepoint in IPv4 ToS byte: ECN bits = 0b11 = 0x03.
         data_frame[ETH_HEADER_LEN + 1] = 0x03;
@@ -8770,7 +8847,10 @@ mod tests {
         let data_len = data_frame.len();
         handler.process_ipv4(
             Frame::new(2, leak(data_frame), data_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
 
         assert!(
@@ -8794,22 +8874,43 @@ mod tests {
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
         let syn_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
         );
         let syn_len = syn_data.len();
         handler.process_ipv4(
             Frame::new(0, leak(syn_data), syn_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         let server_iss = handler.connections[0].iss;
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
             Frame::new(1, leak(ack_data), ack_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         while tx.pop().is_some() {}
 
@@ -8819,14 +8920,24 @@ mod tests {
 
         // Send data to trigger an ACK with ECE.
         let data_frame = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], b"hello",
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            b"hello",
         );
         let data_len = data_frame.len();
         handler.process_ipv4(
             Frame::new(2, leak(data_frame), data_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
 
         // The handler should have sent an ACK (delayed or immediate).
@@ -8837,7 +8948,10 @@ mod tests {
             handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
         }
 
-        assert!(tx.num_frames() >= 1, "should have at least one outgoing ACK");
+        assert!(
+            tx.num_frames() >= 1,
+            "should have at least one outgoing ACK"
+        );
         let frame = tx.pop().unwrap();
         let tcp_flags_byte = frame[ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + 13];
         assert!(
@@ -8862,22 +8976,43 @@ mod tests {
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
         let syn_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
         );
         let syn_len = syn_data.len();
         handler.process_ipv4(
             Frame::new(0, leak(syn_data), syn_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         let server_iss = handler.connections[0].iss;
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
             Frame::new(1, leak(ack_data), ack_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         while tx.pop().is_some() {}
 
@@ -8889,7 +9024,9 @@ mod tests {
         handler.connections[0].ssthresh = 20 * mss;
 
         // Send some data so snd_nxt advances.
-        handler.connections[0].send_buffer.write(b"test data for ecn");
+        handler.connections[0]
+            .send_buffer
+            .write(b"test data for ecn");
         let now = coarsetime::Instant::now();
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
         while tx.pop().is_some() {}
@@ -8901,13 +9038,23 @@ mod tests {
 
         // Receive ACK with ECE flag — simulating peer's congestion signal.
         let ece_ack = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_nxt,
-            flags::ACK | flags::ECE, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            snd_nxt,
+            flags::ACK | flags::ECE,
+            65535,
+            &[],
         );
         let ece_len = ece_ack.len();
         handler.process_ipv4(
             Frame::new(3, leak(ece_ack), ece_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
 
         // Verify cwnd was reduced (halved after congestion avoidance increment).
@@ -8915,7 +9062,8 @@ mod tests {
         assert!(
             cwnd_after < cwnd_before,
             "cwnd should be reduced: before={}, after={}",
-            cwnd_before, cwnd_after,
+            cwnd_before,
+            cwnd_after,
         );
         assert_eq!(
             handler.connections[0].cwnd, handler.connections[0].ssthresh,
@@ -8946,22 +9094,43 @@ mod tests {
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
         let syn_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
         );
         let syn_len = syn_data.len();
         handler.process_ipv4(
             Frame::new(0, leak(syn_data), syn_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         let server_iss = handler.connections[0].iss;
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
             Frame::new(1, leak(ack_data), ack_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         while tx.pop().is_some() {}
 
@@ -9006,22 +9175,43 @@ mod tests {
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
         let syn_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
         );
         let syn_len = syn_data.len();
         handler.process_ipv4(
             Frame::new(0, leak(syn_data), syn_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         let server_iss = handler.connections[0].iss;
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
             Frame::new(1, leak(ack_data), ack_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
         while tx.pop().is_some() {}
 
@@ -9032,14 +9222,24 @@ mod tests {
         // Receive a segment with CWR flag from peer (acknowledging our ECE).
         let rcv_nxt = handler.connections[0].rcv_nxt;
         let cwr_frame = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            rcv_nxt, server_iss.wrapping_add(1),
-            flags::ACK | flags::CWR, 65535, &[], b"data",
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            rcv_nxt,
+            server_iss.wrapping_add(1),
+            flags::ACK | flags::CWR,
+            65535,
+            &[],
+            b"data",
         );
         let cwr_len = cwr_frame.len();
         handler.process_ipv4(
             Frame::new(2, leak(cwr_frame), cwr_len, false),
-            &nh, &mut free, &mut rx, &mut tx,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
 
         assert!(
@@ -9111,14 +9311,23 @@ mod tests {
         // Step 1: Feed side B's SYN to handler A.
         // B sent SYN with seq=ISS_B, no ACK. A should transition to SynReceived.
         let syn_b = build_tcp_frame(
-            ip_b, ip_a, port_b, port_a,
-            iss_b, 0, flags::SYN, 65535,
+            ip_b,
+            ip_a,
+            port_b,
+            port_a,
+            iss_b,
+            0,
+            flags::SYN,
+            65535,
             &[0x02, 0x04, 0x05, 0xB4], // MSS=1460
         );
         let syn_b_len = syn_b.len();
         handler_a.process_ipv4(
             Frame::new(10, leak(syn_b), syn_b_len, false),
-            &nh, &mut free_a, &mut rx, &mut tx,
+            &nh,
+            &mut free_a,
+            &mut rx,
+            &mut tx,
         );
         assert_eq!(
             handler_a.connections[0].state,
@@ -9132,14 +9341,23 @@ mod tests {
 
         // Step 2: Feed side A's SYN to handler B.
         let syn_a = build_tcp_frame(
-            ip_a, ip_b, port_a, port_b,
-            iss_a, 0, flags::SYN, 65535,
+            ip_a,
+            ip_b,
+            port_a,
+            port_b,
+            iss_a,
+            0,
+            flags::SYN,
+            65535,
             &[0x02, 0x04, 0x05, 0xB4],
         );
         let syn_a_len = syn_a.len();
         handler_b.process_ipv4(
             Frame::new(11, leak(syn_a), syn_a_len, false),
-            &nh, &mut free_b, &mut rx, &mut tx,
+            &nh,
+            &mut free_b,
+            &mut rx,
+            &mut tx,
         );
         assert_eq!(
             handler_b.connections[0].state,
@@ -9153,15 +9371,23 @@ mod tests {
         // Step 3: Feed B's SYN-ACK to handler A.
         // B's SYN-ACK: seq=ISS_B, ack=ISS_A+1, flags=SYN|ACK.
         let syn_ack_b = build_tcp_frame(
-            ip_b, ip_a, port_b, port_a,
-            iss_b, iss_a.wrapping_add(1),
-            flags::SYN | flags::ACK, 65535,
+            ip_b,
+            ip_a,
+            port_b,
+            port_a,
+            iss_b,
+            iss_a.wrapping_add(1),
+            flags::SYN | flags::ACK,
+            65535,
             &[0x02, 0x04, 0x05, 0xB4],
         );
         let syn_ack_b_len = syn_ack_b.len();
         handler_a.process_ipv4(
             Frame::new(12, leak(syn_ack_b), syn_ack_b_len, false),
-            &nh, &mut free_a, &mut rx, &mut tx,
+            &nh,
+            &mut free_a,
+            &mut rx,
+            &mut tx,
         );
         assert_eq!(
             handler_a.connections[0].state,
@@ -9173,15 +9399,23 @@ mod tests {
 
         // Step 4: Feed A's SYN-ACK to handler B.
         let syn_ack_a = build_tcp_frame(
-            ip_a, ip_b, port_a, port_b,
-            iss_a, iss_b.wrapping_add(1),
-            flags::SYN | flags::ACK, 65535,
+            ip_a,
+            ip_b,
+            port_a,
+            port_b,
+            iss_a,
+            iss_b.wrapping_add(1),
+            flags::SYN | flags::ACK,
+            65535,
             &[0x02, 0x04, 0x05, 0xB4],
         );
         let syn_ack_a_len = syn_ack_a.len();
         handler_b.process_ipv4(
             Frame::new(13, leak(syn_ack_a), syn_ack_a_len, false),
-            &nh, &mut free_b, &mut rx, &mut tx,
+            &nh,
+            &mut free_b,
+            &mut rx,
+            &mut tx,
         );
         assert_eq!(
             handler_b.connections[0].state,
@@ -9190,13 +9424,100 @@ mod tests {
         );
 
         // Verify both sides emitted Connected events.
-        assert!(
-            events_a.pop().is_some(),
-            "A should have a Connected event"
+        assert!(events_a.pop().is_some(), "A should have a Connected event");
+        assert!(events_b.pop().is_some(), "B should have a Connected event");
+    }
+
+    #[test]
+    fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+        let mut tx = BasicFrameBuffer::new(16);
+
+        for i in 0..8 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Listen with a tiny recv buffer (32 bytes, must be power of two).
+        let config = TcpConfig {
+            recv_buffer_size: 32,
+            backlog: 128,
+            timestamps: false,
+            sack: false,
+            ecn: false,
+            ..TcpConfig::default()
+        };
+        let _accept_queue = handler
+            .listen_with_config(IpAddress::V4(LOCAL_IP), 80, config)
+            .unwrap();
+
+        // SYN from remote.
+        let syn = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
         );
-        assert!(
-            events_b.pop().is_some(),
-            "B should have a Connected event"
+        let syn_len = syn.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+
+        // ACK to complete handshake.
+        let ack = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+        while tx.pop().is_some() {}
+
+        // Fill 20 of 32 bytes in the recv buffer directly, leaving 12 free.
+        let filler = [0xAA_u8; 20];
+        handler.connections[0].recv_buffer.write(&filler);
+        // Advance rcv_nxt to account for the filler (as if received normally).
+        handler.connections[0].rcv_nxt = handler.connections[0].rcv_nxt.wrapping_add(20);
+        let rcv_nxt_before = handler.connections[0].rcv_nxt;
+
+        // Send a 20-byte payload — only 12 should fit.
+        let payload = [0xBB_u8; 20];
+        let data = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            rcv_nxt_before, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], &payload,
+        );
+        let data_len = data.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(data), data_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // rcv_nxt must advance by only 12 (the bytes actually written), not 20.
+        let rcv_nxt_after = handler.connections[0].rcv_nxt;
+        let advanced = rcv_nxt_after.wrapping_sub(rcv_nxt_before);
+        assert_eq!(
+            advanced, 12,
+            "rcv_nxt should advance by bytes written (12), not payload len (20); got {}",
+            advanced
+        );
+        assert_eq!(
+            handler.connections[0].recv_buffer.available(),
+            32,
+            "recv buffer should be completely full (20 filler + 12 new)"
         );
     }
 }
