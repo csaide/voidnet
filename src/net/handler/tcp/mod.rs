@@ -1758,4 +1758,104 @@ mod tests {
         assert_eq!(tcb.snd_nxt, server_iss.wrapping_add(1).wrapping_add(payload.len() as u32));
         assert_eq!(tcb.send_buffer.available(), payload.len()); // still in buffer until ACKed
     }
+
+    #[test]
+    fn fast_retransmit_on_three_dup_acks() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Put data in send buffer and send it.
+        handler.connections[0].send_buffer.write(b"AAAA");
+        handler.connections[0].snd_wnd = 65535;
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {} // consume sent segment
+
+        let cwnd_before = handler.connections[0].cwnd;
+
+        // Send 3 duplicate ACKs (ACKing the old snd_una, not the new data).
+        let dup_ack_seq = server_iss.wrapping_add(1); // original snd_una
+        for i in 0..3u64 {
+            let dup = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, dup_ack_seq, flags::ACK, 65535, &[]);
+            let dup_len = dup.len();
+            handler.process_ipv4(Frame::new(10 + i, leak(dup), dup_len, false), &nh, &mut free, &mut rx, &mut tx);
+        }
+
+        assert_eq!(handler.connections[0].dup_ack_count, 3);
+
+        // poll_timers should trigger fast retransmit.
+        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert!(tx.num_frames() >= 1, "retransmitted segment expected");
+
+        // cwnd should be halved (fast recovery).
+        let tcb = &handler.connections[0];
+        assert!(tcb.cwnd < cwnd_before, "cwnd should be reduced after fast retransmit");
+        assert_eq!(tcb.dup_ack_count, 0, "dup_ack_count should be reset");
+        assert_eq!(tcb.cwnd, tcb.ssthresh, "cwnd should equal ssthresh after fast recovery");
+    }
+
+    #[test]
+    fn rto_retransmit_on_timer_expiry() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Put data in send buffer and send it.
+        handler.connections[0].send_buffer.write(b"BBBB");
+        handler.connections[0].snd_wnd = 65535;
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+
+        let cwnd_before = handler.connections[0].cwnd;
+
+        // Simulate timer expiry by setting a deadline in the past.
+        handler.connections[0].retransmit_deadline = Some(now - coarsetime::Duration::from_millis(1));
+        handler.connections[0].rto_backoff = 0;
+
+        // poll_timers should trigger RTO retransmit.
+        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert!(tx.num_frames() >= 1, "retransmitted segment expected");
+
+        let tcb = &handler.connections[0];
+        // cwnd should be reset to 1 MSS (slow start).
+        assert_eq!(tcb.cwnd, tcb.eff_snd_mss as u32, "cwnd should be 1 MSS after RTO");
+        assert!(tcb.ssthresh < cwnd_before, "ssthresh should be reduced");
+        assert_eq!(tcb.rto_backoff, 1, "rto_backoff should be incremented");
+    }
 }
