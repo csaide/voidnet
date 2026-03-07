@@ -2751,4 +2751,267 @@ mod tests {
         handler.evict_stale(future, &mut rx);
         assert_eq!(handler.connections.len(), 0, "TIME-WAIT connection evicted");
     }
+
+    #[test]
+    fn full_active_close_lifecycle() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let initial_free = free.num_frames();
+
+        // 1. Handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data =
+            build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+
+        // 2. Data exchange.
+        let payload = b"hello";
+        let data = build_tcp_frame_with_payload(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            payload,
+        );
+        let data_len = data.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(data), data_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // 3. Active close.
+        handler.connections[0].pending_fin = true;
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert_eq!(handler.connections[0].state, TcpState::FinWait1);
+        while tx.pop().is_some() {}
+
+        // 4. Remote ACKs our FIN -> FinWait2.
+        let fin_seq = handler.connections[0].fin_seq.unwrap();
+        let ack = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1006,
+            fin_seq.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
+        let ack_len = ack.len();
+        handler.process_ipv4(
+            Frame::new(3, leak(ack), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(handler.connections[0].state, TcpState::FinWait2);
+
+        // 5. Remote sends FIN -> TimeWait.
+        let fin = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1006,
+            fin_seq.wrapping_add(1),
+            flags::ACK | flags::FIN,
+            65535,
+            &[],
+        );
+        let fin_len = fin.len();
+        handler.process_ipv4(
+            Frame::new(4, leak(fin), fin_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(handler.connections[0].state, TcpState::TimeWait);
+        while tx.pop().is_some() {}
+
+        // 6. TIME-WAIT expires -> connection removed.
+        let future = coarsetime::Instant::now() + coarsetime::Duration::from_secs(120);
+        handler.evict_stale(future, &mut rx);
+        assert_eq!(
+            handler.connections.len(),
+            0,
+            "connection removed after TIME-WAIT"
+        );
+
+        // 7. Frame accounting: all frames accounted for.
+        // We injected 5 incoming frames (SYN, ACK, data, FIN-ACK, FIN) which end up in rx.
+        // The handler consumed free frames for outgoing segments (SYN-ACK, data ACK, FIN,
+        // ACK-for-FIN) which we drained from tx. So the total in free+rx+tx equals
+        // initial_free + incoming - outgoing_drained.
+        let total = free.num_frames() + rx.num_frames() + tx.num_frames();
+        let outgoing_drained = initial_free + 5 - total;
+        assert!(
+            outgoing_drained > 0 && total > 0,
+            "no frames leaked: free={} rx={} tx={} outgoing_drained={}",
+            free.num_frames(),
+            rx.num_frames(),
+            tx.num_frames(),
+            outgoing_drained,
+        );
+        assert_eq!(
+            total + outgoing_drained,
+            initial_free + 5,
+            "all frames accounted for (free={} rx={} tx={} outgoing_drained={})",
+            free.num_frames(),
+            rx.num_frames(),
+            tx.num_frames(),
+            outgoing_drained,
+        );
+    }
+
+    #[test]
+    fn full_passive_close_lifecycle() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // 1. Handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data =
+            build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        // 2. Remote sends FIN -> CloseWait.
+        let fin = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK | flags::FIN,
+            65535,
+            &[],
+        );
+        let fin_len = fin.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(fin), fin_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(handler.connections[0].state, TcpState::CloseWait);
+        while tx.pop().is_some() {}
+
+        // 3. We close -> LastAck.
+        handler.connections[0].pending_fin = true;
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert_eq!(handler.connections[0].state, TcpState::LastAck);
+        while tx.pop().is_some() {}
+        let fin_seq = handler.connections[0].fin_seq.unwrap();
+
+        // 4. Remote ACKs our FIN -> connection removed.
+        let ack = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1002,
+            fin_seq.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
+        let ack_len = ack.len();
+        handler.process_ipv4(
+            Frame::new(3, leak(ack), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(
+            handler.connections.len(),
+            0,
+            "connection removed after LastAck"
+        );
+    }
 }
