@@ -454,6 +454,17 @@ impl TcpHandler {
                         free_frames, rx_return, tx_return,
                     );
                 }
+                TcpState::FinWait1 | TcpState::FinWait2 | TcpState::CloseWait
+                | TcpState::Closing | TcpState::LastAck | TcpState::TimeWait => {
+                    let payload_offset = tcp_offset + tcp_header_len;
+                    let payload_len = frame.len().saturating_sub(payload_offset);
+                    self.process_teardown(
+                        idx, frame, now, seg_seq, seg_ack, seg_flags, seg_wnd,
+                        payload_offset, payload_len,
+                        src_mac, dst_mac,
+                        free_frames, rx_return, tx_return,
+                    );
+                }
                 _ => {
                     rx_return.push(frame);
                 }
@@ -1344,6 +1355,159 @@ impl TcpHandler {
                 );
             }
             self.connections.remove(idx);
+        }
+    }
+
+    // --- Teardown state processing (FinWait1, FinWait2, CloseWait, Closing, LastAck, TimeWait) ---
+
+    fn process_teardown<'umem>(
+        &mut self,
+        idx: usize,
+        frame: Frame<'umem>,
+        now: Instant,
+        seg_seq: u32,
+        seg_ack: u32,
+        seg_flags: u8,
+        seg_wnd: u32,
+        payload_offset: usize,
+        payload_len: usize,
+        src_mac: crate::net::wire::ethernet::MacAddress,
+        dst_mac: crate::net::wire::ethernet::MacAddress,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        let state = self.connections[idx].state;
+
+        // RST check — abort all states except TimeWait.
+        if seg_flags & flags::RST != 0 {
+            if state == TcpState::TimeWait {
+                // Ignore RST in TIME-WAIT (prevents RST attacks).
+                rx_return.push(frame);
+                return;
+            }
+            self.connections[idx].event_queue.push(TcpEvent::Reset);
+            self.connections.remove(idx);
+            rx_return.push(frame);
+            return;
+        }
+
+        match state {
+            TcpState::FinWait1 => {
+                let tcb = &mut self.connections[idx];
+                let fin_acked = if seg_flags & flags::ACK != 0 {
+                    if let Some(fin_seq) = tcb.fin_seq {
+                        crate::net::wire::tcp::seq_lt(fin_seq, seg_ack)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                // Process ACK (advance snd_una if valid).
+                if seg_flags & flags::ACK != 0 {
+                    let snd_una = tcb.snd_una;
+                    let snd_nxt = tcb.snd_nxt;
+                    if crate::net::wire::tcp::seq_lt(snd_una, seg_ack)
+                        && crate::net::wire::tcp::seq_le(seg_ack, snd_nxt)
+                    {
+                        let bytes_acked = seg_ack.wrapping_sub(snd_una) as usize;
+                        tcb.snd_una = seg_ack;
+                        // Cap advance to actual buffer content (FIN consumes a sequence
+                        // number but has no corresponding data in the send buffer).
+                        let buf_advance = bytes_acked.min(tcb.send_buffer.available());
+                        tcb.send_buffer.advance(buf_advance);
+                        tcb.snd_wnd = seg_wnd;
+                    }
+                }
+
+                // Process data if present (remote may still be sending).
+                if payload_len > 0 && seg_seq == tcb.rcv_nxt {
+                    let payload = &frame[payload_offset..payload_offset + payload_len];
+                    tcb.recv_buffer.write(payload);
+                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
+                }
+
+                // Check for FIN from remote.
+                let remote_fin = seg_flags & flags::FIN != 0;
+                if remote_fin {
+                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+                }
+
+                // Determine new state.
+                let tcb = &mut self.connections[idx];
+                if fin_acked && remote_fin {
+                    // Both sides FINed and our FIN is ACKed → TimeWait.
+                    tcb.state = TcpState::TimeWait;
+                    tcb.time_wait_deadline = Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
+                    tcb.retransmit_deadline = None;
+                } else if fin_acked {
+                    // Our FIN ACKed but no remote FIN yet → FinWait2.
+                    tcb.state = TcpState::FinWait2;
+                    tcb.retransmit_deadline = None;
+                } else if remote_fin {
+                    // Remote FINed but our FIN not yet ACKed → Closing.
+                    tcb.state = TcpState::Closing;
+                }
+
+                // Send ACK if FIN or data received.
+                if remote_fin || payload_len > 0 {
+                    let id = self.connections[idx].id;
+                    let snd_nxt = self.connections[idx].snd_nxt;
+                    let rcv_nxt = self.connections[idx].rcv_nxt;
+                    let window = self.connections[idx].recv_buffer.free_space().min(u16::MAX as usize) as u16;
+                    SegmentBuilder::build_ack(
+                        id.local_addr, id.remote_addr,
+                        id.local_port, id.remote_port,
+                        snd_nxt, rcv_nxt, window,
+                        src_mac, dst_mac,
+                        self.tx_offload, free_frames, tx_return,
+                    );
+                }
+
+                rx_return.push(frame);
+            }
+
+            TcpState::FinWait2 => {
+                let tcb = &mut self.connections[idx];
+
+                // Process data if present (remote still sending).
+                if payload_len > 0 && seg_seq == tcb.rcv_nxt {
+                    let payload = &frame[payload_offset..payload_offset + payload_len];
+                    tcb.recv_buffer.write(payload);
+                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
+                }
+
+                // Check for FIN.
+                if seg_flags & flags::FIN != 0 {
+                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+                    tcb.state = TcpState::TimeWait;
+                    tcb.time_wait_deadline = Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
+                }
+
+                // Send ACK if FIN or data.
+                if seg_flags & flags::FIN != 0 || payload_len > 0 {
+                    let id = tcb.id;
+                    let snd_nxt = tcb.snd_nxt;
+                    let rcv_nxt = tcb.rcv_nxt;
+                    let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
+                    SegmentBuilder::build_ack(
+                        id.local_addr, id.remote_addr,
+                        id.local_port, id.remote_port,
+                        snd_nxt, rcv_nxt, window,
+                        src_mac, dst_mac,
+                        self.tx_offload, free_frames, tx_return,
+                    );
+                }
+
+                rx_return.push(frame);
+            }
+
+            // Remaining states added in next tasks.
+            _ => {
+                rx_return.push(frame);
+            }
         }
     }
 }
@@ -2267,5 +2431,89 @@ mod tests {
         assert_eq!(tx.num_frames(), 1, "data segment sent");
         assert_eq!(handler.connections[0].state, TcpState::Established, "still Established until data ACKed");
         assert!(handler.connections[0].pending_fin, "pending_fin still set");
+    }
+
+    #[test]
+    fn active_close_fin_wait1_to_fin_wait2() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Active close: set pending_fin, poll_send sends FIN → FinWait1.
+        handler.connections[0].pending_fin = true;
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+        assert_eq!(handler.connections[0].state, TcpState::FinWait1);
+        let fin_seq = handler.connections[0].fin_seq.unwrap();
+
+        // Remote ACKs our FIN → FinWait2.
+        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, fin_seq.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack.len();
+        handler.process_ipv4(Frame::new(3, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        assert_eq!(handler.connections[0].state, TcpState::FinWait2);
+    }
+
+    #[test]
+    fn fin_wait2_receives_fin_to_time_wait() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Active close → FinWait1 → FinWait2.
+        handler.connections[0].pending_fin = true;
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+        let fin_seq = handler.connections[0].fin_seq.unwrap();
+        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, fin_seq.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack.len();
+        handler.process_ipv4(Frame::new(3, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(handler.connections[0].state, TcpState::FinWait2);
+        while tx.pop().is_some() {}
+
+        // Remote sends FIN → TimeWait.
+        let fin = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, fin_seq.wrapping_add(1), flags::ACK | flags::FIN, 65535, &[]);
+        let fin_len = fin.len();
+        handler.process_ipv4(Frame::new(4, leak(fin), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        assert_eq!(handler.connections[0].state, TcpState::TimeWait);
+        assert!(handler.connections[0].time_wait_deadline.is_some());
+        assert_eq!(tx.num_frames(), 1, "ACK for remote FIN");
     }
 }
