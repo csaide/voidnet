@@ -945,6 +945,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     DEFAULT_RCV_WND,
+                    flags::ACK,
                     ts,
                     src_mac,
                     dst_mac,
@@ -991,6 +992,7 @@ impl TcpHandler {
                 tcb.snd_nxt,
                 tcb.rcv_nxt,
                 DEFAULT_RCV_WND,
+                flags::ACK,
                 ts,
                 src_mac,
                 dst_mac,
@@ -1172,6 +1174,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     DEFAULT_RCV_WND,
+                    flags::ACK,
                     ts,
                     src_mac,
                     dst_mac,
@@ -1262,6 +1265,18 @@ impl TcpHandler {
             self.connections[idx].ecn_ce_received = true;
         }
 
+        // ECN CWR processing: peer acknowledges our ECE by sending CWR.
+        if self.connections[idx].ecn_enabled && seg_flags & flags::CWR != 0 {
+            self.connections[idx].ecn_ce_received = false;
+        }
+
+        // Compute ACK flags: include ECE when we need to signal congestion back.
+        let ack_flags = if self.connections[idx].ecn_ce_received {
+            flags::ACK | flags::ECE
+        } else {
+            flags::ACK
+        };
+
         // Step 1: RST check.
         if seg_flags & flags::RST != 0 {
             self.connections[idx].event_queue.push(TcpEvent::Reset);
@@ -1300,6 +1315,7 @@ impl TcpHandler {
                         tcb.snd_nxt,
                         tcb.rcv_nxt,
                         tcb.advertised_window(),
+                        ack_flags,
                         ts,
                         src_mac,
                         dst_mac,
@@ -1334,6 +1350,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
+                    ack_flags,
                     ts,
                     src_mac,
                     dst_mac,
@@ -1449,6 +1466,14 @@ impl TcpHandler {
                     tcb.sack_scoreboard
                         .retain(|&start, _| !crate::net::wire::tcp::seq_lt(start, snd_una));
                 }
+
+                // ECN congestion response: if peer signals ECE, halve cwnd and
+                // schedule CWR on the next data segment.
+                if tcb.ecn_enabled && seg_flags & flags::ECE != 0 && !tcb.ecn_cwr_sent {
+                    tcb.ssthresh = (tcb.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
+                    tcb.cwnd = tcb.ssthresh;
+                    tcb.ecn_cwr_sent = true;
+                }
             } else if seg_ack == snd_una && payload_len == 0 {
                 // Duplicate ACK.
                 let tcb = &mut self.connections[idx];
@@ -1530,6 +1555,7 @@ impl TcpHandler {
                         tcb.snd_nxt,
                         tcb.rcv_nxt,
                         tcb.advertised_window(),
+                        ack_flags,
                         ts,
                         src_mac,
                         dst_mac,
@@ -1587,6 +1613,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
+                    ack_flags,
                     ts,
                     &sack_blocks,
                     src_mac,
@@ -1612,6 +1639,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
+                    ack_flags,
                     ts,
                     src_mac,
                     dst_mac,
@@ -1648,6 +1676,7 @@ impl TcpHandler {
                 snd_nxt,
                 new_rcv_nxt,
                 window,
+                ack_flags,
                 ts,
                 src_mac,
                 dst_mac,
@@ -1690,6 +1719,11 @@ impl TcpHandler {
                 } else {
                     None
                 };
+                let ack_flags = if tcb.ecn_ce_received {
+                    flags::ACK | flags::ECE
+                } else {
+                    flags::ACK
+                };
                 SegmentBuilder::build_ack(
                     id.local_addr,
                     id.remote_addr,
@@ -1698,6 +1732,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
+                    ack_flags,
                     ts,
                     src_mac,
                     dst_mac,
@@ -1746,6 +1781,11 @@ impl TcpHandler {
                 } else {
                     None
                 };
+                let ack_flags = if tcb.ecn_ce_received {
+                    flags::ACK | flags::ECE
+                } else {
+                    flags::ACK
+                };
                 SegmentBuilder::build_ack(
                     id.local_addr,
                     id.remote_addr,
@@ -1754,6 +1794,7 @@ impl TcpHandler {
                     tcb.snd_una.wrapping_sub(1),
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
+                    ack_flags,
                     ts,
                     src_mac,
                     dst_mac,
@@ -2065,11 +2106,17 @@ impl TcpHandler {
                         None
                     };
                     let remaining_after_send = data_available.saturating_sub(to_send);
-                    let data_flags = if remaining_after_send == 0 || to_send >= can_send {
+                    let mut data_flags = if remaining_after_send == 0 || to_send >= can_send {
                         flags::ACK | flags::PSH
                     } else {
                         flags::ACK
                     };
+                    if tcb.ecn_ce_received {
+                        data_flags |= flags::ECE;
+                    }
+                    if tcb.ecn_cwr_sent {
+                        data_flags |= flags::CWR;
+                    }
                     SegmentBuilder::build_data_from_slices(
                         tcb.id.local_addr,
                         tcb.id.remote_addr,
@@ -2100,6 +2147,11 @@ impl TcpHandler {
                     if tcb.retransmit_deadline.is_none() {
                         tcb.retransmit_deadline =
                             Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                    }
+
+                    // Clear CWR after sending (only needs to be on one segment).
+                    if tcb.ecn_cwr_sent {
+                        tcb.ecn_cwr_sent = false;
                     }
 
                     // Piggyback: data segment carries ACK, so clear delayed ACK state.
@@ -2416,6 +2468,7 @@ impl TcpHandler {
                         tcb.snd_nxt,
                         tcb.rcv_nxt,
                         tcb.advertised_window(),
+                        flags::ACK,
                         ts,
                         src_mac,
                         dst_mac,
@@ -2450,6 +2503,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
+                    flags::ACK,
                     ts,
                     src_mac,
                     dst_mac,
@@ -2542,6 +2596,7 @@ impl TcpHandler {
                         snd_nxt,
                         rcv_nxt,
                         self.connections[idx].advertised_window(),
+                        flags::ACK,
                         ts,
                         src_mac,
                         dst_mac,
@@ -2591,6 +2646,7 @@ impl TcpHandler {
                         snd_nxt,
                         rcv_nxt,
                         tcb.advertised_window(),
+                        flags::ACK,
                         ts,
                         src_mac,
                         dst_mac,
@@ -2655,6 +2711,7 @@ impl TcpHandler {
                         snd_nxt,
                         rcv_nxt,
                         tcb.advertised_window(),
+                        flags::ACK,
                         ts,
                         src_mac,
                         dst_mac,
@@ -8703,6 +8760,275 @@ mod tests {
         assert!(
             handler.connections[0].ecn_ce_received,
             "ecn_ce_received should be true after receiving CE-marked segment"
+        );
+    }
+
+    #[test]
+    fn ecn_ece_sent_when_ce_received() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        // Enable ECN and set ecn_ce_received.
+        handler.connections[0].ecn_enabled = true;
+        handler.connections[0].ecn_ce_received = true;
+
+        // Send data to trigger an ACK with ECE.
+        let data_frame = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], b"hello",
+        );
+        let data_len = data_frame.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(data_frame), data_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+
+        // The handler should have sent an ACK (delayed or immediate).
+        // Force delayed ACK flush if needed.
+        if tx.num_frames() == 0 {
+            let now = coarsetime::Instant::now();
+            handler.connections[0].delayed_ack_deadline = Some(now);
+            handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        }
+
+        assert!(tx.num_frames() >= 1, "should have at least one outgoing ACK");
+        let frame = tx.pop().unwrap();
+        let tcp_flags_byte = frame[ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + 13];
+        assert!(
+            tcp_flags_byte & flags::ECE != 0,
+            "outgoing ACK should have ECE flag set, got flags={:#04x}",
+            tcp_flags_byte,
+        );
+    }
+
+    #[test]
+    fn ecn_cwnd_halved_on_ece() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        // Enable ECN and set cwnd to a known value.
+        handler.connections[0].ecn_enabled = true;
+        handler.connections[0].snd_wnd = 65535;
+        let mss = handler.connections[0].eff_snd_mss as u32;
+        handler.connections[0].cwnd = 10 * mss;
+        handler.connections[0].ssthresh = 20 * mss;
+
+        // Send some data so snd_nxt advances.
+        handler.connections[0].send_buffer.write(b"test data for ecn");
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+
+        let snd_nxt = handler.connections[0].snd_nxt;
+
+        // Record cwnd before receiving ECE.
+        let cwnd_before = handler.connections[0].cwnd;
+
+        // Receive ACK with ECE flag — simulating peer's congestion signal.
+        let ece_ack = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_nxt,
+            flags::ACK | flags::ECE, 65535, &[],
+        );
+        let ece_len = ece_ack.len();
+        handler.process_ipv4(
+            Frame::new(3, leak(ece_ack), ece_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+
+        // Verify cwnd was reduced (halved after congestion avoidance increment).
+        let cwnd_after = handler.connections[0].cwnd;
+        assert!(
+            cwnd_after < cwnd_before,
+            "cwnd should be reduced: before={}, after={}",
+            cwnd_before, cwnd_after,
+        );
+        assert_eq!(
+            handler.connections[0].cwnd, handler.connections[0].ssthresh,
+            "cwnd should equal ssthresh after ECN response"
+        );
+        assert!(
+            handler.connections[0].ssthresh >= 2 * mss,
+            "ssthresh should be at least 2*MSS"
+        );
+        assert!(
+            handler.connections[0].ecn_cwr_sent,
+            "ecn_cwr_sent should be true"
+        );
+    }
+
+    #[test]
+    fn ecn_cwr_sent_on_next_data() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        // Enable ECN and set ecn_cwr_sent to true (simulating ECE reception).
+        handler.connections[0].ecn_enabled = true;
+        handler.connections[0].ecn_cwr_sent = true;
+        handler.connections[0].snd_wnd = 65535;
+
+        // Write data and poll_send.
+        handler.connections[0].send_buffer.write(b"cwr test data");
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        assert_eq!(tx.num_frames(), 1, "should have one data segment");
+        let frame = tx.pop().unwrap();
+        let tcp_flags_byte = frame[ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + 13];
+        assert!(
+            tcp_flags_byte & flags::CWR != 0,
+            "outgoing data segment should have CWR flag set, got flags={:#04x}",
+            tcp_flags_byte,
+        );
+
+        // Verify ecn_cwr_sent is cleared after sending.
+        assert!(
+            !handler.connections[0].ecn_cwr_sent,
+            "ecn_cwr_sent should be cleared after sending CWR"
+        );
+    }
+
+    #[test]
+    fn ecn_ce_received_cleared_on_cwr() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        // Enable ECN and set ecn_ce_received.
+        handler.connections[0].ecn_enabled = true;
+        handler.connections[0].ecn_ce_received = true;
+
+        // Receive a segment with CWR flag from peer (acknowledging our ECE).
+        let rcv_nxt = handler.connections[0].rcv_nxt;
+        let cwr_frame = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            rcv_nxt, server_iss.wrapping_add(1),
+            flags::ACK | flags::CWR, 65535, &[], b"data",
+        );
+        let cwr_len = cwr_frame.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(cwr_frame), cwr_len, false),
+            &nh, &mut free, &mut rx, &mut tx,
+        );
+
+        assert!(
+            !handler.connections[0].ecn_ce_received,
+            "ecn_ce_received should be cleared after receiving CWR"
         );
     }
 }

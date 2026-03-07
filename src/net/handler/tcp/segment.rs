@@ -262,6 +262,10 @@ impl SegmentBuilder {
     }
 
     /// Build a pure ACK segment (no data, no SYN/FIN).
+    ///
+    /// The `tcp_flags` parameter allows the caller to set additional flags
+    /// (e.g. ECE) alongside the base ACK. Callers typically pass `flags::ACK`
+    /// or `flags::ACK | flags::ECE`.
     #[inline]
     pub fn build_ack<'umem>(
         local_addr: IpAddress,
@@ -271,6 +275,7 @@ impl SegmentBuilder {
         seq: u32,
         ack: u32,
         window: u16,
+        tcp_flags: u8,
         timestamp: Option<(u32, u32)>,
         src_mac: MacAddress,
         dst_mac: MacAddress,
@@ -297,7 +302,7 @@ impl SegmentBuilder {
                     remote_port,
                     seq,
                     ack,
-                    flags::ACK,
+                    tcp_flags,
                     window,
                     tcp_options,
                     src_mac,
@@ -315,7 +320,7 @@ impl SegmentBuilder {
                     remote_port,
                     seq,
                     ack,
-                    flags::ACK,
+                    tcp_flags,
                     window,
                     tcp_options,
                     src_mac,
@@ -342,6 +347,7 @@ impl SegmentBuilder {
         seq: u32,
         ack: u32,
         window: u16,
+        tcp_flags: u8,
         timestamp: Option<(u32, u32)>,
         sack_blocks: &[(u32, u32)],
         src_mac: MacAddress,
@@ -378,7 +384,7 @@ impl SegmentBuilder {
                     remote_port,
                     seq,
                     ack,
-                    flags::ACK,
+                    tcp_flags,
                     window,
                     tcp_options,
                     src_mac,
@@ -396,7 +402,7 @@ impl SegmentBuilder {
                     remote_port,
                     seq,
                     ack,
-                    flags::ACK,
+                    tcp_flags,
                     window,
                     tcp_options,
                     src_mac,
@@ -1379,6 +1385,7 @@ mod tests {
             1000,
             500,
             65535,
+            flags::ACK,
             None,
             &sack_blocks,
             src_mac,
@@ -1452,6 +1459,7 @@ mod tests {
             1000,
             500,
             65535,
+            flags::ACK,
             Some((100, 200)),
             &sack_blocks,
             MacAddress::new([0xAA; 6]),
@@ -1551,6 +1559,7 @@ mod tests {
             1000,
             500,
             65535,
+            flags::ACK,
             None,
             &[],
             MacAddress::new([0xAA; 6]),
