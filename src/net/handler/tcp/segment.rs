@@ -112,6 +112,7 @@ impl SegmentBuilder {
         wscale: u8,
         timestamp: Option<(u32, u32)>,
         sack_permitted: bool,
+        ecn: bool,
         src_mac: MacAddress,
         dst_mac: MacAddress,
         tx_offload: bool,
@@ -135,6 +136,8 @@ impl SegmentBuilder {
             opt_len += write_sack_permitted_option(&mut opt_buf[opt_len..]);
         }
 
+        let syn_flags = if ecn { flags::SYN | flags::ECE | flags::CWR } else { flags::SYN };
+
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
                 Self::build_ipv4_segment(
@@ -144,7 +147,7 @@ impl SegmentBuilder {
                     remote_port,
                     iss,
                     0,
-                    flags::SYN,
+                    syn_flags,
                     window,
                     &opt_buf[..opt_len],
                     src_mac,
@@ -162,7 +165,7 @@ impl SegmentBuilder {
                     remote_port,
                     iss,
                     0,
-                    flags::SYN,
+                    syn_flags,
                     window,
                     &opt_buf[..opt_len],
                     src_mac,
@@ -190,6 +193,7 @@ impl SegmentBuilder {
         wscale: Option<u8>,
         timestamp: Option<(u32, u32)>,
         sack_permitted: bool,
+        ecn: bool,
         src_mac: MacAddress,
         dst_mac: MacAddress,
         tx_offload: bool,
@@ -214,6 +218,8 @@ impl SegmentBuilder {
             opt_len += write_sack_permitted_option(&mut opt_buf[opt_len..]);
         }
 
+        let syn_ack_flags = if ecn { flags::SYN | flags::ACK | flags::ECE } else { flags::SYN | flags::ACK };
+
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
                 Self::build_ipv4_segment(
@@ -223,7 +229,7 @@ impl SegmentBuilder {
                     remote_port,
                     iss,
                     ack,
-                    flags::SYN | flags::ACK,
+                    syn_ack_flags,
                     window,
                     &opt_buf[..opt_len],
                     src_mac,
@@ -241,7 +247,7 @@ impl SegmentBuilder {
                     remote_port,
                     iss,
                     ack,
-                    flags::SYN | flags::ACK,
+                    syn_ack_flags,
                     window,
                     &opt_buf[..opt_len],
                     src_mac,

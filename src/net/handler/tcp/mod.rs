@@ -60,6 +60,7 @@ pub(crate) struct ListenEntry {
     pub linger: Option<u64>,
     pub timestamps: bool,
     pub sack: bool,
+    pub ecn: bool,
 }
 
 /// Check segment acceptability per RFC 9293 §3.10.7.4.
@@ -152,6 +153,7 @@ impl TcpHandler {
             linger: config.linger,
             timestamps: config.timestamps,
             sack: config.sack,
+            ecn: config.ecn,
         });
         Ok(accept_queue)
     }
@@ -281,7 +283,7 @@ impl TcpHandler {
             ts_offset: Instant::now(),
             sack_enabled: config.sack,
             sack_scoreboard: BTreeMap::new(),
-            ecn_enabled: false,
+            ecn_enabled: config.ecn,
             ecn_ce_received: false,
             ecn_cwr_sent: false,
             persist_deadline: None,
@@ -305,6 +307,7 @@ impl TcpHandler {
             DEFAULT_RCV_WSCALE,
             ts_opt,
             config.sack,
+            config.ecn,
             src_mac,
             dst_mac,
             self.tx_offload,
@@ -774,9 +777,11 @@ impl TcpHandler {
             let wscale_enabled = peer_wscale.is_some();
             let snd_wscale = peer_wscale.unwrap_or(0);
 
-            // Negotiate timestamps and SACK.
+            // Negotiate timestamps, SACK, and ECN.
             let ts_enabled = listener.timestamps && peer_ts.is_some();
             let sack_enabled = listener.sack && peer_sack;
+            let ecn_enabled = listener.ecn
+                && (seg_flags & (flags::ECE | flags::CWR) == (flags::ECE | flags::CWR));
             let peer_tsval = peer_ts.map(|(v, _)| v).unwrap_or(0);
 
             let send_buffer_size = listener.send_buffer_size;
@@ -844,7 +849,7 @@ impl TcpHandler {
                 ts_offset: now,
                 sack_enabled,
                 sack_scoreboard: BTreeMap::new(),
-                ecn_enabled: false,
+                ecn_enabled,
                 ecn_ce_received: false,
                 ecn_cwr_sent: false,
                 persist_deadline: None,
@@ -874,6 +879,7 @@ impl TcpHandler {
                 wscale_opt,
                 ts_opt,
                 sack_enabled,
+                ecn_enabled,
                 src_mac,
                 dst_mac,
                 self.tx_offload,
@@ -1117,6 +1123,12 @@ impl TcpHandler {
             if tcb.sack_enabled && !parse_sack_permitted(options) {
                 tcb.sack_enabled = false;
             }
+            // ECN negotiation: confirm only if SYN-ACK has ECE set.
+            if tcb.ecn_enabled {
+                if seg_flags & flags::ECE == 0 {
+                    tcb.ecn_enabled = false;
+                }
+            }
 
             if seg_flags & flags::ACK != 0 {
                 // Our SYN was ACKed.
@@ -1192,6 +1204,7 @@ impl TcpHandler {
                     wscale_opt,
                     ts_opt,
                     tcb.sack_enabled,
+                    tcb.ecn_enabled,
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -1876,6 +1889,7 @@ impl TcpHandler {
                         DEFAULT_RCV_WSCALE,
                         ts_opt,
                         tcb.sack_enabled,
+                        tcb.ecn_enabled,
                         src_mac,
                         dst_mac,
                         self.tx_offload,
@@ -1907,6 +1921,7 @@ impl TcpHandler {
                         wscale_opt,
                         ts_opt,
                         tcb.sack_enabled,
+                        tcb.ecn_enabled,
                         src_mac,
                         dst_mac,
                         self.tx_offload,
@@ -8248,6 +8263,256 @@ mod tests {
             second_flags & flags::PSH != 0,
             "PSH should be set on last segment, got flags: {:#04x}",
             second_flags
+        );
+    }
+
+    // --- ECN negotiation tests ---
+
+    #[test]
+    fn ecn_negotiated_when_both_sides_support() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let tcp_flags_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + 13;
+
+        // Active open with ECN enabled (default config has ecn=true).
+        let config = TcpConfig::default();
+        assert!(config.ecn, "default config should have ecn=true");
+        let _events = handler
+            .connect_with_config(
+                IpAddress::V4(LOCAL_IP),
+                5000,
+                IpAddress::V4(REMOTE_IP),
+                80,
+                nh.local_mac(),
+                crate::net::wire::ethernet::MacAddress::broadcast(),
+                config,
+                &mut free,
+                &mut tx,
+            )
+            .unwrap();
+
+        // Verify SYN has ECE+CWR flags.
+        assert_eq!(tx.num_frames(), 1, "SYN should be sent");
+        let syn_frame = tx.pop().unwrap();
+        let syn_flags = syn_frame[tcp_flags_offset];
+        assert!(
+            syn_flags & flags::SYN != 0,
+            "SYN flag should be set, got {:#04x}",
+            syn_flags
+        );
+        assert!(
+            syn_flags & flags::ECE != 0,
+            "ECE flag should be set on SYN when ECN enabled, got {:#04x}",
+            syn_flags
+        );
+        assert!(
+            syn_flags & flags::CWR != 0,
+            "CWR flag should be set on SYN when ECN enabled, got {:#04x}",
+            syn_flags
+        );
+
+        // ecn_enabled should be provisionally true.
+        assert!(handler.connections[0].ecn_enabled);
+
+        // Send SYN-ACK with ECE (peer supports ECN).
+        let server_iss = 2000u32;
+        let client_iss = handler.connections[0].iss;
+        let syn_ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            80,
+            5000,
+            server_iss,
+            client_iss.wrapping_add(1),
+            flags::SYN | flags::ACK | flags::ECE,
+            65535,
+            &[],
+        );
+        let syn_ack_len = syn_ack_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_ack_data), syn_ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // ECN should remain enabled.
+        assert!(
+            handler.connections[0].ecn_enabled,
+            "ecn_enabled should be true after SYN-ACK with ECE"
+        );
+        assert_eq!(
+            handler.connections[0].state,
+            TcpState::Established,
+            "connection should be established"
+        );
+    }
+
+    #[test]
+    fn ecn_disabled_when_peer_doesnt_support() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Active open with ECN enabled.
+        let _events = handler
+            .connect_with_config(
+                IpAddress::V4(LOCAL_IP),
+                5001,
+                IpAddress::V4(REMOTE_IP),
+                80,
+                nh.local_mac(),
+                crate::net::wire::ethernet::MacAddress::broadcast(),
+                TcpConfig::default(),
+                &mut free,
+                &mut tx,
+            )
+            .unwrap();
+
+        // Drain the SYN.
+        while tx.pop().is_some() {}
+
+        // ecn_enabled should be provisionally true.
+        assert!(handler.connections[0].ecn_enabled);
+
+        // Send SYN-ACK WITHOUT ECE (peer doesn't support ECN).
+        let server_iss = 3000u32;
+        let client_iss = handler.connections[0].iss;
+        let syn_ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            80,
+            5001,
+            server_iss,
+            client_iss.wrapping_add(1),
+            flags::SYN | flags::ACK,
+            65535,
+            &[],
+        );
+        let syn_ack_len = syn_ack_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_ack_data), syn_ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // ECN should be disabled.
+        assert!(
+            !handler.connections[0].ecn_enabled,
+            "ecn_enabled should be false after SYN-ACK without ECE"
+        );
+        assert_eq!(
+            handler.connections[0].state,
+            TcpState::Established,
+            "connection should be established"
+        );
+    }
+
+    #[test]
+    fn ecn_negotiated_on_passive_open() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let tcp_flags_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + 13;
+
+        // Listen with default config (ecn=true).
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+
+        // Send SYN with ECE+CWR (client supports ECN).
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN | flags::ECE | flags::CWR,
+            65535,
+            &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // Verify SYN-ACK has ECE flag.
+        assert_eq!(tx.num_frames(), 1, "SYN-ACK should be sent");
+        let syn_ack_frame = tx.pop().unwrap();
+        let syn_ack_flags = syn_ack_frame[tcp_flags_offset];
+        assert!(
+            syn_ack_flags & flags::SYN != 0,
+            "SYN flag should be set on SYN-ACK, got {:#04x}",
+            syn_ack_flags
+        );
+        assert!(
+            syn_ack_flags & flags::ACK != 0,
+            "ACK flag should be set on SYN-ACK, got {:#04x}",
+            syn_ack_flags
+        );
+        assert!(
+            syn_ack_flags & flags::ECE != 0,
+            "ECE flag should be set on SYN-ACK when ECN negotiated, got {:#04x}",
+            syn_ack_flags
+        );
+
+        // TCB should have ecn_enabled = true.
+        assert!(
+            handler.connections[0].ecn_enabled,
+            "ecn_enabled should be true on passive side"
+        );
+
+        // Complete handshake with final ACK.
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // Connection should be established with ECN still enabled.
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+        assert!(
+            handler.connections[0].ecn_enabled,
+            "ecn_enabled should remain true after handshake"
         );
     }
 }
