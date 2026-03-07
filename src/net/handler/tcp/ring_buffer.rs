@@ -89,6 +89,22 @@ impl RingBuffer {
         }
     }
 
+    /// Return two slices covering `len` bytes starting at `offset` from `head`,
+    /// without advancing `head`. The first slice covers data up to the end of
+    /// the backing buffer; the second covers the wrap-around portion (empty if
+    /// no wrap occurs).
+    #[inline]
+    pub fn peek_slices(&self, offset: usize, len: usize) -> (&[u8], &[u8]) {
+        debug_assert!(offset + len <= self.len);
+        let pos = (self.head.wrapping_add(offset)) & self.mask;
+        let first = len.min(self.buf.len() - pos);
+        if first >= len {
+            (&self.buf[pos..pos + len], &[])
+        } else {
+            (&self.buf[pos..], &self.buf[..len - first])
+        }
+    }
+
     /// Advance `head` by `n` bytes, freeing space. Used when bytes are ACKed (send)
     /// or consumed by `TcpStream::read()` (receive).
     #[inline]
@@ -271,5 +287,37 @@ mod tests {
         let mut buf = [0u8; 4];
         rb.read(&mut buf);
         assert_eq!(&buf, b"test");
+    }
+
+    #[test]
+    fn peek_slices_no_wrap() {
+        let mut rb = RingBuffer::new(64);
+        rb.write(b"hello world");
+        let (a, b) = rb.peek_slices(0, 5);
+        assert_eq!(a, b"hello");
+        assert!(b.is_empty());
+        assert_eq!(rb.available(), 11); // unchanged
+    }
+
+    #[test]
+    fn peek_slices_with_wrap() {
+        let mut rb = RingBuffer::new(16);
+        rb.write(&[0xAA; 12]);
+        let mut discard = [0u8; 12];
+        rb.read(&mut discard);
+        // head=12. Write 8 bytes: 4 at end [12..16], 4 wrap [0..4].
+        rb.write(&[0xBB; 8]);
+        let (a, b) = rb.peek_slices(0, 8);
+        assert_eq!(a, &[0xBB; 4]);
+        assert_eq!(b, &[0xBB; 4]);
+    }
+
+    #[test]
+    fn peek_slices_with_offset() {
+        let mut rb = RingBuffer::new(64);
+        rb.write(b"hello world");
+        let (a, b) = rb.peek_slices(6, 5);
+        assert_eq!(a, b"world");
+        assert!(b.is_empty());
     }
 }

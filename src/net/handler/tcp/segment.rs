@@ -543,6 +543,78 @@ impl SegmentBuilder {
         }
     }
 
+    /// Build a data segment from two contiguous slices (zero-copy from ring buffer).
+    #[inline]
+    pub fn build_data_from_slices<'umem>(
+        local_addr: IpAddress,
+        remote_addr: IpAddress,
+        local_port: u16,
+        remote_port: u16,
+        seq: u32,
+        ack: u32,
+        window: u16,
+        payload: (&[u8], &[u8]),
+        timestamp: Option<(u32, u32)>,
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        tx_offload: bool,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        // Same options construction as build_data
+        let mut ts_buf = [0u8; 12];
+        let tcp_options: &[u8] = if let Some((tsval, tsecr)) = timestamp {
+            ts_buf[0] = options::NOP;
+            ts_buf[1] = options::NOP;
+            write_timestamp_option(&mut ts_buf[2..], tsval, tsecr);
+            &ts_buf
+        } else {
+            &[]
+        };
+
+        match (local_addr, remote_addr) {
+            (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
+                Self::build_ipv4_data_segment_slices(
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    seq,
+                    ack,
+                    flags::ACK,
+                    window,
+                    payload,
+                    tcp_options,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+            }
+            (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
+                Self::build_ipv6_data_segment_slices(
+                    local_ip,
+                    remote_ip,
+                    local_port,
+                    remote_port,
+                    seq,
+                    ack,
+                    flags::ACK,
+                    window,
+                    payload,
+                    tcp_options,
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+            }
+            _ => {}
+        }
+    }
+
     // --- Internal helpers ---
 
     #[inline]
@@ -888,6 +960,196 @@ impl SegmentBuilder {
         tx_return.push(frame);
     }
 
+    #[inline]
+    fn build_ipv4_data_segment_slices<'umem>(
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        src_port: u16,
+        dst_port: u16,
+        seq: u32,
+        ack: u32,
+        tcp_flags: u8,
+        window: u16,
+        payload: (&[u8], &[u8]),
+        tcp_options: &[u8],
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        tx_offload: bool,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        let Some(mut frame) = free_frames.pop() else {
+            return;
+        };
+
+        let payload_len = payload.0.len() + payload.1.len();
+        let opt_padded_len = (tcp_options.len() + 3) & !3;
+        let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
+        let data_offset = (tcp_header_len / 4) as u8;
+        let total_ip_len = (IPV4_MIN_HEADER_LEN + tcp_header_len + payload_len) as u16;
+        let frame_len = ETH_LEN + IPV4_MIN_HEADER_LEN + tcp_header_len + payload_len;
+
+        if frame.capacity() < frame_len {
+            free_frames.push(frame);
+            return;
+        }
+
+        unsafe { frame.set_len(frame_len) };
+
+        // Ethernet header.
+        write_ethernet_header(&mut frame, dst_mac, src_mac, EtherTypes::IPv4);
+
+        // IPv4 header.
+        {
+            let ip = &mut frame[ETH_LEN..ETH_LEN + IPV4_MIN_HEADER_LEN];
+            ip.fill(0);
+            ip[0] = 0x45; // version=4, ihl=5
+            ip[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
+            ip[6] = 0x40; // Don't Fragment
+            ip[8] = 64; // TTL
+            ip[9] = IpProtocols::Tcp;
+            let src_bytes: [u8; 4] = src_ip.into();
+            ip[12..16].copy_from_slice(&src_bytes);
+            let dst_bytes: [u8; 4] = dst_ip.into();
+            ip[16..20].copy_from_slice(&dst_bytes);
+        }
+        // Compute IPv4 header checksum.
+        {
+            let ip = crate::net::wire::ip::Ipv4Header::from_bytes_mut(&mut frame);
+            ip.fill_checksum();
+        }
+
+        // TCP header.
+        let tcp_offset = ETH_LEN + IPV4_MIN_HEADER_LEN;
+        Self::write_tcp_header(
+            &mut frame,
+            tcp_offset,
+            src_port,
+            dst_port,
+            seq,
+            ack,
+            data_offset,
+            tcp_flags,
+            window,
+            tcp_options,
+            opt_padded_len,
+        );
+
+        // Copy payload (two slices).
+        let payload_start = tcp_offset + tcp_header_len;
+        frame[payload_start..payload_start + payload.0.len()].copy_from_slice(payload.0);
+        if !payload.1.is_empty() {
+            let p2_start = payload_start + payload.0.len();
+            frame[p2_start..p2_start + payload.1.len()].copy_from_slice(payload.1);
+        }
+
+        // TCP checksum — computed from the frame after both slices are written.
+        if !tx_offload {
+            let checksum = compute_tcp_checksum_from_parts(
+                &src_ip,
+                &dst_ip,
+                &frame[tcp_offset..tcp_offset + tcp_header_len],
+                &frame[payload_start..frame_len],
+            );
+            frame[tcp_offset + 16] = checksum[0];
+            frame[tcp_offset + 17] = checksum[1];
+        }
+
+        tx_return.push(frame);
+    }
+
+    #[inline]
+    fn build_ipv6_data_segment_slices<'umem>(
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        src_port: u16,
+        dst_port: u16,
+        seq: u32,
+        ack: u32,
+        tcp_flags: u8,
+        window: u16,
+        payload: (&[u8], &[u8]),
+        tcp_options: &[u8],
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        tx_offload: bool,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        let Some(mut frame) = free_frames.pop() else {
+            return;
+        };
+
+        let payload_len = payload.0.len() + payload.1.len();
+        let opt_padded_len = (tcp_options.len() + 3) & !3;
+        let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
+        let data_offset = (tcp_header_len / 4) as u8;
+        let ipv6_payload_len = (tcp_header_len + payload_len) as u16;
+        let frame_len = ETH_LEN + IPV6_HEADER_LEN + tcp_header_len + payload_len;
+
+        if frame.capacity() < frame_len {
+            free_frames.push(frame);
+            return;
+        }
+
+        unsafe { frame.set_len(frame_len) };
+
+        // Ethernet header.
+        write_ethernet_header(&mut frame, dst_mac, src_mac, EtherTypes::IPv6);
+
+        // IPv6 header.
+        {
+            let ip = &mut frame[ETH_LEN..ETH_LEN + IPV6_HEADER_LEN];
+            ip.fill(0);
+            ip[0] = 0x60; // version=6
+            ip[4..6].copy_from_slice(&ipv6_payload_len.to_be_bytes());
+            ip[6] = IpProtocols::Tcp; // Next Header
+            ip[7] = 64; // Hop Limit
+            let src_bytes: [u8; 16] = src_ip.into();
+            ip[8..24].copy_from_slice(&src_bytes);
+            let dst_bytes: [u8; 16] = dst_ip.into();
+            ip[24..40].copy_from_slice(&dst_bytes);
+        }
+
+        // TCP header.
+        let tcp_offset = ETH_LEN + IPV6_HEADER_LEN;
+        Self::write_tcp_header(
+            &mut frame,
+            tcp_offset,
+            src_port,
+            dst_port,
+            seq,
+            ack,
+            data_offset,
+            tcp_flags,
+            window,
+            tcp_options,
+            opt_padded_len,
+        );
+
+        // Copy payload (two slices).
+        let payload_start = tcp_offset + tcp_header_len;
+        frame[payload_start..payload_start + payload.0.len()].copy_from_slice(payload.0);
+        if !payload.1.is_empty() {
+            let p2_start = payload_start + payload.0.len();
+            frame[p2_start..p2_start + payload.1.len()].copy_from_slice(payload.1);
+        }
+
+        // TCP checksum.
+        if !tx_offload {
+            let checksum = compute_tcp_checksum_v6_from_parts(
+                &src_ip,
+                &dst_ip,
+                &frame[tcp_offset..tcp_offset + tcp_header_len],
+                &frame[payload_start..frame_len],
+            );
+            frame[tcp_offset + 16] = checksum[0];
+            frame[tcp_offset + 17] = checksum[1];
+        }
+
+        tx_return.push(frame);
+    }
+
     #[inline(always)]
     fn write_tcp_header(
         frame: &mut Frame<'_>,
@@ -1204,6 +1466,49 @@ mod tests {
         assert_eq!(frame[opt_start + 13], 10); // SACK len: 2 + 1*8
 
         // Verify TCP checksum.
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_data_from_slices_produces_frame() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        SegmentBuilder::build_data_from_slices(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            1234,
+            80,
+            100,
+            200,
+            65535,
+            (b"hel", b"lo"),
+            None,
+            MacAddress::broadcast(),
+            MacAddress::broadcast(),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1);
+
+        let frame = tx.pop().unwrap();
+        // ETH(14) + IPv4(20) + TCP(20) + payload(5) = 59
+        assert_eq!(frame.len(), 59);
+
+        // Verify payload is correctly assembled.
+        let payload_start = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + TCP_HEADER_LEN;
+        assert_eq!(&frame[payload_start..frame.len()], b"hello");
+
+        // Verify TCP checksum.
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
         let ip = Ipv4Header::from_bytes(&frame);
         assert!(verify_tcp_checksum(
             &ip.src_addr,

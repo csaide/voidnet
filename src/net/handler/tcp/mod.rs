@@ -1786,8 +1786,7 @@ impl TcpHandler {
                 .lookup(now, &id.remote_addr)
                 .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
 
-            let mut payload = vec![0u8; retransmit_len];
-            tcb.send_buffer.peek_at(retransmit_offset, &mut payload);
+            let payload = tcb.send_buffer.peek_slices(retransmit_offset, retransmit_len);
 
             let ts = if tcb.ts_enabled {
                 let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
@@ -1795,7 +1794,7 @@ impl TcpHandler {
             } else {
                 None
             };
-            SegmentBuilder::build_data(
+            SegmentBuilder::build_data_from_slices(
                 id.local_addr,
                 id.remote_addr,
                 id.local_port,
@@ -1803,7 +1802,7 @@ impl TcpHandler {
                 retransmit_seq,
                 tcb.rcv_nxt,
                 tcb.advertised_window(),
-                &payload,
+                payload,
                 ts,
                 src_mac,
                 dst_mac,
@@ -1913,15 +1912,14 @@ impl TcpHandler {
                 TcpState::Established => {
                     let retransmit_len = tcb.send_buffer.available().min(tcb.eff_snd_mss as usize);
                     if retransmit_len > 0 {
-                        let mut payload = vec![0u8; retransmit_len];
-                        tcb.send_buffer.peek_at(0, &mut payload);
+                        let payload = tcb.send_buffer.peek_slices(0, retransmit_len);
                         let ts = if tcb.ts_enabled {
                             let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
                             Some((tsval, tcb.ts_recent))
                         } else {
                             None
                         };
-                        SegmentBuilder::build_data(
+                        SegmentBuilder::build_data_from_slices(
                             id.local_addr,
                             id.remote_addr,
                             id.local_port,
@@ -1929,7 +1927,7 @@ impl TcpHandler {
                             tcb.snd_una,
                             tcb.rcv_nxt,
                             tcb.advertised_window(),
-                            &payload,
+                            payload,
                             ts,
                             src_mac,
                             dst_mac,
@@ -2013,9 +2011,7 @@ impl TcpHandler {
                     // Don't send — wait for outstanding ACK.
                 } else {
                     // Peek the data from the send buffer (don't advance — held until ACKed).
-                    // TODO: use stack buffer to avoid allocation
-                    let mut payload = vec![0u8; to_send];
-                    tcb.send_buffer.peek_at(bytes_in_flight, &mut payload);
+                    let payload = tcb.send_buffer.peek_slices(bytes_in_flight, to_send);
 
                     let dst_mac = neighbor_handler
                         .lookup(now, &tcb.id.remote_addr)
@@ -2027,7 +2023,7 @@ impl TcpHandler {
                     } else {
                         None
                     };
-                    SegmentBuilder::build_data(
+                    SegmentBuilder::build_data_from_slices(
                         tcb.id.local_addr,
                         tcb.id.remote_addr,
                         tcb.id.local_port,
@@ -2035,7 +2031,7 @@ impl TcpHandler {
                         tcb.snd_nxt,
                         tcb.rcv_nxt,
                         tcb.advertised_window(),
-                        &payload,
+                        payload,
                         ts,
                         src_mac,
                         dst_mac,
