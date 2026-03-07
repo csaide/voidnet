@@ -2107,6 +2107,36 @@ impl TcpHandler {
                     tcb.retransmit_deadline =
                         Some(now + coarsetime::Duration::from_millis(tcb.rto << tcb.rto_backoff));
                 }
+                TcpState::FinWait1 | TcpState::Closing | TcpState::LastAck => {
+                    // Retransmit FIN-ACK.
+                    let ts = if tcb.ts_enabled {
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        Some((tsval, tcb.ts_recent))
+                    } else {
+                        None
+                    };
+                    if let Some(fin_seq) = tcb.fin_seq {
+                        SegmentBuilder::build_fin_ack(
+                            id.local_addr,
+                            id.remote_addr,
+                            id.local_port,
+                            id.remote_port,
+                            fin_seq,
+                            tcb.rcv_nxt,
+                            tcb.advertised_window(),
+                            ts,
+                            src_mac,
+                            dst_mac,
+                            self.tx_offload,
+                            free_frames,
+                            tx_return,
+                        );
+                    }
+                    // Exponential backoff (same as Established).
+                    tcb.rto_backoff += 1;
+                    tcb.retransmit_deadline =
+                        Some(now + coarsetime::Duration::from_millis(tcb.rto << tcb.rto_backoff));
+                }
                 _ => continue,
             }
 
@@ -9924,5 +9954,68 @@ mod tests {
             handler.connections[0].rcv_nxt, 1001,
             "rcv_nxt must not advance when SYN is received in Established"
         );
+    }
+
+    #[test]
+    fn fin_retransmitted_in_fin_wait1() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(200 + i));
+        }
+
+        // Establish connection via passive open.
+        let _server_iss =
+            establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        let id = ConnectionId {
+            local_addr: IpAddress::V4(LOCAL_IP),
+            local_port: 80,
+            remote_addr: IpAddress::V4(REMOTE_IP),
+            remote_port: 12345,
+        };
+
+        // Manually transition TCB to FinWait1 with an expired retransmit deadline.
+        let now = coarsetime::Instant::now();
+        {
+            let tcb = handler.get_connection_mut(&id).unwrap();
+            let fin_seq = tcb.snd_nxt;
+            tcb.state = TcpState::FinWait1;
+            tcb.fin_seq = Some(fin_seq);
+            tcb.retransmit_deadline = Some(coarsetime::Instant::recent()); // already expired
+            tcb.rto_backoff = 0;
+        }
+
+        // poll_timers should retransmit the FIN-ACK.
+        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        // (1) A FIN-ACK segment must be emitted.
+        assert!(
+            tx.num_frames() >= 1,
+            "expected FIN-ACK retransmission, got {} frames",
+            tx.num_frames()
+        );
+
+        // Verify the emitted frame has FIN|ACK flags.
+        let frame = tx.pop().unwrap();
+        let tcp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        // TCP flags byte is at offset 13 in the TCP header.
+        let tcp_flags = frame[tcp_off + 13];
+        assert_eq!(
+            tcp_flags & (flags::FIN | flags::ACK),
+            flags::FIN | flags::ACK,
+            "retransmitted segment must have FIN|ACK flags"
+        );
+
+        // (2) retransmit_deadline must be rescheduled with backoff.
+        let tcb = handler.get_connection(&id).unwrap();
+        assert!(
+            tcb.retransmit_deadline.is_some(),
+            "retransmit_deadline must be rescheduled"
+        );
+        assert_eq!(tcb.rto_backoff, 1, "rto_backoff must be incremented");
     }
 }
