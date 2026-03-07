@@ -16,8 +16,8 @@ use crate::{
             ethernet::EthernetFrame,
             ip::{IpAddress, Ipv4Header, Ipv6Header},
             tcp::{
-                TCP_HEADER_LEN, TcpHeader, flags, parse_mss, parse_sack_permitted,
-                parse_timestamp, parse_window_scale,
+                TCP_HEADER_LEN, TcpHeader, flags, parse_mss, parse_sack_permitted, parse_timestamp,
+                parse_window_scale,
             },
         },
     },
@@ -568,6 +568,7 @@ impl TcpHandler {
                 TcpState::SynSent => {
                     self.process_syn_sent(
                         idx,
+                        now,
                         seg_seq,
                         seg_ack,
                         seg_flags,
@@ -583,6 +584,7 @@ impl TcpHandler {
                 TcpState::SynReceived => {
                     self.process_syn_received(
                         idx,
+                        now,
                         seg_seq,
                         seg_ack,
                         seg_flags,
@@ -653,6 +655,7 @@ impl TcpHandler {
         if let Some(listener_idx) = self.find_listener(incoming_dst, dst_port) {
             self.process_listen(
                 listener_idx,
+                now,
                 incoming_src,
                 incoming_dst,
                 src_port,
@@ -703,6 +706,7 @@ impl TcpHandler {
     fn process_listen<'umem>(
         &mut self,
         listener_idx: usize,
+        now: Instant,
         incoming_src: IpAddress,
         incoming_dst: IpAddress,
         src_port: u16,
@@ -801,9 +805,7 @@ impl TcpHandler {
                     0
                 },
                 wscale_enabled,
-                retransmit_deadline: Some(
-                    Instant::now() + coarsetime::Duration::from_millis(INITIAL_RTO_MS),
-                ),
+                retransmit_deadline: Some(now + coarsetime::Duration::from_millis(INITIAL_RTO_MS)),
                 rto_backoff: 0,
                 event_queue,
                 send_buffer: RingBuffer::new(send_buffer_size),
@@ -829,14 +831,14 @@ impl TcpHandler {
                 keep_alive_idle_ms: listener.keep_alive_idle_ms,
                 keep_alive_interval_ms: listener.keep_alive_interval_ms,
                 keep_alive_count: listener.keep_alive_count,
-                last_activity: Instant::now(),
+                last_activity: now,
                 keep_alive_probes_sent: 0,
                 linger: listener.linger,
                 linger_deadline: None,
                 ts_enabled,
                 ts_recent: if ts_enabled { peer_tsval } else { 0 },
-                ts_recent_age: Instant::now(),
-                ts_offset: Instant::now(),
+                ts_recent_age: now,
+                ts_offset: now,
                 sack_enabled,
                 sack_scoreboard: BTreeMap::new(),
                 persist_deadline: None,
@@ -885,6 +887,7 @@ impl TcpHandler {
     fn process_syn_received<'umem>(
         &mut self,
         idx: usize,
+        now: Instant,
         seg_seq: u32,
         seg_ack: u32,
         seg_flags: u8,
@@ -906,7 +909,7 @@ impl TcpHandler {
             if seg_flags & flags::RST == 0 {
                 let tcb = &self.connections[idx];
                 let ts = if tcb.ts_enabled {
-                    let tsval = Instant::now().duration_since(tcb.ts_offset).as_millis() as u32;
+                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
                     Some((tsval, tcb.ts_recent))
                 } else {
                     None
@@ -952,7 +955,7 @@ impl TcpHandler {
             // Send challenge ACK per RFC 5961.
             let tcb = &self.connections[idx];
             let ts = if tcb.ts_enabled {
-                let tsval = Instant::now().duration_since(tcb.ts_offset).as_millis() as u32;
+                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
                 Some((tsval, tcb.ts_recent))
             } else {
                 None
@@ -1023,6 +1026,7 @@ impl TcpHandler {
     fn process_syn_sent<'umem>(
         &mut self,
         idx: usize,
+        now: Instant,
         seg_seq: u32,
         seg_ack: u32,
         seg_flags: u8,
@@ -1098,16 +1102,14 @@ impl TcpHandler {
             if tcb.ts_enabled {
                 if let Some((peer_tsval, _)) = parse_timestamp(options) {
                     tcb.ts_recent = peer_tsval;
-                    tcb.ts_recent_age = Instant::now();
+                    tcb.ts_recent_age = now;
                 } else {
                     tcb.ts_enabled = false; // peer doesn't support
                 }
             }
             // SACK negotiation.
-            if tcb.sack_enabled {
-                if !parse_sack_permitted(options) {
-                    tcb.sack_enabled = false;
-                }
+            if tcb.sack_enabled && !parse_sack_permitted(options) {
+                tcb.sack_enabled = false;
             }
 
             if seg_flags & flags::ACK != 0 {
@@ -1128,7 +1130,7 @@ impl TcpHandler {
                 // Send ACK.
                 let id = tcb.id;
                 let ts = if tcb.ts_enabled {
-                    let tsval = Instant::now().duration_since(tcb.ts_offset).as_millis() as u32;
+                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
                     Some((tsval, tcb.ts_recent))
                 } else {
                     None
@@ -1166,11 +1168,8 @@ impl TcpHandler {
                 } else {
                     None
                 };
-                let now = Instant::now();
                 let ts_opt = if tcb.ts_enabled {
-                    let tsval = now
-                        .duration_since(tcb.ts_offset)
-                        .as_millis() as u32;
+                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
                     Some((tsval, tcb.ts_recent))
                 } else {
                     None
@@ -1196,7 +1195,7 @@ impl TcpHandler {
 
                 // Reset retransmit timer for SYN-ACK.
                 tcb.retransmit_deadline =
-                    Some(Instant::now() + coarsetime::Duration::from_millis(INITIAL_RTO_MS));
+                    Some(now + coarsetime::Duration::from_millis(INITIAL_RTO_MS));
                 tcb.rto_backoff = 0;
             }
         }
@@ -1236,6 +1235,47 @@ impl TcpHandler {
             return;
         }
 
+        // PAWS check (RFC 7323 §5).
+        if self.connections[idx].ts_enabled
+            && let Some((tsval, _)) = parse_timestamp(options)
+        {
+            let tcb = &self.connections[idx];
+            // Check if TSval is older than ts_recent.
+            // Use signed comparison for wraparound.
+            let ts_diff = tsval.wrapping_sub(tcb.ts_recent) as i32;
+            if ts_diff < 0 && seg_flags & flags::RST == 0 {
+                // Check staleness: if ts_recent is older than 24 days, accept anyway.
+                let staleness = now.duration_since(tcb.ts_recent_age).as_millis();
+                if staleness < 24 * 24 * 60 * 60 * 1000 {
+                    // Reject: send ACK and drop.
+                    let tcb = &self.connections[idx];
+                    let ts = if tcb.ts_enabled {
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        Some((tsval, tcb.ts_recent))
+                    } else {
+                        None
+                    };
+                    SegmentBuilder::build_ack(
+                        tcb.id.local_addr,
+                        tcb.id.remote_addr,
+                        tcb.id.local_port,
+                        tcb.id.remote_port,
+                        tcb.snd_nxt,
+                        tcb.rcv_nxt,
+                        tcb.advertised_window(),
+                        ts,
+                        src_mac,
+                        dst_mac,
+                        self.tx_offload,
+                        free_frames,
+                        tx_return,
+                    );
+                    rx_return.push(frame);
+                    return;
+                }
+            }
+        }
+
         // Segment acceptability check (RFC 9293 §3.10.7.4).
         {
             let tcb = &self.connections[idx];
@@ -1272,11 +1312,11 @@ impl TcpHandler {
         // Update ts_recent from incoming segment.
         {
             let tcb = &mut self.connections[idx];
-            if tcb.ts_enabled {
-                if let Some((tsval, _)) = parse_timestamp(options) {
-                    tcb.ts_recent = tsval;
-                    tcb.ts_recent_age = now;
-                }
+            if tcb.ts_enabled
+                && let Some((tsval, _)) = parse_timestamp(options)
+            {
+                tcb.ts_recent = tsval;
+                tcb.ts_recent_age = now;
             }
         }
 
@@ -1312,23 +1352,23 @@ impl TcpHandler {
                 // RTT measurement.
                 if tcb.ts_enabled {
                     // RTTM via timestamps (RFC 7323).
-                    if let Some((_tsval, tsecr)) = parse_timestamp(options) {
-                        if tsecr != 0 {
-                            let our_ts = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                            let rtt_ms = our_ts.wrapping_sub(tsecr) as u64;
-                            match tcb.srtt {
-                                None => {
-                                    tcb.srtt = Some(rtt_ms);
-                                    tcb.rttvar = rtt_ms / 2;
-                                }
-                                Some(srtt) => {
-                                    let diff = rtt_ms.abs_diff(srtt);
-                                    tcb.rttvar = (3 * tcb.rttvar + diff) / 4;
-                                    tcb.srtt = Some((7 * srtt + rtt_ms) / 8);
-                                }
+                    if let Some((_tsval, tsecr)) = parse_timestamp(options)
+                        && tsecr != 0
+                    {
+                        let our_ts = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        let rtt_ms = our_ts.wrapping_sub(tsecr) as u64;
+                        match tcb.srtt {
+                            None => {
+                                tcb.srtt = Some(rtt_ms);
+                                tcb.rttvar = rtt_ms / 2;
                             }
-                            tcb.rto = (tcb.srtt.unwrap() + 4 * tcb.rttvar).clamp(1000, 60_000);
+                            Some(srtt) => {
+                                let diff = rtt_ms.abs_diff(srtt);
+                                tcb.rttvar = (3 * tcb.rttvar + diff) / 4;
+                                tcb.srtt = Some((7 * srtt + rtt_ms) / 8);
+                            }
                         }
+                        tcb.rto = (tcb.srtt.unwrap() + 4 * tcb.rttvar).clamp(1000, 60_000);
                     }
                 } else if let Some(send_time) = tcb.last_send_time {
                     // Fallback: RTT from last_send_time (RFC 6298).
@@ -1354,6 +1394,12 @@ impl TcpHandler {
                 tcb.snd_wnd = tcb.scale_incoming_window(seg_wnd);
                 tcb.snd_wl1 = seg_seq;
                 tcb.snd_wl2 = seg_ack;
+
+                // C. Clear persist timer when window reopens.
+                if tcb.snd_wnd > 0 && tcb.persist_deadline.is_some() {
+                    tcb.persist_deadline = None;
+                    tcb.persist_backoff = 0;
+                }
             } else if seg_ack == snd_una && payload_len == 0 {
                 // Duplicate ACK.
                 let tcb = &mut self.connections[idx];
@@ -1362,6 +1408,20 @@ impl TcpHandler {
                 if tcb.keep_alive_enabled && tcb.keep_alive_probes_sent > 0 {
                     tcb.last_activity = now;
                     tcb.keep_alive_probes_sent = 0;
+                }
+
+                // Window update may arrive as a duplicate ACK (same ACK, new window).
+                let new_wnd = tcb.scale_incoming_window(seg_wnd);
+                if new_wnd != tcb.snd_wnd {
+                    tcb.snd_wnd = new_wnd;
+                    tcb.snd_wl1 = seg_seq;
+                    tcb.snd_wl2 = seg_ack;
+                }
+
+                // Clear persist timer when window reopens via duplicate ACK.
+                if tcb.snd_wnd > 0 && tcb.persist_deadline.is_some() {
+                    tcb.persist_deadline = None;
+                    tcb.persist_backoff = 0;
                 }
             }
         }
@@ -1725,9 +1785,7 @@ impl TcpHandler {
             match tcb.state {
                 TcpState::SynSent => {
                     let ts_opt = if tcb.ts_enabled {
-                        let tsval = now
-                            .duration_since(tcb.ts_offset)
-                            .as_millis() as u32;
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
                         Some((tsval, 0u32))
                     } else {
                         None
@@ -1757,9 +1815,7 @@ impl TcpHandler {
                         None
                     };
                     let ts_opt = if tcb.ts_enabled {
-                        let tsval = now
-                            .duration_since(tcb.ts_offset)
-                            .as_millis() as u32;
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
                         Some((tsval, tcb.ts_recent))
                     } else {
                         None
@@ -1933,6 +1989,55 @@ impl TcpHandler {
                     tcb.ack_pending = false;
                     tcb.ack_delay_count = 0;
                     tcb.delayed_ack_deadline = None;
+                }
+            }
+
+            // --- Zero-window probing (persist timer) ---
+            // A. Arm persist timer when peer advertises window=0 and we have data to send.
+            if send_window == 0 && data_available > 0 && tcb.persist_deadline.is_none() {
+                tcb.persist_deadline = Some(now + coarsetime::Duration::from_millis(tcb.rto));
+            }
+
+            // B. Send 1-byte probe when persist deadline expires.
+            if let Some(deadline) = tcb.persist_deadline {
+                if now >= deadline && send_window == 0 && data_available > 0 {
+                    let mut probe = [0u8; 1];
+                    tcb.send_buffer.peek_at(bytes_in_flight, &mut probe);
+
+                    let dst_mac = neighbor_handler
+                        .lookup(now, &tcb.id.remote_addr)
+                        .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+
+                    let ts = if tcb.ts_enabled {
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        Some((tsval, tcb.ts_recent))
+                    } else {
+                        None
+                    };
+                    SegmentBuilder::build_data(
+                        tcb.id.local_addr,
+                        tcb.id.remote_addr,
+                        tcb.id.local_port,
+                        tcb.id.remote_port,
+                        tcb.snd_nxt,
+                        tcb.rcv_nxt,
+                        tcb.advertised_window(),
+                        &probe,
+                        ts,
+                        src_mac,
+                        dst_mac,
+                        self.tx_offload,
+                        free_frames,
+                        tx_return,
+                    );
+
+                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+
+                    // Schedule next probe with exponential backoff, capped at 60s.
+                    let backoff_ms = (tcb.rto << tcb.persist_backoff).min(60_000);
+                    tcb.persist_deadline =
+                        Some(now + coarsetime::Duration::from_millis(backoff_ms));
+                    tcb.persist_backoff = tcb.persist_backoff.saturating_add(1).min(6);
                 }
             }
 
@@ -2147,7 +2252,7 @@ impl TcpHandler {
         seg_wnd: u32,
         payload_offset: usize,
         payload_len: usize,
-        _options: &[u8],
+        options: &[u8],
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
         free_frames: &mut impl FrameBuffer<'umem>,
@@ -2167,6 +2272,43 @@ impl TcpHandler {
             self.connections.remove(idx);
             rx_return.push(frame);
             return;
+        }
+
+        // PAWS check (RFC 7323 §5).
+        if self.connections[idx].ts_enabled
+            && let Some((tsval, _)) = parse_timestamp(options)
+        {
+            let tcb = &self.connections[idx];
+            let ts_diff = tsval.wrapping_sub(tcb.ts_recent) as i32;
+            if ts_diff < 0 && seg_flags & flags::RST == 0 {
+                let staleness = now.duration_since(tcb.ts_recent_age).as_millis();
+                if staleness < 24 * 24 * 60 * 60 * 1000 {
+                    let tcb = &self.connections[idx];
+                    let ts = if tcb.ts_enabled {
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        Some((tsval, tcb.ts_recent))
+                    } else {
+                        None
+                    };
+                    SegmentBuilder::build_ack(
+                        tcb.id.local_addr,
+                        tcb.id.remote_addr,
+                        tcb.id.local_port,
+                        tcb.id.remote_port,
+                        tcb.snd_nxt,
+                        tcb.rcv_nxt,
+                        tcb.advertised_window(),
+                        ts,
+                        src_mac,
+                        dst_mac,
+                        self.tx_offload,
+                        free_frames,
+                        tx_return,
+                    );
+                    rx_return.push(frame);
+                    return;
+                }
+            }
         }
 
         // Segment acceptability check (RFC 9293 §3.10.7.4).
@@ -6865,6 +7007,313 @@ mod tests {
         );
     }
 
+    /// Build a 12-byte TCP timestamp option (NOP NOP TSopt) for use in test frames.
+    fn build_ts_option(tsval: u32, tsecr: u32) -> Vec<u8> {
+        let mut opt = vec![1u8, 1]; // NOP, NOP (alignment)
+        opt.push(8); // kind = TIMESTAMP
+        opt.push(10); // length = 10
+        opt.extend_from_slice(&tsval.to_be_bytes());
+        opt.extend_from_slice(&tsecr.to_be_bytes());
+        opt
+    }
+
+    #[test]
+    fn paws_rejects_old_timestamp() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+        let mut tx = BasicFrameBuffer::new(16);
+
+        for i in 0..8 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete the handshake with timestamp options.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let ts_opt = build_ts_option(500, 0);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &ts_opt,
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ts_opt2 = build_ts_option(600, 0);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &ts_opt2,
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+        assert!(handler.connections[0].ts_enabled);
+
+        // Set ts_recent to 1000 to make the test deterministic.
+        handler.connections[0].ts_recent = 1000;
+        handler.connections[0].ts_recent_age = coarsetime::Instant::now();
+
+        // Clear tx from handshake.
+        while tx.pop().is_some() {}
+
+        // Send a segment with TSval=999 (older than ts_recent=1000).
+        let old_ts_opt = build_ts_option(999, 0);
+        let data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &old_ts_opt,
+        );
+        let data_len = data.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(data), data_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // Segment should be dropped and an ACK sent back.
+        assert_eq!(
+            handler.connections.len(),
+            1,
+            "connection should still exist"
+        );
+        assert!(
+            tx.pop().is_some(),
+            "ACK should be sent in response to PAWS rejection"
+        );
+    }
+
+    #[test]
+    fn paws_accepts_rst_with_old_timestamp() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+        let mut tx = BasicFrameBuffer::new(16);
+
+        for i in 0..8 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete the handshake with timestamp options.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let ts_opt = build_ts_option(500, 0);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &ts_opt,
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ts_opt2 = build_ts_option(600, 0);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &ts_opt2,
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+        assert!(handler.connections[0].ts_enabled);
+
+        // Set ts_recent to 1000.
+        handler.connections[0].ts_recent = 1000;
+        handler.connections[0].ts_recent_age = coarsetime::Instant::now();
+
+        while tx.pop().is_some() {}
+
+        // Send RST with old TSval=999 — RST should bypass PAWS.
+        let old_ts_opt = build_ts_option(999, 0);
+        let rst_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::RST,
+            65535,
+            &old_ts_opt,
+        );
+        let rst_len = rst_data.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(rst_data), rst_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // RST should have been processed — connection removed.
+        assert_eq!(
+            handler.connections.len(),
+            0,
+            "RST should bypass PAWS and remove connection"
+        );
+    }
+
+    #[test]
+    fn paws_accepts_stale_ts_recent() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+        let mut tx = BasicFrameBuffer::new(16);
+
+        for i in 0..8 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete the handshake with timestamp options.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let ts_opt = build_ts_option(500, 0);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &ts_opt,
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ts_opt2 = build_ts_option(600, 0);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &ts_opt2,
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+        assert!(handler.connections[0].ts_enabled);
+
+        // Set ts_recent to 1000 and ts_recent_age to > 24 days ago.
+        handler.connections[0].ts_recent = 1000;
+        // Set ts_recent_age far in the past by using a very old Instant.
+        // coarsetime::Instant(0) represents the epoch of the coarse clock.
+        handler.connections[0].ts_recent_age = coarsetime::Instant::from_ticks(0);
+
+        while tx.pop().is_some() {}
+
+        // Send a segment with old TSval=999, but ts_recent_age is stale (> 24 days).
+        // The PAWS check should accept the segment despite old timestamp.
+        let old_ts_opt = build_ts_option(999, 0);
+        let data = build_tcp_frame_with_payload(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &old_ts_opt,
+            b"Hello",
+        );
+        let data_len = data.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(data), data_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // Segment should be accepted — connection still exists and data received.
+        assert_eq!(
+            handler.connections.len(),
+            1,
+            "connection should still exist"
+        );
+        let tcb = &handler.connections[0];
+        assert_eq!(
+            tcb.recv_buffer.available(),
+            5,
+            "data should be accepted when ts_recent is stale"
+        );
+    }
+
     #[test]
     fn segment_acceptability_zero_len_zero_wnd() {
         assert!(is_segment_acceptable(100, 0, 100, 0));
@@ -6894,5 +7343,165 @@ mod tests {
         assert!(!is_segment_acceptable(1200, 10, 100, 1000));
         // Completely before
         assert!(!is_segment_acceptable(80, 10, 100, 1000));
+    }
+
+    /// Helper: complete a 3-way handshake and return server_iss.
+    /// Drains tx after handshake so callers start with an empty tx buffer.
+    fn establish_connection(
+        handler: &mut TcpHandler,
+        nh: &NeighborHandler,
+        free: &mut BasicFrameBuffer<'static>,
+        rx: &mut BasicFrameBuffer<'static>,
+        tx: &mut BasicFrameBuffer<'static>,
+    ) -> u32 {
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            nh, free, rx, tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            nh, free, rx, tx,
+        );
+        while tx.pop().is_some() {}
+        server_iss
+    }
+
+    #[test]
+    fn persist_timer_activates_on_zero_window() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        // Write data into send buffer, but set window to 0.
+        handler.connections[0].send_buffer.write(b"Hello");
+        handler.connections[0].snd_wnd = 0;
+
+        assert!(handler.connections[0].persist_deadline.is_none());
+
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        // Persist timer should now be armed.
+        assert!(
+            handler.connections[0].persist_deadline.is_some(),
+            "persist_deadline should be set when window=0 and data available"
+        );
+        // No data segment should have been sent (deadline not yet reached).
+        assert_eq!(tx.num_frames(), 0, "no segment sent before deadline");
+    }
+
+    #[test]
+    fn persist_probe_sent_when_deadline_expires() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let server_iss =
+            establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        // Write data, set window to 0.
+        handler.connections[0].send_buffer.write(b"Hello");
+        handler.connections[0].snd_wnd = 0;
+
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert!(handler.connections[0].persist_deadline.is_some());
+        assert_eq!(handler.connections[0].persist_backoff, 0);
+
+        // Simulate time passing beyond the deadline by setting it to the past.
+        handler.connections[0].persist_deadline = Some(now);
+
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        // A 1-byte probe should have been sent.
+        assert_eq!(tx.num_frames(), 1, "probe segment should be sent");
+        // snd_nxt should advance by 1.
+        assert_eq!(
+            handler.connections[0].snd_nxt,
+            server_iss.wrapping_add(1).wrapping_add(1),
+            "snd_nxt advanced by 1 for probe"
+        );
+        // persist_backoff should have incremented.
+        assert_eq!(handler.connections[0].persist_backoff, 1);
+        // persist_deadline should be rescheduled (not None).
+        assert!(handler.connections[0].persist_deadline.is_some());
+    }
+
+    #[test]
+    fn persist_timer_clears_when_window_reopens() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let server_iss =
+            establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        // Write data, set window to 0, arm persist timer.
+        handler.connections[0].send_buffer.write(b"Hello");
+        handler.connections[0].snd_wnd = 0;
+
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert!(handler.connections[0].persist_deadline.is_some());
+        handler.connections[0].persist_backoff = 3; // simulate some backoff
+
+        // Peer sends ACK with non-zero window, reopening it.
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            32000, // non-zero window
+            &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // Persist timer should be cleared.
+        assert!(
+            handler.connections[0].persist_deadline.is_none(),
+            "persist_deadline should be cleared when window reopens"
+        );
+        assert_eq!(
+            handler.connections[0].persist_backoff, 0,
+            "persist_backoff should be reset"
+        );
     }
 }
