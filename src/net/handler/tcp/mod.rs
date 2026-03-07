@@ -1662,7 +1662,11 @@ impl TcpHandler {
         }
 
         // Step 4: Process FIN flag.
-        if seg_flags & flags::FIN != 0 {
+        // Only process FIN when all preceding data has been received, i.e. the
+        // segment's data ends exactly at rcv_nxt (RFC 9293 §3.10.7.4 Step 8).
+        if seg_flags & flags::FIN != 0
+            && seg_seq.wrapping_add(payload_len as u32) == self.connections[idx].rcv_nxt
+        {
             let tcb = &mut self.connections[idx];
             tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1); // FIN consumes one sequence number
             tcb.state = TcpState::CloseWait;
@@ -9518,6 +9522,124 @@ mod tests {
             handler.connections[0].recv_buffer.available(),
             32,
             "recv buffer should be completely full (20 filler + 12 new)"
+        );
+    }
+
+    #[test]
+    fn out_of_order_fin_does_not_transition_to_close_wait() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake: remote ISS=1000, so after SYN rcv_nxt=1001.
+        let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+        assert_eq!(handler.connections[0].rcv_nxt, 1001);
+
+        // Send a data+FIN segment that is out-of-order: there is a gap.
+        // rcv_nxt is 1001, but we send seq=1006 with 5 bytes of data + FIN.
+        // This means bytes 1001..1005 are missing.
+        let fin_data = build_tcp_frame_with_payload(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1006,
+            server_iss.wrapping_add(1),
+            flags::ACK | flags::FIN,
+            65535,
+            &[],
+            b"world",
+        );
+        let fin_len = fin_data.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(fin_data), fin_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // Connection must remain Established because preceding data is missing.
+        assert_eq!(
+            handler.connections[0].state,
+            TcpState::Established,
+            "FIN must not be processed when there is a gap before it"
+        );
+        assert_eq!(
+            handler.connections[0].rcv_nxt, 1001,
+            "rcv_nxt must not advance past the gap"
+        );
+
+        // Drain any ACKs from tx.
+        while tx.pop().is_some() {}
+
+        // Now fill the gap: send the missing 5 bytes at seq=1001.
+        let fill_data = build_tcp_frame_with_payload(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            b"hello",
+        );
+        let fill_len = fill_data.len();
+        handler.process_ipv4(
+            Frame::new(3, leak(fill_data), fill_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // After gap fill, rcv_nxt should advance through the reassembled data.
+        // But FIN was out-of-order and needs to be re-sent by the peer.
+        // rcv_nxt should be at 1011 (1001 + 5 gap-fill + 5 OOO data).
+        assert_eq!(handler.connections[0].rcv_nxt, 1011);
+
+        // Drain tx again.
+        while tx.pop().is_some() {}
+
+        // Re-send the FIN now that all data is received (seq=1011, no payload, FIN).
+        let fin_retry = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1011,
+            server_iss.wrapping_add(1),
+            flags::ACK | flags::FIN,
+            65535,
+            &[],
+        );
+        let fin_retry_len = fin_retry.len();
+        handler.process_ipv4(
+            Frame::new(4, leak(fin_retry), fin_retry_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // Now the FIN should be processed and we transition to CloseWait.
+        assert_eq!(
+            handler.connections[0].state,
+            TcpState::CloseWait,
+            "FIN should be processed once all preceding data is received"
+        );
+        assert_eq!(
+            handler.connections[0].rcv_nxt, 1012,
+            "rcv_nxt should advance by 1 for the FIN"
         );
     }
 }
