@@ -70,7 +70,6 @@ pub const DEFAULT_RCV_WND: u16 = 65535;
 pub const DEFAULT_RCV_WSCALE: u8 = 7;
 
 /// Configuration for TCP connections.
-#[allow(dead_code)]
 pub struct TcpConfig {
     /// Send buffer size in bytes. Must be a power of two. Default: 256KB.
     pub send_buffer_size: usize,

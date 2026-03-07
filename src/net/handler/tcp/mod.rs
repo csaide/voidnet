@@ -27,7 +27,7 @@ use isn::IsnGenerator;
 use ring_buffer::RingBuffer;
 use segment::SegmentBuilder;
 use state::TcpState;
-use tcb::{ConnectionId, Tcb, TcpEvent, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE};
+use tcb::{ConnectionId, Tcb, TcpConfig, TcpEvent, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE};
 
 /// Initial RTO for SYN retransmission (1 second in coarsetime ticks).
 const INITIAL_RTO_MS: u64 = 1000;
@@ -42,6 +42,8 @@ pub(crate) struct ListenEntry {
     pub backlog: usize,
     pub accept_queue: LocalQueue<ConnectionId>,
     pub syn_received_count: usize,
+    pub send_buffer_size: usize,
+    pub recv_buffer_size: usize,
 }
 
 /// TCP protocol handler.
@@ -76,17 +78,33 @@ impl TcpHandler {
         port: u16,
         backlog: usize,
     ) -> Result<LocalQueue<ConnectionId>, BindError> {
+        let config = TcpConfig {
+            backlog,
+            ..TcpConfig::default()
+        };
+        self.listen_with_config(addr, port, config)
+    }
+
+    /// Register a listening socket with custom buffer configuration.
+    pub fn listen_with_config(
+        &mut self,
+        addr: IpAddress,
+        port: u16,
+        config: TcpConfig,
+    ) -> Result<LocalQueue<ConnectionId>, BindError> {
         // Check for duplicate listeners.
         if self.listeners.iter().any(|l| l.port == port && (l.addr == addr || l.addr.is_unspecified() || addr.is_unspecified())) {
             return Err(BindError::AddressInUse);
         }
-        let accept_queue = LocalQueue::new(backlog);
+        let accept_queue = LocalQueue::new(config.backlog);
         self.listeners.push(ListenEntry {
             addr,
             port,
-            backlog,
+            backlog: config.backlog,
             accept_queue: accept_queue.clone(),
             syn_received_count: 0,
+            send_buffer_size: config.send_buffer_size,
+            recv_buffer_size: config.recv_buffer_size,
         });
         Ok(accept_queue)
     }
@@ -114,6 +132,26 @@ impl TcpHandler {
         remote_port: u16,
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) -> Result<LocalQueue<TcpEvent>, BindError> {
+        self.connect_with_config(
+            local_addr, local_port, remote_addr, remote_port,
+            src_mac, dst_mac, TcpConfig::default(),
+            free_frames, tx_return,
+        )
+    }
+
+    /// Initiate an active open (connect) with custom buffer configuration.
+    pub fn connect_with_config<'umem>(
+        &mut self,
+        local_addr: IpAddress,
+        local_port: u16,
+        remote_addr: IpAddress,
+        remote_port: u16,
+        src_mac: crate::net::wire::ethernet::MacAddress,
+        dst_mac: crate::net::wire::ethernet::MacAddress,
+        config: TcpConfig,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) -> Result<LocalQueue<TcpEvent>, BindError> {
@@ -154,8 +192,8 @@ impl TcpHandler {
             retransmit_deadline: Some(Instant::now() + coarsetime::Duration::from_millis(INITIAL_RTO_MS)),
             rto_backoff: 0,
             event_queue: event_queue.clone(),
-            send_buffer: RingBuffer::new(256 * 1024),
-            recv_buffer: RingBuffer::new(256 * 1024),
+            send_buffer: RingBuffer::new(config.send_buffer_size),
+            recv_buffer: RingBuffer::new(config.recv_buffer_size),
             ooo_ranges: BTreeMap::new(),
             cwnd: 10 * DEFAULT_RCV_MSS as u32,
             ssthresh: u32::MAX,
@@ -506,6 +544,9 @@ impl TcpHandler {
             let wscale_enabled = peer_wscale.is_some();
             let snd_wscale = peer_wscale.unwrap_or(0);
 
+            let send_buffer_size = listener.send_buffer_size;
+            let recv_buffer_size = listener.recv_buffer_size;
+
             let event_queue = LocalQueue::new(16);
 
             let tcb = Tcb {
@@ -530,8 +571,8 @@ impl TcpHandler {
                 retransmit_deadline: Some(Instant::now() + coarsetime::Duration::from_millis(INITIAL_RTO_MS)),
                 rto_backoff: 0,
                 event_queue,
-                send_buffer: RingBuffer::new(256 * 1024),
-                recv_buffer: RingBuffer::new(256 * 1024),
+                send_buffer: RingBuffer::new(send_buffer_size),
+                recv_buffer: RingBuffer::new(recv_buffer_size),
                 ooo_ranges: BTreeMap::new(),
                 cwnd: 10 * peer_mss.min(DEFAULT_RCV_MSS) as u32,
                 ssthresh: u32::MAX,
@@ -1959,5 +2000,44 @@ mod tests {
         // RTO should be at least 1000ms (the minimum clamp).
         assert!(tcb.rto >= 1000, "rto should be at least 1000ms");
         assert!(tcb.rto <= 60_000, "rto should be at most 60000ms");
+    }
+
+    #[test]
+    fn frame_accounting_through_data_transfer() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(64);
+        let mut rx = BasicFrameBuffer::new(64);
+        let mut tx = BasicFrameBuffer::new(64);
+
+        for i in 0..32 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let initial_total = free.num_frames();
+
+        // Handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn.len();
+        handler.process_ipv4(Frame::new(0, leak(syn), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack.len();
+        handler.process_ipv4(Frame::new(1, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        // Data segment.
+        let data = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], b"test data",
+        );
+        let data_len = data.len();
+        handler.process_ipv4(Frame::new(2, leak(data), data_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        // All frames accounted for: free + rx + tx = initial + incoming frames.
+        let total = free.num_frames() + rx.num_frames() + tx.num_frames();
+        // We started with initial_total free frames and injected 3 incoming frames.
+        assert_eq!(total, initial_total + 3, "all frames accounted for");
     }
 }

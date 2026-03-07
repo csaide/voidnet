@@ -24,6 +24,7 @@ use crate::{
 
 use super::LocalQueue;
 
+pub use crate::net::handler::tcp::tcb::TcpConfig;
 use crate::net::handler::tcp::tcb::{ConnectionId, TcpError, TcpEvent};
 
 const DEFAULT_BACKLOG: usize = 128;
@@ -56,6 +57,26 @@ impl TcpListener {
         with_runtime_context(|ctx| {
             let handler = unsafe { &mut *ctx.tcp_handler.get() };
             let accept_queue = handler.listen(addr, port, backlog)?;
+            Ok(Self {
+                local_addr: addr,
+                local_port: port,
+                accept_queue,
+                handler: ctx.tcp_handler.clone(),
+            })
+        })
+    }
+
+    /// Create a new listening TCP socket with custom configuration.
+    ///
+    /// The config controls backlog size and per-connection buffer sizes.
+    pub fn listen_with_config(
+        addr: IpAddress,
+        port: u16,
+        config: TcpConfig,
+    ) -> Result<Self, BindError> {
+        with_runtime_context(|ctx| {
+            let handler = unsafe { &mut *ctx.tcp_handler.get() };
+            let accept_queue = handler.listen_with_config(addr, port, config)?;
             Ok(Self {
                 local_addr: addr,
                 local_port: port,
@@ -180,6 +201,61 @@ impl TcpStream {
                     remote_port,
                     src_mac,
                     dst_mac,
+                    &mut free_frames,
+                    &mut tx_return,
+                )
+                .map_err(|_| TcpError::NotConnected)?;
+
+            let conn_id = ConnectionId {
+                local_addr,
+                local_port,
+                remote_addr,
+                remote_port,
+            };
+
+            Ok(Connect {
+                conn_id,
+                event_queue,
+                handler: ctx.tcp_handler.clone(),
+            })
+        })
+    }
+
+    /// Initiate an active open (connect) with custom buffer configuration.
+    ///
+    /// Returns a `Connect` future that resolves when the 3-way handshake
+    /// completes or fails.
+    ///
+    /// Must be called inside a `LocalRuntime::run()` closure. Panics otherwise.
+    pub fn connect_with_config(
+        local_addr: IpAddress,
+        local_port: u16,
+        remote_addr: IpAddress,
+        remote_port: u16,
+        config: TcpConfig,
+    ) -> Result<Connect, TcpError> {
+        with_runtime_context(|ctx| {
+            let handler = unsafe { &mut *ctx.tcp_handler.get() };
+            let neighbor_handler = &*ctx.neighbor_handler;
+
+            // Resolve MACs for the outbound SYN.
+            let src_mac = neighbor_handler.local_mac();
+            let dst_mac = neighbor_handler
+                .lookup(Instant::now(), &remote_addr)
+                .unwrap_or(MacAddress::broadcast());
+
+            let mut free_frames = ctx.free_frames.clone();
+            let mut tx_return = ctx.tx_return.clone();
+
+            let event_queue = handler
+                .connect_with_config(
+                    local_addr,
+                    local_port,
+                    remote_addr,
+                    remote_port,
+                    src_mac,
+                    dst_mac,
+                    config,
                     &mut free_frames,
                     &mut tx_return,
                 )
