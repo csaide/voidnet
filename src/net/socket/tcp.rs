@@ -384,6 +384,7 @@ impl Future for Connect {
             Some(TcpEvent::ConnectionRefused) => Poll::Ready(Err(TcpError::ConnectionRefused)),
             Some(TcpEvent::Timeout) => Poll::Ready(Err(TcpError::Timeout)),
             Some(TcpEvent::Reset) => Poll::Ready(Err(TcpError::Reset)),
+            Some(TcpEvent::RemoteClose) => Poll::Ready(Err(TcpError::Reset)),
             None => Poll::Pending,
         }
     }

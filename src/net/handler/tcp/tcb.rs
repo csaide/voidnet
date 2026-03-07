@@ -37,6 +37,7 @@ pub enum TcpEvent {
     ConnectionRefused,
     Reset,
     Timeout,
+    RemoteClose,
 }
 
 /// Errors returned by TCP operations.
@@ -77,6 +78,8 @@ pub struct TcpConfig {
     pub recv_buffer_size: usize,
     /// Listener backlog. Default: 128.
     pub backlog: usize,
+    /// Duration to remain in TIME-WAIT state in milliseconds. Default: 60000 (60s).
+    pub time_wait_duration_ms: u64,
 }
 
 impl Default for TcpConfig {
@@ -85,6 +88,7 @@ impl Default for TcpConfig {
             send_buffer_size: 256 * 1024,
             recv_buffer_size: 256 * 1024,
             backlog: 128,
+            time_wait_duration_ms: 60_000,
         }
     }
 }
@@ -169,6 +173,16 @@ pub struct Tcb {
     pub rto: u64,
     /// Timestamp of last data segment sent (for RTT measurement).
     pub last_send_time: Option<Instant>,
+
+    // --- Connection teardown ---
+    /// True when a FIN needs to be sent.
+    pub pending_fin: bool,
+    /// Sequence number of our FIN (set when FIN is sent).
+    pub fin_seq: Option<u32>,
+    /// Deadline for exiting TIME-WAIT state.
+    pub time_wait_deadline: Option<Instant>,
+    /// Duration to remain in TIME-WAIT state in milliseconds.
+    pub time_wait_duration: u64,
 }
 
 impl Tcb {

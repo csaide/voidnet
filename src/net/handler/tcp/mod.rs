@@ -44,6 +44,7 @@ pub(crate) struct ListenEntry {
     pub syn_received_count: usize,
     pub send_buffer_size: usize,
     pub recv_buffer_size: usize,
+    pub time_wait_duration: u64,
 }
 
 /// TCP protocol handler.
@@ -105,6 +106,7 @@ impl TcpHandler {
             syn_received_count: 0,
             send_buffer_size: config.send_buffer_size,
             recv_buffer_size: config.recv_buffer_size,
+            time_wait_duration: config.time_wait_duration_ms,
         });
         Ok(accept_queue)
     }
@@ -202,6 +204,10 @@ impl TcpHandler {
             rttvar: 0,
             rto: 1000,
             last_send_time: None,
+            pending_fin: false,
+            fin_seq: None,
+            time_wait_deadline: None,
+            time_wait_duration: config.time_wait_duration_ms,
         };
 
         // Send SYN.
@@ -546,6 +552,7 @@ impl TcpHandler {
 
             let send_buffer_size = listener.send_buffer_size;
             let recv_buffer_size = listener.recv_buffer_size;
+            let time_wait_duration = listener.time_wait_duration;
 
             let event_queue = LocalQueue::new(16);
 
@@ -581,6 +588,10 @@ impl TcpHandler {
                 rttvar: 0,
                 rto: 1000,
                 last_send_time: None,
+                pending_fin: false,
+                fin_seq: None,
+                time_wait_deadline: None,
+                time_wait_duration,
             };
 
             // Send SYN-ACK.
