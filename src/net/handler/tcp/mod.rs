@@ -982,6 +982,64 @@ impl TcpHandler {
         // Placeholder — will be used for TIME-WAIT cleanup in future phases.
     }
 
+    // --- Data transmission ---
+
+    /// Poll established connections for outbound data segments.
+    /// Called each tick from the runtime loop after receive processing.
+    pub fn poll_send<'umem>(
+        &mut self,
+        now: Instant,
+        src_mac: crate::net::wire::ethernet::MacAddress,
+        neighbor_handler: &NeighborHandler,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        for tcb in &mut self.connections {
+            if tcb.state != TcpState::Established {
+                continue;
+            }
+
+            // Compute how many bytes we can send.
+            let bytes_in_flight = tcb.snd_nxt.wrapping_sub(tcb.snd_una) as usize;
+            let send_window = (tcb.snd_wnd as usize).min(tcb.cwnd as usize);
+            let can_send = send_window.saturating_sub(bytes_in_flight);
+            let data_available = tcb.send_buffer.available().saturating_sub(bytes_in_flight);
+
+            if can_send == 0 || data_available == 0 {
+                continue;
+            }
+
+            let to_send = can_send.min(data_available).min(tcb.eff_snd_mss as usize);
+
+            // Peek the data from the send buffer (don't advance — held until ACKed).
+            // TODO: use stack buffer to avoid allocation
+            let mut payload = vec![0u8; to_send];
+            tcb.send_buffer.peek_at(bytes_in_flight, &mut payload);
+
+            let dst_mac = neighbor_handler
+                .lookup(now, &tcb.id.remote_addr)
+                .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+
+            let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
+
+            SegmentBuilder::build_data(
+                tcb.id.local_addr, tcb.id.remote_addr,
+                tcb.id.local_port, tcb.id.remote_port,
+                tcb.snd_nxt, tcb.rcv_nxt, window,
+                &payload,
+                src_mac, dst_mac,
+                self.tx_offload, free_frames, tx_return,
+            );
+
+            tcb.snd_nxt = tcb.snd_nxt.wrapping_add(to_send as u32);
+
+            // Set retransmit timer if not already running.
+            if tcb.retransmit_deadline.is_none() {
+                tcb.retransmit_deadline = Some(now + coarsetime::Duration::from_millis(tcb.rto));
+            }
+        }
+    }
+
     // --- Helpers ---
 
     /// Find a matching listener for the given address and port.
@@ -1592,5 +1650,44 @@ mod tests {
         let mut buf = [0u8; 10];
         handler.connections[0].recv_buffer.read(&mut buf);
         assert_eq!(&buf, b"helloworld");
+    }
+
+    #[test]
+    fn poll_send_builds_data_segment() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Write data into the connection's send buffer.
+        let payload = b"Hello from server!";
+        handler.connections[0].send_buffer.write(payload);
+
+        // Set snd_wnd so the window allows sending.
+        handler.connections[0].snd_wnd = 65535;
+
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        assert_eq!(tx.num_frames(), 1, "data segment built");
+        let tcb = &handler.connections[0];
+        assert_eq!(tcb.snd_nxt, server_iss.wrapping_add(1).wrapping_add(payload.len() as u32));
+        assert_eq!(tcb.send_buffer.available(), payload.len()); // still in buffer until ACKed
     }
 }
