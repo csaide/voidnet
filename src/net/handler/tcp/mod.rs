@@ -1557,6 +1557,33 @@ impl TcpHandler {
                     tcb.cwnd = tcb.ssthresh;
                     tcb.ecn_cwr_sent = true;
                 }
+            } else if seq_lt(snd_nxt, seg_ack) {
+                // ACK for unsent data — send ACK and drop (RFC 9293 §3.10.7.4 Step 5).
+                let tcb = &self.connections[idx];
+                let ts = if tcb.ts_enabled {
+                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                    Some((tsval, tcb.ts_recent))
+                } else {
+                    None
+                };
+                SegmentBuilder::build_ack(
+                    tcb.id.local_addr,
+                    tcb.id.remote_addr,
+                    tcb.id.local_port,
+                    tcb.id.remote_port,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
+                    tcb.advertised_window(),
+                    ack_flags,
+                    ts,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+                rx_return.push(frame);
+                return;
             } else if seg_ack == snd_una && payload_len == 0 {
                 // Duplicate ACK.
                 let tcb = &mut self.connections[idx];
@@ -10080,5 +10107,82 @@ mod tests {
             "retransmit_deadline must be rescheduled"
         );
         assert_eq!(tcb.rto_backoff, 1, "rto_backoff must be incremented");
+    }
+
+    #[test]
+    fn ack_beyond_snd_nxt_sends_ack_and_drops() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        let snd_una_before = handler.connections[0].snd_una;
+        let snd_nxt_before = handler.connections[0].snd_nxt;
+        let rcv_nxt_before = handler.connections[0].rcv_nxt;
+
+        // Send a segment with seg_ack far beyond snd_nxt.
+        let bad_ack = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001, // seq = rcv_nxt (in-window)
+            server_iss.wrapping_add(1).wrapping_add(999999), // ACK for unsent data
+            flags::ACK,
+            65535,
+            &[],
+        );
+        let bad_ack_len = bad_ack.len();
+        handler.process_ipv4(
+            Frame::new(50, leak(bad_ack), bad_ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // (1) Connection must survive.
+        assert_eq!(
+            handler.connections.len(),
+            1,
+            "connection must not be destroyed by future ACK"
+        );
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+
+        // (2) An ACK must be sent in response.
+        assert!(
+            tx.num_frames() > 0,
+            "ACK must be sent when seg_ack > snd_nxt (RFC 9293 §3.10.7.4)"
+        );
+
+        // Verify the response has ACK flags.
+        let resp = tx.pop().unwrap();
+        let tcp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp_flags = resp[tcp_off + 13];
+        assert_eq!(
+            tcp_flags & flags::ACK,
+            flags::ACK,
+            "response must be an ACK"
+        );
+
+        // (3) No state changes: snd_una must be unchanged.
+        assert_eq!(
+            handler.connections[0].snd_una, snd_una_before,
+            "snd_una must not change on future ACK"
+        );
+        assert_eq!(
+            handler.connections[0].snd_nxt, snd_nxt_before,
+            "snd_nxt must not change on future ACK"
+        );
+        assert_eq!(
+            handler.connections[0].rcv_nxt, rcv_nxt_before,
+            "rcv_nxt must not change on future ACK"
+        );
     }
 }
