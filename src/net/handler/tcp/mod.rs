@@ -608,6 +608,7 @@ impl TcpHandler {
                         seg_wnd,
                         payload_offset,
                         payload_len,
+                        options,
                         src_mac,
                         dst_mac,
                         free_frames,
@@ -633,6 +634,7 @@ impl TcpHandler {
                         seg_wnd,
                         payload_offset,
                         payload_len,
+                        options,
                         src_mac,
                         dst_mac,
                         free_frames,
@@ -903,6 +905,12 @@ impl TcpHandler {
             // Out of window — if not RST, send challenge ACK.
             if seg_flags & flags::RST == 0 {
                 let tcb = &self.connections[idx];
+                let ts = if tcb.ts_enabled {
+                    let tsval = Instant::now().duration_since(tcb.ts_offset).as_millis() as u32;
+                    Some((tsval, tcb.ts_recent))
+                } else {
+                    None
+                };
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
@@ -911,6 +919,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     DEFAULT_RCV_WND,
+                    ts,
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -942,6 +951,12 @@ impl TcpHandler {
         if seg_flags & flags::SYN != 0 {
             // Send challenge ACK per RFC 5961.
             let tcb = &self.connections[idx];
+            let ts = if tcb.ts_enabled {
+                let tsval = Instant::now().duration_since(tcb.ts_offset).as_millis() as u32;
+                Some((tsval, tcb.ts_recent))
+            } else {
+                None
+            };
             SegmentBuilder::build_ack(
                 tcb.id.local_addr,
                 tcb.id.remote_addr,
@@ -950,6 +965,7 @@ impl TcpHandler {
                 tcb.snd_nxt,
                 tcb.rcv_nxt,
                 DEFAULT_RCV_WND,
+                ts,
                 src_mac,
                 dst_mac,
                 self.tx_offload,
@@ -1111,6 +1127,12 @@ impl TcpHandler {
 
                 // Send ACK.
                 let id = tcb.id;
+                let ts = if tcb.ts_enabled {
+                    let tsval = Instant::now().duration_since(tcb.ts_offset).as_millis() as u32;
+                    Some((tsval, tcb.ts_recent))
+                } else {
+                    None
+                };
                 SegmentBuilder::build_ack(
                     id.local_addr,
                     id.remote_addr,
@@ -1119,6 +1141,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     DEFAULT_RCV_WND,
+                    ts,
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -1194,6 +1217,7 @@ impl TcpHandler {
         seg_wnd: u32,
         payload_offset: usize,
         payload_len: usize,
+        options: &[u8],
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
         free_frames: &mut impl FrameBuffer<'umem>,
@@ -1219,6 +1243,12 @@ impl TcpHandler {
             let rcv_wnd = tcb.recv_buffer.free_space() as u32;
             if !is_segment_acceptable(seg_seq, seg_len, tcb.rcv_nxt, rcv_wnd) {
                 // Out-of-window: send ACK (unless RST, already handled above).
+                let ts = if tcb.ts_enabled {
+                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                    Some((tsval, tcb.ts_recent))
+                } else {
+                    None
+                };
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
@@ -1227,6 +1257,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
+                    ts,
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -1235,6 +1266,17 @@ impl TcpHandler {
                 );
                 rx_return.push(frame);
                 return;
+            }
+        }
+
+        // Update ts_recent from incoming segment.
+        {
+            let tcb = &mut self.connections[idx];
+            if tcb.ts_enabled {
+                if let Some((tsval, _)) = parse_timestamp(options) {
+                    tcb.ts_recent = tsval;
+                    tcb.ts_recent_age = now;
+                }
             }
         }
 
@@ -1267,25 +1309,43 @@ impl TcpHandler {
 
                 tcb.dup_ack_count = 0;
 
-                // RTT measurement (RFC 6298).
-                if let Some(send_time) = tcb.last_send_time {
+                // RTT measurement.
+                if tcb.ts_enabled {
+                    // RTTM via timestamps (RFC 7323).
+                    if let Some((_tsval, tsecr)) = parse_timestamp(options) {
+                        if tsecr != 0 {
+                            let our_ts = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                            let rtt_ms = our_ts.wrapping_sub(tsecr) as u64;
+                            match tcb.srtt {
+                                None => {
+                                    tcb.srtt = Some(rtt_ms);
+                                    tcb.rttvar = rtt_ms / 2;
+                                }
+                                Some(srtt) => {
+                                    let diff = rtt_ms.abs_diff(srtt);
+                                    tcb.rttvar = (3 * tcb.rttvar + diff) / 4;
+                                    tcb.srtt = Some((7 * srtt + rtt_ms) / 8);
+                                }
+                            }
+                            tcb.rto = (tcb.srtt.unwrap() + 4 * tcb.rttvar).clamp(1000, 60_000);
+                        }
+                    }
+                } else if let Some(send_time) = tcb.last_send_time {
+                    // Fallback: RTT from last_send_time (RFC 6298).
                     let rtt_ms = now.duration_since(send_time).as_millis();
 
                     match tcb.srtt {
                         None => {
-                            // First measurement (RFC 6298 §2.2).
                             tcb.srtt = Some(rtt_ms);
                             tcb.rttvar = rtt_ms / 2;
                         }
                         Some(srtt) => {
-                            // Subsequent measurements (RFC 6298 §2.3).
                             let diff = rtt_ms.abs_diff(srtt);
                             tcb.rttvar = (3 * tcb.rttvar + diff) / 4;
                             tcb.srtt = Some((7 * srtt + rtt_ms) / 8);
                         }
                     }
                     let srtt = tcb.srtt.unwrap();
-                    // RTO = SRTT + 4 * RTTVAR, clamped to [1000ms, 60_000ms].
                     tcb.rto = (srtt + 4 * tcb.rttvar).clamp(1000, 60_000);
                     tcb.last_send_time = None; // consumed
                 }
@@ -1339,6 +1399,12 @@ impl TcpHandler {
                 tcb.ack_delay_count += 1;
                 if tcb.ack_delay_count >= MAX_DELAYED_ACK_COUNT {
                     // Flush: ACK every other segment (RFC 5681 §4.2).
+                    let ts = if tcb.ts_enabled {
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        Some((tsval, tcb.ts_recent))
+                    } else {
+                        None
+                    };
                     SegmentBuilder::build_ack(
                         tcb.id.local_addr,
                         tcb.id.remote_addr,
@@ -1347,6 +1413,7 @@ impl TcpHandler {
                         tcb.snd_nxt,
                         tcb.rcv_nxt,
                         tcb.advertised_window(),
+                        ts,
                         src_mac,
                         dst_mac,
                         self.tx_offload,
@@ -1372,6 +1439,12 @@ impl TcpHandler {
                 tcb.ooo_ranges.insert(seg_seq, payload_len as u32);
 
                 // Send duplicate ACK (with current rcv_nxt).
+                let ts = if tcb.ts_enabled {
+                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                    Some((tsval, tcb.ts_recent))
+                } else {
+                    None
+                };
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
@@ -1380,6 +1453,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
+                    ts,
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -1389,6 +1463,12 @@ impl TcpHandler {
             } else {
                 // Duplicate data (seg_seq < rcv_nxt) — just ACK.
                 let tcb = &self.connections[idx];
+                let ts = if tcb.ts_enabled {
+                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                    Some((tsval, tcb.ts_recent))
+                } else {
+                    None
+                };
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
@@ -1397,6 +1477,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
+                    ts,
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -1418,6 +1499,12 @@ impl TcpHandler {
             let snd_nxt = tcb.snd_nxt;
             let new_rcv_nxt = tcb.rcv_nxt;
             let window = tcb.advertised_window();
+            let ts = if tcb.ts_enabled {
+                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                Some((tsval, tcb.ts_recent))
+            } else {
+                None
+            };
             SegmentBuilder::build_ack(
                 id.local_addr,
                 id.remote_addr,
@@ -1426,6 +1513,7 @@ impl TcpHandler {
                 snd_nxt,
                 new_rcv_nxt,
                 window,
+                ts,
                 src_mac,
                 dst_mac,
                 self.tx_offload,
@@ -1461,6 +1549,12 @@ impl TcpHandler {
                 let dst_mac = neighbor_handler
                     .lookup(now, &id.remote_addr)
                     .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                let ts = if tcb.ts_enabled {
+                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                    Some((tsval, tcb.ts_recent))
+                } else {
+                    None
+                };
                 SegmentBuilder::build_ack(
                     id.local_addr,
                     id.remote_addr,
@@ -1469,6 +1563,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
+                    ts,
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -1510,6 +1605,12 @@ impl TcpHandler {
                 let dst_mac = neighbor_handler
                     .lookup(now, &id.remote_addr)
                     .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                let ts = if tcb.ts_enabled {
+                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                    Some((tsval, tcb.ts_recent))
+                } else {
+                    None
+                };
                 SegmentBuilder::build_ack(
                     id.local_addr,
                     id.remote_addr,
@@ -1518,6 +1619,7 @@ impl TcpHandler {
                     tcb.snd_una.wrapping_sub(1),
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
+                    ts,
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -1556,6 +1658,12 @@ impl TcpHandler {
             let mut payload = vec![0u8; retransmit_len];
             tcb.send_buffer.peek_at(0, &mut payload);
 
+            let ts = if tcb.ts_enabled {
+                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                Some((tsval, tcb.ts_recent))
+            } else {
+                None
+            };
             SegmentBuilder::build_data(
                 id.local_addr,
                 id.remote_addr,
@@ -1565,6 +1673,7 @@ impl TcpHandler {
                 tcb.rcv_nxt,
                 tcb.advertised_window(),
                 &payload,
+                ts,
                 src_mac,
                 dst_mac,
                 self.tx_offload,
@@ -1679,6 +1788,12 @@ impl TcpHandler {
                     if retransmit_len > 0 {
                         let mut payload = vec![0u8; retransmit_len];
                         tcb.send_buffer.peek_at(0, &mut payload);
+                        let ts = if tcb.ts_enabled {
+                            let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                            Some((tsval, tcb.ts_recent))
+                        } else {
+                            None
+                        };
                         SegmentBuilder::build_data(
                             id.local_addr,
                             id.remote_addr,
@@ -1688,6 +1803,7 @@ impl TcpHandler {
                             tcb.rcv_nxt,
                             tcb.advertised_window(),
                             &payload,
+                            ts,
                             src_mac,
                             dst_mac,
                             self.tx_offload,
@@ -1777,6 +1893,12 @@ impl TcpHandler {
                         .lookup(now, &tcb.id.remote_addr)
                         .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
 
+                    let ts = if tcb.ts_enabled {
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        Some((tsval, tcb.ts_recent))
+                    } else {
+                        None
+                    };
                     SegmentBuilder::build_data(
                         tcb.id.local_addr,
                         tcb.id.remote_addr,
@@ -1786,6 +1908,7 @@ impl TcpHandler {
                         tcb.rcv_nxt,
                         tcb.advertised_window(),
                         &payload,
+                        ts,
                         src_mac,
                         dst_mac,
                         self.tx_offload,
@@ -1859,6 +1982,12 @@ impl TcpHandler {
                     let dst_mac = neighbor_handler
                         .lookup(now, &id.remote_addr)
                         .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                    let ts = if tcb.ts_enabled {
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        Some((tsval, tcb.ts_recent))
+                    } else {
+                        None
+                    };
                     SegmentBuilder::build_fin_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -1867,6 +1996,7 @@ impl TcpHandler {
                         tcb.snd_nxt,
                         tcb.rcv_nxt,
                         tcb.advertised_window(),
+                        ts,
                         src_mac,
                         dst_mac,
                         self.tx_offload,
@@ -2017,6 +2147,7 @@ impl TcpHandler {
         seg_wnd: u32,
         payload_offset: usize,
         payload_len: usize,
+        _options: &[u8],
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
         free_frames: &mut impl FrameBuffer<'umem>,
@@ -2045,6 +2176,12 @@ impl TcpHandler {
             let rcv_wnd = tcb.recv_buffer.free_space() as u32;
             if !is_segment_acceptable(seg_seq, seg_len, tcb.rcv_nxt, rcv_wnd) {
                 // Out-of-window: send ACK (unless RST, already handled above).
+                let ts = if tcb.ts_enabled {
+                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                    Some((tsval, tcb.ts_recent))
+                } else {
+                    None
+                };
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
@@ -2053,6 +2190,7 @@ impl TcpHandler {
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     tcb.advertised_window(),
+                    ts,
                     src_mac,
                     dst_mac,
                     self.tx_offload,
@@ -2126,9 +2264,16 @@ impl TcpHandler {
 
                 // Send ACK if FIN or data received.
                 if remote_fin || payload_len > 0 {
-                    let id = self.connections[idx].id;
-                    let snd_nxt = self.connections[idx].snd_nxt;
-                    let rcv_nxt = self.connections[idx].rcv_nxt;
+                    let tcb = &self.connections[idx];
+                    let id = tcb.id;
+                    let snd_nxt = tcb.snd_nxt;
+                    let rcv_nxt = tcb.rcv_nxt;
+                    let ts = if tcb.ts_enabled {
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        Some((tsval, tcb.ts_recent))
+                    } else {
+                        None
+                    };
                     SegmentBuilder::build_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -2137,6 +2282,7 @@ impl TcpHandler {
                         snd_nxt,
                         rcv_nxt,
                         self.connections[idx].advertised_window(),
+                        ts,
                         src_mac,
                         dst_mac,
                         self.tx_offload,
@@ -2171,6 +2317,12 @@ impl TcpHandler {
                     let id = tcb.id;
                     let snd_nxt = tcb.snd_nxt;
                     let rcv_nxt = tcb.rcv_nxt;
+                    let ts = if tcb.ts_enabled {
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        Some((tsval, tcb.ts_recent))
+                    } else {
+                        None
+                    };
                     SegmentBuilder::build_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -2179,6 +2331,7 @@ impl TcpHandler {
                         snd_nxt,
                         rcv_nxt,
                         tcb.advertised_window(),
+                        ts,
                         src_mac,
                         dst_mac,
                         self.tx_offload,
@@ -2228,6 +2381,12 @@ impl TcpHandler {
                     let id = tcb.id;
                     let snd_nxt = tcb.snd_nxt;
                     let rcv_nxt = tcb.rcv_nxt;
+                    let ts = if tcb.ts_enabled {
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        Some((tsval, tcb.ts_recent))
+                    } else {
+                        None
+                    };
                     SegmentBuilder::build_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -2236,6 +2395,7 @@ impl TcpHandler {
                         snd_nxt,
                         rcv_nxt,
                         tcb.advertised_window(),
+                        ts,
                         src_mac,
                         dst_mac,
                         self.tx_offload,

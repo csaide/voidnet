@@ -264,12 +264,23 @@ impl SegmentBuilder {
         seq: u32,
         ack: u32,
         window: u16,
+        timestamp: Option<(u32, u32)>,
         src_mac: MacAddress,
         dst_mac: MacAddress,
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
+        let mut ts_buf = [0u8; 12];
+        let tcp_options: &[u8] = if let Some((tsval, tsecr)) = timestamp {
+            ts_buf[0] = options::NOP;
+            ts_buf[1] = options::NOP;
+            write_timestamp_option(&mut ts_buf[2..], tsval, tsecr);
+            &ts_buf
+        } else {
+            &[]
+        };
+
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
                 Self::build_ipv4_segment(
@@ -281,7 +292,7 @@ impl SegmentBuilder {
                     ack,
                     flags::ACK,
                     window,
-                    &[],
+                    tcp_options,
                     src_mac,
                     dst_mac,
                     tx_offload,
@@ -299,7 +310,7 @@ impl SegmentBuilder {
                     ack,
                     flags::ACK,
                     window,
-                    &[],
+                    tcp_options,
                     src_mac,
                     dst_mac,
                     tx_offload,
@@ -321,12 +332,23 @@ impl SegmentBuilder {
         seq: u32,
         ack: u32,
         window: u16,
+        timestamp: Option<(u32, u32)>,
         src_mac: MacAddress,
         dst_mac: MacAddress,
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
+        let mut ts_buf = [0u8; 12];
+        let tcp_options: &[u8] = if let Some((tsval, tsecr)) = timestamp {
+            ts_buf[0] = options::NOP;
+            ts_buf[1] = options::NOP;
+            write_timestamp_option(&mut ts_buf[2..], tsval, tsecr);
+            &ts_buf
+        } else {
+            &[]
+        };
+
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
                 Self::build_ipv4_segment(
@@ -338,7 +360,7 @@ impl SegmentBuilder {
                     ack,
                     flags::ACK | flags::FIN,
                     window,
-                    &[],
+                    tcp_options,
                     src_mac,
                     dst_mac,
                     tx_offload,
@@ -356,7 +378,7 @@ impl SegmentBuilder {
                     ack,
                     flags::ACK | flags::FIN,
                     window,
-                    &[],
+                    tcp_options,
                     src_mac,
                     dst_mac,
                     tx_offload,
@@ -379,12 +401,23 @@ impl SegmentBuilder {
         ack: u32,
         window: u16,
         payload: &[u8],
+        timestamp: Option<(u32, u32)>,
         src_mac: MacAddress,
         dst_mac: MacAddress,
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
+        let mut ts_buf = [0u8; 12];
+        let tcp_options: &[u8] = if let Some((tsval, tsecr)) = timestamp {
+            ts_buf[0] = options::NOP;
+            ts_buf[1] = options::NOP;
+            write_timestamp_option(&mut ts_buf[2..], tsval, tsecr);
+            &ts_buf
+        } else {
+            &[]
+        };
+
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
                 Self::build_ipv4_data_segment(
@@ -397,6 +430,7 @@ impl SegmentBuilder {
                     flags::ACK,
                     window,
                     payload,
+                    tcp_options,
                     src_mac,
                     dst_mac,
                     tx_offload,
@@ -415,6 +449,7 @@ impl SegmentBuilder {
                     flags::ACK,
                     window,
                     payload,
+                    tcp_options,
                     src_mac,
                     dst_mac,
                     tx_offload,
@@ -602,6 +637,7 @@ impl SegmentBuilder {
         tcp_flags: u8,
         window: u16,
         payload: &[u8],
+        tcp_options: &[u8],
         src_mac: MacAddress,
         dst_mac: MacAddress,
         tx_offload: bool,
@@ -612,7 +648,8 @@ impl SegmentBuilder {
             return;
         };
 
-        let tcp_header_len = TCP_HEADER_LEN; // no options for data segments
+        let opt_padded_len = (tcp_options.len() + 3) & !3;
+        let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
         let data_offset = (tcp_header_len / 4) as u8;
         let total_ip_len = (IPV4_MIN_HEADER_LEN + tcp_header_len + payload.len()) as u16;
         let frame_len = ETH_LEN + IPV4_MIN_HEADER_LEN + tcp_header_len + payload.len();
@@ -659,15 +696,15 @@ impl SegmentBuilder {
             data_offset,
             tcp_flags,
             window,
-            &[],
-            0,
+            tcp_options,
+            opt_padded_len,
         );
 
         // Copy payload.
         let payload_offset = tcp_offset + tcp_header_len;
         frame[payload_offset..payload_offset + payload.len()].copy_from_slice(payload);
 
-        // TCP checksum — must cover header + payload.
+        // TCP checksum — must cover header (including options) + payload.
         if !tx_offload {
             let checksum = compute_tcp_checksum_from_parts(
                 &src_ip,
@@ -693,6 +730,7 @@ impl SegmentBuilder {
         tcp_flags: u8,
         window: u16,
         payload: &[u8],
+        tcp_options: &[u8],
         src_mac: MacAddress,
         dst_mac: MacAddress,
         tx_offload: bool,
@@ -703,7 +741,8 @@ impl SegmentBuilder {
             return;
         };
 
-        let tcp_header_len = TCP_HEADER_LEN;
+        let opt_padded_len = (tcp_options.len() + 3) & !3;
+        let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
         let data_offset = (tcp_header_len / 4) as u8;
         let ipv6_payload_len = (tcp_header_len + payload.len()) as u16;
         let frame_len = ETH_LEN + IPV6_HEADER_LEN + tcp_header_len + payload.len();
@@ -744,8 +783,8 @@ impl SegmentBuilder {
             data_offset,
             tcp_flags,
             window,
-            &[],
-            0,
+            tcp_options,
+            opt_padded_len,
         );
 
         // Copy payload.
@@ -843,6 +882,7 @@ mod tests {
             500,
             65535,
             payload,
+            None,
             src_mac,
             dst_mac,
             false,
@@ -885,6 +925,7 @@ mod tests {
             5000,
             3000,
             65535,
+            None,
             MacAddress::new([0xAA; 6]),
             MacAddress::new([0xBB; 6]),
             false,
@@ -921,6 +962,7 @@ mod tests {
             500,
             65535,
             b"payload",
+            None,
             MacAddress::new([0xAA; 6]),
             MacAddress::new([0xBB; 6]),
             false,
@@ -946,6 +988,7 @@ mod tests {
             500,
             65535,
             b"payload",
+            None,
             MacAddress::new([0xAA; 6]),
             MacAddress::new([0xBB; 6]),
             false,
