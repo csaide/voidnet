@@ -1801,6 +1801,7 @@ impl TcpHandler {
                 tcb.rcv_nxt,
                 tcb.advertised_window(),
                 payload,
+                flags::ACK,
                 ts,
                 src_mac,
                 dst_mac,
@@ -1926,6 +1927,7 @@ impl TcpHandler {
                             tcb.rcv_nxt,
                             tcb.advertised_window(),
                             payload,
+                            flags::ACK,
                             ts,
                             src_mac,
                             dst_mac,
@@ -2021,6 +2023,12 @@ impl TcpHandler {
                     } else {
                         None
                     };
+                    let remaining_after_send = data_available.saturating_sub(to_send);
+                    let data_flags = if remaining_after_send == 0 || to_send >= can_send {
+                        flags::ACK | flags::PSH
+                    } else {
+                        flags::ACK
+                    };
                     SegmentBuilder::build_data_from_slices(
                         tcb.id.local_addr,
                         tcb.id.remote_addr,
@@ -2030,6 +2038,7 @@ impl TcpHandler {
                         tcb.rcv_nxt,
                         tcb.advertised_window(),
                         payload,
+                        data_flags,
                         ts,
                         src_mac,
                         dst_mac,
@@ -8138,6 +8147,101 @@ mod tests {
         assert_eq!(
             tcb.cwnd, tcb.ssthresh,
             "cwnd should equal ssthresh after fast recovery"
+        );
+    }
+
+    #[test]
+    fn poll_send_sets_psh_on_last_segment() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        // Write small data (< MSS) into send buffer.
+        handler.connections[0].send_buffer.write(b"Hello");
+
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        assert_eq!(tx.num_frames(), 1, "expected one data segment");
+        let frame = tx.pop().unwrap();
+
+        // TCP flags byte is at offset ETH(14) + IPv4(20) + 13 = 47.
+        let tcp_flags_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + 13;
+        let tcp_flags_byte = frame[tcp_flags_offset];
+        assert!(
+            tcp_flags_byte & flags::PSH != 0,
+            "PSH flag should be set on last (only) data segment, got flags: {:#04x}",
+            tcp_flags_byte
+        );
+        assert!(
+            tcp_flags_byte & flags::ACK != 0,
+            "ACK flag should also be set, got flags: {:#04x}",
+            tcp_flags_byte
+        );
+    }
+
+    #[test]
+    fn poll_send_no_psh_on_first_segment_when_more_data() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        // Allocate frames large enough for MSS-sized segments (ETH+IP+TCP+1460).
+        for i in 0..16 {
+            let buf = leak(vec![0u8; 2048]);
+            free.push(Frame::new(2000 + i, buf, 2048, false));
+        }
+
+        let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+        // Write more than 1 MSS of data.
+        let mss = handler.connections[0].eff_snd_mss as usize;
+        let big_data = vec![0x41u8; mss + 100];
+        handler.connections[0].send_buffer.write(&big_data);
+
+        // Ensure cwnd is large enough to allow sending.
+        handler.connections[0].cwnd = (mss as u32) * 10;
+        // Disable Nagle so the second (sub-MSS) segment can be sent.
+        handler.connections[0].nagle_enabled = false;
+
+        let now = coarsetime::Instant::now();
+        // First poll_send: sends MSS bytes, more data remains -> no PSH.
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        assert_eq!(tx.num_frames(), 1, "expected one data segment from first poll");
+
+        let first_frame = tx.pop().unwrap();
+        let tcp_flags_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + 13;
+        let first_flags = first_frame[tcp_flags_offset];
+        assert!(
+            first_flags & flags::PSH == 0,
+            "PSH should NOT be set on first segment when more data remains, got flags: {:#04x}",
+            first_flags
+        );
+        assert!(
+            first_flags & flags::ACK != 0,
+            "ACK flag should be set, got flags: {:#04x}",
+            first_flags
+        );
+
+        // Second poll_send: sends remaining 100 bytes, no more data -> PSH set.
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        assert_eq!(tx.num_frames(), 1, "expected one data segment from second poll");
+        let second_frame = tx.pop().unwrap();
+        let second_flags = second_frame[tcp_flags_offset];
+        assert!(
+            second_flags & flags::PSH != 0,
+            "PSH should be set on last segment, got flags: {:#04x}",
+            second_flags
         );
     }
 }
