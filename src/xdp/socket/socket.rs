@@ -166,7 +166,7 @@ impl<'if_name> SocketBuilder<'if_name> {
     ) -> Result<LocalSocket<'umem>> {
         let (owner, rx, tx) = self.build_internal(ctx, umem)?.split();
 
-        Ok(LocalSocket::new(owner, rx, tx)?)
+        LocalSocket::new(owner, rx, tx)
     }
 
     /// Builds the socket as a [SmolSocket].
@@ -241,7 +241,7 @@ impl<'umem> Socket<'umem> {
             xsk_socket__create(
                 xsk_ptr,
                 if_name_c.as_ptr(),
-                queue as u32,
+                queue,
                 umem.as_ptr(),
                 rx.as_mut_ptr(),
                 tx.as_mut_ptr(),
@@ -655,7 +655,7 @@ mod tests {
         let mut send_buffer = BasicFrameBuffer::new(4);
         for frame in buffer.drain(..4) {
             let mut f = frame;
-            f.copy_from(&[0u8; 64]);
+            f.copy_from([0u8; 64]);
             send_buffer.push(f);
         }
 
@@ -669,7 +669,7 @@ mod tests {
         let mut more_buffer = BasicFrameBuffer::new(4);
         for frame in buffer.drain(..) {
             let mut f = frame;
-            f.copy_from(&[0u8; 64]);
+            f.copy_from([0u8; 64]);
             more_buffer.push(f);
         }
 

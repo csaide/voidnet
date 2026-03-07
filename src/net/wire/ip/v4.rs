@@ -125,7 +125,7 @@ impl Ipv4Header {
     pub const fn payload_len(&self) -> usize {
         let total = self.total_length() as usize;
         let hdr = self.header_len();
-        if total > hdr { total - hdr } else { 0 }
+        total.saturating_sub(hdr)
     }
 
     /// Fills `header_checksum` with the correct value.

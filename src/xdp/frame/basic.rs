@@ -68,10 +68,9 @@ impl<'umem> FrameBuffer<'umem> for BasicFrameBuffer<'umem> {
     }
 
     fn pop(&mut self) -> Option<Frame<'umem>> {
-        self.frames.pop_front().map(|frame| {
+        self.frames.pop_front().inspect(|_| {
             self.free_space += 1;
             self.num_frames -= 1;
-            frame
         })
     }
 

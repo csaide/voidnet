@@ -6,7 +6,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     task::Context,
-    task::Poll,
 };
 
 use coarsetime::Duration;
@@ -16,8 +15,8 @@ use crate::{
     net::{
         NeighborHandler, PmtuCache,
         handler::{
-            ethernet::EthernetHandler, ipv4::Ipv4Handler, ipv6::Ipv6Handler,
-            tcp::TcpHandler, udp::UdpHandler,
+            ethernet::EthernetHandler, ipv4::Ipv4Handler, ipv6::Ipv6Handler, tcp::TcpHandler,
+            udp::UdpHandler,
         },
     },
     xdp::{
@@ -318,7 +317,7 @@ impl<'umem> LocalRuntime<'umem> {
                 }
             };
 
-            if let Poll::Ready(_) = fut.as_mut().poll(&mut cx) {
+            if fut.as_mut().poll(&mut cx).is_ready() {
                 return Ok(());
             }
 
@@ -362,10 +361,7 @@ impl<'umem> LocalRuntime<'umem> {
                 // Evict stale TCP connections (e.g. TIME-WAIT).
                 //
                 // SAFETY: single-threaded, no reentrant handler calls.
-                unsafe { &mut *self.tcp_handler.get() }.evict_stale(
-                    now,
-                    &mut self.rx_return,
-                );
+                unsafe { &mut *self.tcp_handler.get() }.evict_stale(now, &mut self.rx_return);
 
                 // Evict stale neighbor entries.
                 self.neighbor_handler.evict_stale(now);
@@ -381,15 +377,19 @@ impl<'umem> LocalRuntime<'umem> {
 
             // We have frames to send, so send them.
             while self.tx_return.num_frames() > 0 {
-                if let Err(_) = self.socket.send(&mut self.tx_return) {
+                if self.socket.send(&mut self.tx_return).is_err() {
                     self.socket.maybe_wake()?;
                     let _ = self.umem.process_completion_queue(&mut self.rx_return);
                 }
             }
 
             // Fully flush the writes from above.
-            while self.rx_return.num_frames() < expected_size as usize {
-                if let Err(_) = self.umem.process_completion_queue(&mut self.rx_return) {
+            while self.rx_return.num_frames() < expected_size {
+                if self
+                    .umem
+                    .process_completion_queue(&mut self.rx_return)
+                    .is_err()
+                {
                     self.socket.maybe_wake()?;
                 }
             }
@@ -401,7 +401,7 @@ impl<'umem> LocalRuntime<'umem> {
 
             // Anything left goes back to the fill queue.
             while self.rx_return.num_frames() > 0 {
-                if let Err(_) = self.umem.process_fill_queue(&mut self.rx_return) {
+                if self.umem.process_fill_queue(&mut self.rx_return).is_err() {
                     self.umem.maybe_wake_fill_queue(self.socket.fd())?;
                 }
             }

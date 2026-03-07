@@ -15,7 +15,7 @@ use crate::{
         wire::{
             ethernet::EthernetFrame,
             ip::{IpAddress, Ipv4Header, Ipv6Header},
-            tcp::{TcpHeader, TCP_HEADER_LEN, flags, parse_mss, parse_window_scale},
+            tcp::{TCP_HEADER_LEN, TcpHeader, flags, parse_mss, parse_window_scale},
         },
     },
     xdp::frame::{Frame, FrameBuffer},
@@ -27,7 +27,10 @@ use isn::IsnGenerator;
 use ring_buffer::RingBuffer;
 use segment::SegmentBuilder;
 use state::TcpState;
-use tcb::{ConnectionId, MAX_DELAYED_ACK_COUNT, Tcb, TcpConfig, TcpEvent, DEFAULT_DELAYED_ACK_MS, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE};
+use tcb::{
+    ConnectionId, DEFAULT_DELAYED_ACK_MS, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE,
+    MAX_DELAYED_ACK_COUNT, Tcb, TcpConfig, TcpEvent,
+};
 
 /// Initial RTO for SYN retransmission (1 second in coarsetime ticks).
 const INITIAL_RTO_MS: u64 = 1000;
@@ -77,8 +80,6 @@ impl TcpHandler {
         }
     }
 
-    // --- Listener management ---
-
     /// Register a listening socket on (addr, port).
     pub fn listen(
         &mut self,
@@ -101,7 +102,9 @@ impl TcpHandler {
         config: TcpConfig,
     ) -> Result<LocalQueue<ConnectionId>, BindError> {
         // Check for duplicate listeners.
-        if self.listeners.iter().any(|l| l.port == port && (l.addr == addr || l.addr.is_unspecified() || addr.is_unspecified())) {
+        if self.listeners.iter().any(|l| {
+            l.port == port && (l.addr == addr || l.addr.is_unspecified() || addr.is_unspecified())
+        }) {
             return Err(BindError::AddressInUse);
         }
         let accept_queue = LocalQueue::new(config.backlog);
@@ -127,7 +130,8 @@ impl TcpHandler {
 
     /// Remove a listener on (addr, port) and clean up associated SYN-RECEIVED connections.
     pub fn unlisten(&mut self, addr: IpAddress, port: u16) {
-        self.listeners.retain(|l| !(l.port == port && l.addr == addr));
+        self.listeners
+            .retain(|l| !(l.port == port && l.addr == addr));
         // Remove any SYN-RECEIVED connections associated with this listener.
         self.connections.retain(|c| {
             !(c.state == TcpState::SynReceived
@@ -152,9 +156,15 @@ impl TcpHandler {
         tx_return: &mut impl FrameBuffer<'umem>,
     ) -> Result<LocalQueue<TcpEvent>, BindError> {
         self.connect_with_config(
-            local_addr, local_port, remote_addr, remote_port,
-            src_mac, dst_mac, TcpConfig::default(),
-            free_frames, tx_return,
+            local_addr,
+            local_port,
+            remote_addr,
+            remote_port,
+            src_mac,
+            dst_mac,
+            TcpConfig::default(),
+            free_frames,
+            tx_return,
         )
     }
 
@@ -205,7 +215,9 @@ impl TcpHandler {
             snd_wscale: 0,
             rcv_wscale: DEFAULT_RCV_WSCALE,
             wscale_enabled: false,
-            retransmit_deadline: Some(Instant::now() + coarsetime::Duration::from_millis(INITIAL_RTO_MS)),
+            retransmit_deadline: Some(
+                Instant::now() + coarsetime::Duration::from_millis(INITIAL_RTO_MS),
+            ),
             rto_backoff: 0,
             event_queue: event_queue.clone(),
             send_buffer: RingBuffer::new(config.send_buffer_size),
@@ -239,11 +251,19 @@ impl TcpHandler {
 
         // Send SYN.
         SegmentBuilder::build_syn(
-            local_addr, remote_addr,
-            local_port, remote_port,
-            iss, DEFAULT_RCV_WND, DEFAULT_RCV_MSS, DEFAULT_RCV_WSCALE,
-            src_mac, dst_mac,
-            self.tx_offload, free_frames, tx_return,
+            local_addr,
+            remote_addr,
+            local_port,
+            remote_port,
+            iss,
+            DEFAULT_RCV_WND,
+            DEFAULT_RCV_MSS,
+            DEFAULT_RCV_WSCALE,
+            src_mac,
+            dst_mac,
+            self.tx_offload,
+            free_frames,
+            tx_return,
         );
 
         self.connections.push(tcb);
@@ -261,7 +281,14 @@ impl TcpHandler {
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        self.process_ipv4_with_now(frame, Instant::now(), neighbor_handler, free_frames, rx_return, tx_return);
+        self.process_ipv4_with_now(
+            frame,
+            Instant::now(),
+            neighbor_handler,
+            free_frames,
+            rx_return,
+            tx_return,
+        );
     }
 
     /// Process an incoming IPv4 TCP segment with an explicit timestamp.
@@ -314,7 +341,8 @@ impl TcpHandler {
         let mut opt_buf = [0u8; 40];
         let opt_len = if header_len > TCP_HEADER_LEN {
             let len = header_len - TCP_HEADER_LEN;
-            opt_buf[..len].copy_from_slice(&frame[tcp_offset + TCP_HEADER_LEN..tcp_offset + header_len]);
+            opt_buf[..len]
+                .copy_from_slice(&frame[tcp_offset + TCP_HEADER_LEN..tcp_offset + header_len]);
             len
         } else {
             0
@@ -330,11 +358,25 @@ impl TcpHandler {
         let dst_mac = EthernetFrame::from_bytes(&frame).src_mac;
 
         self.process_segment(
-            frame, now, incoming_src, incoming_dst,
-            src_port, dst_port, seg_seq, seg_ack, seg_flags, seg_wnd, seg_len,
-            &opt_buf[..opt_len], tcp_offset, header_len,
-            src_mac, dst_mac,
-            free_frames, rx_return, tx_return,
+            frame,
+            now,
+            incoming_src,
+            incoming_dst,
+            src_port,
+            dst_port,
+            seg_seq,
+            seg_ack,
+            seg_flags,
+            seg_wnd,
+            seg_len,
+            &opt_buf[..opt_len],
+            tcp_offset,
+            header_len,
+            src_mac,
+            dst_mac,
+            free_frames,
+            rx_return,
+            tx_return,
         );
     }
 
@@ -348,7 +390,15 @@ impl TcpHandler {
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        self.process_ipv6_with_now(frame, tcp_offset, Instant::now(), neighbor_handler, free_frames, rx_return, tx_return);
+        self.process_ipv6_with_now(
+            frame,
+            tcp_offset,
+            Instant::now(),
+            neighbor_handler,
+            free_frames,
+            rx_return,
+            tx_return,
+        );
     }
 
     /// Process an incoming IPv6 TCP segment with an explicit timestamp.
@@ -399,7 +449,8 @@ impl TcpHandler {
         let mut opt_buf = [0u8; 40];
         let opt_len = if header_len > TCP_HEADER_LEN {
             let len = header_len - TCP_HEADER_LEN;
-            opt_buf[..len].copy_from_slice(&frame[tcp_offset + TCP_HEADER_LEN..tcp_offset + header_len]);
+            opt_buf[..len]
+                .copy_from_slice(&frame[tcp_offset + TCP_HEADER_LEN..tcp_offset + header_len]);
             len
         } else {
             0
@@ -414,11 +465,25 @@ impl TcpHandler {
         let dst_mac = EthernetFrame::from_bytes(&frame).src_mac;
 
         self.process_segment(
-            frame, now, incoming_src, incoming_dst,
-            src_port, dst_port, seg_seq, seg_ack, seg_flags, seg_wnd, seg_len,
-            &opt_buf[..opt_len], tcp_offset, header_len,
-            src_mac, dst_mac,
-            free_frames, rx_return, tx_return,
+            frame,
+            now,
+            incoming_src,
+            incoming_dst,
+            src_port,
+            dst_port,
+            seg_seq,
+            seg_ack,
+            seg_flags,
+            seg_wnd,
+            seg_len,
+            &opt_buf[..opt_len],
+            tcp_offset,
+            header_len,
+            src_mac,
+            dst_mac,
+            free_frames,
+            rx_return,
+            tx_return,
         );
     }
 
@@ -459,15 +524,31 @@ impl TcpHandler {
             match state {
                 TcpState::SynSent => {
                     self.process_syn_sent(
-                        idx, seg_seq, seg_ack, seg_flags, seg_wnd, options,
-                        src_mac, dst_mac, free_frames, tx_return,
+                        idx,
+                        seg_seq,
+                        seg_ack,
+                        seg_flags,
+                        seg_wnd,
+                        options,
+                        src_mac,
+                        dst_mac,
+                        free_frames,
+                        tx_return,
                     );
                     rx_return.push(frame);
                 }
                 TcpState::SynReceived => {
                     self.process_syn_received(
-                        idx, seg_seq, seg_ack, seg_flags, seg_wnd, seg_len,
-                        src_mac, dst_mac, free_frames, tx_return,
+                        idx,
+                        seg_seq,
+                        seg_ack,
+                        seg_flags,
+                        seg_wnd,
+                        seg_len,
+                        src_mac,
+                        dst_mac,
+                        free_frames,
+                        tx_return,
                     );
                     rx_return.push(frame);
                 }
@@ -475,21 +556,45 @@ impl TcpHandler {
                     let payload_offset = tcp_offset + tcp_header_len;
                     let payload_len = frame.len().saturating_sub(payload_offset);
                     self.process_established(
-                        idx, frame, now, seg_seq, seg_ack, seg_flags, seg_wnd,
-                        payload_offset, payload_len,
-                        src_mac, dst_mac,
-                        free_frames, rx_return, tx_return,
+                        idx,
+                        frame,
+                        now,
+                        seg_seq,
+                        seg_ack,
+                        seg_flags,
+                        seg_wnd,
+                        payload_offset,
+                        payload_len,
+                        src_mac,
+                        dst_mac,
+                        free_frames,
+                        rx_return,
+                        tx_return,
                     );
                 }
-                TcpState::FinWait1 | TcpState::FinWait2 | TcpState::CloseWait
-                | TcpState::Closing | TcpState::LastAck | TcpState::TimeWait => {
+                TcpState::FinWait1
+                | TcpState::FinWait2
+                | TcpState::CloseWait
+                | TcpState::Closing
+                | TcpState::LastAck
+                | TcpState::TimeWait => {
                     let payload_offset = tcp_offset + tcp_header_len;
                     let payload_len = frame.len().saturating_sub(payload_offset);
                     self.process_teardown(
-                        idx, frame, now, seg_seq, seg_ack, seg_flags, seg_wnd,
-                        payload_offset, payload_len,
-                        src_mac, dst_mac,
-                        free_frames, rx_return, tx_return,
+                        idx,
+                        frame,
+                        now,
+                        seg_seq,
+                        seg_ack,
+                        seg_flags,
+                        seg_wnd,
+                        payload_offset,
+                        payload_len,
+                        src_mac,
+                        dst_mac,
+                        free_frames,
+                        rx_return,
+                        tx_return,
                     );
                 }
                 _ => {
@@ -503,9 +608,20 @@ impl TcpHandler {
         if let Some(listener_idx) = self.find_listener(incoming_dst, dst_port) {
             self.process_listen(
                 listener_idx,
-                incoming_src, incoming_dst, src_port, dst_port,
-                seg_seq, seg_ack, seg_flags, seg_wnd, seg_len, options,
-                src_mac, dst_mac, free_frames, tx_return,
+                incoming_src,
+                incoming_dst,
+                src_port,
+                dst_port,
+                seg_seq,
+                seg_ack,
+                seg_flags,
+                seg_wnd,
+                seg_len,
+                options,
+                src_mac,
+                dst_mac,
+                free_frames,
+                tx_return,
             );
             rx_return.push(frame);
             return;
@@ -520,11 +636,19 @@ impl TcpHandler {
 
         // Send RST per RFC §16.1.
         SegmentBuilder::build_rst(
-            incoming_src, incoming_dst,
-            src_port, dst_port,
-            seg_seq, seg_ack, seg_flags, seg_len,
-            src_mac, dst_mac,
-            self.tx_offload, free_frames, tx_return,
+            incoming_src,
+            incoming_dst,
+            src_port,
+            dst_port,
+            seg_seq,
+            seg_ack,
+            seg_flags,
+            seg_len,
+            src_mac,
+            dst_mac,
+            self.tx_offload,
+            free_frames,
+            tx_return,
         );
         rx_return.push(frame);
     }
@@ -557,11 +681,19 @@ impl TcpHandler {
         // Step 2: ACK (no SYN) → send RST.
         if seg_flags & flags::ACK != 0 && seg_flags & flags::SYN == 0 {
             SegmentBuilder::build_rst(
-                incoming_src, incoming_dst,
-                src_port, dst_port,
-                seg_seq, seg_ack, seg_flags, seg_len,
-                src_mac, dst_mac,
-                self.tx_offload, free_frames, tx_return,
+                incoming_src,
+                incoming_dst,
+                src_port,
+                dst_port,
+                seg_seq,
+                seg_ack,
+                seg_flags,
+                seg_len,
+                src_mac,
+                dst_mac,
+                self.tx_offload,
+                free_frames,
+                tx_return,
             );
             return;
         }
@@ -611,9 +743,15 @@ impl TcpHandler {
                 rcv_mss: DEFAULT_RCV_MSS,
                 eff_snd_mss: peer_mss.min(DEFAULT_RCV_MSS),
                 snd_wscale,
-                rcv_wscale: if wscale_enabled { DEFAULT_RCV_WSCALE } else { 0 },
+                rcv_wscale: if wscale_enabled {
+                    DEFAULT_RCV_WSCALE
+                } else {
+                    0
+                },
                 wscale_enabled,
-                retransmit_deadline: Some(Instant::now() + coarsetime::Duration::from_millis(INITIAL_RTO_MS)),
+                retransmit_deadline: Some(
+                    Instant::now() + coarsetime::Duration::from_millis(INITIAL_RTO_MS),
+                ),
                 rto_backoff: 0,
                 event_queue,
                 send_buffer: RingBuffer::new(send_buffer_size),
@@ -646,14 +784,26 @@ impl TcpHandler {
             };
 
             // Send SYN-ACK.
-            let wscale_opt = if wscale_enabled { Some(DEFAULT_RCV_WSCALE) } else { None };
+            let wscale_opt = if wscale_enabled {
+                Some(DEFAULT_RCV_WSCALE)
+            } else {
+                None
+            };
             SegmentBuilder::build_syn_ack(
-                incoming_dst, incoming_src,
-                dst_port, src_port,
-                iss, seg_seq.wrapping_add(1),
-                DEFAULT_RCV_WND, DEFAULT_RCV_MSS, wscale_opt,
-                src_mac, dst_mac,
-                self.tx_offload, free_frames, tx_return,
+                incoming_dst,
+                incoming_src,
+                dst_port,
+                src_port,
+                iss,
+                seg_seq.wrapping_add(1),
+                DEFAULT_RCV_WND,
+                DEFAULT_RCV_MSS,
+                wscale_opt,
+                src_mac,
+                dst_mac,
+                self.tx_offload,
+                free_frames,
+                tx_return,
             );
 
             self.connections.push(tcb);
@@ -689,12 +839,18 @@ impl TcpHandler {
             if seg_flags & flags::RST == 0 {
                 let tcb = &self.connections[idx];
                 SegmentBuilder::build_ack(
-                    tcb.id.local_addr, tcb.id.remote_addr,
-                    tcb.id.local_port, tcb.id.remote_port,
-                    tcb.snd_nxt, tcb.rcv_nxt,
+                    tcb.id.local_addr,
+                    tcb.id.remote_addr,
+                    tcb.id.local_port,
+                    tcb.id.remote_port,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
                     DEFAULT_RCV_WND,
-                    src_mac, dst_mac,
-                    self.tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
             return;
@@ -709,7 +865,9 @@ impl TcpHandler {
                 self.connections.remove(idx);
             } else {
                 // Active open → signal refused.
-                self.connections[idx].event_queue.push(TcpEvent::ConnectionRefused);
+                self.connections[idx]
+                    .event_queue
+                    .push(TcpEvent::ConnectionRefused);
                 self.connections.remove(idx);
             }
             return;
@@ -720,12 +878,18 @@ impl TcpHandler {
             // Send challenge ACK per RFC 5961.
             let tcb = &self.connections[idx];
             SegmentBuilder::build_ack(
-                tcb.id.local_addr, tcb.id.remote_addr,
-                tcb.id.local_port, tcb.id.remote_port,
-                tcb.snd_nxt, tcb.rcv_nxt,
+                tcb.id.local_addr,
+                tcb.id.remote_addr,
+                tcb.id.local_port,
+                tcb.id.remote_port,
+                tcb.snd_nxt,
+                tcb.rcv_nxt,
                 DEFAULT_RCV_WND,
-                src_mac, dst_mac,
-                self.tx_offload, free_frames, tx_return,
+                src_mac,
+                dst_mac,
+                self.tx_offload,
+                free_frames,
+                tx_return,
             );
             return;
         }
@@ -755,11 +919,19 @@ impl TcpHandler {
             } else {
                 // Bad ACK → send RST.
                 SegmentBuilder::build_rst(
-                    id.remote_addr, id.local_addr,
-                    id.remote_port, id.local_port,
-                    seg_seq, seg_ack, seg_flags, 0,
-                    src_mac, dst_mac,
-                    self.tx_offload, free_frames, tx_return,
+                    id.remote_addr,
+                    id.local_addr,
+                    id.remote_port,
+                    id.local_port,
+                    seg_seq,
+                    seg_ack,
+                    seg_flags,
+                    0,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
         }
@@ -784,29 +956,40 @@ impl TcpHandler {
         let iss = tcb.iss;
 
         // Step 1: Check ACK.
-        if seg_flags & flags::ACK != 0 {
-            if crate::net::wire::tcp::seq_le(seg_ack, iss) || crate::net::wire::tcp::seq_lt(tcb.snd_nxt, seg_ack) {
-                // Unacceptable ACK.
-                if seg_flags & flags::RST == 0 {
-                    // Send RST unless RST is set.
-                    let id = tcb.id;
-                    SegmentBuilder::build_rst(
-                        id.remote_addr, id.local_addr,
-                        id.remote_port, id.local_port,
-                        seg_seq, seg_ack, seg_flags, 0,
-                        src_mac, dst_mac,
-                        self.tx_offload, free_frames, tx_return,
-                    );
-                }
-                return;
+        if seg_flags & flags::ACK != 0
+            && (crate::net::wire::tcp::seq_le(seg_ack, iss)
+                || crate::net::wire::tcp::seq_lt(tcb.snd_nxt, seg_ack))
+        {
+            // Unacceptable ACK.
+            if seg_flags & flags::RST == 0 {
+                // Send RST unless RST is set.
+                let id = tcb.id;
+                SegmentBuilder::build_rst(
+                    id.remote_addr,
+                    id.local_addr,
+                    id.remote_port,
+                    id.local_port,
+                    seg_seq,
+                    seg_ack,
+                    seg_flags,
+                    0,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
+                );
             }
+            return;
         }
 
         // Step 2: Check RST.
         if seg_flags & flags::RST != 0 {
             if seg_flags & flags::ACK != 0 {
                 // ACK was acceptable (passed step 1) → connection refused.
-                self.connections[idx].event_queue.push(TcpEvent::ConnectionRefused);
+                self.connections[idx]
+                    .event_queue
+                    .push(TcpEvent::ConnectionRefused);
                 self.connections.remove(idx);
             }
             // RST without ACK → drop silently.
@@ -848,12 +1031,18 @@ impl TcpHandler {
                 // Send ACK.
                 let id = tcb.id;
                 SegmentBuilder::build_ack(
-                    id.local_addr, id.remote_addr,
-                    id.local_port, id.remote_port,
-                    tcb.snd_nxt, tcb.rcv_nxt,
+                    id.local_addr,
+                    id.remote_addr,
+                    id.local_port,
+                    id.remote_port,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
                     DEFAULT_RCV_WND,
-                    src_mac, dst_mac,
-                    self.tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
                 );
 
                 tcb.event_queue.push(TcpEvent::Connected);
@@ -868,18 +1057,31 @@ impl TcpHandler {
 
                 // Send SYN-ACK.
                 let id = tcb.id;
-                let wscale_opt = if tcb.wscale_enabled { Some(tcb.rcv_wscale) } else { None };
+                let wscale_opt = if tcb.wscale_enabled {
+                    Some(tcb.rcv_wscale)
+                } else {
+                    None
+                };
                 SegmentBuilder::build_syn_ack(
-                    id.local_addr, id.remote_addr,
-                    id.local_port, id.remote_port,
-                    tcb.iss, tcb.rcv_nxt,
-                    DEFAULT_RCV_WND, tcb.rcv_mss, wscale_opt,
-                    src_mac, dst_mac,
-                    self.tx_offload, free_frames, tx_return,
+                    id.local_addr,
+                    id.remote_addr,
+                    id.local_port,
+                    id.remote_port,
+                    tcb.iss,
+                    tcb.rcv_nxt,
+                    DEFAULT_RCV_WND,
+                    tcb.rcv_mss,
+                    wscale_opt,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
                 );
 
                 // Reset retransmit timer for SYN-ACK.
-                tcb.retransmit_deadline = Some(Instant::now() + coarsetime::Duration::from_millis(INITIAL_RTO_MS));
+                tcb.retransmit_deadline =
+                    Some(Instant::now() + coarsetime::Duration::from_millis(INITIAL_RTO_MS));
                 tcb.rto_backoff = 0;
             }
         }
@@ -906,7 +1108,7 @@ impl TcpHandler {
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        use crate::net::wire::tcp::{seq_lt, seq_le};
+        use crate::net::wire::tcp::{seq_le, seq_lt};
 
         // Step 1: RST check.
         if seg_flags & flags::RST != 0 {
@@ -959,14 +1161,14 @@ impl TcpHandler {
                         }
                         Some(srtt) => {
                             // Subsequent measurements (RFC 6298 §2.3).
-                            let diff = if rtt_ms > srtt { rtt_ms - srtt } else { srtt - rtt_ms };
+                            let diff = rtt_ms.abs_diff(srtt);
                             tcb.rttvar = (3 * tcb.rttvar + diff) / 4;
                             tcb.srtt = Some((7 * srtt + rtt_ms) / 8);
                         }
                     }
                     let srtt = tcb.srtt.unwrap();
                     // RTO = SRTT + 4 * RTTVAR, clamped to [1000ms, 60_000ms].
-                    tcb.rto = (srtt + 4 * tcb.rttvar).max(1000).min(60_000);
+                    tcb.rto = (srtt + 4 * tcb.rttvar).clamp(1000, 60_000);
                     tcb.last_send_time = None; // consumed
                 }
 
@@ -1020,12 +1222,18 @@ impl TcpHandler {
                 if tcb.ack_delay_count >= MAX_DELAYED_ACK_COUNT {
                     // Flush: ACK every other segment (RFC 5681 §4.2).
                     SegmentBuilder::build_ack(
-                        tcb.id.local_addr, tcb.id.remote_addr,
-                        tcb.id.local_port, tcb.id.remote_port,
-                        tcb.snd_nxt, tcb.rcv_nxt,
+                        tcb.id.local_addr,
+                        tcb.id.remote_addr,
+                        tcb.id.local_port,
+                        tcb.id.remote_port,
+                        tcb.snd_nxt,
+                        tcb.rcv_nxt,
                         DEFAULT_RCV_WND,
-                        src_mac, dst_mac,
-                        self.tx_offload, free_frames, tx_return,
+                        src_mac,
+                        dst_mac,
+                        self.tx_offload,
+                        free_frames,
+                        tx_return,
                     );
                     tcb.ack_pending = false;
                     tcb.ack_delay_count = 0;
@@ -1033,7 +1241,8 @@ impl TcpHandler {
                 } else {
                     tcb.ack_pending = true;
                     if tcb.delayed_ack_deadline.is_none() {
-                        tcb.delayed_ack_deadline = Some(now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms));
+                        tcb.delayed_ack_deadline =
+                            Some(now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms));
                     }
                 }
             } else if seq_lt(rcv_nxt, seg_seq) {
@@ -1046,23 +1255,35 @@ impl TcpHandler {
 
                 // Send duplicate ACK (with current rcv_nxt).
                 SegmentBuilder::build_ack(
-                    tcb.id.local_addr, tcb.id.remote_addr,
-                    tcb.id.local_port, tcb.id.remote_port,
-                    tcb.snd_nxt, tcb.rcv_nxt,
+                    tcb.id.local_addr,
+                    tcb.id.remote_addr,
+                    tcb.id.local_port,
+                    tcb.id.remote_port,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
                     DEFAULT_RCV_WND,
-                    src_mac, dst_mac,
-                    self.tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             } else {
                 // Duplicate data (seg_seq < rcv_nxt) — just ACK.
                 let tcb = &self.connections[idx];
                 SegmentBuilder::build_ack(
-                    tcb.id.local_addr, tcb.id.remote_addr,
-                    tcb.id.local_port, tcb.id.remote_port,
-                    tcb.snd_nxt, tcb.rcv_nxt,
+                    tcb.id.local_addr,
+                    tcb.id.remote_addr,
+                    tcb.id.local_port,
+                    tcb.id.remote_port,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
                     DEFAULT_RCV_WND,
-                    src_mac, dst_mac,
-                    self.tx_offload, free_frames, tx_return,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
         }
@@ -1080,11 +1301,18 @@ impl TcpHandler {
             let new_rcv_nxt = tcb.rcv_nxt;
             let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
             SegmentBuilder::build_ack(
-                id.local_addr, id.remote_addr,
-                id.local_port, id.remote_port,
-                snd_nxt, new_rcv_nxt, window,
-                src_mac, dst_mac,
-                self.tx_offload, free_frames, tx_return,
+                id.local_addr,
+                id.remote_addr,
+                id.local_port,
+                id.remote_port,
+                snd_nxt,
+                new_rcv_nxt,
+                window,
+                src_mac,
+                dst_mac,
+                self.tx_offload,
+                free_frames,
+                tx_return,
             );
         }
 
@@ -1108,25 +1336,32 @@ impl TcpHandler {
             if !tcb.ack_pending {
                 continue;
             }
-            if let Some(deadline) = tcb.delayed_ack_deadline {
-                if now >= deadline {
-                    let id = tcb.id;
-                    let dst_mac = neighbor_handler
-                        .lookup(now, &id.remote_addr)
-                        .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
-                    let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
+            if let Some(deadline) = tcb.delayed_ack_deadline
+                && now >= deadline
+            {
+                let id = tcb.id;
+                let dst_mac = neighbor_handler
+                    .lookup(now, &id.remote_addr)
+                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
 
-                    SegmentBuilder::build_ack(
-                        id.local_addr, id.remote_addr,
-                        id.local_port, id.remote_port,
-                        tcb.snd_nxt, tcb.rcv_nxt, window,
-                        src_mac, dst_mac,
-                        self.tx_offload, free_frames, tx_return,
-                    );
-                    tcb.ack_pending = false;
-                    tcb.ack_delay_count = 0;
-                    tcb.delayed_ack_deadline = None;
-                }
+                SegmentBuilder::build_ack(
+                    id.local_addr,
+                    id.remote_addr,
+                    id.local_port,
+                    id.remote_port,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
+                    window,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+                tcb.ack_pending = false;
+                tcb.ack_delay_count = 0;
+                tcb.delayed_ack_deadline = None;
             }
         }
 
@@ -1142,7 +1377,8 @@ impl TcpHandler {
             let probe_threshold = if tcb.keep_alive_probes_sent == 0 {
                 tcb.keep_alive_idle_ms
             } else {
-                tcb.keep_alive_idle_ms + tcb.keep_alive_interval_ms * tcb.keep_alive_probes_sent as u64
+                tcb.keep_alive_idle_ms
+                    + tcb.keep_alive_interval_ms * tcb.keep_alive_probes_sent as u64
             };
 
             if idle_ms >= probe_threshold {
@@ -1161,11 +1397,18 @@ impl TcpHandler {
                 let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
 
                 SegmentBuilder::build_ack(
-                    id.local_addr, id.remote_addr,
-                    id.local_port, id.remote_port,
-                    tcb.snd_una.wrapping_sub(1), tcb.rcv_nxt, window,
-                    src_mac, dst_mac,
-                    self.tx_offload, free_frames, tx_return,
+                    id.local_addr,
+                    id.remote_addr,
+                    id.local_port,
+                    id.remote_port,
+                    tcb.snd_una.wrapping_sub(1),
+                    tcb.rcv_nxt,
+                    window,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
                 );
 
                 tcb.keep_alive_probes_sent += 1;
@@ -1201,12 +1444,19 @@ impl TcpHandler {
             let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
 
             SegmentBuilder::build_data(
-                id.local_addr, id.remote_addr,
-                id.local_port, id.remote_port,
-                tcb.snd_una, tcb.rcv_nxt, window,
+                id.local_addr,
+                id.remote_addr,
+                id.local_port,
+                id.remote_port,
+                tcb.snd_una,
+                tcb.rcv_nxt,
+                window,
                 &payload,
-                src_mac, dst_mac,
-                self.tx_offload, free_frames, tx_return,
+                src_mac,
+                dst_mac,
+                self.tx_offload,
+                free_frames,
+                tx_return,
             );
 
             // Fast recovery: halve cwnd.
@@ -1253,22 +1503,42 @@ impl TcpHandler {
             match tcb.state {
                 TcpState::SynSent => {
                     SegmentBuilder::build_syn(
-                        id.local_addr, id.remote_addr,
-                        id.local_port, id.remote_port,
-                        tcb.iss, DEFAULT_RCV_WND, DEFAULT_RCV_MSS, DEFAULT_RCV_WSCALE,
-                        src_mac, dst_mac,
-                        self.tx_offload, free_frames, tx_return,
+                        id.local_addr,
+                        id.remote_addr,
+                        id.local_port,
+                        id.remote_port,
+                        tcb.iss,
+                        DEFAULT_RCV_WND,
+                        DEFAULT_RCV_MSS,
+                        DEFAULT_RCV_WSCALE,
+                        src_mac,
+                        dst_mac,
+                        self.tx_offload,
+                        free_frames,
+                        tx_return,
                     );
                 }
                 TcpState::SynReceived => {
-                    let wscale_opt = if tcb.wscale_enabled { Some(tcb.rcv_wscale) } else { None };
+                    let wscale_opt = if tcb.wscale_enabled {
+                        Some(tcb.rcv_wscale)
+                    } else {
+                        None
+                    };
                     SegmentBuilder::build_syn_ack(
-                        id.local_addr, id.remote_addr,
-                        id.local_port, id.remote_port,
-                        tcb.iss, tcb.rcv_nxt,
-                        DEFAULT_RCV_WND, tcb.rcv_mss, wscale_opt,
-                        src_mac, dst_mac,
-                        self.tx_offload, free_frames, tx_return,
+                        id.local_addr,
+                        id.remote_addr,
+                        id.local_port,
+                        id.remote_port,
+                        tcb.iss,
+                        tcb.rcv_nxt,
+                        DEFAULT_RCV_WND,
+                        tcb.rcv_mss,
+                        wscale_opt,
+                        src_mac,
+                        dst_mac,
+                        self.tx_offload,
+                        free_frames,
+                        tx_return,
                     );
                 }
                 TcpState::Established => {
@@ -1278,19 +1548,27 @@ impl TcpHandler {
                         tcb.send_buffer.peek_at(0, &mut payload);
                         let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
                         SegmentBuilder::build_data(
-                            id.local_addr, id.remote_addr,
-                            id.local_port, id.remote_port,
-                            tcb.snd_una, tcb.rcv_nxt, window,
+                            id.local_addr,
+                            id.remote_addr,
+                            id.local_port,
+                            id.remote_port,
+                            tcb.snd_una,
+                            tcb.rcv_nxt,
+                            window,
                             &payload,
-                            src_mac, dst_mac,
-                            self.tx_offload, free_frames, tx_return,
+                            src_mac,
+                            dst_mac,
+                            self.tx_offload,
+                            free_frames,
+                            tx_return,
                         );
                     }
                     // Back to slow start.
                     tcb.ssthresh = (tcb.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
                     tcb.cwnd = tcb.eff_snd_mss as u32;
                     tcb.rto_backoff += 1;
-                    tcb.retransmit_deadline = Some(now + coarsetime::Duration::from_millis(tcb.rto << tcb.rto_backoff));
+                    tcb.retransmit_deadline =
+                        Some(now + coarsetime::Duration::from_millis(tcb.rto << tcb.rto_backoff));
                 }
                 _ => continue,
             }
@@ -1315,18 +1593,13 @@ impl TcpHandler {
     }
 
     /// Evict stale connections whose TIME-WAIT deadline has passed.
-    pub fn evict_stale<'umem>(
-        &mut self,
-        now: Instant,
-        _rx_return: &mut impl FrameBuffer<'umem>,
-    ) {
+    pub fn evict_stale<'umem>(&mut self, now: Instant, _rx_return: &mut impl FrameBuffer<'umem>) {
         self.connections.retain(|tcb| {
-            if tcb.state == TcpState::TimeWait {
-                if let Some(deadline) = tcb.time_wait_deadline {
-                    if now >= deadline {
-                        return false; // remove
-                    }
-                }
+            if tcb.state == TcpState::TimeWait
+                && let Some(deadline) = tcb.time_wait_deadline
+                && now >= deadline
+            {
+                return false; // remove
             }
             true // keep
         });
@@ -1375,12 +1648,19 @@ impl TcpHandler {
                     let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
 
                     SegmentBuilder::build_data(
-                        tcb.id.local_addr, tcb.id.remote_addr,
-                        tcb.id.local_port, tcb.id.remote_port,
-                        tcb.snd_nxt, tcb.rcv_nxt, window,
+                        tcb.id.local_addr,
+                        tcb.id.remote_addr,
+                        tcb.id.local_port,
+                        tcb.id.remote_port,
+                        tcb.snd_nxt,
+                        tcb.rcv_nxt,
+                        window,
                         &payload,
-                        src_mac, dst_mac,
-                        self.tx_offload, free_frames, tx_return,
+                        src_mac,
+                        dst_mac,
+                        self.tx_offload,
+                        free_frames,
+                        tx_return,
                     );
 
                     tcb.snd_nxt = tcb.snd_nxt.wrapping_add(to_send as u32);
@@ -1392,7 +1672,8 @@ impl TcpHandler {
 
                     // Set retransmit timer if not already running.
                     if tcb.retransmit_deadline.is_none() {
-                        tcb.retransmit_deadline = Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                        tcb.retransmit_deadline =
+                            Some(now + coarsetime::Duration::from_millis(tcb.rto));
                     }
 
                     // Piggyback: data segment carries ACK, so clear delayed ACK state.
@@ -1403,33 +1684,38 @@ impl TcpHandler {
             }
 
             // Check linger deadline — if expired, abort with RST.
-            if tcb.pending_fin {
-                if let Some(deadline) = tcb.linger_deadline {
-                    if now >= deadline {
-                        // Send RST to peer.
-                        let id = tcb.id;
-                        let dst_mac = neighbor_handler
-                            .lookup(now, &id.remote_addr)
-                            .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+            if tcb.pending_fin
+                && let Some(deadline) = tcb.linger_deadline
+                && now >= deadline
+            {
+                // Send RST to peer.
+                let id = tcb.id;
+                let dst_mac = neighbor_handler
+                    .lookup(now, &id.remote_addr)
+                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
 
-                        // Use build_rst by simulating an "incoming ACK" segment.
-                        // This produces: <SEQ=SEG.ACK><CTL=RST> = <SEQ=snd_nxt><CTL=RST>
-                        SegmentBuilder::build_rst(
-                            id.remote_addr, id.local_addr,  // swapped: "incoming" from remote
-                            id.remote_port, id.local_port,  // swapped
-                            0, tcb.snd_nxt,                 // incoming_seq=0, incoming_ack=snd_nxt
-                            flags::ACK,                     // pretend incoming has ACK set
-                            0,                              // seg_len doesn't matter
-                            src_mac, dst_mac,
-                            self.tx_offload, free_frames, tx_return,
-                        );
+                // Use build_rst by simulating an "incoming ACK" segment.
+                // This produces: <SEQ=SEG.ACK><CTL=RST> = <SEQ=snd_nxt><CTL=RST>
+                SegmentBuilder::build_rst(
+                    id.remote_addr,
+                    id.local_addr, // swapped: "incoming" from remote
+                    id.remote_port,
+                    id.local_port, // swapped
+                    0,
+                    tcb.snd_nxt, // incoming_seq=0, incoming_ack=snd_nxt
+                    flags::ACK,  // pretend incoming has ACK set
+                    0,           // seg_len doesn't matter
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
+                );
 
-                        tcb.event_queue.push(TcpEvent::Reset);
-                        tcb.state = TcpState::Closed;
-                        tcb.pending_fin = false;
-                        continue;
-                    }
-                }
+                tcb.event_queue.push(TcpEvent::Reset);
+                tcb.state = TcpState::Closed;
+                tcb.pending_fin = false;
+                continue;
             }
 
             // After data sending: check if we should send FIN.
@@ -1446,11 +1732,18 @@ impl TcpHandler {
                     let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
 
                     SegmentBuilder::build_fin_ack(
-                        id.local_addr, id.remote_addr,
-                        id.local_port, id.remote_port,
-                        tcb.snd_nxt, tcb.rcv_nxt, window,
-                        src_mac, dst_mac,
-                        self.tx_offload, free_frames, tx_return,
+                        id.local_addr,
+                        id.remote_addr,
+                        id.local_port,
+                        id.remote_port,
+                        tcb.snd_nxt,
+                        tcb.rcv_nxt,
+                        window,
+                        src_mac,
+                        dst_mac,
+                        self.tx_offload,
+                        free_frames,
+                        tx_return,
                     );
 
                     tcb.fin_seq = Some(tcb.snd_nxt);
@@ -1466,7 +1759,8 @@ impl TcpHandler {
 
                     // Set retransmit timer for FIN.
                     if tcb.retransmit_deadline.is_none() {
-                        tcb.retransmit_deadline = Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                        tcb.retransmit_deadline =
+                            Some(now + coarsetime::Duration::from_millis(tcb.rto));
                     }
                 }
             }
@@ -1482,7 +1776,9 @@ impl TcpHandler {
     /// `poll_send` will drain remaining data and then send FIN.
     pub fn initiate_close(&mut self, id: &ConnectionId) {
         if let Some(tcb) = self.connections.iter_mut().find(|c| c.id == *id) {
-            if tcb.pending_fin || (tcb.state != TcpState::Established && tcb.state != TcpState::CloseWait) {
+            if tcb.pending_fin
+                || (tcb.state != TcpState::Established && tcb.state != TcpState::CloseWait)
+            {
                 return;
             }
 
@@ -1494,7 +1790,8 @@ impl TcpHandler {
                 }
                 Some(ms) => {
                     // Linger(timeout): graceful close with deadline.
-                    tcb.linger_deadline = Some(Instant::now() + coarsetime::Duration::from_millis(ms));
+                    tcb.linger_deadline =
+                        Some(Instant::now() + coarsetime::Duration::from_millis(ms));
                 }
                 None => {
                     // Default: graceful close, no deadline.
@@ -1507,9 +1804,9 @@ impl TcpHandler {
 
     /// Find a matching listener for the given address and port.
     fn find_listener(&self, addr: IpAddress, port: u16) -> Option<usize> {
-        self.listeners.iter().position(|l| {
-            l.port == port && (l.addr.is_unspecified() || l.addr == addr)
-        })
+        self.listeners
+            .iter()
+            .position(|l| l.port == port && (l.addr.is_unspecified() || l.addr == addr))
     }
 
     /// Push a ConnectionId to the matching listener's accept queue.
@@ -1560,11 +1857,19 @@ impl TcpHandler {
             // Send RST for now (proper FIN sequence deferred).
             if tcb.state.is_synchronized() || tcb.state == TcpState::SynReceived {
                 SegmentBuilder::build_rst(
-                    id.local_addr, id.remote_addr,
-                    id.local_port, id.remote_port,
-                    0, 0, flags::ACK, 0,
-                    src_mac, dst_mac,
-                    self.tx_offload, free_frames, tx_return,
+                    id.local_addr,
+                    id.remote_addr,
+                    id.local_port,
+                    id.remote_port,
+                    0,
+                    0,
+                    flags::ACK,
+                    0,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
                 );
             }
             self.connections.remove(idx);
@@ -1653,7 +1958,8 @@ impl TcpHandler {
                 if fin_acked && remote_fin {
                     // Both sides FINed and our FIN is ACKed → TimeWait.
                     tcb.state = TcpState::TimeWait;
-                    tcb.time_wait_deadline = Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
+                    tcb.time_wait_deadline =
+                        Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
                     tcb.retransmit_deadline = None;
                 } else if fin_acked {
                     // Our FIN ACKed but no remote FIN yet → FinWait2.
@@ -1669,13 +1975,23 @@ impl TcpHandler {
                     let id = self.connections[idx].id;
                     let snd_nxt = self.connections[idx].snd_nxt;
                     let rcv_nxt = self.connections[idx].rcv_nxt;
-                    let window = self.connections[idx].recv_buffer.free_space().min(u16::MAX as usize) as u16;
+                    let window = self.connections[idx]
+                        .recv_buffer
+                        .free_space()
+                        .min(u16::MAX as usize) as u16;
                     SegmentBuilder::build_ack(
-                        id.local_addr, id.remote_addr,
-                        id.local_port, id.remote_port,
-                        snd_nxt, rcv_nxt, window,
-                        src_mac, dst_mac,
-                        self.tx_offload, free_frames, tx_return,
+                        id.local_addr,
+                        id.remote_addr,
+                        id.local_port,
+                        id.remote_port,
+                        snd_nxt,
+                        rcv_nxt,
+                        window,
+                        src_mac,
+                        dst_mac,
+                        self.tx_offload,
+                        free_frames,
+                        tx_return,
                     );
                 }
 
@@ -1696,7 +2012,8 @@ impl TcpHandler {
                 if seg_flags & flags::FIN != 0 {
                     tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
                     tcb.state = TcpState::TimeWait;
-                    tcb.time_wait_deadline = Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
+                    tcb.time_wait_deadline =
+                        Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
                 }
 
                 // Send ACK if FIN or data.
@@ -1706,11 +2023,18 @@ impl TcpHandler {
                     let rcv_nxt = tcb.rcv_nxt;
                     let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
                     SegmentBuilder::build_ack(
-                        id.local_addr, id.remote_addr,
-                        id.local_port, id.remote_port,
-                        snd_nxt, rcv_nxt, window,
-                        src_mac, dst_mac,
-                        self.tx_offload, free_frames, tx_return,
+                        id.local_addr,
+                        id.remote_addr,
+                        id.local_port,
+                        id.remote_port,
+                        snd_nxt,
+                        rcv_nxt,
+                        window,
+                        src_mac,
+                        dst_mac,
+                        self.tx_offload,
+                        free_frames,
+                        tx_return,
                     );
                 }
 
@@ -1720,15 +2044,15 @@ impl TcpHandler {
             TcpState::Closing => {
                 let tcb = &mut self.connections[idx];
                 // Waiting for ACK of our FIN.
-                if seg_flags & flags::ACK != 0 {
-                    if let Some(fin_seq) = tcb.fin_seq {
-                        if crate::net::wire::tcp::seq_lt(fin_seq, seg_ack) {
-                            tcb.snd_una = seg_ack;
-                            tcb.state = TcpState::TimeWait;
-                            tcb.time_wait_deadline = Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
-                            tcb.retransmit_deadline = None;
-                        }
-                    }
+                if seg_flags & flags::ACK != 0
+                    && let Some(fin_seq) = tcb.fin_seq
+                    && crate::net::wire::tcp::seq_lt(fin_seq, seg_ack)
+                {
+                    tcb.snd_una = seg_ack;
+                    tcb.state = TcpState::TimeWait;
+                    tcb.time_wait_deadline =
+                        Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
+                    tcb.retransmit_deadline = None;
                 }
                 rx_return.push(frame);
             }
@@ -1737,12 +2061,12 @@ impl TcpHandler {
                 // Waiting for ACK of our FIN.
                 if seg_flags & flags::ACK != 0 {
                     let tcb = &self.connections[idx];
-                    if let Some(fin_seq) = tcb.fin_seq {
-                        if crate::net::wire::tcp::seq_lt(fin_seq, seg_ack) {
-                            self.connections.remove(idx);
-                            rx_return.push(frame);
-                            return;
-                        }
+                    if let Some(fin_seq) = tcb.fin_seq
+                        && crate::net::wire::tcp::seq_lt(fin_seq, seg_ack)
+                    {
+                        self.connections.remove(idx);
+                        rx_return.push(frame);
+                        return;
                     }
                 }
                 rx_return.push(frame);
@@ -1757,13 +2081,21 @@ impl TcpHandler {
                     let rcv_nxt = tcb.rcv_nxt;
                     let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
                     SegmentBuilder::build_ack(
-                        id.local_addr, id.remote_addr,
-                        id.local_port, id.remote_port,
-                        snd_nxt, rcv_nxt, window,
-                        src_mac, dst_mac,
-                        self.tx_offload, free_frames, tx_return,
+                        id.local_addr,
+                        id.remote_addr,
+                        id.local_port,
+                        id.remote_port,
+                        snd_nxt,
+                        rcv_nxt,
+                        window,
+                        src_mac,
+                        dst_mac,
+                        self.tx_offload,
+                        free_frames,
+                        tx_return,
                     );
-                    tcb.time_wait_deadline = Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
+                    tcb.time_wait_deadline =
+                        Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
                 }
                 // Everything else (including RST) is ignored — RST handled above.
                 rx_return.push(frame);
@@ -1851,9 +2183,15 @@ mod tests {
         // TCP header.
         let tcp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
         let hdr = TcpHeader::new(
-            src_port, dst_port, seq, ack,
-            data_offset, tcp_flags, window,
-            [0, 0], 0,
+            src_port,
+            dst_port,
+            seq,
+            ack,
+            data_offset,
+            tcp_flags,
+            window,
+            [0, 0],
+            0,
         );
         let hdr_bytes = unsafe {
             std::slice::from_raw_parts(&hdr as *const TcpHeader as *const u8, TCP_HEADER_LEN)
@@ -1892,7 +2230,8 @@ mod tests {
         let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
         let data_offset = (tcp_header_len / 4) as u8;
         let total_ip_len = (IPV4_MIN_HEADER_LEN + tcp_header_len + payload.len()) as u16;
-        let mut buf = vec![0u8; ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + tcp_header_len + payload.len()];
+        let mut buf =
+            vec![0u8; ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + tcp_header_len + payload.len()];
 
         // Ethernet header.
         buf[0..6].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]); // dst mac
@@ -1918,9 +2257,15 @@ mod tests {
         // TCP header.
         let tcp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
         let hdr = TcpHeader::new(
-            src_port, dst_port, seq, ack,
-            data_offset, tcp_flags, window,
-            [0, 0], 0,
+            src_port,
+            dst_port,
+            seq,
+            ack,
+            data_offset,
+            tcp_flags,
+            window,
+            [0, 0],
+            0,
         );
         let hdr_bytes = unsafe {
             std::slice::from_raw_parts(&hdr as *const TcpHeader as *const u8, TCP_HEADER_LEN)
@@ -1967,7 +2312,17 @@ mod tests {
 
         free.push(alloc_free_frame(100));
 
-        let data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let len = data.len();
         let frame = Frame::new(0, leak(data), len, false);
 
@@ -2004,7 +2359,17 @@ mod tests {
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
 
-        let data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         // Corrupt checksum.
         let tcp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
         let leaked = leak(data);
@@ -2066,7 +2431,17 @@ mod tests {
 
         // MSS option in SYN.
         let mss_opt = [0x02, 0x04, 0x05, 0xB4]; // MSS=1460
-        let data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &mss_opt);
+        let data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &mss_opt,
+        );
         let len = data.len();
         let frame = Frame::new(0, leak(data), len, false);
 
@@ -2095,7 +2470,17 @@ mod tests {
         let accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
 
         // Step 1: SYN.
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
         let syn_frame = Frame::new(0, leak(syn_data), syn_len, false);
         handler.process_ipv4(syn_frame, &nh, &mut free, &mut rx, &mut tx);
@@ -2106,9 +2491,15 @@ mod tests {
 
         // Step 2: ACK completing handshake.
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         let ack_frame = Frame::new(1, leak(ack_data), ack_len, false);
@@ -2133,7 +2524,17 @@ mod tests {
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
 
         // SYN.
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
         let syn_frame = Frame::new(0, leak(syn_data), syn_len, false);
         handler.process_ipv4(syn_frame, &nh, &mut free, &mut rx, &mut tx);
@@ -2141,7 +2542,17 @@ mod tests {
 
         // RST.
         let rcv_nxt = handler.connections[0].rcv_nxt;
-        let rst_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, rcv_nxt, 0, flags::RST, 0, &[]);
+        let rst_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            rcv_nxt,
+            0,
+            flags::RST,
+            0,
+            &[],
+        );
         let rst_len = rst_data.len();
         let rst_frame = Frame::new(2, leak(rst_data), rst_len, false);
         handler.process_ipv4(rst_frame, &nh, &mut free, &mut rx, &mut tx);
@@ -2166,9 +2577,15 @@ mod tests {
         // Send 3 SYNs — only 2 should be accepted (backlog=2).
         for i in 0..3u16 {
             let syn_data = build_tcp_frame(
-                REMOTE_IP, LOCAL_IP,
-                10000 + i, 80,
-                1000, 0, flags::SYN, 65535, &[],
+                REMOTE_IP,
+                LOCAL_IP,
+                10000 + i,
+                80,
+                1000,
+                0,
+                flags::SYN,
+                65535,
+                &[],
             );
             let syn_len = syn_data.len();
             let syn_frame = Frame::new(i as u64, leak(syn_data), syn_len, false);
@@ -2188,7 +2605,17 @@ mod tests {
 
         free.push(alloc_free_frame(100));
 
-        let data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let len = data.len();
         let frame = Frame::new(0, leak(data), len, false);
 
@@ -2215,15 +2642,25 @@ mod tests {
         // SYN with MSS + Window Scale options.
         let ws_opts = [
             0x02, 0x04, 0x05, 0xB4, // MSS=1460
-            0x01,                     // NOP
-            0x03, 0x03, 0x07,         // Window Scale=7
+            0x01, // NOP
+            0x03, 0x03, 0x07, // Window Scale=7
         ];
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &ws_opts);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &ws_opts,
+        );
         let syn_len = syn_data.len();
         let syn_frame = Frame::new(0, leak(syn_data), syn_len, false);
         handler.process_ipv4(syn_frame, &nh, &mut free, &mut rx, &mut tx);
 
-        assert_eq!(handler.connections[0].wscale_enabled, true);
+        assert!(handler.connections[0].wscale_enabled);
         assert_eq!(handler.connections[0].snd_wscale, 7);
         assert_eq!(handler.connections[0].rcv_wscale, DEFAULT_RCV_WSCALE);
     }
@@ -2242,13 +2679,45 @@ mod tests {
 
         // Complete the handshake.
         let accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
         // Clear tx from handshake.
@@ -2257,26 +2726,59 @@ mod tests {
         // Send first data segment (deferred by delayed ACK).
         let payload = b"Hello, TCP!";
         let data = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], payload,
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            payload,
         );
         let data_len = data.len();
-        handler.process_ipv4(Frame::new(2, leak(data), data_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(2, leak(data), data_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         // First segment deferred — no immediate ACK.
-        assert_eq!(tx.num_frames(), 0, "ACK deferred for first in-order segment");
-        assert!(handler.connections[0].ack_pending, "ack_pending should be true");
+        assert_eq!(
+            tx.num_frames(),
+            0,
+            "ACK deferred for first in-order segment"
+        );
+        assert!(
+            handler.connections[0].ack_pending,
+            "ack_pending should be true"
+        );
 
         // Send second data segment to flush delayed ACK.
         let payload2 = b"World!";
         let data2 = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001 + payload.len() as u32, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], payload2,
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001 + payload.len() as u32,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            payload2,
         );
         let data2_len = data2.len();
-        handler.process_ipv4(Frame::new(3, leak(data2), data2_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(3, leak(data2), data2_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         // Second segment flushes the ACK.
         assert_eq!(tx.num_frames(), 1, "ACK flushed on second segment");
@@ -2284,7 +2786,10 @@ mod tests {
         // Verify: data is in the receive ring buffer.
         let tcb = &handler.connections[0];
         assert_eq!(tcb.recv_buffer.available(), payload.len() + payload2.len());
-        assert_eq!(tcb.rcv_nxt, 1001 + payload.len() as u32 + payload2.len() as u32);
+        assert_eq!(
+            tcb.rcv_nxt,
+            1001 + payload.len() as u32 + payload2.len() as u32
+        );
 
         drop(accept_queue);
     }
@@ -2303,38 +2808,106 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Send segment 2 first (out of order): seq=1006, 5 bytes "world".
         let seg2 = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1006, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], b"world",
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1006,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            b"world",
         );
         let seg2_len = seg2.len();
-        handler.process_ipv4(Frame::new(2, leak(seg2), seg2_len, false), &nh, &mut free, &mut rx, &mut tx);
-        assert_eq!(handler.connections[0].rcv_nxt, 1001, "rcv_nxt not advanced for OOO");
+        handler.process_ipv4(
+            Frame::new(2, leak(seg2), seg2_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(
+            handler.connections[0].rcv_nxt, 1001,
+            "rcv_nxt not advanced for OOO"
+        );
         assert_eq!(handler.connections[0].ooo_ranges.len(), 1);
 
         // Now send segment 1 (fills the gap): seq=1001, 5 bytes "hello".
         let seg1 = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], b"hello",
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            b"hello",
         );
         let seg1_len = seg1.len();
-        handler.process_ipv4(Frame::new(3, leak(seg1), seg1_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(3, leak(seg1), seg1_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         // Both segments should now be contiguous.
-        assert_eq!(handler.connections[0].rcv_nxt, 1011, "rcv_nxt advanced past both segments");
-        assert_eq!(handler.connections[0].ooo_ranges.len(), 0, "OOO ranges drained");
+        assert_eq!(
+            handler.connections[0].rcv_nxt, 1011,
+            "rcv_nxt advanced past both segments"
+        );
+        assert_eq!(
+            handler.connections[0].ooo_ranges.len(),
+            0,
+            "OOO ranges drained"
+        );
         assert_eq!(handler.connections[0].recv_buffer.available(), 10);
 
         // Read from recv buffer and verify contents.
@@ -2357,13 +2930,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Write data into the connection's send buffer.
@@ -2378,7 +2983,12 @@ mod tests {
 
         assert_eq!(tx.num_frames(), 1, "data segment built");
         let tcb = &handler.connections[0];
-        assert_eq!(tcb.snd_nxt, server_iss.wrapping_add(1).wrapping_add(payload.len() as u32));
+        assert_eq!(
+            tcb.snd_nxt,
+            server_iss
+                .wrapping_add(1)
+                .wrapping_add(payload.len() as u32)
+        );
         assert_eq!(tcb.send_buffer.available(), payload.len()); // still in buffer until ACKed
     }
 
@@ -2396,13 +3006,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Put data in send buffer and send it.
@@ -2417,9 +3059,25 @@ mod tests {
         // Send 3 duplicate ACKs (ACKing the old snd_una, not the new data).
         let dup_ack_seq = server_iss.wrapping_add(1); // original snd_una
         for i in 0..3u64 {
-            let dup = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, dup_ack_seq, flags::ACK, 65535, &[]);
+            let dup = build_tcp_frame(
+                REMOTE_IP,
+                LOCAL_IP,
+                12345,
+                80,
+                1001,
+                dup_ack_seq,
+                flags::ACK,
+                65535,
+                &[],
+            );
             let dup_len = dup.len();
-            handler.process_ipv4(Frame::new(10 + i, leak(dup), dup_len, false), &nh, &mut free, &mut rx, &mut tx);
+            handler.process_ipv4(
+                Frame::new(10 + i, leak(dup), dup_len, false),
+                &nh,
+                &mut free,
+                &mut rx,
+                &mut tx,
+            );
         }
 
         assert_eq!(handler.connections[0].dup_ack_count, 3);
@@ -2430,9 +3088,15 @@ mod tests {
 
         // cwnd should be halved (fast recovery).
         let tcb = &handler.connections[0];
-        assert!(tcb.cwnd < cwnd_before, "cwnd should be reduced after fast retransmit");
+        assert!(
+            tcb.cwnd < cwnd_before,
+            "cwnd should be reduced after fast retransmit"
+        );
         assert_eq!(tcb.dup_ack_count, 0, "dup_ack_count should be reset");
-        assert_eq!(tcb.cwnd, tcb.ssthresh, "cwnd should equal ssthresh after fast recovery");
+        assert_eq!(
+            tcb.cwnd, tcb.ssthresh,
+            "cwnd should equal ssthresh after fast recovery"
+        );
     }
 
     #[test]
@@ -2449,13 +3113,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Put data in send buffer and send it.
@@ -2468,7 +3164,8 @@ mod tests {
         let cwnd_before = handler.connections[0].cwnd;
 
         // Simulate timer expiry by setting a deadline in the past.
-        handler.connections[0].retransmit_deadline = Some(now - coarsetime::Duration::from_millis(1));
+        handler.connections[0].retransmit_deadline =
+            Some(now - coarsetime::Duration::from_millis(1));
         handler.connections[0].rto_backoff = 0;
 
         // poll_timers should trigger RTO retransmit.
@@ -2477,7 +3174,10 @@ mod tests {
 
         let tcb = &handler.connections[0];
         // cwnd should be reset to 1 MSS (slow start).
-        assert_eq!(tcb.cwnd, tcb.eff_snd_mss as u32, "cwnd should be 1 MSS after RTO");
+        assert_eq!(
+            tcb.cwnd, tcb.eff_snd_mss as u32,
+            "cwnd should be 1 MSS after RTO"
+        );
         assert!(tcb.ssthresh < cwnd_before, "ssthresh should be reduced");
         assert_eq!(tcb.rto_backoff, 1, "rto_backoff should be incremented");
     }
@@ -2496,13 +3196,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Send data.
@@ -2513,19 +3245,45 @@ mod tests {
         while tx.pop().is_some() {}
 
         // Verify last_send_time is set.
-        assert!(handler.connections[0].last_send_time.is_some(), "last_send_time should be set after poll_send");
+        assert!(
+            handler.connections[0].last_send_time.is_some(),
+            "last_send_time should be set after poll_send"
+        );
 
         // ACK the data.
         let new_ack = server_iss.wrapping_add(1).wrapping_add(9); // ISS+1 + 9 bytes
-        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, new_ack, flags::ACK, 65535, &[]);
+        let ack = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            new_ack,
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack.len();
         let recv_time = coarsetime::Instant::now();
-        handler.process_ipv4_with_now(Frame::new(5, leak(ack), ack_len, false), recv_time, &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4_with_now(
+            Frame::new(5, leak(ack), ack_len, false),
+            recv_time,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         // Verify RTT was measured.
         let tcb = &handler.connections[0];
-        assert!(tcb.srtt.is_some(), "srtt should be set after first RTT measurement");
-        assert!(tcb.last_send_time.is_none(), "last_send_time should be consumed");
+        assert!(
+            tcb.srtt.is_some(),
+            "srtt should be set after first RTT measurement"
+        );
+        assert!(
+            tcb.last_send_time.is_none(),
+            "last_send_time should be consumed"
+        );
         // RTO should be at least 1000ms (the minimum clamp).
         assert!(tcb.rto >= 1000, "rto should be at least 1000ms");
         assert!(tcb.rto <= 60_000, "rto should be at most 60000ms");
@@ -2547,31 +3305,89 @@ mod tests {
 
         // Handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn.len();
-        handler.process_ipv4(Frame::new(0, leak(syn), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack.len();
-        handler.process_ipv4(Frame::new(1, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         // Data segment 1 (ACK deferred).
         let data = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], b"test data",
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            b"test data",
         );
         let data_len = data.len();
-        handler.process_ipv4(Frame::new(2, leak(data), data_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(2, leak(data), data_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         // Data segment 2 (flushes delayed ACK).
         let data2 = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001 + 9, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], b"more data",
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001 + 9,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            b"more data",
         );
         let data2_len = data2.len();
-        handler.process_ipv4(Frame::new(3, leak(data2), data2_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(3, leak(data2), data2_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         // All frames accounted for: free + rx + tx = initial + incoming frames.
         let total = free.num_frames() + rx.num_frames() + tx.num_frames();
@@ -2593,19 +3409,67 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Remote sends FIN.
-        let fin_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK | flags::FIN, 65535, &[]);
+        let fin_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK | flags::FIN,
+            65535,
+            &[],
+        );
         let fin_len = fin_data.len();
-        handler.process_ipv4(Frame::new(2, leak(fin_data), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(2, leak(fin_data), fin_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         assert_eq!(handler.connections[0].state, TcpState::CloseWait);
         assert_eq!(handler.connections[0].rcv_nxt, 1002); // 1001 + FIN=1
@@ -2626,29 +3490,80 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Remote sends data + FIN piggybacked.
         let payload = b"goodbye";
         let fin_data = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK | flags::FIN, 65535, &[], payload,
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK | flags::FIN,
+            65535,
+            &[],
+            payload,
         );
         let fin_len = fin_data.len();
-        handler.process_ipv4(Frame::new(2, leak(fin_data), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(2, leak(fin_data), fin_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         assert_eq!(handler.connections[0].state, TcpState::CloseWait);
-        assert_eq!(handler.connections[0].recv_buffer.available(), payload.len());
+        assert_eq!(
+            handler.connections[0].recv_buffer.available(),
+            payload.len()
+        );
         // rcv_nxt = 1001 + 7 bytes data + 1 FIN = 1009
-        assert_eq!(handler.connections[0].rcv_nxt, 1001 + payload.len() as u32 + 1);
+        assert_eq!(
+            handler.connections[0].rcv_nxt,
+            1001 + payload.len() as u32 + 1
+        );
     }
 
     #[test]
@@ -2665,13 +3580,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Set pending_fin.
@@ -2702,13 +3649,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Write data AND set pending_fin.
@@ -2721,7 +3700,11 @@ mod tests {
 
         // Should send data first, NOT FIN yet (data still in flight).
         assert_eq!(tx.num_frames(), 1, "data segment sent");
-        assert_eq!(handler.connections[0].state, TcpState::Established, "still Established until data ACKed");
+        assert_eq!(
+            handler.connections[0].state,
+            TcpState::Established,
+            "still Established until data ACKed"
+        );
         assert!(handler.connections[0].pending_fin, "pending_fin still set");
     }
 
@@ -2739,13 +3722,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Active close: set pending_fin, poll_send sends FIN → FinWait1.
@@ -2757,9 +3772,25 @@ mod tests {
         let fin_seq = handler.connections[0].fin_seq.unwrap();
 
         // Remote ACKs our FIN → FinWait2.
-        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, fin_seq.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            fin_seq.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack.len();
-        handler.process_ipv4(Frame::new(3, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(3, leak(ack), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         assert_eq!(handler.connections[0].state, TcpState::FinWait2);
     }
@@ -2778,13 +3809,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Active close → FinWait1 → FinWait2.
@@ -2793,16 +3856,48 @@ mod tests {
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
         while tx.pop().is_some() {}
         let fin_seq = handler.connections[0].fin_seq.unwrap();
-        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, fin_seq.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            fin_seq.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack.len();
-        handler.process_ipv4(Frame::new(3, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(3, leak(ack), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(handler.connections[0].state, TcpState::FinWait2);
         while tx.pop().is_some() {}
 
         // Remote sends FIN → TimeWait.
-        let fin = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, fin_seq.wrapping_add(1), flags::ACK | flags::FIN, 65535, &[]);
+        let fin = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            fin_seq.wrapping_add(1),
+            flags::ACK | flags::FIN,
+            65535,
+            &[],
+        );
         let fin_len = fin.len();
-        handler.process_ipv4(Frame::new(4, leak(fin), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(4, leak(fin), fin_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         assert_eq!(handler.connections[0].state, TcpState::TimeWait);
         assert!(handler.connections[0].time_wait_deadline.is_some());
@@ -2823,13 +3918,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Active close → FinWait1.
@@ -2840,17 +3967,49 @@ mod tests {
         assert_eq!(handler.connections[0].state, TcpState::FinWait1);
 
         // Simultaneous close: remote sends FIN without ACKing ours → Closing.
-        let fin = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK | flags::FIN, 65535, &[]);
+        let fin = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK | flags::FIN,
+            65535,
+            &[],
+        );
         let fin_len = fin.len();
-        handler.process_ipv4(Frame::new(3, leak(fin), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(3, leak(fin), fin_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(handler.connections[0].state, TcpState::Closing);
         while tx.pop().is_some() {}
 
         // Remote ACKs our FIN → TimeWait.
         let fin_seq = handler.connections[0].fin_seq.unwrap();
-        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1002, fin_seq.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1002,
+            fin_seq.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack.len();
-        handler.process_ipv4(Frame::new(4, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(4, leak(ack), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(handler.connections[0].state, TcpState::TimeWait);
     }
 
@@ -2868,19 +4027,67 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Remote sends FIN → CloseWait.
-        let fin = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK | flags::FIN, 65535, &[]);
+        let fin = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK | flags::FIN,
+            65535,
+            &[],
+        );
         let fin_len = fin.len();
-        handler.process_ipv4(Frame::new(2, leak(fin), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(2, leak(fin), fin_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(handler.connections[0].state, TcpState::CloseWait);
         while tx.pop().is_some() {}
 
@@ -2893,10 +4100,30 @@ mod tests {
         let fin_seq = handler.connections[0].fin_seq.unwrap();
 
         // Remote ACKs our FIN → connection removed.
-        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1002, fin_seq.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1002,
+            fin_seq.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack.len();
-        handler.process_ipv4(Frame::new(4, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
-        assert_eq!(handler.connections.len(), 0, "connection removed after LastAck");
+        handler.process_ipv4(
+            Frame::new(4, leak(ack), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(
+            handler.connections.len(),
+            0,
+            "connection removed after LastAck"
+        );
     }
 
     #[test]
@@ -2913,13 +4140,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Full active close → TimeWait.
@@ -2928,20 +4187,62 @@ mod tests {
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
         while tx.pop().is_some() {}
         let fin_seq = handler.connections[0].fin_seq.unwrap();
-        let ack = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, fin_seq.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            fin_seq.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack.len();
-        handler.process_ipv4(Frame::new(3, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
-        let fin = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, fin_seq.wrapping_add(1), flags::ACK | flags::FIN, 65535, &[]);
+        handler.process_ipv4(
+            Frame::new(3, leak(ack), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let fin = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            fin_seq.wrapping_add(1),
+            flags::ACK | flags::FIN,
+            65535,
+            &[],
+        );
         let fin_len = fin.len();
-        handler.process_ipv4(Frame::new(4, leak(fin), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(4, leak(fin), fin_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(handler.connections[0].state, TcpState::TimeWait);
         while tx.pop().is_some() {}
 
         // RST in TIME-WAIT should be ignored.
         let rst = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1002, 0, flags::RST, 0, &[]);
         let rst_len = rst.len();
-        handler.process_ipv4(Frame::new(5, leak(rst), rst_len, false), &nh, &mut free, &mut rx, &mut tx);
-        assert_eq!(handler.connections.len(), 1, "connection NOT removed by RST in TIME-WAIT");
+        handler.process_ipv4(
+            Frame::new(5, leak(rst), rst_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(
+            handler.connections.len(),
+            1,
+            "connection NOT removed by RST in TIME-WAIT"
+        );
         assert_eq!(handler.connections[0].state, TcpState::TimeWait);
     }
 
@@ -2959,13 +4260,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Force into TimeWait state with expired deadline.
@@ -2994,8 +4327,17 @@ mod tests {
 
         // 1. Handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data =
-            build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
         handler.process_ipv4(
             Frame::new(0, leak(syn_data), syn_len, false),
@@ -3151,8 +4493,17 @@ mod tests {
 
         // 1. Handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data =
-            build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
         handler.process_ipv4(
             Frame::new(0, leak(syn_data), syn_len, false),
@@ -3255,30 +4606,78 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Send one in-order data segment.
         let payload = b"hello";
         let data = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], payload,
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            payload,
         );
         let data_len = data.len();
-        handler.process_ipv4(Frame::new(2, leak(data), data_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(2, leak(data), data_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         // No immediate ACK — deferred.
         assert_eq!(tx.num_frames(), 0, "ACK should be deferred");
         let tcb = &handler.connections[0];
         assert!(tcb.ack_pending, "ack_pending should be true");
-        assert!(tcb.delayed_ack_deadline.is_some(), "delayed_ack_deadline should be set");
+        assert!(
+            tcb.delayed_ack_deadline.is_some(),
+            "delayed_ack_deadline should be set"
+        );
         assert_eq!(tcb.ack_delay_count, 1, "ack_delay_count should be 1");
     }
 
@@ -3296,38 +4695,99 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // First in-order segment — deferred.
         let seg1 = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], b"aaaaa",
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            b"aaaaa",
         );
         let seg1_len = seg1.len();
-        handler.process_ipv4(Frame::new(2, leak(seg1), seg1_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(2, leak(seg1), seg1_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(tx.num_frames(), 0, "first segment deferred");
 
         // Second in-order segment — flushes ACK.
         let seg2 = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1006, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], b"bbbbb",
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1006,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            b"bbbbb",
         );
         let seg2_len = seg2.len();
-        handler.process_ipv4(Frame::new(3, leak(seg2), seg2_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(3, leak(seg2), seg2_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(tx.num_frames(), 1, "second segment flushes ACK");
 
         let tcb = &handler.connections[0];
         assert!(!tcb.ack_pending, "ack_pending should be false after flush");
-        assert_eq!(tcb.ack_delay_count, 0, "ack_delay_count should be 0 after flush");
+        assert_eq!(
+            tcb.ack_delay_count, 0,
+            "ack_delay_count should be 0 after flush"
+        );
     }
 
     #[test]
@@ -3344,25 +4804,74 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Send out-of-order data (skip sequence numbers).
         let ooo_data = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1011, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], b"ooo",
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1011,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            b"ooo",
         );
         let ooo_len = ooo_data.len();
-        handler.process_ipv4(Frame::new(2, leak(ooo_data), ooo_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(2, leak(ooo_data), ooo_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
-        assert_eq!(tx.num_frames(), 1, "out-of-order data triggers immediate ACK");
+        assert_eq!(
+            tx.num_frames(),
+            1,
+            "out-of-order data triggers immediate ACK"
+        );
     }
 
     #[test]
@@ -3379,23 +4888,67 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Send FIN.
         let fin_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK | flags::FIN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK | flags::FIN,
+            65535,
+            &[],
         );
         let fin_len = fin_data.len();
-        handler.process_ipv4(Frame::new(2, leak(fin_data), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(2, leak(fin_data), fin_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         assert_eq!(tx.num_frames(), 1, "FIN triggers immediate ACK");
         assert_eq!(handler.connections[0].state, TcpState::CloseWait);
@@ -3416,7 +4969,17 @@ mod tests {
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
 
         // Step 1: SYN.
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
         let syn_frame = Frame::new(0, leak(syn_data), syn_len, false);
         handler.process_ipv4(syn_frame, &nh, &mut free, &mut rx, &mut tx);
@@ -3426,9 +4989,15 @@ mod tests {
 
         // Step 2: ACK completing handshake.
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         let ack_frame = Frame::new(1, leak(ack_data), ack_len, false);
@@ -3439,9 +5008,16 @@ mod tests {
         // Verify delayed ACK and Nagle defaults.
         let tcb = &handler.connections[0];
         assert!(!tcb.ack_pending, "ack_pending should be false");
-        assert!(tcb.delayed_ack_deadline.is_none(), "delayed_ack_deadline should be None");
+        assert!(
+            tcb.delayed_ack_deadline.is_none(),
+            "delayed_ack_deadline should be None"
+        );
         assert_eq!(tcb.ack_delay_count, 0, "ack_delay_count should be 0");
-        assert_eq!(tcb.delayed_ack_ms, tcb::DEFAULT_DELAYED_ACK_MS, "delayed_ack_ms should match default");
+        assert_eq!(
+            tcb.delayed_ack_ms,
+            tcb::DEFAULT_DELAYED_ACK_MS,
+            "delayed_ack_ms should match default"
+        );
         assert!(tcb.nagle_enabled, "nagle should be enabled by default");
     }
 
@@ -3461,13 +5037,45 @@ mod tests {
 
         // Complete handshake.
         let _accept = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Manually set delayed ACK state on the TCB.
@@ -3508,30 +5116,47 @@ mod tests {
         rx: &mut BasicFrameBuffer<'static>,
         tx: &mut BasicFrameBuffer<'static>,
     ) -> u32 {
-        let src_mac = crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
-        let dst_mac = crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        let src_mac =
+            crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        let dst_mac =
+            crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
 
         // connect sends SYN.
-        let _event_queue = handler.connect(
-            IpAddress::V4(LOCAL_IP), 5000,
-            IpAddress::V4(REMOTE_IP), 80,
-            src_mac, dst_mac,
-            free, tx,
-        ).unwrap();
+        let _event_queue = handler
+            .connect(
+                IpAddress::V4(LOCAL_IP),
+                5000,
+                IpAddress::V4(REMOTE_IP),
+                80,
+                src_mac,
+                dst_mac,
+                free,
+                tx,
+            )
+            .unwrap();
         while tx.pop().is_some() {} // consume SYN frame
 
         let client_iss = handler.connections[0].iss;
 
         // Feed SYN-ACK from the remote.
         let syn_ack = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 80, 5000,
-            2000, client_iss.wrapping_add(1),
-            flags::SYN | flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            80,
+            5000,
+            2000,
+            client_iss.wrapping_add(1),
+            flags::SYN | flags::ACK,
+            65535,
+            &[],
         );
         let syn_ack_len = syn_ack.len();
         handler.process_ipv4(
             Frame::new(50, leak(syn_ack), syn_ack_len, false),
-            nh, free, rx, tx,
+            nh,
+            free,
+            rx,
+            tx,
         );
         while tx.pop().is_some() {} // consume ACK frame
 
@@ -3550,28 +5175,46 @@ mod tests {
         rx: &mut BasicFrameBuffer<'static>,
         tx: &mut BasicFrameBuffer<'static>,
     ) -> u32 {
-        let src_mac = crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
-        let dst_mac = crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        let src_mac =
+            crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        let dst_mac =
+            crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
 
-        let _event_queue = handler.connect_with_config(
-            IpAddress::V4(LOCAL_IP), 5000,
-            IpAddress::V4(REMOTE_IP), 80,
-            src_mac, dst_mac, config,
-            free, tx,
-        ).unwrap();
+        let _event_queue = handler
+            .connect_with_config(
+                IpAddress::V4(LOCAL_IP),
+                5000,
+                IpAddress::V4(REMOTE_IP),
+                80,
+                src_mac,
+                dst_mac,
+                config,
+                free,
+                tx,
+            )
+            .unwrap();
         while tx.pop().is_some() {}
 
         let client_iss = handler.connections[0].iss;
 
         let syn_ack = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 80, 5000,
-            2000, client_iss.wrapping_add(1),
-            flags::SYN | flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            80,
+            5000,
+            2000,
+            client_iss.wrapping_add(1),
+            flags::SYN | flags::ACK,
+            65535,
+            &[],
         );
         let syn_ack_len = syn_ack.len();
         handler.process_ipv4(
             Frame::new(50, leak(syn_ack), syn_ack_len, false),
-            nh, free, rx, tx,
+            nh,
+            free,
+            rx,
+            tx,
         );
         while tx.pop().is_some() {}
 
@@ -3612,7 +5255,11 @@ mod tests {
 
         // 6. poll_send — Nagle holds it.
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
-        assert_eq!(tx.num_frames(), 0, "Nagle should hold small data when bytes in flight");
+        assert_eq!(
+            tx.num_frames(),
+            0,
+            "Nagle should hold small data when bytes in flight"
+        );
     }
 
     #[test]
@@ -3644,7 +5291,11 @@ mod tests {
 
         // 4. poll_send — full MSS always sends even with bytes in flight.
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
-        assert_eq!(tx.num_frames(), 1, "full MSS segment should send even with bytes in flight");
+        assert_eq!(
+            tx.num_frames(),
+            1,
+            "full MSS segment should send even with bytes in flight"
+        );
     }
 
     #[test]
@@ -3660,13 +5311,24 @@ mod tests {
         }
 
         // 1. Complete handshake with tcp_no_delay.
-        let config = TcpConfig { tcp_no_delay: true, ..Default::default() };
+        let config = TcpConfig {
+            tcp_no_delay: true,
+            ..Default::default()
+        };
         let _iss = active_open_handshake_with_config(
-            &mut handler, &nh, config, &mut free, &mut rx, &mut tx,
+            &mut handler,
+            &nh,
+            config,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
 
         // Verify nagle is disabled.
-        assert!(!handler.connections[0].nagle_enabled, "nagle should be disabled with tcp_no_delay");
+        assert!(
+            !handler.connections[0].nagle_enabled,
+            "nagle should be disabled with tcp_no_delay"
+        );
 
         // 2. Write small data, poll_send (first send), pop tx.
         handler.connections[0].send_buffer.write(b"hello");
@@ -3680,7 +5342,11 @@ mod tests {
 
         // 4. poll_send — TCP_NODELAY bypasses Nagle.
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
-        assert_eq!(tx.num_frames(), 1, "TCP_NODELAY should bypass Nagle and send immediately");
+        assert_eq!(
+            tx.num_frames(),
+            1,
+            "TCP_NODELAY should bypass Nagle and send immediately"
+        );
     }
 
     #[test]
@@ -3697,26 +5363,74 @@ mod tests {
 
         // 1. Complete handshake via passive open (listener).
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // 2. Receive in-order data — ack_pending becomes true.
         let data_seg = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], b"incoming data",
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            b"incoming data",
         );
         let data_len = data_seg.len();
-        handler.process_ipv4(Frame::new(2, leak(data_seg), data_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(2, leak(data_seg), data_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {} // consume any immediate ACK frames
 
-        assert!(handler.connections[0].ack_pending, "ack_pending should be true after receiving data");
+        assert!(
+            handler.connections[0].ack_pending,
+            "ack_pending should be true after receiving data"
+        );
 
         // 3. Write data to send buffer.
         handler.connections[0].send_buffer.write(b"reply data");
@@ -3729,9 +5443,15 @@ mod tests {
 
         // 5. Verify delayed ACK state is cleared.
         let tcb = &handler.connections[0];
-        assert!(!tcb.ack_pending, "ack_pending should be cleared after data send");
+        assert!(
+            !tcb.ack_pending,
+            "ack_pending should be cleared after data send"
+        );
         assert_eq!(tcb.ack_delay_count, 0, "ack_delay_count should be cleared");
-        assert!(tcb.delayed_ack_deadline.is_none(), "delayed_ack_deadline should be cleared");
+        assert!(
+            tcb.delayed_ack_deadline.is_none(),
+            "delayed_ack_deadline should be cleared"
+        );
     }
 
     #[test]
@@ -3748,27 +5468,69 @@ mod tests {
 
         // Complete handshake to reach Established.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
         // Verify pending_fin is initially false.
-        assert!(!handler.connections[0].pending_fin, "pending_fin should start false");
+        assert!(
+            !handler.connections[0].pending_fin,
+            "pending_fin should start false"
+        );
 
         // Call initiate_close (the handler method that shutdown() delegates to).
         let conn_id = handler.connections[0].id;
         handler.initiate_close(&conn_id);
 
         // Verify pending_fin is now true.
-        assert!(handler.connections[0].pending_fin, "pending_fin should be true after initiate_close");
+        assert!(
+            handler.connections[0].pending_fin,
+            "pending_fin should be true after initiate_close"
+        );
 
         // Verify connection is still Established (FIN not yet sent).
-        assert_eq!(handler.connections[0].state, TcpState::Established, "state should remain Established until poll_send");
+        assert_eq!(
+            handler.connections[0].state,
+            TcpState::Established,
+            "state should remain Established until poll_send"
+        );
     }
 
     #[test]
@@ -3785,13 +5547,45 @@ mod tests {
 
         // Complete handshake to reach Established.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
         // Simulate stale keep-alive state: set probes sent to 5.
@@ -3804,17 +5598,36 @@ mod tests {
         // Send a data segment to the established connection.
         let payload = b"keepalive-reset";
         let data = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], payload,
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            payload,
         );
         let data_len = data.len();
-        handler.process_ipv4(Frame::new(2, leak(data), data_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(2, leak(data), data_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         // Verify keep-alive probes were reset.
         let tcb = &handler.connections[0];
-        assert_eq!(tcb.keep_alive_probes_sent, 0, "keep_alive_probes_sent should be reset to 0 on data receipt");
-        assert!(tcb.last_activity >= old_activity, "last_activity should be updated on data receipt");
+        assert_eq!(
+            tcb.keep_alive_probes_sent, 0,
+            "keep_alive_probes_sent should be reset to 0 on data receipt"
+        );
+        assert!(
+            tcb.last_activity >= old_activity,
+            "last_activity should be updated on data receipt"
+        );
     }
 
     #[test]
@@ -3831,13 +5644,45 @@ mod tests {
 
         // Complete handshake.
         let _accept = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
@@ -3857,9 +5702,14 @@ mod tests {
 
         handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
-        assert_eq!(handler.connections[0].keep_alive_probes_sent, 1,
-            "one keep-alive probe should have been sent");
-        assert!(tx.num_frames() >= 1, "a probe segment should have been emitted");
+        assert_eq!(
+            handler.connections[0].keep_alive_probes_sent, 1,
+            "one keep-alive probe should have been sent"
+        );
+        assert!(
+            tx.num_frames() >= 1,
+            "a probe segment should have been emitted"
+        );
     }
 
     #[test]
@@ -3876,13 +5726,45 @@ mod tests {
 
         // Complete handshake.
         let _accept = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
@@ -3895,8 +5777,10 @@ mod tests {
 
         handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
-        assert_eq!(handler.connections[0].keep_alive_probes_sent, 0,
-            "no probes should be sent when keep-alive is disabled");
+        assert_eq!(
+            handler.connections[0].keep_alive_probes_sent, 0,
+            "no probes should be sent when keep-alive is disabled"
+        );
         assert_eq!(tx.num_frames(), 0, "no segments should be emitted");
     }
 
@@ -3914,13 +5798,45 @@ mod tests {
 
         // Complete handshake.
         let _accept = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
@@ -3945,11 +5861,18 @@ mod tests {
         handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
         // Connection should be removed.
-        assert!(handler.connections.is_empty(), "connection should be removed after max probes exceeded");
+        assert!(
+            handler.connections.is_empty(),
+            "connection should be removed after max probes exceeded"
+        );
 
         // Timeout event should have been pushed.
         let event = event_queue.pop();
-        assert_eq!(event, Some(TcpEvent::Timeout), "TcpEvent::Timeout should be emitted");
+        assert_eq!(
+            event,
+            Some(TcpEvent::Timeout),
+            "TcpEvent::Timeout should be emitted"
+        );
     }
 
     #[test]
@@ -3966,13 +5889,45 @@ mod tests {
 
         // Complete handshake to reach Established.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
         // Set linger to 0 and capture event queue.
@@ -3985,22 +5940,35 @@ mod tests {
 
         // Call initiate_close — should set pending_fin and linger_deadline to Instant::recent().
         handler.initiate_close(&conn_id);
-        assert!(handler.connections[0].pending_fin, "pending_fin should be set");
-        assert!(handler.connections[0].linger_deadline.is_some(), "linger_deadline should be set");
+        assert!(
+            handler.connections[0].pending_fin,
+            "pending_fin should be set"
+        );
+        assert!(
+            handler.connections[0].linger_deadline.is_some(),
+            "linger_deadline should be set"
+        );
 
         // Call poll_send — linger deadline is already expired, should send RST.
         let now = coarsetime::Instant::now();
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
         // Connection should be removed.
-        assert!(handler.get_connection(&conn_id).is_none(), "connection should be removed after linger(0) RST");
+        assert!(
+            handler.get_connection(&conn_id).is_none(),
+            "connection should be removed after linger(0) RST"
+        );
 
         // A RST segment should have been emitted.
         assert!(tx.num_frames() > 0, "RST segment should be emitted");
 
         // Reset event should have been pushed.
         let event = event_queue.pop();
-        assert_eq!(event, Some(TcpEvent::Reset), "TcpEvent::Reset should be emitted");
+        assert_eq!(
+            event,
+            Some(TcpEvent::Reset),
+            "TcpEvent::Reset should be emitted"
+        );
     }
 
     #[test]
@@ -4017,13 +5985,45 @@ mod tests {
 
         // Complete handshake to reach Established.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
         // Set linger to 5000ms.
@@ -4035,15 +6035,24 @@ mod tests {
 
         // Call initiate_close.
         handler.initiate_close(&conn_id);
-        assert!(handler.connections[0].pending_fin, "pending_fin should be set");
-        assert!(handler.connections[0].linger_deadline.is_some(), "linger_deadline should be set");
+        assert!(
+            handler.connections[0].pending_fin,
+            "pending_fin should be set"
+        );
+        assert!(
+            handler.connections[0].linger_deadline.is_some(),
+            "linger_deadline should be set"
+        );
 
         // Call poll_send immediately — deadline is 5s in the future, should NOT abort.
         let now = coarsetime::Instant::now();
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
         // Connection should still exist.
-        assert!(handler.get_connection(&conn_id).is_some(), "connection should still exist before deadline");
+        assert!(
+            handler.get_connection(&conn_id).is_some(),
+            "connection should still exist before deadline"
+        );
     }
 
     #[test]
@@ -4060,25 +6069,66 @@ mod tests {
 
         // Complete handshake to reach Established.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
         // Ensure linger is None (default).
-        assert!(handler.connections[0].linger.is_none(), "linger should be None by default");
+        assert!(
+            handler.connections[0].linger.is_none(),
+            "linger should be None by default"
+        );
         let conn_id = handler.connections[0].id;
 
         // Call initiate_close.
         handler.initiate_close(&conn_id);
 
         // Verify pending_fin is true and linger_deadline is None.
-        assert!(handler.connections[0].pending_fin, "pending_fin should be set");
-        assert!(handler.connections[0].linger_deadline.is_none(), "linger_deadline should be None for default close");
+        assert!(
+            handler.connections[0].pending_fin,
+            "pending_fin should be set"
+        );
+        assert!(
+            handler.connections[0].linger_deadline.is_none(),
+            "linger_deadline should be None for default close"
+        );
     }
 
     #[test]
@@ -4095,13 +6145,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
@@ -4110,19 +6192,34 @@ mod tests {
         handler.initiate_close(&conn_id);
 
         // Verify pending_fin is set but state is still Established (FIN not sent yet).
-        assert!(handler.connections[0].pending_fin, "pending_fin should be true after initiate_close");
-        assert_eq!(handler.connections[0].state, TcpState::Established, "state should still be Established before poll_send");
+        assert!(
+            handler.connections[0].pending_fin,
+            "pending_fin should be true after initiate_close"
+        );
+        assert_eq!(
+            handler.connections[0].state,
+            TcpState::Established,
+            "state should still be Established before poll_send"
+        );
 
         // Write data directly into recv_buffer (simulating received data).
         let incoming = b"data after half-close";
         handler.connections[0].recv_buffer.write(incoming);
 
         // Verify reads still work after half-close.
-        assert_eq!(handler.connections[0].recv_buffer.available(), incoming.len(), "recv_buffer should still be readable after half-close");
+        assert_eq!(
+            handler.connections[0].recv_buffer.available(),
+            incoming.len(),
+            "recv_buffer should still be readable after half-close"
+        );
         let mut buf = [0u8; 32];
         let read_len = handler.connections[0].recv_buffer.read(&mut buf);
         assert_eq!(read_len, incoming.len(), "should read all data");
-        assert_eq!(&buf[..read_len], incoming, "read data should match written data");
+        assert_eq!(
+            &buf[..read_len],
+            incoming,
+            "read data should match written data"
+        );
     }
 
     #[test]
@@ -4139,13 +6236,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
@@ -4169,8 +6298,14 @@ mod tests {
         handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
         // Verify probe was sent.
-        assert!(tx.num_frames() > tx_before, "keep-alive probe should be sent");
-        assert_eq!(handler.connections[0].keep_alive_probes_sent, 1, "probes_sent should be 1");
+        assert!(
+            tx.num_frames() > tx_before,
+            "keep-alive probe should be sent"
+        );
+        assert_eq!(
+            handler.connections[0].keep_alive_probes_sent, 1,
+            "probes_sent should be 1"
+        );
 
         // Record last_activity before recovery.
         let activity_before = handler.connections[0].last_activity;
@@ -4179,9 +6314,15 @@ mod tests {
         let rcv_nxt = handler.connections[0].rcv_nxt;
         let snd_una = handler.connections[0].snd_una;
         let ack_frame = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            rcv_nxt, snd_una,
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            rcv_nxt,
+            snd_una,
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_frame_len = ack_frame.len();
 
@@ -4190,15 +6331,25 @@ mod tests {
         let recv_now = coarsetime::Instant::now();
         handler.process_ipv4_with_now(
             Frame::new(10, leak(ack_frame), ack_frame_len, false),
-            recv_now, &nh, &mut free, &mut rx, &mut tx,
+            recv_now,
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
         );
 
         // The ACK is a duplicate ACK (seg_ack == snd_una, no data).
         // Keep-alive probe responses are duplicate ACKs — the fix in process_established
         // resets keep_alive_probes_sent when a dup ACK arrives and probes are outstanding.
         let tcb = &handler.connections[0];
-        assert_eq!(tcb.keep_alive_probes_sent, 0, "probes_sent should be reset by dup ACK probe response");
-        assert!(tcb.last_activity >= activity_before, "last_activity should be updated");
+        assert_eq!(
+            tcb.keep_alive_probes_sent, 0,
+            "probes_sent should be reset by dup ACK probe response"
+        );
+        assert!(
+            tcb.last_activity >= activity_before,
+            "last_activity should be updated"
+        );
     }
 
     #[test]
@@ -4215,13 +6366,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
@@ -4246,8 +6429,15 @@ mod tests {
         handler.poll_timers(now1, nh.local_mac(), &nh, &mut free, &mut tx);
 
         // First probe should have been sent.
-        assert_eq!(handler.connections[0].keep_alive_probes_sent, 1, "first probe sent");
-        assert_eq!(handler.connections.len(), 1, "connection still alive after first probe");
+        assert_eq!(
+            handler.connections[0].keep_alive_probes_sent, 1,
+            "first probe sent"
+        );
+        assert_eq!(
+            handler.connections.len(),
+            1,
+            "connection still alive after first probe"
+        );
 
         // Wait again past the interval — max probes exceeded.
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -4256,11 +6446,18 @@ mod tests {
         handler.poll_timers(now2, nh.local_mac(), &nh, &mut free, &mut tx);
 
         // Connection should be removed.
-        assert!(handler.connections.is_empty(), "connection should be removed after max probes exceeded");
+        assert!(
+            handler.connections.is_empty(),
+            "connection should be removed after max probes exceeded"
+        );
 
         // Timeout event should have been pushed.
         let event = event_queue.pop();
-        assert_eq!(event, Some(TcpEvent::Timeout), "TcpEvent::Timeout should be emitted");
+        assert_eq!(
+            event,
+            Some(TcpEvent::Timeout),
+            "TcpEvent::Timeout should be emitted"
+        );
     }
 
     #[test]
@@ -4277,13 +6474,45 @@ mod tests {
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
         assert_eq!(handler.connections[0].state, TcpState::Established);
 
@@ -4297,21 +6526,34 @@ mod tests {
 
         // Initiate close — linger(0) sets immediate deadline.
         handler.initiate_close(&conn_id);
-        assert!(handler.connections[0].pending_fin, "pending_fin should be set");
-        assert!(handler.connections[0].linger_deadline.is_some(), "linger_deadline should be set for linger(0)");
+        assert!(
+            handler.connections[0].pending_fin,
+            "pending_fin should be set"
+        );
+        assert!(
+            handler.connections[0].linger_deadline.is_some(),
+            "linger_deadline should be set for linger(0)"
+        );
 
         // Call poll_send — linger deadline is already expired, should send RST.
         let now = coarsetime::Instant::now();
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
         // Connection should be removed.
-        assert!(handler.get_connection(&conn_id).is_none(), "connection should be removed after linger(0) RST");
+        assert!(
+            handler.get_connection(&conn_id).is_none(),
+            "connection should be removed after linger(0) RST"
+        );
 
         // RST segment should have been emitted.
         assert!(tx.num_frames() > 0, "RST segment should be emitted on tx");
 
         // Reset event should have been pushed.
         let event = event_queue.pop();
-        assert_eq!(event, Some(TcpEvent::Reset), "TcpEvent::Reset should be emitted for linger(0) abort");
+        assert_eq!(
+            event,
+            Some(TcpEvent::Reset),
+            "TcpEvent::Reset should be emitted for linger(0) abort"
+        );
     }
 }

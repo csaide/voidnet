@@ -119,37 +119,37 @@ impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for std::sync::MutexGuard<
 
     #[inline(always)]
     fn free_space(&self) -> usize {
-        B::free_space(&*self)
+        B::free_space(self)
     }
 
     #[inline(always)]
     fn num_frames(&self) -> usize {
-        B::num_frames(&*self)
+        B::num_frames(self)
     }
 
     #[inline(always)]
     fn push(&mut self, frame: Frame<'umem>) {
-        B::push(&mut *self, frame)
+        B::push(self, frame)
     }
 
     #[inline(always)]
     fn pop(&mut self) -> Option<Frame<'umem>> {
-        B::pop(&mut *self)
+        B::pop(self)
     }
 
     #[inline(always)]
     fn take_frames(&mut self) -> Self::Drain<'_> {
-        B::take_frames(&mut *self)
+        B::take_frames(self)
     }
 
     #[inline(always)]
     fn iter_frames(&self) -> Self::Iter<'_> {
-        B::iter_frames(&*self)
+        B::iter_frames(self)
     }
 
     #[inline(always)]
     fn iter_frames_mut(&mut self) -> Self::IterMut<'_> {
-        B::iter_frames_mut(&mut *self)
+        B::iter_frames_mut(self)
     }
 }
 
@@ -175,37 +175,37 @@ impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for futures_util::lock::Mu
 
     #[inline(always)]
     fn free_space(&self) -> usize {
-        B::free_space(&*self)
+        B::free_space(self)
     }
 
     #[inline(always)]
     fn num_frames(&self) -> usize {
-        B::num_frames(&*self)
+        B::num_frames(self)
     }
 
     #[inline(always)]
     fn push(&mut self, frame: Frame<'umem>) {
-        B::push(&mut *self, frame)
+        B::push(self, frame)
     }
 
     #[inline(always)]
     fn pop(&mut self) -> Option<Frame<'umem>> {
-        B::pop(&mut *self)
+        B::pop(self)
     }
 
     #[inline(always)]
     fn take_frames(&mut self) -> Self::Drain<'_> {
-        B::take_frames(&mut *self)
+        B::take_frames(self)
     }
 
     #[inline(always)]
     fn iter_frames(&self) -> Self::Iter<'_> {
-        B::iter_frames(&*self)
+        B::iter_frames(self)
     }
 
     #[inline(always)]
     fn iter_frames_mut(&mut self) -> Self::IterMut<'_> {
-        B::iter_frames_mut(&mut *self)
+        B::iter_frames_mut(self)
     }
 }
 

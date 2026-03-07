@@ -67,6 +67,12 @@ impl Producer<Uninit> {
     }
 }
 
+impl Default for Producer<Uninit> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Producer<Init> {
     /// Returns the size of the producer ring.
     #[inline(always)]
@@ -119,7 +125,7 @@ impl Producer<Init> {
             unsafe { AtomicU32::from_ptr(self.ring.consumer) }.load(Ordering::Acquire);
         self.ring.cached_cons += self.ring.size;
 
-        return self.ring.cached_cons - self.ring.cached_prod;
+        self.ring.cached_cons - self.ring.cached_prod
     }
 
     /// Reserves a batch of descriptors from the ring.
@@ -158,9 +164,9 @@ impl Producer<Init> {
     /// ```c
     /// XDP_ALWAYS_INLINE struct xdp_desc *xsk_ring_prod__tx_desc(struct xsk_ring_prod *tx, __u32 idx)
     /// {
-    /// 	struct xdp_desc *descs = (struct xdp_desc *)tx->ring;
+    ///     struct xdp_desc *descs = (struct xdp_desc *)tx->ring;
     ///
-    /// 	return &descs[idx & tx->mask];
+    ///     return &descs[idx & tx->mask];
     /// }
     /// ```
     #[inline(always)]
@@ -176,9 +182,9 @@ impl Producer<Init> {
     /// ```c
     /// XDP_ALWAYS_INLINE __u64 *xsk_ring_prod__fill_addr(struct xsk_ring_prod *fill, __u32 idx)
     /// {
-    /// 	__u64 *addrs = (__u64 *)fill->ring;
+    ///     __u64 *addrs = (__u64 *)fill->ring;
     ///
-    /// 	return &addrs[idx & fill->mask];
+    ///     return &addrs[idx & fill->mask];
     /// }
     /// ```
     // #[inline(always)]
@@ -194,10 +200,10 @@ impl Producer<Init> {
     /// ```c
     /// XDP_ALWAYS_INLINE void xsk_ring_prod__submit(struct xsk_ring_prod *prod, __u32 nb)
     /// {
-    /// 	/* Make sure everything has been written to the ring before indicating
-    /// 	* this to the kernel by writing the producer pointer.
-    /// 	*/
-    /// 	__atomic_store_n(prod->producer, *prod->producer + nb, __ATOMIC_RELEASE);
+    ///     /* Make sure everything has been written to the ring before indicating
+    ///     * this to the kernel by writing the producer pointer.
+    ///     */
+    ///     __atomic_store_n(prod->producer, *prod->producer + nb, __ATOMIC_RELEASE);
     /// }
     /// ```
     #[inline(always)]
@@ -216,7 +222,7 @@ impl Producer<Init> {
     /// ```c
     /// XDP_ALWAYS_INLINE int xsk_ring_prod__needs_wakeup(const struct xsk_ring_prod *r)
     /// {
-    /// 	return *r->flags & XDP_RING_NEED_WAKEUP;
+    ///     return *r->flags & XDP_RING_NEED_WAKEUP;
     /// }
     /// ```
     // #[inline(always)]

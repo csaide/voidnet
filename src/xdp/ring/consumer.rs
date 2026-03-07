@@ -67,6 +67,12 @@ impl Consumer<Uninit> {
     }
 }
 
+impl Default for Consumer<Uninit> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Consumer<Init> {
     /// Returns the size of the consumer ring.
     #[inline(always)]
@@ -82,14 +88,14 @@ impl Consumer<Init> {
     /// ```c
     /// XDP_ALWAYS_INLINE __u32 xsk_cons_nb_avail(struct xsk_ring_cons *r, __u32 nb)
     /// {
-    /// 	__u32 entries = r->cached_prod - r->cached_cons;
+    ///     __u32 entries = r->cached_prod - r->cached_cons;
     ///
-    /// 	if (entries == 0) {
-    /// 		r->cached_prod = __atomic_load_n(r->producer, __ATOMIC_ACQUIRE);
-    /// 		entries = r->cached_prod - r->cached_cons;
-    /// 	}
+    ///     if (entries == 0) {
+    ///         r->cached_prod = __atomic_load_n(r->producer, __ATOMIC_ACQUIRE);
+    ///         entries = r->cached_prod - r->cached_cons;
+    ///     }
     ///
-    /// 	return (entries > nb) ? nb : entries;
+    ///     return (entries > nb) ? nb : entries;
     /// }
     /// ```
     #[inline(always)]

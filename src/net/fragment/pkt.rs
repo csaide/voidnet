@@ -30,6 +30,13 @@ impl<'umem> Packet<'umem> {
         }
     }
 
+    /// Returns true if the packet is empty.
+    ///
+    /// Note for fragmented packets this iterates over the entire packet use sparingly.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Returns a borrowing iterator over the frames in this packet.
     pub fn frames(&self) -> PacketFrameIter<'_, 'umem> {
         match self {

@@ -60,7 +60,7 @@ impl<'umem> UdpSocket<'umem> {
             Ok(Self {
                 local_addr: addr,
                 local_port: port,
-                rx_queue: rx_queue,
+                rx_queue,
                 free_frames: ctx.free_frames.clone(),
                 tx_return: ctx.tx_return.clone(),
                 rx_return: ctx.rx_return.clone(),
@@ -223,9 +223,9 @@ impl<'sock, 'umem> SendHalf<'sock, 'umem> {
         payload: &'buf [u8],
     ) -> SendTo<'_, 'buf, 'umem> {
         SendTo {
-            free_frames: &mut self.free_frames,
-            rx_return: &mut self.rx_return,
-            tx_return: &mut self.tx_return,
+            free_frames: self.free_frames,
+            rx_return: self.rx_return,
+            tx_return: self.tx_return,
             pmtu: self.pmtu,
             neighbor_handler: self.neighbor_handler,
             pkt: Packet::Empty,
@@ -243,7 +243,7 @@ impl<'sock, 'umem> SendHalf<'sock, 'umem> {
     pub fn echo(&mut self, packet: ReceivedUdpPacket<'umem>) -> Echo<'_, 'umem> {
         let payload_len = packet.packet.len() as u32;
         Echo {
-            tx_return: &mut self.tx_return,
+            tx_return: self.tx_return,
             pkt: packet.packet,
             payload_len,
         }
@@ -502,9 +502,9 @@ mod tests {
         let neighbor_handler =
             Rc::new(NeighborHandler::new("test0", Duration::from_secs(60)).unwrap());
         let udp_handler = Rc::new(UnsafeCell::new(UdpHandler::new(256, false)));
-        let tcp_handler = Rc::new(UnsafeCell::new(
-            crate::net::handler::tcp::TcpHandler::new(false, false),
-        ));
+        let tcp_handler = Rc::new(UnsafeCell::new(crate::net::handler::tcp::TcpHandler::new(
+            false, false,
+        )));
 
         let ctx = RuntimeContext {
             free_frames,

@@ -193,10 +193,10 @@ fn handle_neighbor_solicitation<'umem>(
     let sender_mac = parse_ndp_link_layer_option(&frame, options_start, icmpv6_end, 1);
 
     // Cache sender's MAC if source is not unspecified (DAD uses ::).
-    if !src_addr.is_unspecified() {
-        if let Some(mac) = sender_mac {
-            table.insert(IpAddress::V6(src_addr), NeighborEntry::new(mac, now + ttl));
-        }
+    if !src_addr.is_unspecified()
+        && let Some(mac) = sender_mac
+    {
+        table.insert(IpAddress::V6(src_addr), NeighborEntry::new(mac, now + ttl));
     }
 
     // Check if the target is one of our addresses.

@@ -125,10 +125,10 @@ fn main() {
         debug_assert_eq!(frames.num_frames(), received as usize);
 
         // For each received frame, attempt to swap the addresses.
-        for mut frame in frames.iter_frames_mut() {
+        for frame in frames.iter_frames_mut() {
             stats.update(frame.len(), frame.is_fragment());
 
-            swap_addresses(&mut frame).unwrap();
+            swap_addresses(frame).unwrap();
         }
 
         // Send the updated frames to the socket.
@@ -138,7 +138,7 @@ fn main() {
         debug_assert_eq!(frames.num_frames(), 0);
 
         // So we "sent" the packets but now we need to actually drive the completion of those sends.
-        while let Err(_) = umem.process_completion_queue(&mut frames) {
+        while umem.process_completion_queue(&mut frames).is_err() {
             socket.maybe_wake().expect("Failed to wake tx queue");
         }
 

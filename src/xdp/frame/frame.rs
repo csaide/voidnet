@@ -16,7 +16,7 @@ impl<'umem> Frame<'umem> {
     /// Create a new frame with the given address, data pointer, length, and capacity.
     pub(crate) fn new(addr: u64, data: &'umem mut [u8], len: usize, is_fragment: bool) -> Self {
         assert!(
-            data.len() > 0 && len <= data.len(),
+            !data.is_empty() && len <= data.len(),
             "len must be less than or equal to capacity, which must be greater than 0"
         );
 
@@ -42,6 +42,12 @@ impl<'umem> Frame<'umem> {
         self.len
     }
 
+    /// Returns true if the frame is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Returns the capacity of the frame in bytes.
     ///
     /// This is the total number of bytes that the frame can hold.
@@ -63,6 +69,10 @@ impl<'umem> Frame<'umem> {
     }
 
     /// Sets the length of the frame.
+    ///
+    /// # Safety
+    ///
+    /// This function does not check if the length is valid, it blindly sets the length of the frame.
     #[inline]
     pub unsafe fn set_len(&mut self, len: usize) {
         self.len = len;
@@ -150,7 +160,7 @@ mod tests {
         let mut frame = Frame::new(0, &mut data, 0, false);
 
         let incoming = [1, 2, 3, 4, 5];
-        frame.copy_from(&incoming);
+        frame.copy_from(incoming);
 
         assert_eq!(frame.len(), 5);
         assert_eq!(&frame[..], &incoming);
@@ -163,7 +173,7 @@ mod tests {
         let mut frame = Frame::new(0, &mut data, 0, false);
 
         let incoming = [1, 2, 3, 4, 5, 6];
-        frame.copy_from(&incoming);
+        frame.copy_from(incoming);
     }
 
     #[test]

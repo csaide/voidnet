@@ -33,7 +33,7 @@ impl FragmentPlan {
         let subsequent_chunks = if remaining == 0 {
             0
         } else {
-            (remaining + max_frag_data - 1) / max_frag_data
+            remaining.div_ceil(max_frag_data)
         };
         FragmentPlan {
             max_frag_data,

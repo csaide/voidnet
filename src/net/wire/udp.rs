@@ -57,11 +57,7 @@ impl UdpHeader {
     #[inline]
     pub const fn payload_len(&self) -> usize {
         let total = self.length() as usize;
-        if total > UDP_HEADER_LEN {
-            total - UDP_HEADER_LEN
-        } else {
-            0
-        }
+        total.saturating_sub(UDP_HEADER_LEN)
     }
 
     /// Zero-copy reference to a UDP header at `offset` within a frame.
@@ -130,5 +126,4 @@ mod tests {
         assert_eq!(UDP_HEADER_LEN, 8);
         assert_eq!(size_of::<UdpHeader>(), 8);
     }
-
 }

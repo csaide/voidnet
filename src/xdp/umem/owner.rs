@@ -207,7 +207,7 @@ mod tests {
 
         // Write different data to each frame
         for (i, frame) in buffer.iter_frames_mut().enumerate() {
-            frame.copy_from(&[i as u8; 4]);
+            frame.copy_from([i as u8; 4]);
         }
 
         // Verify isolation: each frame retains its own data

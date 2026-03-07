@@ -65,15 +65,11 @@ pub fn handle_icmpv4<'umem>(
 
             // Swap Ethernet MACs.
             let eth = EthernetFrame::from_bytes_mut(&mut frame);
-            let tmp_mac = eth.dst_mac;
-            eth.dst_mac = eth.src_mac;
-            eth.src_mac = tmp_mac;
+            std::mem::swap(&mut eth.dst_mac, &mut eth.src_mac);
 
             // Swap IPv4 addresses and reset TTL.
             let ip = Ipv4Header::from_bytes_mut(&mut frame);
-            let tmp_addr = ip.src_addr;
-            ip.src_addr = ip.dst_addr;
-            ip.dst_addr = tmp_addr;
+            std::mem::swap(&mut ip.src_addr, &mut ip.dst_addr);
             ip.ttl = 64;
             if !tx_offload {
                 ip.fill_checksum();
@@ -158,11 +154,12 @@ pub fn send_destination_unreachable<'umem>(
     }
 
     // RFC 792: MUST NOT send ICMP error in response to an ICMP error.
-    if orig_protocol == IpProtocols::Icmp && frame.len() > orig_payload_offset {
-        if is_icmp_error(frame[orig_payload_offset]) {
-            rx_return.push(frame);
-            return;
-        }
+    if orig_protocol == IpProtocols::Icmp
+        && frame.len() > orig_payload_offset
+        && is_icmp_error(frame[orig_payload_offset])
+    {
+        rx_return.push(frame);
+        return;
     }
 
     // Save the original IP header + first 8 bytes of payload.
@@ -194,9 +191,7 @@ pub fn send_destination_unreachable<'umem>(
         let pkt = Icmpv4Frame::from_bytes_mut(&mut frame);
 
         // Swap Ethernet MACs.
-        let tmp_mac = pkt.ethernet.dst_mac;
-        pkt.ethernet.dst_mac = pkt.ethernet.src_mac;
-        pkt.ethernet.src_mac = tmp_mac;
+        std::mem::swap(&mut pkt.ethernet.dst_mac, &mut pkt.ethernet.src_mac);
 
         // Build the new IPv4 header (always 20 bytes, no options).
         pkt.ipv4.version_ihl = 0x45;
@@ -359,7 +354,7 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(
             frame,
-            &mut PmtuCache::new(),
+            &PmtuCache::new(),
             now,
             false,
             false,
@@ -422,7 +417,7 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(
             frame,
-            &mut PmtuCache::new(),
+            &PmtuCache::new(),
             now,
             false,
             false,
@@ -451,7 +446,7 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(
             frame,
-            &mut PmtuCache::new(),
+            &PmtuCache::new(),
             now,
             false,
             false,
@@ -481,7 +476,7 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(
             frame,
-            &mut PmtuCache::new(),
+            &PmtuCache::new(),
             now,
             false,
             false,
@@ -507,7 +502,7 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(
             frame,
-            &mut PmtuCache::new(),
+            &PmtuCache::new(),
             now,
             false,
             false,
@@ -542,7 +537,7 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(
             frame,
-            &mut PmtuCache::new(),
+            &PmtuCache::new(),
             now,
             false,
             false,
@@ -779,10 +774,10 @@ mod tests {
         buf[..data.len()].copy_from_slice(&data);
         let frame = Frame::new(0, &mut buf, data.len(), false);
 
-        let mut pmtu = PmtuCache::new();
+        let pmtu = PmtuCache::new();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &mut pmtu, now, false, false, &mut rx, &mut tx);
+        handle_icmpv4(frame, &pmtu, now, false, false, &mut rx, &mut tx);
 
         // Frame goes to rx (not an echo request)
         assert_eq!(rx.num_frames(), 1);

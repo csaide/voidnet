@@ -8,7 +8,7 @@ use crate::xdp::{
 };
 
 /// Embedded XDP BPF program for round-robin packet routing to AF_XDP sockets.
-static XDP_PROG_DATA: &'static [u8] = include_bytes!("../../../bpf/xdp_kern.o");
+static XDP_PROG_DATA: &[u8] = include_bytes!("../../../bpf/xdp_kern.o");
 
 /// Builder for creating an XdpContext.
 ///
@@ -55,7 +55,7 @@ impl<'name> XdpContextBuilder<'name> {
 
     /// Builds the XdpContext.
     pub fn build(self) -> Result<XdpContext> {
-        XdpContext::new(&self.if_name, self.attach_mode, self.enable_fragmentation)
+        XdpContext::new(self.if_name, self.attach_mode, self.enable_fragmentation)
     }
 }
 

@@ -149,7 +149,7 @@ impl UmemBuilder {
     pub fn build_local<'umem>(mut self) -> Result<LocalUmem<'umem>> {
         let (owner, fq, cq) = self.build_internal()?.split();
 
-        Ok(LocalUmem::new(owner, fq, cq)?)
+        LocalUmem::new(owner, fq, cq)
     }
 
     #[cfg(feature = "smol")]
@@ -190,7 +190,7 @@ impl<'umem> Umem<'umem> {
         let mut opts = xsk_umem_opts {
             sz: size_of::<xsk_umem_opts>(),
             fd: 0,
-            size: size,
+            size,
             fill_size: fill_ring_size,
             comp_size: completion_ring_size,
             frame_size: frame_size as u32,
@@ -211,7 +211,7 @@ impl<'umem> Umem<'umem> {
         if huge_tables {
             map_opts.huge(None);
         }
-        let mut mmap = map_opts.map_anon().map_err(|e| Error::MmapAllocate(e))?;
+        let mut mmap = map_opts.map_anon().map_err(Error::MmapAllocate)?;
 
         let umem = unsafe {
             xsk_umem__create_opts(

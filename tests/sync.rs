@@ -117,7 +117,7 @@ fn test_sync() {
                 }
             };
 
-            while let Err(_) = umem_outer.process_completion_queue(&mut tx_buffer) {
+            while umem_outer.process_completion_queue(&mut tx_buffer).is_err() {
                 socket_outer.maybe_wake().unwrap();
             }
 

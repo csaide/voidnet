@@ -77,15 +77,11 @@ pub fn handle_icmpv6<'umem>(
 
             // Swap Ethernet MACs.
             let eth = EthernetFrame::from_bytes_mut(&mut frame);
-            let tmp_mac = eth.dst_mac;
-            eth.dst_mac = eth.src_mac;
-            eth.src_mac = tmp_mac;
+            std::mem::swap(&mut eth.dst_mac, &mut eth.src_mac);
 
             // Swap IPv6 addresses and reset hop limit.
             let ip = Ipv6Header::from_bytes_mut(&mut frame);
-            let tmp_addr = ip.src_addr;
-            ip.src_addr = ip.dst_addr;
-            ip.dst_addr = tmp_addr;
+            std::mem::swap(&mut ip.src_addr, &mut ip.dst_addr);
             ip.hop_limit = 64;
 
             // Set ICMPv6 type to Echo Reply and recompute checksum.
@@ -233,9 +229,7 @@ pub fn send_icmpv6_error<'umem>(
         let pkt = Icmpv6Frame::from_bytes_mut(&mut frame);
 
         // Swap Ethernet MACs.
-        let tmp_mac = pkt.ethernet.dst_mac;
-        pkt.ethernet.dst_mac = pkt.ethernet.src_mac;
-        pkt.ethernet.src_mac = tmp_mac;
+        std::mem::swap(&mut pkt.ethernet.dst_mac, &mut pkt.ethernet.src_mac);
 
         // Build the new IPv6 header.
         pkt.ipv6.version_tc_fl = [0x60, 0x00, 0x00, 0x00];
@@ -391,13 +385,13 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
+        let neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
         handle_icmpv6(
             frame,
             icmpv6_offset,
             icmpv6_len,
-            &mut neighbor_handler,
-            &mut PmtuCache::new(),
+            &neighbor_handler,
+            &PmtuCache::new(),
             now,
             false,
             false,
@@ -455,13 +449,13 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
+        let neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
         handle_icmpv6(
             frame,
             icmpv6_offset,
             icmpv6_len,
-            &mut neighbor_handler,
-            &mut PmtuCache::new(),
+            &neighbor_handler,
+            &PmtuCache::new(),
             now,
             false,
             false,
@@ -490,13 +484,13 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
+        let neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
         handle_icmpv6(
             frame,
             icmpv6_offset,
             4,
-            &mut neighbor_handler,
-            &mut PmtuCache::new(),
+            &neighbor_handler,
+            &PmtuCache::new(),
             now,
             false,
             false,
@@ -519,13 +513,13 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
+        let neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
         handle_icmpv6(
             frame,
             icmpv6_offset,
             icmpv6_len,
-            &mut neighbor_handler,
-            &mut PmtuCache::new(),
+            &neighbor_handler,
+            &PmtuCache::new(),
             now,
             false,
             false,
@@ -560,13 +554,13 @@ mod tests {
 
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
+        let neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
         handle_icmpv6(
             frame,
             icmpv6_offset,
             icmpv6_payload.len(),
-            &mut neighbor_handler,
-            &mut PmtuCache::new(),
+            &neighbor_handler,
+            &PmtuCache::new(),
             now,
             false,
             false,
@@ -620,16 +614,16 @@ mod tests {
 
         let icmpv6_offset = eth_len + IPV6_HEADER_LEN;
 
-        let mut pmtu = PmtuCache::new();
+        let pmtu = PmtuCache::new();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
+        let neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
         handle_icmpv6(
             frame,
             icmpv6_offset,
             icmpv6_msg.len(),
-            &mut neighbor_handler,
-            &mut pmtu,
+            &neighbor_handler,
+            &pmtu,
             now,
             false,
             false,

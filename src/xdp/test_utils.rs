@@ -349,14 +349,12 @@ impl TestVethPair {
         }
 
         // Read MAC addresses
-        let outer_mac = read_mac_address(&outer_name).map_err(|e| {
+        let outer_mac = read_mac_address(&outer_name).inspect_err(|_| {
             cleanup(&outer_name);
-            e
         })?;
 
-        let inner_mac = read_mac_address(&inner_name).map_err(|e| {
+        let inner_mac = read_mac_address(&inner_name).inspect_err(|_| {
             cleanup(&outer_name);
-            e
         })?;
 
         Ok(Self {

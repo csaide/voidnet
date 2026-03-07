@@ -310,7 +310,7 @@ mod tests {
     const DST_V6: Ipv6Address =
         Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 
-    fn make_free_frames(bufs: &mut Vec<Vec<u8>>, n: usize) -> BasicFrameBuffer<'_> {
+    fn make_free_frames(bufs: &mut [Vec<u8>], n: usize) -> BasicFrameBuffer<'_> {
         let mut fb = BasicFrameBuffer::new(n * 2);
         for (i, buf) in bufs.iter_mut().enumerate() {
             fb.push(Frame::new(i as u64, buf.as_mut_slice(), 1, false));

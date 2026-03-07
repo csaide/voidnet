@@ -36,7 +36,7 @@ impl<'umem> CompletionQueue<'umem> {
             idx += 1;
         }
 
-        self.ring.release(ready as u32);
+        self.ring.release(ready);
         Ok(ready)
     }
 }

@@ -96,6 +96,12 @@ impl PmtuCache {
     }
 }
 
+impl Default for PmtuCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ops::Add;
