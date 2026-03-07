@@ -7709,7 +7709,7 @@ mod tests {
             free.push(alloc_free_frame(100 + i));
         }
 
-        let server_iss =
+        let _server_iss =
             establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
         // Put data in the send buffer and advance snd_nxt to simulate sent data.
@@ -7758,7 +7758,7 @@ mod tests {
             free.push(alloc_free_frame(100 + i));
         }
 
-        let server_iss =
+        let _server_iss =
             establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
         let tcb = &mut handler.connections[0];
@@ -7823,7 +7823,7 @@ mod tests {
             free.push(alloc_free_frame(100 + i));
         }
 
-        let server_iss =
+        let _server_iss =
             establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
         let tcb = &mut handler.connections[0];
@@ -7866,7 +7866,7 @@ mod tests {
             free.push(alloc_free_frame(100 + i));
         }
 
-        let server_iss =
+        let _server_iss =
             establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
         let tcb = &mut handler.connections[0];
