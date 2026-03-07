@@ -27,7 +27,7 @@ use isn::IsnGenerator;
 use ring_buffer::RingBuffer;
 use segment::SegmentBuilder;
 use state::TcpState;
-use tcb::{ConnectionId, Tcb, TcpConfig, TcpEvent, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE};
+use tcb::{ConnectionId, Tcb, TcpConfig, TcpEvent, DEFAULT_DELAYED_ACK_MS, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE};
 
 /// Initial RTO for SYN retransmission (1 second in coarsetime ticks).
 const INITIAL_RTO_MS: u64 = 1000;
@@ -45,6 +45,8 @@ pub(crate) struct ListenEntry {
     pub send_buffer_size: usize,
     pub recv_buffer_size: usize,
     pub time_wait_duration: u64,
+    pub tcp_no_delay: bool,
+    pub delayed_ack_ms: u64,
 }
 
 /// TCP protocol handler.
@@ -107,6 +109,8 @@ impl TcpHandler {
             send_buffer_size: config.send_buffer_size,
             recv_buffer_size: config.recv_buffer_size,
             time_wait_duration: config.time_wait_duration_ms,
+            tcp_no_delay: config.tcp_no_delay,
+            delayed_ack_ms: config.delayed_ack_ms,
         });
         Ok(accept_queue)
     }
@@ -208,6 +212,11 @@ impl TcpHandler {
             fin_seq: None,
             time_wait_deadline: None,
             time_wait_duration: config.time_wait_duration_ms,
+            ack_pending: false,
+            delayed_ack_deadline: None,
+            ack_delay_count: 0,
+            delayed_ack_ms: DEFAULT_DELAYED_ACK_MS,
+            nagle_enabled: !config.tcp_no_delay,
         };
 
         // Send SYN.
@@ -603,6 +612,11 @@ impl TcpHandler {
                 fin_seq: None,
                 time_wait_deadline: None,
                 time_wait_duration,
+                ack_pending: false,
+                delayed_ack_deadline: None,
+                ack_delay_count: 0,
+                delayed_ack_ms: listener.delayed_ack_ms,
+                nagle_enabled: !listener.tcp_no_delay,
             };
 
             // Send SYN-ACK.
@@ -3013,5 +3027,49 @@ mod tests {
             0,
             "connection removed after LastAck"
         );
+    }
+
+    #[test]
+    fn new_connection_has_delayed_ack_fields() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(8);
+        let mut rx = BasicFrameBuffer::new(8);
+        let mut tx = BasicFrameBuffer::new(8);
+
+        for i in 0..4 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+
+        // Step 1: SYN.
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        let syn_frame = Frame::new(0, leak(syn_data), syn_len, false);
+        handler.process_ipv4(syn_frame, &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(handler.connections[0].state, TcpState::SynReceived);
+
+        let server_iss = handler.connections[0].iss;
+
+        // Step 2: ACK completing handshake.
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack_data.len();
+        let ack_frame = Frame::new(1, leak(ack_data), ack_len, false);
+        handler.process_ipv4(ack_frame, &nh, &mut free, &mut rx, &mut tx);
+
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+
+        // Verify delayed ACK and Nagle defaults.
+        let tcb = &handler.connections[0];
+        assert!(!tcb.ack_pending, "ack_pending should be false");
+        assert!(tcb.delayed_ack_deadline.is_none(), "delayed_ack_deadline should be None");
+        assert_eq!(tcb.ack_delay_count, 0, "ack_delay_count should be 0");
+        assert_eq!(tcb.delayed_ack_ms, tcb::DEFAULT_DELAYED_ACK_MS, "delayed_ack_ms should match default");
+        assert!(tcb.nagle_enabled, "nagle should be enabled by default");
     }
 }

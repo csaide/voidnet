@@ -70,6 +70,12 @@ pub const DEFAULT_RCV_WND: u16 = 65535;
 /// Default receive window scale shift count.
 pub const DEFAULT_RCV_WSCALE: u8 = 7;
 
+/// Default delayed ACK timeout in milliseconds (RFC 9293 §4.2: < 500ms).
+pub const DEFAULT_DELAYED_ACK_MS: u64 = 40;
+
+/// Maximum consecutive unACKed segments before flushing (RFC 5681 §4.2).
+pub const MAX_DELAYED_ACK_COUNT: u8 = 2;
+
 /// Configuration for TCP connections.
 pub struct TcpConfig {
     /// Send buffer size in bytes. Must be a power of two. Default: 256KB.
@@ -80,6 +86,10 @@ pub struct TcpConfig {
     pub backlog: usize,
     /// Duration to remain in TIME-WAIT state in milliseconds. Default: 60000 (60s).
     pub time_wait_duration_ms: u64,
+    /// If true, disable Nagle algorithm (send small segments immediately). Default: false.
+    pub tcp_no_delay: bool,
+    /// Maximum delay for ACKs in milliseconds. Default: 40.
+    pub delayed_ack_ms: u64,
 }
 
 impl Default for TcpConfig {
@@ -89,6 +99,8 @@ impl Default for TcpConfig {
             recv_buffer_size: 256 * 1024,
             backlog: 128,
             time_wait_duration_ms: 60_000,
+            tcp_no_delay: false,
+            delayed_ack_ms: DEFAULT_DELAYED_ACK_MS,
         }
     }
 }
@@ -183,6 +195,20 @@ pub struct Tcb {
     pub time_wait_deadline: Option<Instant>,
     /// Duration to remain in TIME-WAIT state in milliseconds.
     pub time_wait_duration: u64,
+
+    // --- Delayed ACK ---
+    /// True when an ACK is owed but deferred.
+    pub ack_pending: bool,
+    /// Deadline for sending the deferred ACK.
+    pub delayed_ack_deadline: Option<Instant>,
+    /// Count of consecutive unACKed segments (flush at MAX_DELAYED_ACK_COUNT).
+    pub ack_delay_count: u8,
+    /// Delayed ACK timeout in milliseconds.
+    pub delayed_ack_ms: u64,
+
+    // --- Nagle algorithm ---
+    /// When true, the Nagle algorithm gates small sends. Disabled by TCP_NODELAY.
+    pub nagle_enabled: bool,
 }
 
 impl Tcb {
