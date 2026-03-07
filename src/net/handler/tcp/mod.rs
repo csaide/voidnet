@@ -27,7 +27,7 @@ use isn::IsnGenerator;
 use ring_buffer::RingBuffer;
 use segment::SegmentBuilder;
 use state::TcpState;
-use tcb::{ConnectionId, Tcb, TcpConfig, TcpEvent, DEFAULT_DELAYED_ACK_MS, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE};
+use tcb::{ConnectionId, MAX_DELAYED_ACK_COUNT, Tcb, TcpConfig, TcpEvent, DEFAULT_DELAYED_ACK_MS, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE};
 
 /// Initial RTO for SYN retransmission (1 second in coarsetime ticks).
 const INITIAL_RTO_MS: u64 = 1000;
@@ -974,16 +974,28 @@ impl TcpHandler {
                     }
                 }
 
-                // Send ACK.
-                let tcb = &self.connections[idx];
-                SegmentBuilder::build_ack(
-                    tcb.id.local_addr, tcb.id.remote_addr,
-                    tcb.id.local_port, tcb.id.remote_port,
-                    tcb.snd_nxt, tcb.rcv_nxt,
-                    DEFAULT_RCV_WND,
-                    src_mac, dst_mac,
-                    self.tx_offload, free_frames, tx_return,
-                );
+                // Defer ACK (delayed ACK).
+                let tcb = &mut self.connections[idx];
+                tcb.ack_delay_count += 1;
+                if tcb.ack_delay_count >= MAX_DELAYED_ACK_COUNT {
+                    // Flush: ACK every other segment (RFC 5681 §4.2).
+                    SegmentBuilder::build_ack(
+                        tcb.id.local_addr, tcb.id.remote_addr,
+                        tcb.id.local_port, tcb.id.remote_port,
+                        tcb.snd_nxt, tcb.rcv_nxt,
+                        DEFAULT_RCV_WND,
+                        src_mac, dst_mac,
+                        self.tx_offload, free_frames, tx_return,
+                    );
+                    tcb.ack_pending = false;
+                    tcb.ack_delay_count = 0;
+                    tcb.delayed_ack_deadline = None;
+                } else {
+                    tcb.ack_pending = true;
+                    if tcb.delayed_ack_deadline.is_none() {
+                        tcb.delayed_ack_deadline = Some(now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms));
+                    }
+                }
             } else if seq_lt(rcv_nxt, seg_seq) {
                 // Out-of-order data.
                 let offset = seg_seq.wrapping_sub(rcv_nxt) as usize;
@@ -1051,6 +1063,33 @@ impl TcpHandler {
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
+        // Delayed ACK pass — flush pending ACKs whose deadline has expired.
+        for tcb in &mut self.connections {
+            if !tcb.ack_pending {
+                continue;
+            }
+            if let Some(deadline) = tcb.delayed_ack_deadline {
+                if now >= deadline {
+                    let id = tcb.id;
+                    let dst_mac = neighbor_handler
+                        .lookup(now, &id.remote_addr)
+                        .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                    let window = tcb.recv_buffer.free_space().min(u16::MAX as usize) as u16;
+
+                    SegmentBuilder::build_ack(
+                        id.local_addr, id.remote_addr,
+                        id.local_port, id.remote_port,
+                        tcb.snd_nxt, tcb.rcv_nxt, window,
+                        src_mac, dst_mac,
+                        self.tx_offload, free_frames, tx_return,
+                    );
+                    tcb.ack_pending = false;
+                    tcb.ack_delay_count = 0;
+                    tcb.delayed_ack_deadline = None;
+                }
+            }
+        }
+
         // Fast retransmit pass — independent of timer expiry.
         // Triggered by 3 duplicate ACKs on established connections.
         for tcb in &mut self.connections {
@@ -2064,7 +2103,7 @@ mod tests {
         // Clear tx from handshake.
         while tx.pop().is_some() {}
 
-        // Send a data segment.
+        // Send first data segment (deferred by delayed ACK).
         let payload = b"Hello, TCP!";
         let data = build_tcp_frame_with_payload(
             REMOTE_IP, LOCAL_IP, 12345, 80,
@@ -2074,14 +2113,27 @@ mod tests {
         let data_len = data.len();
         handler.process_ipv4(Frame::new(2, leak(data), data_len, false), &nh, &mut free, &mut rx, &mut tx);
 
-        // Verify: frame returned to rx_return, ACK generated on tx.
-        assert!(rx.num_frames() >= 1, "incoming frame returned to rx_return");
-        assert_eq!(tx.num_frames(), 1, "ACK generated");
+        // First segment deferred — no immediate ACK.
+        assert_eq!(tx.num_frames(), 0, "ACK deferred for first in-order segment");
+        assert!(handler.connections[0].ack_pending, "ack_pending should be true");
+
+        // Send second data segment to flush delayed ACK.
+        let payload2 = b"World!";
+        let data2 = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001 + payload.len() as u32, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], payload2,
+        );
+        let data2_len = data2.len();
+        handler.process_ipv4(Frame::new(3, leak(data2), data2_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        // Second segment flushes the ACK.
+        assert_eq!(tx.num_frames(), 1, "ACK flushed on second segment");
 
         // Verify: data is in the receive ring buffer.
         let tcb = &handler.connections[0];
-        assert_eq!(tcb.recv_buffer.available(), payload.len());
-        assert_eq!(tcb.rcv_nxt, 1001 + payload.len() as u32);
+        assert_eq!(tcb.recv_buffer.available(), payload.len() + payload2.len());
+        assert_eq!(tcb.rcv_nxt, 1001 + payload.len() as u32 + payload2.len() as u32);
 
         drop(accept_queue);
     }
@@ -2352,7 +2404,7 @@ mod tests {
         let ack_len = ack.len();
         handler.process_ipv4(Frame::new(1, leak(ack), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
 
-        // Data segment.
+        // Data segment 1 (ACK deferred).
         let data = build_tcp_frame_with_payload(
             REMOTE_IP, LOCAL_IP, 12345, 80,
             1001, server_iss.wrapping_add(1),
@@ -2361,10 +2413,19 @@ mod tests {
         let data_len = data.len();
         handler.process_ipv4(Frame::new(2, leak(data), data_len, false), &nh, &mut free, &mut rx, &mut tx);
 
+        // Data segment 2 (flushes delayed ACK).
+        let data2 = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001 + 9, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], b"more data",
+        );
+        let data2_len = data2.len();
+        handler.process_ipv4(Frame::new(3, leak(data2), data2_len, false), &nh, &mut free, &mut rx, &mut tx);
+
         // All frames accounted for: free + rx + tx = initial + incoming frames.
         let total = free.num_frames() + rx.num_frames() + tx.num_frames();
-        // We started with initial_total free frames and injected 3 incoming frames.
-        assert_eq!(total, initial_total + 3, "all frames accounted for");
+        // We started with initial_total free frames and injected 4 incoming frames.
+        assert_eq!(total, initial_total + 4, "all frames accounted for");
     }
 
     #[test]
@@ -3030,6 +3091,166 @@ mod tests {
     }
 
     #[test]
+    fn delayed_ack_defers_ack_for_in_order_data() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+        let mut tx = BasicFrameBuffer::new(16);
+
+        for i in 0..8 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Send one in-order data segment.
+        let payload = b"hello";
+        let data = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], payload,
+        );
+        let data_len = data.len();
+        handler.process_ipv4(Frame::new(2, leak(data), data_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        // No immediate ACK — deferred.
+        assert_eq!(tx.num_frames(), 0, "ACK should be deferred");
+        let tcb = &handler.connections[0];
+        assert!(tcb.ack_pending, "ack_pending should be true");
+        assert!(tcb.delayed_ack_deadline.is_some(), "delayed_ack_deadline should be set");
+        assert_eq!(tcb.ack_delay_count, 1, "ack_delay_count should be 1");
+    }
+
+    #[test]
+    fn delayed_ack_flushes_on_second_segment() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+        let mut tx = BasicFrameBuffer::new(16);
+
+        for i in 0..8 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // First in-order segment — deferred.
+        let seg1 = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], b"aaaaa",
+        );
+        let seg1_len = seg1.len();
+        handler.process_ipv4(Frame::new(2, leak(seg1), seg1_len, false), &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(tx.num_frames(), 0, "first segment deferred");
+
+        // Second in-order segment — flushes ACK.
+        let seg2 = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1006, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], b"bbbbb",
+        );
+        let seg2_len = seg2.len();
+        handler.process_ipv4(Frame::new(3, leak(seg2), seg2_len, false), &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(tx.num_frames(), 1, "second segment flushes ACK");
+
+        let tcb = &handler.connections[0];
+        assert!(!tcb.ack_pending, "ack_pending should be false after flush");
+        assert_eq!(tcb.ack_delay_count, 0, "ack_delay_count should be 0 after flush");
+    }
+
+    #[test]
+    fn out_of_order_data_sends_immediate_ack() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+        let mut tx = BasicFrameBuffer::new(16);
+
+        for i in 0..8 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Send out-of-order data (skip sequence numbers).
+        let ooo_data = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1011, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], b"ooo",
+        );
+        let ooo_len = ooo_data.len();
+        handler.process_ipv4(Frame::new(2, leak(ooo_data), ooo_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        assert_eq!(tx.num_frames(), 1, "out-of-order data triggers immediate ACK");
+    }
+
+    #[test]
+    fn fin_sends_immediate_ack() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+        let mut tx = BasicFrameBuffer::new(16);
+
+        for i in 0..8 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Send FIN.
+        let fin_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001, server_iss.wrapping_add(1),
+            flags::ACK | flags::FIN, 65535, &[],
+        );
+        let fin_len = fin_data.len();
+        handler.process_ipv4(Frame::new(2, leak(fin_data), fin_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        assert_eq!(tx.num_frames(), 1, "FIN triggers immediate ACK");
+        assert_eq!(handler.connections[0].state, TcpState::CloseWait);
+    }
+
+    #[test]
     fn new_connection_has_delayed_ack_fields() {
         let mut handler = new_handler();
         let nh = new_neighbor_handler();
@@ -3071,5 +3292,59 @@ mod tests {
         assert_eq!(tcb.ack_delay_count, 0, "ack_delay_count should be 0");
         assert_eq!(tcb.delayed_ack_ms, tcb::DEFAULT_DELAYED_ACK_MS, "delayed_ack_ms should match default");
         assert!(tcb.nagle_enabled, "nagle should be enabled by default");
+    }
+
+    #[test]
+    fn delayed_ack_timer_flushes_pending_ack() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let now = coarsetime::Instant::now();
+
+        // Complete handshake.
+        let _accept = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Manually set delayed ACK state on the TCB.
+        let id = ConnectionId {
+            local_addr: IpAddress::V4(LOCAL_IP),
+            local_port: 80,
+            remote_addr: IpAddress::V4(REMOTE_IP),
+            remote_port: 12345,
+        };
+        {
+            let tcb = handler.get_connection_mut(&id).unwrap();
+            tcb.ack_pending = true;
+            tcb.ack_delay_count = 1;
+            tcb.delayed_ack_deadline = Some(now + coarsetime::Duration::from_millis(40));
+        }
+
+        // Before deadline — should NOT flush.
+        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert_eq!(tx.num_frames(), 0, "should not flush before deadline");
+
+        // After deadline — should flush.
+        let later = now + coarsetime::Duration::from_millis(50);
+        handler.poll_timers(later, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert_eq!(tx.num_frames(), 1, "should flush after deadline");
+
+        let tcb = handler.get_connection(&id).unwrap();
+        assert!(!tcb.ack_pending);
+        assert_eq!(tcb.ack_delay_count, 0);
+        assert!(tcb.delayed_ack_deadline.is_none());
     }
 }
