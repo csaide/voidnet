@@ -248,7 +248,8 @@ impl TcpHandler {
         self.process_segment(
             frame, incoming_src, incoming_dst,
             src_port, dst_port, seg_seq, seg_ack, seg_flags, seg_wnd, seg_len,
-            &opt_buf[..opt_len], src_mac, dst_mac,
+            &opt_buf[..opt_len], tcp_offset, header_len,
+            src_mac, dst_mac,
             free_frames, rx_return, tx_return,
         );
     }
@@ -317,7 +318,8 @@ impl TcpHandler {
         self.process_segment(
             frame, incoming_src, incoming_dst,
             src_port, dst_port, seg_seq, seg_ack, seg_flags, seg_wnd, seg_len,
-            &opt_buf[..opt_len], src_mac, dst_mac,
+            &opt_buf[..opt_len], tcp_offset, header_len,
+            src_mac, dst_mac,
             free_frames, rx_return, tx_return,
         );
     }
@@ -337,6 +339,8 @@ impl TcpHandler {
         seg_wnd: u32,
         seg_len: u32,
         options: &[u8],
+        tcp_offset: usize,
+        tcp_header_len: usize,
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
         free_frames: &mut impl FrameBuffer<'umem>,
@@ -369,8 +373,14 @@ impl TcpHandler {
                     rx_return.push(frame);
                 }
                 TcpState::Established => {
-                    // Data transfer not yet implemented — just ACK and return frame.
-                    rx_return.push(frame);
+                    let payload_offset = tcp_offset + tcp_header_len;
+                    let payload_len = frame.len().saturating_sub(payload_offset);
+                    self.process_established(
+                        idx, frame, seg_seq, seg_ack, seg_flags, seg_wnd,
+                        payload_offset, payload_len,
+                        src_mac, dst_mac,
+                        free_frames, rx_return, tx_return,
+                    );
                 }
                 _ => {
                     rx_return.push(frame);
@@ -746,6 +756,140 @@ impl TcpHandler {
         // Step 4: Neither SYN nor RST → drop.
     }
 
+    // --- ESTABLISHED state processing ---
+
+    fn process_established<'umem>(
+        &mut self,
+        idx: usize,
+        frame: Frame<'umem>,
+        seg_seq: u32,
+        seg_ack: u32,
+        seg_flags: u8,
+        seg_wnd: u32,
+        payload_offset: usize,
+        payload_len: usize,
+        src_mac: crate::net::wire::ethernet::MacAddress,
+        dst_mac: crate::net::wire::ethernet::MacAddress,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        use crate::net::wire::tcp::{seq_lt, seq_le};
+
+        // Step 1: RST check.
+        if seg_flags & flags::RST != 0 {
+            self.connections[idx].event_queue.push(TcpEvent::Reset);
+            let id = self.connections[idx].id;
+            self.decrement_syn_received(&id);
+            self.connections.remove(idx);
+            rx_return.push(frame);
+            return;
+        }
+
+        // Step 2: ACK processing.
+        if seg_flags & flags::ACK != 0 {
+            let tcb = &self.connections[idx];
+            let snd_una = tcb.snd_una;
+            let snd_nxt = tcb.snd_nxt;
+
+            if seq_lt(snd_una, seg_ack) && seq_le(seg_ack, snd_nxt) {
+                // Valid new ACK — advance snd_una and send buffer.
+                let bytes_acked = seg_ack.wrapping_sub(snd_una) as usize;
+                let tcb = &mut self.connections[idx];
+                tcb.snd_una = seg_ack;
+                tcb.send_buffer.advance(bytes_acked);
+
+                // Congestion control.
+                let eff_mss = tcb.eff_snd_mss as u32;
+                if tcb.cwnd < tcb.ssthresh {
+                    // Slow start.
+                    tcb.cwnd += eff_mss;
+                } else {
+                    // Congestion avoidance.
+                    tcb.cwnd += (eff_mss * eff_mss) / tcb.cwnd;
+                }
+
+                tcb.dup_ack_count = 0;
+
+                // Update send window.
+                tcb.snd_wnd = seg_wnd;
+                tcb.snd_wl1 = seg_seq;
+                tcb.snd_wl2 = seg_ack;
+            } else if seg_ack == snd_una && payload_len == 0 {
+                // Duplicate ACK.
+                self.connections[idx].dup_ack_count += 1;
+            }
+        }
+
+        // Step 3: Data processing.
+        if payload_len > 0 {
+            let tcb = &self.connections[idx];
+            let rcv_nxt = tcb.rcv_nxt;
+
+            if seg_seq == rcv_nxt {
+                // In-order data.
+                let payload = &frame[payload_offset..payload_offset + payload_len];
+                let tcb = &mut self.connections[idx];
+                tcb.recv_buffer.write(payload);
+                tcb.rcv_nxt = rcv_nxt.wrapping_add(payload_len as u32);
+
+                // Drain contiguous OOO ranges.
+                loop {
+                    let current_nxt = self.connections[idx].rcv_nxt;
+                    if let Some(&ooo_len) = self.connections[idx].ooo_ranges.get(&current_nxt) {
+                        self.connections[idx].ooo_ranges.remove(&current_nxt);
+                        self.connections[idx].recv_buffer.commit(ooo_len as usize);
+                        self.connections[idx].rcv_nxt = current_nxt.wrapping_add(ooo_len);
+                    } else {
+                        break;
+                    }
+                }
+
+                // Send ACK.
+                let tcb = &self.connections[idx];
+                SegmentBuilder::build_ack(
+                    tcb.id.local_addr, tcb.id.remote_addr,
+                    tcb.id.local_port, tcb.id.remote_port,
+                    tcb.snd_nxt, tcb.rcv_nxt,
+                    DEFAULT_RCV_WND,
+                    src_mac, dst_mac,
+                    self.tx_offload, free_frames, tx_return,
+                );
+            } else if seq_lt(rcv_nxt, seg_seq) {
+                // Out-of-order data.
+                let offset = seg_seq.wrapping_sub(rcv_nxt) as usize;
+                let payload = &frame[payload_offset..payload_offset + payload_len];
+                let tcb = &mut self.connections[idx];
+                tcb.recv_buffer.write_at(offset, payload);
+                tcb.ooo_ranges.insert(seg_seq, payload_len as u32);
+
+                // Send duplicate ACK (with current rcv_nxt).
+                SegmentBuilder::build_ack(
+                    tcb.id.local_addr, tcb.id.remote_addr,
+                    tcb.id.local_port, tcb.id.remote_port,
+                    tcb.snd_nxt, tcb.rcv_nxt,
+                    DEFAULT_RCV_WND,
+                    src_mac, dst_mac,
+                    self.tx_offload, free_frames, tx_return,
+                );
+            } else {
+                // Duplicate data (seg_seq < rcv_nxt) — just ACK.
+                let tcb = &self.connections[idx];
+                SegmentBuilder::build_ack(
+                    tcb.id.local_addr, tcb.id.remote_addr,
+                    tcb.id.local_port, tcb.id.remote_port,
+                    tcb.snd_nxt, tcb.rcv_nxt,
+                    DEFAULT_RCV_WND,
+                    src_mac, dst_mac,
+                    self.tx_offload, free_frames, tx_return,
+                );
+            }
+        }
+
+        // Always return incoming frame to rx_return.
+        rx_return.push(frame);
+    }
+
     // --- Timer polling ---
 
     /// Poll retransmission timers for SYN/SYN-ACK retransmission.
@@ -987,6 +1131,79 @@ mod tests {
         }
 
         // TCP checksum.
+        let tcp_segment = &mut buf[tcp_off..];
+        let cksum = compute_tcp_checksum(&src_ip, &dst_ip, tcp_segment);
+        buf[tcp_off + 16] = cksum[0];
+        buf[tcp_off + 17] = cksum[1];
+
+        buf
+    }
+
+    /// Build a valid Ethernet + IPv4 + TCP frame with payload data.
+    fn build_tcp_frame_with_payload(
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        src_port: u16,
+        dst_port: u16,
+        seq: u32,
+        ack: u32,
+        tcp_flags: u8,
+        window: u16,
+        tcp_options: &[u8],
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let opt_padded_len = (tcp_options.len() + 3) & !3;
+        let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
+        let data_offset = (tcp_header_len / 4) as u8;
+        let total_ip_len = (IPV4_MIN_HEADER_LEN + tcp_header_len + payload.len()) as u16;
+        let mut buf = vec![0u8; ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + tcp_header_len + payload.len()];
+
+        // Ethernet header.
+        buf[0..6].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]); // dst mac
+        buf[6..12].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]); // src mac
+        buf[12] = 0x08;
+        buf[13] = 0x00;
+
+        // IPv4 header.
+        let ip = &mut buf[ETH_HEADER_LEN..];
+        ip[0] = 0x45;
+        ip[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
+        ip[6] = 0x40;
+        ip[8] = 64;
+        ip[9] = IpProtocols::Tcp;
+        let src_bytes: [u8; 4] = src_ip.into();
+        ip[12..16].copy_from_slice(&src_bytes);
+        let dst_bytes: [u8; 4] = dst_ip.into();
+        ip[16..20].copy_from_slice(&dst_bytes);
+        let cksum = compute_ipv4_checksum(&ip[..20]);
+        ip[10] = cksum[0];
+        ip[11] = cksum[1];
+
+        // TCP header.
+        let tcp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let hdr = TcpHeader::new(
+            src_port, dst_port, seq, ack,
+            data_offset, tcp_flags, window,
+            [0, 0], 0,
+        );
+        let hdr_bytes = unsafe {
+            std::slice::from_raw_parts(&hdr as *const TcpHeader as *const u8, TCP_HEADER_LEN)
+        };
+        buf[tcp_off..tcp_off + TCP_HEADER_LEN].copy_from_slice(hdr_bytes);
+
+        // Options.
+        if !tcp_options.is_empty() {
+            buf[tcp_off + TCP_HEADER_LEN..tcp_off + TCP_HEADER_LEN + tcp_options.len()]
+                .copy_from_slice(tcp_options);
+        }
+
+        // Payload.
+        if !payload.is_empty() {
+            buf[tcp_off + tcp_header_len..tcp_off + tcp_header_len + payload.len()]
+                .copy_from_slice(payload);
+        }
+
+        // TCP checksum (covers header + payload).
         let tcp_segment = &mut buf[tcp_off..];
         let cksum = compute_tcp_checksum(&src_ip, &dst_ip, tcp_segment);
         buf[tcp_off + 16] = cksum[0];
@@ -1273,5 +1490,53 @@ mod tests {
         assert_eq!(handler.connections[0].wscale_enabled, true);
         assert_eq!(handler.connections[0].snd_wscale, 7);
         assert_eq!(handler.connections[0].rcv_wscale, DEFAULT_RCV_WSCALE);
+    }
+
+    #[test]
+    fn established_receives_in_order_data() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+        let mut tx = BasicFrameBuffer::new(16);
+
+        for i in 0..8 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete the handshake.
+        let accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        assert_eq!(handler.connections[0].state, TcpState::Established);
+
+        // Clear tx from handshake.
+        while tx.pop().is_some() {}
+
+        // Send a data segment.
+        let payload = b"Hello, TCP!";
+        let data = build_tcp_frame_with_payload(
+            REMOTE_IP, LOCAL_IP, 12345, 80,
+            1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[], payload,
+        );
+        let data_len = data.len();
+        handler.process_ipv4(Frame::new(2, leak(data), data_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        // Verify: frame returned to rx_return, ACK generated on tx.
+        assert!(rx.num_frames() >= 1, "incoming frame returned to rx_return");
+        assert_eq!(tx.num_frames(), 1, "ACK generated");
+
+        // Verify: data is in the receive ring buffer.
+        let tcb = &handler.connections[0];
+        assert_eq!(tcb.recv_buffer.available(), payload.len());
+        assert_eq!(tcb.rcv_nxt, 1001 + payload.len() as u32);
+
+        drop(accept_queue);
     }
 }
