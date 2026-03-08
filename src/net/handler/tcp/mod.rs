@@ -4,6 +4,7 @@ mod handler;
 mod inbound;
 mod isn;
 pub(crate) mod listener;
+pub(crate) mod options;
 pub(crate) mod recovery;
 pub(crate) mod ring_buffer;
 pub(crate) mod segment;

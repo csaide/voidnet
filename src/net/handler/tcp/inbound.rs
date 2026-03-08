@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 
 use super::congestion::CubicState;
 use super::handler::{INITIAL_RTO_MS, TcpHandler};
+use super::options::ParsedOptions;
 use super::recovery::{FRtoAction, FRtoState, PrrState, SackRecovery};
 use super::ring_buffer::RingBuffer;
 use super::segment::SegmentBuilder;
@@ -316,6 +317,7 @@ impl TcpHandler {
                 TcpState::Established => {
                     let payload_offset = tcp_offset + tcp_header_len;
                     let payload_len = frame.len().saturating_sub(payload_offset);
+                    let opts = ParsedOptions::parse(options);
                     self.process_established(
                         idx,
                         frame,
@@ -327,7 +329,7 @@ impl TcpHandler {
                         seg_wnd,
                         payload_offset,
                         payload_len,
-                        options,
+                        &opts,
                         ecn_bits,
                         src_mac,
                         dst_mac,
@@ -344,6 +346,7 @@ impl TcpHandler {
                 | TcpState::TimeWait => {
                     let payload_offset = tcp_offset + tcp_header_len;
                     let payload_len = frame.len().saturating_sub(payload_offset);
+                    let opts = ParsedOptions::parse(options);
                     self.process_teardown(
                         idx,
                         frame,
@@ -355,7 +358,7 @@ impl TcpHandler {
                         seg_wnd,
                         payload_offset,
                         payload_len,
-                        options,
+                        &opts,
                         src_mac,
                         dst_mac,
                         free_frames,
@@ -965,7 +968,7 @@ impl TcpHandler {
         seg_wnd: u32,
         payload_offset: usize,
         payload_len: usize,
-        options: &[u8],
+        opts: &ParsedOptions,
         ecn_bits: u8,
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
@@ -995,7 +998,7 @@ impl TcpHandler {
 
         // PAWS check (RFC 7323 §5).
         if self.connections[idx].ts_enabled
-            && let Some((tsval, _)) = parse_timestamp(options)
+            && let Some((tsval, _)) = opts.timestamp
         {
             let tcb = &self.connections[idx];
             // Check if TSval is older than ts_recent.
@@ -1135,7 +1138,7 @@ impl TcpHandler {
         {
             let tcb = &mut self.connections[idx];
             if tcb.ts_enabled
-                && let Some((tsval, _)) = parse_timestamp(options)
+                && let Some((tsval, _)) = opts.timestamp
             {
                 tcb.ts_recent = tsval;
                 tcb.ts_recent_age = now;
@@ -1200,7 +1203,7 @@ impl TcpHandler {
                 // RTT measurement.
                 if tcb.ts_enabled {
                     // RTTM via timestamps (RFC 7323).
-                    if let Some((_tsval, tsecr)) = parse_timestamp(options)
+                    if let Some((_tsval, tsecr)) = opts.timestamp
                         && tsecr != 0
                     {
                         let our_ts = tsval;
@@ -1256,7 +1259,7 @@ impl TcpHandler {
 
                 // Parse and merge SACK blocks into scoreboard.
                 if tcb.sack_enabled {
-                    let (blocks, count) = crate::net::wire::tcp::parse_sack_blocks(options);
+                    let (blocks, count) = opts.sack_blocks;
                     for (left, right) in blocks.iter().take(count).flatten() {
                         tcb.sack_scoreboard.insert(*left, right.wrapping_sub(*left));
                     }
@@ -1323,7 +1326,7 @@ impl TcpHandler {
 
                 // Parse SACK blocks on duplicate ACKs too.
                 if tcb.sack_enabled {
-                    let (blocks, count) = crate::net::wire::tcp::parse_sack_blocks(options);
+                    let (blocks, count) = opts.sack_blocks;
                     for (left, right) in blocks.iter().take(count).flatten() {
                         tcb.sack_scoreboard.insert(*left, right.wrapping_sub(*left));
                     }
@@ -1526,7 +1529,7 @@ impl TcpHandler {
         seg_wnd: u32,
         payload_offset: usize,
         payload_len: usize,
-        options: &[u8],
+        opts: &ParsedOptions,
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
         free_frames: &mut impl FrameBuffer<'umem>,
@@ -1537,7 +1540,7 @@ impl TcpHandler {
 
         // PAWS check (RFC 7323 §5).
         if self.connections[idx].ts_enabled
-            && let Some((tsval, _)) = parse_timestamp(options)
+            && let Some((tsval, _)) = opts.timestamp
         {
             let tcb = &self.connections[idx];
             let ts_diff = tsval.wrapping_sub(tcb.ts_recent) as i32;
