@@ -339,6 +339,7 @@ pub(super) fn active_open_handshake(
             80,
             src_mac,
             dst_mac,
+            coarsetime::Instant::now(),
             free,
             tx,
         )
@@ -398,6 +399,7 @@ pub(super) fn active_open_handshake_with_config(
             80,
             src_mac,
             dst_mac,
+            coarsetime::Instant::now(),
             config,
             free,
             tx,

@@ -251,6 +251,7 @@ fn simultaneous_open_both_reach_established() {
             port_b,
             mac_a,
             mac_b,
+            coarsetime::Instant::now(),
             &mut free_a,
             &mut tx,
         )
@@ -266,6 +267,7 @@ fn simultaneous_open_both_reach_established() {
             port_a,
             mac_b,
             mac_a,
+            coarsetime::Instant::now(),
             &mut free_b,
             &mut tx,
         )

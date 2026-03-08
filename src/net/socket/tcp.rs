@@ -183,11 +183,12 @@ impl TcpStream {
         with_runtime_context(|ctx| {
             let handler = unsafe { &mut *ctx.tcp_handler.get() };
             let neighbor_handler = &*ctx.neighbor_handler;
+            let now = Instant::now();
 
             // Resolve MACs for the outbound SYN.
             let src_mac = neighbor_handler.local_mac();
             let dst_mac = neighbor_handler
-                .lookup(Instant::now(), &remote_addr)
+                .lookup(now, &remote_addr)
                 .unwrap_or(MacAddress::broadcast());
 
             let mut free_frames = ctx.free_frames.clone();
@@ -201,6 +202,7 @@ impl TcpStream {
                     remote_port,
                     src_mac,
                     dst_mac,
+                    now,
                     &mut free_frames,
                     &mut tx_return,
                 )
@@ -237,11 +239,12 @@ impl TcpStream {
         with_runtime_context(|ctx| {
             let handler = unsafe { &mut *ctx.tcp_handler.get() };
             let neighbor_handler = &*ctx.neighbor_handler;
+            let now = Instant::now();
 
             // Resolve MACs for the outbound SYN.
             let src_mac = neighbor_handler.local_mac();
             let dst_mac = neighbor_handler
-                .lookup(Instant::now(), &remote_addr)
+                .lookup(now, &remote_addr)
                 .unwrap_or(MacAddress::broadcast());
 
             let mut free_frames = ctx.free_frames.clone();
@@ -255,6 +258,7 @@ impl TcpStream {
                     remote_port,
                     src_mac,
                     dst_mac,
+                    now,
                     config,
                     &mut free_frames,
                     &mut tx_return,
