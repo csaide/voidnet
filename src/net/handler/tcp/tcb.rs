@@ -137,75 +137,90 @@ impl Default for TcpConfig {
 }
 
 /// Transmission Control Block — per-connection state.
+///
+/// Fields are ordered by access frequency to maximize L1d cache locality.
+/// Hot fields (accessed every packet) are packed into the first 1-2 cache lines.
 pub struct Tcb {
-    pub id: ConnectionId,
-    pub state: TcpState,
-    /// True if this connection originated from a passive open (LISTEN).
-    pub from_passive_open: bool,
+    // === HOT: accessed every packet ===
 
-    // --- Send sequence space ---
-    /// Initial send sequence number.
-    pub iss: u32,
-    /// Oldest unacknowledged sequence number.
-    pub snd_una: u32,
-    /// Next sequence number to send.
-    pub snd_nxt: u32,
-    /// Send window.
-    pub snd_wnd: u32,
-    /// Segment sequence number used for last window update.
-    pub snd_wl1: u32,
-    /// Segment acknowledgment number used for last window update.
-    pub snd_wl2: u32,
-
-    // --- Receive sequence space ---
-    /// Initial receive sequence number.
-    pub irs: u32,
     /// Next sequence number expected on incoming segments.
     pub rcv_nxt: u32,
-    /// Receive window.
-    pub rcv_wnd: u32,
-
-    // --- MSS negotiation ---
-    /// MSS advertised by the remote peer.
-    pub snd_mss: u16,
-    /// MSS we advertise to the remote peer.
-    pub rcv_mss: u16,
+    /// Next sequence number to send.
+    pub snd_nxt: u32,
+    /// Oldest unacknowledged sequence number.
+    pub snd_una: u32,
+    /// Send window.
+    pub snd_wnd: u32,
+    pub state: TcpState,
+    /// True when an ACK is owed but deferred.
+    pub ack_pending: bool,
+    /// Count of consecutive unACKed segments (flush at MAX_DELAYED_ACK_COUNT).
+    pub ack_delay_count: u8,
+    /// Whether timestamps were negotiated.
+    pub ts_enabled: bool,
+    /// Whether SACK was negotiated.
+    pub sack_enabled: bool,
+    /// Whether ECN was negotiated for this connection.
+    pub ecn_enabled: bool,
+    /// True when a CE-marked segment has been received and needs to be echoed.
+    pub ecn_ce_received: bool,
+    /// Whether window scaling is enabled for this connection.
+    pub wscale_enabled: bool,
     /// Effective send MSS (min of snd_mss and path MTU constraints).
     pub eff_snd_mss: u16,
-
-    // --- Window scale ---
     /// Send window scale factor (shift count from remote).
     pub snd_wscale: u8,
     /// Receive window scale factor (our shift count).
     pub rcv_wscale: u8,
-    /// Whether window scaling is enabled for this connection.
-    pub wscale_enabled: bool,
+    /// MSS we advertise to the remote peer.
+    pub rcv_mss: u16,
+    /// When true, the Nagle algorithm gates small sends. Disabled by TCP_NODELAY.
+    pub nagle_enabled: bool,
+    /// True if this connection originated from a passive open (LISTEN).
+    pub from_passive_open: bool,
 
-    // --- Retransmission ---
-    /// Deadline for retransmitting unacknowledged SYN or SYN-ACK.
-    pub retransmit_deadline: Option<Instant>,
-    /// Exponential backoff counter for retransmissions.
-    pub rto_backoff: u8,
+    // === WARM: accessed most packets (data transfer) ===
 
-    // --- Event notification ---
-    /// Queue for delivering events to user-facing socket.
-    pub event_queue: LocalQueue<TcpEvent>,
-
-    // --- Data transfer buffers ---
+    pub id: ConnectionId,
     /// Send ring buffer — user data is copied in, segments built from here.
     pub send_buffer: RingBuffer,
     /// Receive ring buffer — incoming payload copied here, user reads from here.
     pub recv_buffer: RingBuffer,
-    /// Out-of-order receive ranges: seq -> byte_length (metadata only).
-    pub ooo_ranges: BTreeMap<u32, u32>,
+    /// Most recent TSval received from peer.
+    pub ts_recent: u32,
+    /// Deadline for sending the deferred ACK.
+    pub delayed_ack_deadline: Option<Instant>,
+    /// Delayed ACK timeout in milliseconds.
+    pub delayed_ack_ms: u64,
 
-    // --- Congestion control ---
+    // === ACK processing ===
+
+    /// Segment sequence number used for last window update.
+    pub snd_wl1: u32,
+    /// Segment acknowledgment number used for last window update.
+    pub snd_wl2: u32,
+    /// Largest send window ever advertised by peer (for sender SWS).
+    pub max_snd_wnd: u32,
+    /// Right edge of last advertised receive window (rcv_nxt + wnd at ACK time).
+    pub last_advertised_right_edge: u32,
+    /// Initial send sequence number.
+    pub iss: u32,
+    /// Initial receive sequence number.
+    pub irs: u32,
+    /// Receive window.
+    pub rcv_wnd: u32,
+    /// MSS advertised by the remote peer.
+    pub snd_mss: u16,
+
+    // === Congestion/recovery ===
+
     pub cubic: CubicState,
     pub recovery: SackRecovery,
     pub prr: PrrState,
     pub frto: FRtoState,
 
-    // --- RTT estimation (RFC 6298) ---
+    // === RTT estimation (RFC 6298) ===
+
     /// Smoothed RTT in milliseconds.
     pub srtt: Option<u64>,
     /// RTT variance in milliseconds.
@@ -214,8 +229,25 @@ pub struct Tcb {
     pub rto: u64,
     /// Timestamp of last data segment sent (for RTT measurement).
     pub last_send_time: Option<Instant>,
+    /// When ts_recent was last updated.
+    pub ts_recent_age: Instant,
+    /// Base instant for deriving our monotonic timestamp clock.
+    pub ts_offset: Instant,
 
-    // --- Connection teardown ---
+    // === COLD: rarely accessed ===
+
+    /// Deadline for retransmitting unacknowledged SYN or SYN-ACK.
+    pub retransmit_deadline: Option<Instant>,
+    /// Exponential backoff counter for retransmissions.
+    pub rto_backoff: u8,
+    /// Queue for delivering events to user-facing socket.
+    pub event_queue: LocalQueue<TcpEvent>,
+    /// Out-of-order receive ranges: seq -> byte_length (metadata only).
+    pub ooo_ranges: BTreeMap<u32, u32>,
+    /// Scoreboard: byte ranges the peer has confirmed receiving (left_edge -> right_edge).
+    pub sack_scoreboard: BTreeMap<u32, u32>,
+    /// True when CWR has been sent and is awaiting acknowledgment.
+    pub ecn_cwr_sent: bool,
     /// True when a FIN needs to be sent.
     pub pending_fin: bool,
     /// Sequence number of our FIN (set when FIN is sent).
@@ -224,68 +256,18 @@ pub struct Tcb {
     pub time_wait_deadline: Option<Instant>,
     /// Duration to remain in TIME-WAIT state in milliseconds.
     pub time_wait_duration: u64,
-
-    // --- Delayed ACK ---
-    /// True when an ACK is owed but deferred.
-    pub ack_pending: bool,
-    /// Deadline for sending the deferred ACK.
-    pub delayed_ack_deadline: Option<Instant>,
-    /// Count of consecutive unACKed segments (flush at MAX_DELAYED_ACK_COUNT).
-    pub ack_delay_count: u8,
-    /// Delayed ACK timeout in milliseconds.
-    pub delayed_ack_ms: u64,
-
-    // --- Nagle algorithm ---
-    /// When true, the Nagle algorithm gates small sends. Disabled by TCP_NODELAY.
-    pub nagle_enabled: bool,
-
-    // --- Keep-alive ---
+    /// Deadline for next zero-window probe.
+    pub persist_deadline: Option<Instant>,
+    /// Exponential backoff counter for persist probes (cap at 6).
+    pub persist_backoff: u8,
     pub keep_alive_enabled: bool,
     pub keep_alive_idle_ms: u64,
     pub keep_alive_interval_ms: u64,
     pub keep_alive_count: u8,
     pub last_activity: Instant,
     pub keep_alive_probes_sent: u8,
-
-    // --- Linger ---
     pub linger: Option<u64>,
     pub linger_deadline: Option<Instant>,
-
-    // --- Timestamps (RFC 7323) ---
-    /// Whether timestamps were negotiated.
-    pub ts_enabled: bool,
-    /// Most recent TSval received from peer.
-    pub ts_recent: u32,
-    /// When ts_recent was last updated.
-    pub ts_recent_age: Instant,
-    /// Base instant for deriving our monotonic timestamp clock.
-    pub ts_offset: Instant,
-
-    // --- SACK ---
-    /// Whether SACK was negotiated.
-    pub sack_enabled: bool,
-    /// Scoreboard: byte ranges the peer has confirmed receiving (left_edge -> right_edge).
-    pub sack_scoreboard: BTreeMap<u32, u32>,
-
-    // --- ECN (RFC 3168) ---
-    /// Whether ECN was negotiated for this connection.
-    pub ecn_enabled: bool,
-    /// True when a CE-marked segment has been received and needs to be echoed.
-    pub ecn_ce_received: bool,
-    /// True when CWR has been sent and is awaiting acknowledgment.
-    pub ecn_cwr_sent: bool,
-
-    // --- Zero-window probing ---
-    /// Deadline for next zero-window probe.
-    pub persist_deadline: Option<Instant>,
-    /// Exponential backoff counter for persist probes (cap at 6).
-    pub persist_backoff: u8,
-
-    // --- SWS avoidance ---
-    /// Largest send window ever advertised by peer (for sender SWS).
-    pub max_snd_wnd: u32,
-    /// Right edge of last advertised receive window (rcv_nxt + wnd at ACK time).
-    pub last_advertised_right_edge: u32,
 }
 
 impl Tcb {
