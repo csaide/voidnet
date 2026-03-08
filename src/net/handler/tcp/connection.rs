@@ -9,7 +9,7 @@ use crate::net::wire::ip::IpAddress;
 use crate::xdp::frame::FrameBuffer;
 
 use super::TcpHandler;
-use super::INITIAL_RTO_MS;
+use super::handler::INITIAL_RTO_MS;
 use super::congestion::CubicState;
 use super::recovery::{FRtoState, PrrState, SackRecovery};
 use super::ring_buffer::RingBuffer;

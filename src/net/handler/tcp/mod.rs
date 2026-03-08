@@ -1,5 +1,6 @@
 pub(crate) mod congestion;
 mod connection;
+mod handler;
 mod isn;
 pub(crate) mod listener;
 pub(crate) mod recovery;
@@ -9,6 +10,8 @@ pub(crate) mod state;
 pub(crate) mod tcb;
 mod timers;
 mod transmit;
+
+pub use handler::TcpHandler;
 
 use coarsetime::Instant;
 
@@ -32,7 +35,7 @@ use crate::{
 use std::collections::BTreeMap;
 
 use congestion::CubicState;
-use isn::IsnGenerator;
+use handler::INITIAL_RTO_MS;
 use recovery::{FRtoAction, FRtoState, PrrState, SackRecovery};
 use ring_buffer::RingBuffer;
 use segment::SegmentBuilder;
@@ -41,12 +44,6 @@ use tcb::{
     ConnectionId, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE, MAX_DELAYED_ACK_COUNT,
     TS_OPTION_LEN, Tcb, TcpEvent,
 };
-
-/// Initial RTO for SYN retransmission (1 second in coarsetime ticks).
-const INITIAL_RTO_MS: u64 = 1000;
-
-/// R2 threshold for SYN retransmission (~3 minutes per MUST-23).
-const SYN_R2_THRESHOLD_MS: u64 = 180_000;
 
 /// Check segment acceptability per RFC 9293 §3.10.7.4.
 #[inline]
@@ -69,29 +66,7 @@ fn is_segment_acceptable(seg_seq: u32, seg_len: u32, rcv_nxt: u32, rcv_wnd: u32)
     }
 }
 
-/// TCP protocol handler.
-///
-/// Manages the connection table, listener table, and dispatches
-/// incoming TCP segments through the appropriate state machine.
-pub struct TcpHandler {
-    connections: Vec<Tcb>,
-    listeners: Vec<listener::ListenEntry>,
-    isn_generator: IsnGenerator,
-    rx_offload: bool,
-    tx_offload: bool,
-}
-
 impl TcpHandler {
-    pub fn new(rx_offload: bool, tx_offload: bool) -> Self {
-        Self {
-            connections: Vec::new(),
-            listeners: Vec::new(),
-            isn_generator: IsnGenerator::new(),
-            rx_offload,
-            tx_offload,
-        }
-    }
-
     // --- Segment processing ---
 
     /// Process an incoming IPv4 TCP segment.
@@ -1640,51 +1615,6 @@ impl TcpHandler {
     }
 
     // --- Connection teardown ---
-
-    /// Mark a connection for graceful close. Sets `pending_fin` so that
-    /// `poll_send` will drain remaining data and then send FIN.
-    /// Get a reference to the connection for a given ConnectionId.
-    pub fn get_connection(&self, id: &ConnectionId) -> Option<&Tcb> {
-        self.connections.iter().find(|c| c.id == *id)
-    }
-
-    /// Get a mutable reference to the connection for a given ConnectionId.
-    pub fn get_connection_mut(&mut self, id: &ConnectionId) -> Option<&mut Tcb> {
-        self.connections.iter_mut().find(|c| c.id == *id)
-    }
-
-    /// Remove a connection by ConnectionId (used by TcpStream::close).
-    pub fn remove_connection<'umem>(
-        &mut self,
-        id: &ConnectionId,
-        src_mac: crate::net::wire::ethernet::MacAddress,
-        dst_mac: crate::net::wire::ethernet::MacAddress,
-        free_frames: &mut impl FrameBuffer<'umem>,
-        tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
-        if let Some(idx) = self.connections.iter().position(|c| c.id == *id) {
-            let tcb = &self.connections[idx];
-            // Send RST for now (proper FIN sequence deferred).
-            if tcb.state.is_synchronized() || tcb.state == TcpState::SynReceived {
-                SegmentBuilder::build_rst(
-                    id.local_addr,
-                    id.remote_addr,
-                    id.local_port,
-                    id.remote_port,
-                    0,
-                    0,
-                    flags::ACK,
-                    0,
-                    src_mac,
-                    dst_mac,
-                    self.tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            self.connections.remove(idx);
-        }
-    }
 
     // --- Teardown state processing (FinWait1, FinWait2, CloseWait, Closing, LastAck, TimeWait) ---
 

@@ -12,7 +12,7 @@ use super::{
     segment::SegmentBuilder,
     state::TcpState,
     tcb::{DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE, TcpEvent},
-    TcpHandler, INITIAL_RTO_MS, SYN_R2_THRESHOLD_MS,
+    TcpHandler, handler::{INITIAL_RTO_MS, SYN_R2_THRESHOLD_MS},
 };
 
 impl TcpHandler {
