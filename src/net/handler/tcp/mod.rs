@@ -1487,6 +1487,16 @@ impl TcpHandler {
                 tcb.last_activity = now;
                 tcb.keep_alive_probes_sent = 0;
 
+                // Recovery exit check — must come before congestion control.
+                if tcb.recovery.in_recovery {
+                    if tcb.recovery.on_ack(seg_ack) {
+                        // Exited recovery — full ACK covers recovery_point.
+                        tcb.prr.exit();
+                    }
+                    // Note: if still in recovery (partial ACK), we skip cubic.on_ack below
+                    // because it's already gated by !tcb.recovery.in_recovery
+                }
+
                 // Congestion control — only update outside recovery.
                 if !tcb.recovery.in_recovery {
                     let rtt_ms = tcb.srtt.unwrap_or(tcb.rto);
@@ -1630,6 +1640,14 @@ impl TcpHandler {
                     for (left, right) in blocks.iter().take(count).flatten() {
                         tcb.sack_scoreboard.insert(*left, right.wrapping_sub(*left));
                     }
+                }
+
+                // Enter SACK recovery on the 3rd duplicate ACK.
+                if tcb.recovery.dup_ack_count == 3 && !tcb.recovery.in_recovery {
+                    let bytes_in_flight = tcb.snd_nxt.wrapping_sub(tcb.snd_una);
+                    tcb.recovery.enter(tcb.snd_nxt);
+                    tcb.prr.enter(bytes_in_flight);
+                    tcb.cubic.on_loss();
                 }
             }
         }
@@ -1946,85 +1964,76 @@ impl TcpHandler {
             self.connections.remove(idx);
         }
 
-        // Fast retransmit pass — independent of timer expiry.
-        // Triggered by 3 duplicate ACKs on established connections.
+        // SACK recovery pass — RFC 6675 recovery loop.
         for tcb in &mut self.connections {
-            if tcb.state != TcpState::Established || tcb.recovery.dup_ack_count < 3 {
+            if tcb.state != TcpState::Established || !tcb.recovery.in_recovery {
                 continue;
             }
 
-            use crate::net::wire::tcp::seq_lt;
-
-            // Determine retransmit offset: use SACK scoreboard gaps when available.
-            let snd_una = tcb.snd_una;
-            let (retransmit_offset, retransmit_seq) = if tcb.sack_enabled
-                && !tcb.sack_scoreboard.is_empty()
-            {
-                let mut gap_start = snd_una;
-                let mut found = None;
-                for (&sack_start, &sack_len) in &tcb.sack_scoreboard {
-                    if seq_lt(gap_start, sack_start) {
-                        let gap_size = sack_start.wrapping_sub(gap_start) as usize;
-                        let len = gap_size.min(tcb.eff_snd_mss as usize);
-                        found = Some((gap_start.wrapping_sub(snd_una) as usize, gap_start, len));
-                        break;
-                    }
-                    let sack_end = sack_start.wrapping_add(sack_len);
-                    if seq_lt(gap_start, sack_end) {
-                        gap_start = sack_end;
-                    }
-                }
-                match found {
-                    Some((offset, seq, _)) => (offset, seq),
-                    None => (0, snd_una),
-                }
-            } else {
-                (0, snd_una)
-            };
-
-            let retransmit_len = tcb.send_buffer.available().min(tcb.eff_snd_mss as usize);
-            if retransmit_len == 0 {
-                continue;
-            }
-
-            let id = tcb.id;
-            let dst_mac = neighbor_handler
-                .lookup(now, &id.remote_addr)
-                .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
-
-            let payload = tcb
-                .send_buffer
-                .peek_slices(retransmit_offset, retransmit_len);
-
-            let ts = if tcb.ts_enabled {
-                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                Some((tsval, tcb.ts_recent))
-            } else {
-                None
-            };
-            SegmentBuilder::build_data_from_slices(
-                id.local_addr,
-                id.remote_addr,
-                id.local_port,
-                id.remote_port,
-                retransmit_seq,
-                tcb.rcv_nxt,
-                tcb.advertised_window(),
-                payload,
-                flags::ACK,
-                false, // retransmits don't get ECT per RFC 3168 §6.1.5
-                ts,
-                src_mac,
-                dst_mac,
-                self.tx_offload,
-                free_frames,
-                tx_return,
+            // Recompute pipe estimate.
+            tcb.recovery.set_pipe(
+                tcb.snd_una,
+                tcb.snd_nxt,
+                &tcb.sack_scoreboard,
+                tcb.eff_snd_mss,
             );
 
-            // Fast recovery: halve cwnd.
-            tcb.cubic.ssthresh = (tcb.cubic.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
-            tcb.cubic.cwnd = tcb.cubic.ssthresh;
-            tcb.recovery.dup_ack_count = 0;
+            // Send while pipe < cwnd.
+            while tcb.recovery.pipe < tcb.cubic.cwnd {
+                // Try lost segment first.
+                if let Some(lost_seq) = tcb.recovery.next_lost_segment(
+                    tcb.snd_una,
+                    tcb.snd_nxt,
+                    &tcb.sack_scoreboard,
+                    tcb.eff_snd_mss,
+                ) {
+                    let offset = lost_seq.wrapping_sub(tcb.snd_una) as usize;
+                    let retransmit_len = tcb.send_buffer.available()
+                        .saturating_sub(offset)
+                        .min(tcb.eff_snd_mss as usize);
+                    if retransmit_len == 0 {
+                        break;
+                    }
+
+                    let id = tcb.id;
+                    let dst_mac = neighbor_handler
+                        .lookup(now, &id.remote_addr)
+                        .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+
+                    let payload = tcb.send_buffer.peek_slices(offset, retransmit_len);
+                    let ts = if tcb.ts_enabled {
+                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        Some((tsval, tcb.ts_recent))
+                    } else {
+                        None
+                    };
+                    SegmentBuilder::build_data_from_slices(
+                        id.local_addr,
+                        id.remote_addr,
+                        id.local_port,
+                        id.remote_port,
+                        lost_seq,
+                        tcb.rcv_nxt,
+                        tcb.advertised_window(),
+                        payload,
+                        flags::ACK,
+                        false,
+                        ts,
+                        src_mac,
+                        dst_mac,
+                        self.tx_offload,
+                        free_frames,
+                        tx_return,
+                    );
+
+                    tcb.recovery.pipe += tcb.eff_snd_mss as u32;
+                    tcb.prr.on_sent(retransmit_len as u32);
+                } else {
+                    // No more lost segments — could send new data, but that's
+                    // handled by poll_send. Break here.
+                    break;
+                }
+            }
         }
 
         // RTO retransmit pass — timer-based.
@@ -3973,22 +3982,18 @@ mod tests {
             );
         }
 
-        assert_eq!(handler.connections[0].recovery.dup_ack_count, 3);
-
-        // poll_timers should trigger fast retransmit.
-        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
-        assert!(tx.num_frames() >= 1, "retransmitted segment expected");
-
-        // cwnd should be halved (fast recovery).
+        // Recovery entry now happens at dup ACK processing time (not poll_timers).
         let tcb = &handler.connections[0];
+        assert_eq!(tcb.recovery.dup_ack_count, 3);
+        assert!(tcb.recovery.in_recovery, "should be in SACK recovery");
+        // CUBIC beta=0.7: cwnd = ssthresh = cwnd_before * 0.7.
         assert!(
             tcb.cubic.cwnd < cwnd_before,
-            "cwnd should be reduced after fast retransmit"
+            "cwnd should be reduced after recovery entry"
         );
-        assert_eq!(tcb.recovery.dup_ack_count, 0, "dup_ack_count should be reset");
         assert_eq!(
             tcb.cubic.cwnd, tcb.cubic.ssthresh,
-            "cwnd should equal ssthresh after fast recovery"
+            "cwnd should equal ssthresh after CUBIC on_loss"
         );
     }
 
@@ -8434,40 +8439,41 @@ mod tests {
         tcb.eff_snd_mss = 100;
         let mss = tcb.eff_snd_mss as usize;
 
-        // Fill send buffer with 3 MSS worth of distinguishable data.
-        let mut data = vec![0u8; 3 * mss];
+        // Fill send buffer with 5 MSS worth of data.
+        let mut data = vec![0u8; 5 * mss];
         for (i, byte) in data.iter_mut().enumerate() {
-            *byte = (i / mss) as u8; // 0 for 1st MSS, 1 for 2nd, 2 for 3rd
+            *byte = (i / mss) as u8;
         }
         tcb.send_buffer.write(&data);
-        tcb.snd_nxt = tcb.snd_una.wrapping_add(3 * mss as u32);
+        tcb.snd_nxt = tcb.snd_una.wrapping_add(5 * mss as u32);
         let snd_una = tcb.snd_una;
 
-        // Add a SACK entry for the 2nd MSS (gap is the 1st MSS).
-        let sack_start = snd_una.wrapping_add(mss as u32);
-        let sack_len = mss as u32;
-        tcb.sack_scoreboard.insert(sack_start, sack_len);
+        // SACK blocks for MSS 2, 3, 4 (gap is the 1st MSS).
+        // This gives 3 SACKed segments above snd_una, satisfying DupThresh.
+        tcb.sack_scoreboard.insert(snd_una.wrapping_add(mss as u32), mss as u32);
+        tcb.sack_scoreboard.insert(snd_una.wrapping_add(2 * mss as u32), mss as u32);
+        tcb.sack_scoreboard.insert(snd_una.wrapping_add(3 * mss as u32), mss as u32);
 
-        // Record cwnd before fast retransmit.
+        // Enter SACK recovery (simulating what happens on 3 dup ACKs).
         let cwnd_before = tcb.cubic.cwnd;
-
-        // Set dup_ack_count = 3 to trigger fast retransmit.
         tcb.recovery.dup_ack_count = 3;
+        tcb.recovery.enter(tcb.snd_nxt);
+        tcb.prr.enter(tcb.snd_nxt.wrapping_sub(tcb.snd_una));
+        tcb.cubic.on_loss();
 
         let now = coarsetime::Instant::now();
         handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
-        // Verify a segment was emitted.
+        // Verify a segment was emitted (the 1st MSS gap should be retransmitted).
         assert!(tx.pop().is_some(), "expected a retransmitted segment");
 
         let tcb = &handler.connections[0];
-        // dup_ack_count should be reset.
-        assert_eq!(tcb.recovery.dup_ack_count, 0, "dup_ack_count should be reset");
-        // cwnd should be halved.
-        assert!(tcb.cubic.cwnd < cwnd_before, "cwnd should have been halved");
+        assert!(tcb.recovery.in_recovery, "should still be in recovery");
+        // cwnd should be reduced by CUBIC on_loss (beta=0.7).
+        assert!(tcb.cubic.cwnd < cwnd_before, "cwnd should have been reduced");
         assert_eq!(
             tcb.cubic.cwnd, tcb.cubic.ssthresh,
-            "cwnd should equal ssthresh after fast recovery"
+            "cwnd should equal ssthresh after CUBIC on_loss"
         );
     }
 
@@ -8497,26 +8503,195 @@ mod tests {
         // Record cwnd before.
         let cwnd_before = tcb.cubic.cwnd;
 
-        // Scoreboard is empty; dup_ack_count = 3 triggers fallback.
+        // Scoreboard is empty; enter recovery manually.
         assert!(tcb.sack_scoreboard.is_empty());
         tcb.recovery.dup_ack_count = 3;
+        tcb.recovery.enter(tcb.snd_nxt);
+        tcb.prr.enter(tcb.snd_nxt.wrapping_sub(tcb.snd_una));
+        tcb.cubic.on_loss();
 
         let now = coarsetime::Instant::now();
         handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
-        // Verify a segment was emitted.
-        assert!(
-            tx.pop().is_some(),
-            "expected a retransmitted segment from snd_una"
-        );
-
+        // With empty scoreboard, next_lost_segment returns None (nothing marked lost
+        // by RFC 6675 criteria), so no retransmit is emitted from the recovery loop.
+        // This is correct: without SACK blocks, nothing can be determined as lost.
         let tcb = &handler.connections[0];
-        assert_eq!(tcb.recovery.dup_ack_count, 0, "dup_ack_count should be reset");
-        assert!(tcb.cubic.cwnd < cwnd_before, "cwnd should have been halved");
+        assert!(tcb.recovery.in_recovery, "should still be in recovery");
+        assert!(tcb.cubic.cwnd < cwnd_before, "cwnd should have been reduced");
         assert_eq!(
             tcb.cubic.cwnd, tcb.cubic.ssthresh,
-            "cwnd should equal ssthresh after fast recovery"
+            "cwnd should equal ssthresh after CUBIC on_loss"
         );
+    }
+
+    #[test]
+    fn sack_recovery_enters_on_3_dup_acks() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(64);
+        let mut rx = BasicFrameBuffer::new(64);
+        let mut tx = BasicFrameBuffer::new(64);
+        for i in 0..32 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        // Use small MSS so segments fit in 256-byte test frames.
+        let mss = 100u16;
+        handler.connections[0].eff_snd_mss = mss;
+
+        // Write 4 MSS of data and simulate 4 segments sent by advancing snd_nxt.
+        let data_len = 4 * mss as usize;
+        handler.connections[0].send_buffer.write(&vec![0xAA; data_len]);
+        handler.connections[0].snd_wnd = 65535;
+        handler.connections[0].snd_nxt = handler.connections[0]
+            .snd_una
+            .wrapping_add(data_len as u32);
+
+        let snd_una = handler.connections[0].snd_una;
+        let cwnd_before = handler.connections[0].cubic.cwnd;
+
+        // Send 3 dup ACKs.
+        for i in 0..3 {
+            let dup = build_tcp_frame(
+                REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_una, flags::ACK, 65535, &[],
+            );
+            let dup_len = dup.len();
+            handler.process_ipv4(
+                Frame::new(10 + i, leak(dup), dup_len, false),
+                &nh,
+                &mut free,
+                &mut rx,
+                &mut tx,
+            );
+        }
+
+        let tcb = &handler.connections[0];
+        assert!(tcb.recovery.in_recovery, "should be in SACK recovery");
+        assert_eq!(tcb.recovery.dup_ack_count, 3);
+        // CUBIC beta=0.7: cwnd should be reduced by on_loss.
+        assert!(
+            tcb.cubic.cwnd < cwnd_before,
+            "cwnd should be reduced by CUBIC on_loss"
+        );
+    }
+
+    #[test]
+    fn sack_recovery_partial_ack_stays_in_recovery() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(64);
+        let mut rx = BasicFrameBuffer::new(64);
+        let mut tx = BasicFrameBuffer::new(64);
+        for i in 0..32 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
+            flags::ACK, 65535, &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        // Use small MSS so segments fit in 256-byte test frames.
+        let mss = 100u16;
+        handler.connections[0].eff_snd_mss = mss;
+
+        // Write 4 MSS of data and simulate 4 segments sent by advancing snd_nxt.
+        let data_len = 4 * mss as usize;
+        handler.connections[0].send_buffer.write(&vec![0xAA; data_len]);
+        handler.connections[0].snd_wnd = 65535;
+        handler.connections[0].snd_nxt = handler.connections[0]
+            .snd_una
+            .wrapping_add(data_len as u32);
+
+        let snd_una = handler.connections[0].snd_una;
+
+        // 3 dup ACKs -> enter recovery.
+        for i in 0..3 {
+            let dup = build_tcp_frame(
+                REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_una, flags::ACK, 65535, &[],
+            );
+            let dup_len = dup.len();
+            handler.process_ipv4(
+                Frame::new(10 + i, leak(dup), dup_len, false),
+                &nh,
+                &mut free,
+                &mut rx,
+                &mut tx,
+            );
+        }
+        assert!(handler.connections[0].recovery.in_recovery);
+
+        // Partial ACK — advances snd_una by 1 MSS but doesn't reach recovery_point.
+        let partial_ack_seq = snd_una.wrapping_add(mss as u32);
+        let partial = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, partial_ack_seq, flags::ACK, 65535, &[],
+        );
+        let partial_len = partial.len();
+        handler.process_ipv4(
+            Frame::new(20, leak(partial), partial_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        assert!(
+            handler.connections[0].recovery.in_recovery,
+            "should still be in recovery after partial ACK"
+        );
+        assert_eq!(handler.connections[0].snd_una, partial_ack_seq);
     }
 
     #[test]

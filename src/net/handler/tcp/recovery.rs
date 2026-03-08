@@ -25,7 +25,8 @@ impl SackRecovery {
     pub fn enter(&mut self, snd_nxt: u32) {
         self.in_recovery = true;
         self.recovery_point = snd_nxt;
-        self.dup_ack_count = 0;
+        // dup_ack_count intentionally NOT reset here — it stays at 3+
+        // during recovery and is reset on exit().
     }
 
     /// Exit recovery, reset state.
