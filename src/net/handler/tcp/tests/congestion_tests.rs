@@ -27,6 +27,7 @@ fn cubic_slow_start_on_new_ack() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -47,6 +48,7 @@ fn cubic_slow_start_on_new_ack() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -80,6 +82,7 @@ fn cubic_slow_start_on_new_ack() {
     let ack_len = ack.len();
     handler.process_ipv4(
         Frame::new(2, leak(ack), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -122,6 +125,7 @@ fn frto_restores_cwnd_on_spurious_rto() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -142,6 +146,7 @@ fn frto_restores_cwnd_on_spurious_rto() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -195,6 +200,7 @@ fn frto_restores_cwnd_on_spurious_rto() {
     let ack1_len = ack1.len();
     handler.process_ipv4(
         Frame::new(10, leak(ack1), ack1_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -223,6 +229,7 @@ fn frto_restores_cwnd_on_spurious_rto() {
     let ack2_len = ack2.len();
     handler.process_ipv4(
         Frame::new(11, leak(ack2), ack2_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,

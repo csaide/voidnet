@@ -28,6 +28,7 @@ fn delayed_ack_defers_ack_for_in_order_data() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -48,6 +49,7 @@ fn delayed_ack_defers_ack_for_in_order_data() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -72,6 +74,7 @@ fn delayed_ack_defers_ack_for_in_order_data() {
     let data_len = data.len();
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -117,6 +120,7 @@ fn delayed_ack_flushes_on_second_segment() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -137,6 +141,7 @@ fn delayed_ack_flushes_on_second_segment() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -160,6 +165,7 @@ fn delayed_ack_flushes_on_second_segment() {
     let seg1_len = seg1.len();
     handler.process_ipv4(
         Frame::new(2, leak(seg1), seg1_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -183,6 +189,7 @@ fn delayed_ack_flushes_on_second_segment() {
     let seg2_len = seg2.len();
     handler.process_ipv4(
         Frame::new(3, leak(seg2), seg2_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -226,6 +233,7 @@ fn out_of_order_data_sends_immediate_ack() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -246,6 +254,7 @@ fn out_of_order_data_sends_immediate_ack() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -269,6 +278,7 @@ fn out_of_order_data_sends_immediate_ack() {
     let ooo_len = ooo_data.len();
     handler.process_ipv4(
         Frame::new(2, leak(ooo_data), ooo_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -310,6 +320,7 @@ fn fin_sends_immediate_ack() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -330,6 +341,7 @@ fn fin_sends_immediate_ack() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -352,6 +364,7 @@ fn fin_sends_immediate_ack() {
     let fin_len = fin_data.len();
     handler.process_ipv4(
         Frame::new(2, leak(fin_data), fin_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -390,7 +403,7 @@ fn new_connection_has_delayed_ack_fields() {
     );
     let syn_len = syn_data.len();
     let syn_frame = Frame::new(0, leak(syn_data), syn_len, false);
-    handler.process_ipv4(syn_frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(syn_frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(handler.connections[0].state, TcpState::SynReceived);
 
     let server_iss = handler.connections[0].iss;
@@ -409,7 +422,7 @@ fn new_connection_has_delayed_ack_fields() {
     );
     let ack_len = ack_data.len();
     let ack_frame = Frame::new(1, leak(ack_data), ack_len, false);
-    handler.process_ipv4(ack_frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(ack_frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(handler.connections[0].state, TcpState::Established);
 
@@ -459,6 +472,7 @@ fn delayed_ack_timer_flushes_pending_ack() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -479,6 +493,7 @@ fn delayed_ack_timer_flushes_pending_ack() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -543,6 +558,7 @@ fn data_send_clears_delayed_ack() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -563,6 +579,7 @@ fn data_send_clears_delayed_ack() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -586,6 +603,7 @@ fn data_send_clears_delayed_ack() {
     let data_len = data_seg.len();
     handler.process_ipv4(
         Frame::new(2, leak(data_seg), data_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,

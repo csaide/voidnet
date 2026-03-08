@@ -28,6 +28,7 @@ fn fast_retransmit_on_three_dup_acks() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -48,6 +49,7 @@ fn fast_retransmit_on_three_dup_acks() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -81,6 +83,7 @@ fn fast_retransmit_on_three_dup_acks() {
         let dup_len = dup.len();
         handler.process_ipv4(
             Frame::new(10 + i, leak(dup), dup_len, false),
+            coarsetime::Instant::now(),
             &nh,
             &mut free,
             &mut rx,
@@ -131,6 +134,7 @@ fn rto_retransmit_on_timer_expiry() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -151,6 +155,7 @@ fn rto_retransmit_on_timer_expiry() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -217,6 +222,7 @@ fn rtt_estimation_updates_rto() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -237,6 +243,7 @@ fn rtt_estimation_updates_rto() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -272,7 +279,7 @@ fn rtt_estimation_updates_rto() {
     );
     let ack_len = ack.len();
     let recv_time = coarsetime::Instant::now();
-    handler.process_ipv4_with_now(
+    handler.process_ipv4(
         Frame::new(5, leak(ack), ack_len, false),
         recv_time,
         &nh,
@@ -323,6 +330,7 @@ fn limited_transmit_sends_on_first_dup_ack() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -343,6 +351,7 @@ fn limited_transmit_sends_on_first_dup_ack() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -381,6 +390,7 @@ fn limited_transmit_sends_on_first_dup_ack() {
     let dup_len = dup.len();
     handler.process_ipv4(
         Frame::new(10, leak(dup), dup_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,

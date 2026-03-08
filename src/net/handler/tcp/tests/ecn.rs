@@ -70,6 +70,7 @@ fn ecn_negotiated_when_both_sides_support() {
     let syn_ack_len = syn_ack_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_ack_data), syn_ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -137,6 +138,7 @@ fn ecn_disabled_when_peer_doesnt_support() {
     let syn_ack_len = syn_ack_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_ack_data), syn_ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -186,6 +188,7 @@ fn ecn_negotiated_on_passive_open() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -234,6 +237,7 @@ fn ecn_negotiated_on_passive_open() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -276,6 +280,7 @@ fn ecn_ect_set_on_outgoing_data() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -296,6 +301,7 @@ fn ecn_ect_set_on_outgoing_data() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -349,6 +355,7 @@ fn ecn_ect_not_set_on_retransmit() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -369,6 +376,7 @@ fn ecn_ect_not_set_on_retransmit() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -424,6 +432,7 @@ fn ecn_ce_detected_on_incoming() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -444,6 +453,7 @@ fn ecn_ce_detected_on_incoming() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -481,6 +491,7 @@ fn ecn_ce_detected_on_incoming() {
     let data_len = data_frame.len();
     handler.process_ipv4(
         Frame::new(2, leak(data_frame), data_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -521,6 +532,7 @@ fn ecn_ece_sent_when_ce_received() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -541,6 +553,7 @@ fn ecn_ece_sent_when_ce_received() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -568,6 +581,7 @@ fn ecn_ece_sent_when_ce_received() {
     let data_len = data_frame.len();
     handler.process_ipv4(
         Frame::new(2, leak(data_frame), data_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -623,6 +637,7 @@ fn ecn_cwnd_halved_on_ece() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -643,6 +658,7 @@ fn ecn_cwnd_halved_on_ece() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -685,6 +701,7 @@ fn ecn_cwnd_halved_on_ece() {
     let ece_len = ece_ack.len();
     handler.process_ipv4(
         Frame::new(3, leak(ece_ack), ece_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -741,6 +758,7 @@ fn ecn_cwr_sent_on_next_data() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -761,6 +779,7 @@ fn ecn_cwr_sent_on_next_data() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -822,6 +841,7 @@ fn ecn_ce_received_cleared_on_cwr() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -842,6 +862,7 @@ fn ecn_ce_received_cleared_on_cwr() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -870,6 +891,7 @@ fn ecn_ce_received_cleared_on_cwr() {
     let cwr_len = cwr_frame.len();
     handler.process_ipv4(
         Frame::new(2, leak(cwr_frame), cwr_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,

@@ -109,6 +109,7 @@ fn persist_timer_clears_when_window_reopens() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(2, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,

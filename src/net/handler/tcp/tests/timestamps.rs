@@ -29,6 +29,7 @@ fn paws_rejects_old_timestamp() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -50,6 +51,7 @@ fn paws_rejects_old_timestamp() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -81,6 +83,7 @@ fn paws_rejects_old_timestamp() {
     let data_len = data.len();
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -128,6 +131,7 @@ fn paws_drops_rst_with_old_timestamp() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -149,6 +153,7 @@ fn paws_drops_rst_with_old_timestamp() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -180,6 +185,7 @@ fn paws_drops_rst_with_old_timestamp() {
     let rst_len = rst_data.len();
     handler.process_ipv4(
         Frame::new(2, leak(rst_data), rst_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -224,6 +230,7 @@ fn paws_accepts_stale_ts_recent() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -245,6 +252,7 @@ fn paws_accepts_stale_ts_recent() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -282,7 +290,7 @@ fn paws_accepts_stale_ts_recent() {
         b"Hello",
     );
     let data_len = data.len();
-    handler.process_ipv4_with_now(
+    handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
         now,
         &nh,

@@ -24,7 +24,7 @@ fn unmatched_syn_generates_rst() {
     let len = data.len();
     let frame = Frame::new(0, leak(data), len, false);
 
-    handler.process_ipv4(frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(rx.num_frames(), 1, "original frame returned to rx");
     assert_eq!(tx.num_frames(), 1, "RST generated on tx");
@@ -43,7 +43,7 @@ fn rst_to_unbound_port_silently_dropped() {
     let len = data.len();
     let frame = Frame::new(0, leak(data), len, false);
 
-    handler.process_ipv4(frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(rx.num_frames(), 1, "frame returned to rx");
     assert_eq!(tx.num_frames(), 0, "no RST for RST");
@@ -75,7 +75,7 @@ fn invalid_checksum_dropped() {
     let len = leaked.len();
     let frame = Frame::new(0, leaked, len, false);
 
-    handler.process_ipv4(frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(rx.num_frames(), 1, "frame returned to rx");
     assert_eq!(tx.num_frames(), 0, "no RST for bad checksum");
@@ -109,7 +109,7 @@ fn truncated_tcp_header_dropped() {
     let len = data.len();
     let frame = Frame::new(0, leak(data), len, false);
 
-    handler.process_ipv4(frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(rx.num_frames(), 1, "truncated frame returned to rx");
     assert_eq!(tx.num_frames(), 0, "no response");
@@ -139,7 +139,7 @@ fn frame_accounting_after_rst() {
     let len = data.len();
     let frame = Frame::new(0, leak(data), len, false);
 
-    handler.process_ipv4(frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
 
     let total = free.num_frames() + rx.num_frames() + tx.num_frames();
     assert_eq!(total, 2, "all frames accounted for (1 rx + 1 tx)");
@@ -174,6 +174,7 @@ fn rst_outside_window_is_dropped() {
     let rst_len = rst_data.len();
     handler.process_ipv4(
         Frame::new(50, leak(rst_data), rst_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -217,6 +218,7 @@ fn rst_in_window_but_not_exact_sends_challenge_ack() {
     let rst_len = rst_data.len();
     handler.process_ipv4(
         Frame::new(50, leak(rst_data), rst_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -266,6 +268,7 @@ fn syn_in_established_sends_challenge_ack() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(50, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -324,6 +327,7 @@ fn segment_without_ack_is_dropped() {
     let no_ack_len = no_ack_data.len();
     handler.process_ipv4(
         Frame::new(50, leak(no_ack_data), no_ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -376,6 +380,7 @@ fn ack_beyond_snd_nxt_sends_ack_and_drops() {
     let bad_ack_len = bad_ack.len();
     handler.process_ipv4(
         Frame::new(50, leak(bad_ack), bad_ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -450,6 +455,7 @@ fn stale_segment_does_not_regress_window() {
     let seg_b_len = seg_b.len();
     handler.process_ipv4(
         Frame::new(10, leak(seg_b), seg_b_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -483,6 +489,7 @@ fn stale_segment_does_not_regress_window() {
     let seg_a_len = seg_a.len();
     handler.process_ipv4(
         Frame::new(11, leak(seg_a), seg_a_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -529,6 +536,7 @@ fn sender_sws_avoidance_holds_small_sends() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -549,6 +557,7 @@ fn sender_sws_avoidance_holds_small_sends() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -616,6 +625,7 @@ fn sender_sws_allows_send_when_all_data_fits() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -636,6 +646,7 @@ fn sender_sws_allows_send_when_all_data_fits() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,

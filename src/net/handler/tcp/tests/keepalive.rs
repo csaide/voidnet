@@ -28,6 +28,7 @@ fn keep_alive_activity_resets_probe_timer() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -48,6 +49,7 @@ fn keep_alive_activity_resets_probe_timer() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -79,6 +81,7 @@ fn keep_alive_activity_resets_probe_timer() {
     let data_len = data.len();
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -125,6 +128,7 @@ fn keep_alive_probe_sent_after_idle_timeout() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -145,6 +149,7 @@ fn keep_alive_probe_sent_after_idle_timeout() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -207,6 +212,7 @@ fn keep_alive_no_probe_when_disabled() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -227,6 +233,7 @@ fn keep_alive_no_probe_when_disabled() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -279,6 +286,7 @@ fn keep_alive_connection_aborted_after_max_probes() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -299,6 +307,7 @@ fn keep_alive_connection_aborted_after_max_probes() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -370,6 +379,7 @@ fn linger_zero_sends_rst_on_poll_send() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -390,6 +400,7 @@ fn linger_zero_sends_rst_on_poll_send() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -466,6 +477,7 @@ fn linger_timeout_sets_deadline() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -486,6 +498,7 @@ fn linger_timeout_sets_deadline() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -550,6 +563,7 @@ fn linger_none_normal_close() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -570,6 +584,7 @@ fn linger_none_normal_close() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -626,6 +641,7 @@ fn keep_alive_probe_and_recovery() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -646,6 +662,7 @@ fn keep_alive_probe_and_recovery() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -702,10 +719,10 @@ fn keep_alive_probe_and_recovery() {
     );
     let ack_frame_len = ack_frame.len();
 
-    // Use process_ipv4_with_now so last_activity gets a known timestamp.
+    // Use process_ipv4 with a known timestamp so last_activity is deterministic.
     coarsetime::Instant::update();
     let recv_now = coarsetime::Instant::now();
-    handler.process_ipv4_with_now(
+    handler.process_ipv4(
         Frame::new(10, leak(ack_frame), ack_frame_len, false),
         recv_now,
         &nh,
@@ -756,6 +773,7 @@ fn keep_alive_exhaustion_removes_connection() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -776,6 +794,7 @@ fn keep_alive_exhaustion_removes_connection() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -864,6 +883,7 @@ fn linger_zero_immediate_rst() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -884,6 +904,7 @@ fn linger_zero_immediate_rst() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,

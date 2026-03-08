@@ -28,7 +28,7 @@ fn syn_to_listener_generates_syn_ack() {
     let len = data.len();
     let frame = Frame::new(0, leak(data), len, false);
 
-    handler.process_ipv4(frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(rx.num_frames(), 1, "original frame to rx");
     assert_eq!(tx.num_frames(), 1, "SYN-ACK generated");
@@ -66,7 +66,7 @@ fn handshake_completes_on_ack() {
     );
     let syn_len = syn_data.len();
     let syn_frame = Frame::new(0, leak(syn_data), syn_len, false);
-    handler.process_ipv4(syn_frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(syn_frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(handler.connections[0].state, TcpState::SynReceived);
 
     // Get ISS from the TCB.
@@ -86,7 +86,7 @@ fn handshake_completes_on_ack() {
     );
     let ack_len = ack_data.len();
     let ack_frame = Frame::new(1, leak(ack_data), ack_len, false);
-    handler.process_ipv4(ack_frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(ack_frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(handler.connections[0].state, TcpState::Established);
     assert_eq!(accept_queue.len(), 1, "connection in accept queue");
@@ -120,7 +120,7 @@ fn rst_in_syn_received_removes_connection() {
     );
     let syn_len = syn_data.len();
     let syn_frame = Frame::new(0, leak(syn_data), syn_len, false);
-    handler.process_ipv4(syn_frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(syn_frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(handler.connections.len(), 1);
 
     // RST.
@@ -138,7 +138,7 @@ fn rst_in_syn_received_removes_connection() {
     );
     let rst_len = rst_data.len();
     let rst_frame = Frame::new(2, leak(rst_data), rst_len, false);
-    handler.process_ipv4(rst_frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(rst_frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(handler.connections.len(), 0, "connection removed");
 }
@@ -172,7 +172,7 @@ fn backlog_limits_syn_received() {
         );
         let syn_len = syn_data.len();
         let syn_frame = Frame::new(i as u64, leak(syn_data), syn_len, false);
-        handler.process_ipv4(syn_frame, &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(syn_frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
     }
 
     assert_eq!(handler.connections.len(), 2, "backlog limits connections");
@@ -211,7 +211,7 @@ fn window_scale_negotiation() {
     );
     let syn_len = syn_data.len();
     let syn_frame = Frame::new(0, leak(syn_data), syn_len, false);
-    handler.process_ipv4(syn_frame, &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(syn_frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
 
     assert!(handler.connections[0].wscale_enabled);
     assert_eq!(handler.connections[0].snd_wscale, 7);
@@ -294,6 +294,7 @@ fn simultaneous_open_both_reach_established() {
     let syn_b_len = syn_b.len();
     handler_a.process_ipv4(
         Frame::new(10, leak(syn_b), syn_b_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free_a,
         &mut rx,
@@ -324,6 +325,7 @@ fn simultaneous_open_both_reach_established() {
     let syn_a_len = syn_a.len();
     handler_b.process_ipv4(
         Frame::new(11, leak(syn_a), syn_a_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free_b,
         &mut rx,
@@ -354,6 +356,7 @@ fn simultaneous_open_both_reach_established() {
     let syn_ack_b_len = syn_ack_b.len();
     handler_a.process_ipv4(
         Frame::new(12, leak(syn_ack_b), syn_ack_b_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free_a,
         &mut rx,
@@ -382,6 +385,7 @@ fn simultaneous_open_both_reach_established() {
     let syn_ack_a_len = syn_ack_a.len();
     handler_b.process_ipv4(
         Frame::new(13, leak(syn_ack_a), syn_ack_a_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free_b,
         &mut rx,

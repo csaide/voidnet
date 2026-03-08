@@ -106,7 +106,7 @@ impl Ipv4Handler {
             ),
             IpProtocols::Udp => udp_handler.process_ipv4(frame, rx_return),
             IpProtocols::Tcp => {
-                tcp_handler.process_ipv4_with_now(frame, now, neighbor_handler, free_frames, rx_return, tx_return)
+                tcp_handler.process_ipv4(frame, now, neighbor_handler, free_frames, rx_return, tx_return)
             }
             _ => icmpv4::send_destination_unreachable(
                 frame,

@@ -28,6 +28,7 @@ fn established_receives_in_order_data() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -48,6 +49,7 @@ fn established_receives_in_order_data() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -75,6 +77,7 @@ fn established_receives_in_order_data() {
     let data_len = data.len();
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -109,6 +112,7 @@ fn established_receives_in_order_data() {
     let data2_len = data2.len();
     handler.process_ipv4(
         Frame::new(3, leak(data2), data2_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -157,6 +161,7 @@ fn established_out_of_order_reassembly() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -177,6 +182,7 @@ fn established_out_of_order_reassembly() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -200,6 +206,7 @@ fn established_out_of_order_reassembly() {
     let seg2_len = seg2.len();
     handler.process_ipv4(
         Frame::new(2, leak(seg2), seg2_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -227,6 +234,7 @@ fn established_out_of_order_reassembly() {
     let seg1_len = seg1.len();
     handler.process_ipv4(
         Frame::new(3, leak(seg1), seg1_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -279,6 +287,7 @@ fn poll_send_builds_data_segment() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -299,6 +308,7 @@ fn poll_send_builds_data_segment() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -357,6 +367,7 @@ fn frame_accounting_through_data_transfer() {
     let syn_len = syn.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -377,6 +388,7 @@ fn frame_accounting_through_data_transfer() {
     let ack_len = ack.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -399,6 +411,7 @@ fn frame_accounting_through_data_transfer() {
     let data_len = data.len();
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -421,6 +434,7 @@ fn frame_accounting_through_data_transfer() {
     let data2_len = data2.len();
     handler.process_ipv4(
         Frame::new(3, leak(data2), data2_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -569,6 +583,7 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
     let syn_len = syn.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -591,6 +606,7 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
     let ack_len = ack.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -623,6 +639,7 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
     let data_len = data.len();
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,

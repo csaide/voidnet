@@ -31,6 +31,7 @@ fn ooo_data_sends_sack_blocks_in_dup_ack() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -58,6 +59,7 @@ fn ooo_data_sends_sack_blocks_in_dup_ack() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -83,6 +85,7 @@ fn ooo_data_sends_sack_blocks_in_dup_ack() {
     let ooo_len = ooo_seg.len();
     handler.process_ipv4(
         Frame::new(2, leak(ooo_seg), ooo_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -159,6 +162,7 @@ fn sack_blocks_update_scoreboard_on_ack() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(2, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -223,6 +227,7 @@ fn sack_scoreboard_pruned_on_cumulative_ack_advance() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(2, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -249,6 +254,7 @@ fn sack_scoreboard_pruned_on_cumulative_ack_advance() {
     let ack_len2 = ack_data2.len();
     handler.process_ipv4(
         Frame::new(3, leak(ack_data2), ack_len2, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -308,6 +314,7 @@ fn sack_blocks_updated_on_dup_ack() {
     let dup_len = dup_ack.len();
     handler.process_ipv4(
         Frame::new(2, leak(dup_ack), dup_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -361,6 +368,7 @@ fn sack_scoreboard_cleared_on_rto() {
     let dup_len = dup_ack.len();
     handler.process_ipv4(
         Frame::new(2, leak(dup_ack), dup_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -523,6 +531,7 @@ fn sack_recovery_enters_on_3_dup_acks() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -543,6 +552,7 @@ fn sack_recovery_enters_on_3_dup_acks() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -582,6 +592,7 @@ fn sack_recovery_enters_on_3_dup_acks() {
         let dup_len = dup.len();
         handler.process_ipv4(
             Frame::new(10 + i, leak(dup), dup_len, false),
+            coarsetime::Instant::now(),
             &nh,
             &mut free,
             &mut rx,
@@ -626,6 +637,7 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -646,6 +658,7 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -684,6 +697,7 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
         let dup_len = dup.len();
         handler.process_ipv4(
             Frame::new(10 + i, leak(dup), dup_len, false),
+            coarsetime::Instant::now(),
             &nh,
             &mut free,
             &mut rx,
@@ -708,6 +722,7 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
     let partial_len = partial.len();
     handler.process_ipv4(
         Frame::new(20, leak(partial), partial_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,

@@ -58,25 +58,6 @@ impl TcpHandler {
     pub fn process_ipv4<'umem>(
         &mut self,
         frame: Frame<'umem>,
-        neighbor_handler: &NeighborHandler,
-        free_frames: &mut impl FrameBuffer<'umem>,
-        rx_return: &mut impl FrameBuffer<'umem>,
-        tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
-        self.process_ipv4_with_now(
-            frame,
-            Instant::now(),
-            neighbor_handler,
-            free_frames,
-            rx_return,
-            tx_return,
-        );
-    }
-
-    /// Process an incoming IPv4 TCP segment with an explicit timestamp.
-    pub fn process_ipv4_with_now<'umem>(
-        &mut self,
-        frame: Frame<'umem>,
         now: Instant,
         neighbor_handler: &NeighborHandler,
         free_frames: &mut impl FrameBuffer<'umem>,
@@ -169,27 +150,6 @@ impl TcpHandler {
 
     /// Process an incoming IPv6 TCP segment.
     pub fn process_ipv6<'umem>(
-        &mut self,
-        frame: Frame<'umem>,
-        tcp_offset: usize,
-        neighbor_handler: &NeighborHandler,
-        free_frames: &mut impl FrameBuffer<'umem>,
-        rx_return: &mut impl FrameBuffer<'umem>,
-        tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
-        self.process_ipv6_with_now(
-            frame,
-            tcp_offset,
-            Instant::now(),
-            neighbor_handler,
-            free_frames,
-            rx_return,
-            tx_return,
-        );
-    }
-
-    /// Process an incoming IPv6 TCP segment with an explicit timestamp.
-    pub fn process_ipv6_with_now<'umem>(
         &mut self,
         frame: Frame<'umem>,
         tcp_offset: usize,

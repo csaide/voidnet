@@ -28,6 +28,7 @@ fn established_receives_fin_transitions_to_close_wait() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -48,6 +49,7 @@ fn established_receives_fin_transitions_to_close_wait() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -70,6 +72,7 @@ fn established_receives_fin_transitions_to_close_wait() {
     let fin_len = fin_data.len();
     handler.process_ipv4(
         Frame::new(2, leak(fin_data), fin_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -109,6 +112,7 @@ fn established_receives_fin_with_data() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -129,6 +133,7 @@ fn established_receives_fin_with_data() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -153,6 +158,7 @@ fn established_receives_fin_with_data() {
     let fin_len = fin_data.len();
     handler.process_ipv4(
         Frame::new(2, leak(fin_data), fin_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -199,6 +205,7 @@ fn poll_send_sends_fin_when_pending() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -219,6 +226,7 @@ fn poll_send_sends_fin_when_pending() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -268,6 +276,7 @@ fn poll_send_drains_data_before_fin() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -288,6 +297,7 @@ fn poll_send_drains_data_before_fin() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -341,6 +351,7 @@ fn active_close_fin_wait1_to_fin_wait2() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -361,6 +372,7 @@ fn active_close_fin_wait1_to_fin_wait2() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -391,6 +403,7 @@ fn active_close_fin_wait1_to_fin_wait2() {
     let ack_len = ack.len();
     handler.process_ipv4(
         Frame::new(3, leak(ack), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -428,6 +441,7 @@ fn fin_wait2_receives_fin_to_time_wait() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -448,6 +462,7 @@ fn fin_wait2_receives_fin_to_time_wait() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -475,6 +490,7 @@ fn fin_wait2_receives_fin_to_time_wait() {
     let ack_len = ack.len();
     handler.process_ipv4(
         Frame::new(3, leak(ack), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -498,6 +514,7 @@ fn fin_wait2_receives_fin_to_time_wait() {
     let fin_len = fin.len();
     handler.process_ipv4(
         Frame::new(4, leak(fin), fin_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -537,6 +554,7 @@ fn simultaneous_close_closing_to_time_wait() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -557,6 +575,7 @@ fn simultaneous_close_closing_to_time_wait() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -586,6 +605,7 @@ fn simultaneous_close_closing_to_time_wait() {
     let fin_len = fin.len();
     handler.process_ipv4(
         Frame::new(3, leak(fin), fin_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -610,6 +630,7 @@ fn simultaneous_close_closing_to_time_wait() {
     let ack_len = ack.len();
     handler.process_ipv4(
         Frame::new(4, leak(ack), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -646,6 +667,7 @@ fn passive_close_last_ack_removes_connection() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -666,6 +688,7 @@ fn passive_close_last_ack_removes_connection() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -688,6 +711,7 @@ fn passive_close_last_ack_removes_connection() {
     let fin_len = fin.len();
     handler.process_ipv4(
         Frame::new(2, leak(fin), fin_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -719,6 +743,7 @@ fn passive_close_last_ack_removes_connection() {
     let ack_len = ack.len();
     handler.process_ipv4(
         Frame::new(4, leak(ack), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -759,6 +784,7 @@ fn time_wait_ignores_rst() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -779,6 +805,7 @@ fn time_wait_ignores_rst() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -806,6 +833,7 @@ fn time_wait_ignores_rst() {
     let ack_len = ack.len();
     handler.process_ipv4(
         Frame::new(3, leak(ack), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -825,6 +853,7 @@ fn time_wait_ignores_rst() {
     let fin_len = fin.len();
     handler.process_ipv4(
         Frame::new(4, leak(fin), fin_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -838,6 +867,7 @@ fn time_wait_ignores_rst() {
     let rst_len = rst.len();
     handler.process_ipv4(
         Frame::new(5, leak(rst), rst_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -879,6 +909,7 @@ fn time_wait_evicted_after_deadline() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -899,6 +930,7 @@ fn time_wait_evicted_after_deadline() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -946,6 +978,7 @@ fn full_active_close_lifecycle() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -966,6 +999,7 @@ fn full_active_close_lifecycle() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -990,6 +1024,7 @@ fn full_active_close_lifecycle() {
     let data_len = data.len();
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1019,6 +1054,7 @@ fn full_active_close_lifecycle() {
     let ack_len = ack.len();
     handler.process_ipv4(
         Frame::new(3, leak(ack), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1041,6 +1077,7 @@ fn full_active_close_lifecycle() {
     let fin_len = fin.len();
     handler.process_ipv4(
         Frame::new(4, leak(fin), fin_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1112,6 +1149,7 @@ fn full_passive_close_lifecycle() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1132,6 +1170,7 @@ fn full_passive_close_lifecycle() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1154,6 +1193,7 @@ fn full_passive_close_lifecycle() {
     let fin_len = fin.len();
     handler.process_ipv4(
         Frame::new(2, leak(fin), fin_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1185,6 +1225,7 @@ fn full_passive_close_lifecycle() {
     let ack_len = ack.len();
     handler.process_ipv4(
         Frame::new(3, leak(ack), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1225,6 +1266,7 @@ fn shutdown_sets_pending_fin() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1245,6 +1287,7 @@ fn shutdown_sets_pending_fin() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1304,6 +1347,7 @@ fn half_close_writes_blocked_reads_continue() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1324,6 +1368,7 @@ fn half_close_writes_blocked_reads_continue() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1395,6 +1440,7 @@ fn close_wait_processes_ack_for_sent_data() {
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1415,6 +1461,7 @@ fn close_wait_processes_ack_for_sent_data() {
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1460,6 +1507,7 @@ fn close_wait_processes_ack_for_sent_data() {
     let fin_len = fin_data.len();
     handler.process_ipv4(
         Frame::new(2, leak(fin_data), fin_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1483,6 +1531,7 @@ fn close_wait_processes_ack_for_sent_data() {
     let data_ack_len = data_ack.len();
     handler.process_ipv4(
         Frame::new(3, leak(data_ack), data_ack_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1604,6 +1653,7 @@ fn out_of_order_fin_does_not_transition_to_close_wait() {
     let fin_len = fin_data.len();
     handler.process_ipv4(
         Frame::new(2, leak(fin_data), fin_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1640,6 +1690,7 @@ fn out_of_order_fin_does_not_transition_to_close_wait() {
     let fill_len = fill_data.len();
     handler.process_ipv4(
         Frame::new(3, leak(fill_data), fill_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,
@@ -1669,6 +1720,7 @@ fn out_of_order_fin_does_not_transition_to_close_wait() {
     let fin_retry_len = fin_retry.len();
     handler.process_ipv4(
         Frame::new(4, leak(fin_retry), fin_retry_len, false),
+        coarsetime::Instant::now(),
         &nh,
         &mut free,
         &mut rx,

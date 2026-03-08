@@ -225,6 +225,7 @@ pub(super) fn establish_connection(
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         nh,
         free,
         rx,
@@ -245,6 +246,7 @@ pub(super) fn establish_connection(
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         nh,
         free,
         rx,
@@ -279,6 +281,7 @@ pub(super) fn establish_connection_with_sack(
     let syn_len = syn_data.len();
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
         nh,
         free,
         rx,
@@ -302,6 +305,7 @@ pub(super) fn establish_connection_with_sack(
     let ack_len = ack_data.len();
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
         nh,
         free,
         rx,
@@ -358,6 +362,7 @@ pub(super) fn active_open_handshake(
     let syn_ack_len = syn_ack.len();
     handler.process_ipv4(
         Frame::new(50, leak(syn_ack), syn_ack_len, false),
+        coarsetime::Instant::now(),
         nh,
         free,
         rx,
@@ -416,6 +421,7 @@ pub(super) fn active_open_handshake_with_config(
     let syn_ack_len = syn_ack.len();
     handler.process_ipv4(
         Frame::new(50, leak(syn_ack), syn_ack_len, false),
+        coarsetime::Instant::now(),
         nh,
         free,
         rx,
