@@ -954,6 +954,149 @@ impl TcpHandler {
         // Step 4: Neither SYN nor RST → drop.
     }
 
+    // --- ESTABLISHED state processing: cold-path helpers ---
+
+    /// Handle RST in established state (RFC 5961).
+    /// Returns `true` if the connection was removed (exact sequence match).
+    #[inline(never)]
+    fn handle_rst_established<'umem>(
+        &mut self,
+        idx: usize,
+        seg_seq: u32,
+        tsval: u32,
+        ack_flags: u8,
+        src_mac: crate::net::wire::ethernet::MacAddress,
+        dst_mac: crate::net::wire::ethernet::MacAddress,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) -> bool {
+        if seg_seq == self.connections[idx].rcv_nxt {
+            // Exact match: reset connection.
+            self.connections[idx].event_queue.push(TcpEvent::Reset);
+            let id = self.connections[idx].id;
+            self.decrement_syn_received(&id);
+            self.connections.remove(idx);
+            return true;
+        }
+        // In-window but not exact: send challenge ACK, drop segment.
+        let tcb = &self.connections[idx];
+        let ts = tcb.ts_option(tsval);
+        SegmentBuilder::build_ack(
+            tcb.id.local_addr,
+            tcb.id.remote_addr,
+            tcb.id.local_port,
+            tcb.id.remote_port,
+            tcb.snd_nxt,
+            tcb.rcv_nxt,
+            tcb.advertised_window(),
+            ack_flags,
+            ts,
+            src_mac,
+            dst_mac,
+            self.tx_offload,
+            free_frames,
+            tx_return,
+        );
+        false
+    }
+
+    /// Handle SYN in established state — send challenge ACK (RFC 5961).
+    #[inline(never)]
+    fn handle_syn_established<'umem>(
+        &mut self,
+        idx: usize,
+        tsval: u32,
+        ack_flags: u8,
+        src_mac: crate::net::wire::ethernet::MacAddress,
+        dst_mac: crate::net::wire::ethernet::MacAddress,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        let tcb = &self.connections[idx];
+        let ts = tcb.ts_option(tsval);
+        SegmentBuilder::build_ack(
+            tcb.id.local_addr,
+            tcb.id.remote_addr,
+            tcb.id.local_port,
+            tcb.id.remote_port,
+            tcb.snd_nxt,
+            tcb.rcv_nxt,
+            tcb.advertised_window(),
+            ack_flags,
+            ts,
+            src_mac,
+            dst_mac,
+            self.tx_offload,
+            free_frames,
+            tx_return,
+        );
+    }
+
+    /// Handle out-of-order data — store in OOO buffer and send duplicate ACK with SACK blocks.
+    #[inline(never)]
+    fn handle_ooo_data<'umem>(
+        &mut self,
+        idx: usize,
+        frame: &Frame<'umem>,
+        seg_seq: u32,
+        tsval: u32,
+        payload_offset: usize,
+        payload_len: usize,
+        ack_flags: u8,
+        src_mac: crate::net::wire::ethernet::MacAddress,
+        dst_mac: crate::net::wire::ethernet::MacAddress,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        let rcv_nxt = self.connections[idx].rcv_nxt;
+        let offset = seg_seq.wrapping_sub(rcv_nxt) as usize;
+        let payload = &frame[payload_offset..payload_offset + payload_len];
+        let tcb = &mut self.connections[idx];
+        tcb.recv_buffer.write_at(offset, payload);
+        tcb.ooo_ranges.insert(seg_seq, payload_len as u32);
+
+        // Send duplicate ACK (with current rcv_nxt) and SACK blocks.
+        let ts = tcb.ts_option(tsval);
+
+        let max_blocks = if tcb.ts_enabled { 3 } else { 4 };
+        let mut sack_buf = [(0u32, 0u32); 4];
+        let mut sack_count = 0usize;
+        if tcb.sack_enabled {
+            // Most recently received range first (per RFC 2018 §3).
+            sack_buf[0] = (seg_seq, seg_seq.wrapping_add(payload_len as u32));
+            sack_count = 1;
+            for (&start, &len) in tcb.ooo_ranges.iter().rev() {
+                if sack_count >= max_blocks {
+                    break;
+                }
+                let end = start.wrapping_add(len);
+                if start != seg_seq {
+                    sack_buf[sack_count] = (start, end);
+                    sack_count += 1;
+                }
+            }
+        }
+        let sack_blocks = &sack_buf[..sack_count];
+
+        SegmentBuilder::build_ack_with_sack(
+            tcb.id.local_addr,
+            tcb.id.remote_addr,
+            tcb.id.local_port,
+            tcb.id.remote_port,
+            tcb.snd_nxt,
+            tcb.rcv_nxt,
+            tcb.advertised_window(),
+            ack_flags,
+            ts,
+            sack_blocks,
+            src_mac,
+            dst_mac,
+            self.tx_offload,
+            free_frames,
+            tx_return,
+        );
+    }
+
     // --- ESTABLISHED state processing ---
 
     fn process_established<'umem>(
@@ -1386,33 +1529,8 @@ impl TcpHandler {
 
         // Step 2: RST check (RFC 5961).
         if seg_flags & flags::RST != 0 {
-            if seg_seq == self.connections[idx].rcv_nxt {
-                // Exact match: reset connection.
-                self.connections[idx].event_queue.push(TcpEvent::Reset);
-                let id = self.connections[idx].id;
-                self.decrement_syn_received(&id);
-                self.connections.remove(idx);
-                rx_return.push(frame);
-                return;
-            }
-            // In-window but not exact: send challenge ACK, drop segment.
-            let tcb = &self.connections[idx];
-            let ts = tcb.ts_option(tsval);
-            SegmentBuilder::build_ack(
-                tcb.id.local_addr,
-                tcb.id.remote_addr,
-                tcb.id.local_port,
-                tcb.id.remote_port,
-                tcb.snd_nxt,
-                tcb.rcv_nxt,
-                tcb.advertised_window(),
-                ack_flags,
-                ts,
-                src_mac,
-                dst_mac,
-                self.tx_offload,
-                free_frames,
-                tx_return,
+            self.handle_rst_established(
+                idx, seg_seq, tsval, ack_flags, src_mac, dst_mac, free_frames, tx_return,
             );
             rx_return.push(frame);
             return;
@@ -1420,23 +1538,8 @@ impl TcpHandler {
 
         // Step 4: SYN check (RFC 5961 — challenge ACK for SYN in synchronized state).
         if seg_flags & flags::SYN != 0 {
-            let tcb = &self.connections[idx];
-            let ts = tcb.ts_option(tsval);
-            SegmentBuilder::build_ack(
-                tcb.id.local_addr,
-                tcb.id.remote_addr,
-                tcb.id.local_port,
-                tcb.id.remote_port,
-                tcb.snd_nxt,
-                tcb.rcv_nxt,
-                tcb.advertised_window(),
-                ack_flags,
-                ts,
-                src_mac,
-                dst_mac,
-                self.tx_offload,
-                free_frames,
-                tx_return,
+            self.handle_syn_established(
+                idx, tsval, ack_flags, src_mac, dst_mac, free_frames, tx_return,
             );
             rx_return.push(frame);
             return;
@@ -1719,51 +1822,9 @@ impl TcpHandler {
                 }
             } else if seq_lt(rcv_nxt, seg_seq) {
                 // Out-of-order data.
-                let offset = seg_seq.wrapping_sub(rcv_nxt) as usize;
-                let payload = &frame[payload_offset..payload_offset + payload_len];
-                let tcb = &mut self.connections[idx];
-                tcb.recv_buffer.write_at(offset, payload);
-                tcb.ooo_ranges.insert(seg_seq, payload_len as u32);
-
-                // Send duplicate ACK (with current rcv_nxt) and SACK blocks.
-                let ts = tcb.ts_option(tsval);
-
-                let max_blocks = if tcb.ts_enabled { 3 } else { 4 };
-                let mut sack_buf = [(0u32, 0u32); 4];
-                let mut sack_count = 0usize;
-                if tcb.sack_enabled {
-                    // Most recently received range first (per RFC 2018 §3).
-                    sack_buf[0] = (seg_seq, seg_seq.wrapping_add(payload_len as u32));
-                    sack_count = 1;
-                    for (&start, &len) in tcb.ooo_ranges.iter().rev() {
-                        if sack_count >= max_blocks {
-                            break;
-                        }
-                        let end = start.wrapping_add(len);
-                        if start != seg_seq {
-                            sack_buf[sack_count] = (start, end);
-                            sack_count += 1;
-                        }
-                    }
-                }
-                let sack_blocks = &sack_buf[..sack_count];
-
-                SegmentBuilder::build_ack_with_sack(
-                    tcb.id.local_addr,
-                    tcb.id.remote_addr,
-                    tcb.id.local_port,
-                    tcb.id.remote_port,
-                    tcb.snd_nxt,
-                    tcb.rcv_nxt,
-                    tcb.advertised_window(),
-                    ack_flags,
-                    ts,
-                    sack_blocks,
-                    src_mac,
-                    dst_mac,
-                    self.tx_offload,
-                    free_frames,
-                    tx_return,
+                self.handle_ooo_data(
+                    idx, &frame, seg_seq, tsval, payload_offset, payload_len, ack_flags, src_mac,
+                    dst_mac, free_frames, tx_return,
                 );
             } else {
                 // Duplicate data (seg_seq < rcv_nxt) — just ACK.
