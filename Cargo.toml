@@ -118,11 +118,3 @@ required-features = ["tokio"]
 name = "tokio-tx"
 path = "examples/tokio-tx.rs"
 required-features = ["tokio"]
-
-[[bench]]
-name = "tcp_throughput"
-harness = false
-
-[[bench]]
-name = "tcp_latency"
-harness = false
