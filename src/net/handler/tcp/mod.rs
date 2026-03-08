@@ -2,6 +2,7 @@ mod isn;
 pub(crate) mod ring_buffer;
 pub(crate) mod segment;
 pub(crate) mod state;
+pub(crate) mod congestion;
 pub(crate) mod tcb;
 
 use coarsetime::Instant;
