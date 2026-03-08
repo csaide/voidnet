@@ -201,9 +201,9 @@ pub struct Tcb {
     pub frto: FRtoState,
 
     // --- RTT estimation (RFC 6298) ---
-    /// Smoothed RTT in microseconds.
+    /// Smoothed RTT in milliseconds.
     pub srtt: Option<u64>,
-    /// RTT variance in microseconds.
+    /// RTT variance in milliseconds.
     pub rttvar: u64,
     /// Retransmission timeout in milliseconds (computed from srtt/rttvar).
     pub rto: u64,

@@ -178,6 +178,10 @@ impl PrrState {
     pub fn on_ack(&mut self, bytes_newly_delivered: u32, pipe: u32, ssthresh: u32, eff_mss: u16) -> u32 {
         self.prr_delivered += bytes_newly_delivered;
 
+        if self.recover_fs == 0 {
+            return eff_mss as u32;
+        }
+
         if pipe > ssthresh {
             // Proportional: snd_cnt = ceil(prr_delivered * ssthresh / recover_fs) - prr_out.
             let numer = self.prr_delivered as u64 * ssthresh as u64;
