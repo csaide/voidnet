@@ -996,6 +996,320 @@ impl TcpHandler {
             flags::ACK
         };
 
+        // Fast-path: common case — in-order data + valid new ACK, no special flags.
+        {
+            let tcb = &self.connections[idx];
+            let fast_path = (seg_flags & (flags::RST | flags::SYN | flags::FIN)) == 0
+                && seg_flags & flags::ACK != 0
+                && payload_len > 0
+                && seg_seq == tcb.rcv_nxt
+                && seq_lt(tcb.snd_una, seg_ack)
+                && seq_le(seg_ack, tcb.snd_nxt)
+                && !tcb.recovery.in_recovery
+                && tcb.ooo_ranges.is_empty();
+
+            if fast_path {
+                // PAWS check — on failure, fall through to slow path.
+                if self.connections[idx].ts_enabled {
+                    if let Some((ts_val, _)) = opts.timestamp {
+                        let ts_diff = ts_val.wrapping_sub(self.connections[idx].ts_recent) as i32;
+                        if ts_diff < 0 {
+                            // Possible PAWS rejection — let slow path handle it.
+                        } else {
+                            // PAWS OK — proceed with fast path.
+
+                            // Segment acceptability (simplified: seg_seq == rcv_nxt, payload > 0).
+                            if self.connections[idx].recv_buffer.free_space() == 0 {
+                                // No window space — fall through to slow path.
+                            } else {
+                                // Update ts_recent.
+                                let tcb = &mut self.connections[idx];
+                                tcb.ts_recent = ts_val;
+                                tcb.ts_recent_age = now;
+
+                                // ACK advancement (we know snd_una < seg_ack <= snd_nxt).
+                                let bytes_acked = seg_ack.wrapping_sub(tcb.snd_una) as usize;
+                                tcb.snd_una = seg_ack;
+                                tcb.send_buffer.advance(bytes_acked);
+                                tcb.last_activity = now;
+                                tcb.keep_alive_probes_sent = 0;
+
+                                // F-RTO check.
+                                let mut frto_handled = false;
+                                if tcb.frto.is_active() {
+                                    let action = tcb.frto.on_ack(seg_ack);
+                                    match action {
+                                        FRtoAction::SpuriousRto => {
+                                            tcb.cubic.restore_after_spurious_rto();
+                                            frto_handled = true;
+                                        }
+                                        FRtoAction::SendNewData => {
+                                            frto_handled = true;
+                                        }
+                                        FRtoAction::GenuineLoss | FRtoAction::None => {}
+                                    }
+                                }
+
+                                // Congestion control (fast path is never in recovery).
+                                if !frto_handled {
+                                    let rtt_ms = tcb.srtt.unwrap_or(tcb.rto);
+                                    tcb.cubic
+                                        .on_ack(bytes_acked as u32, now, rtt_ms, tcb.max_snd_wnd);
+                                }
+                                tcb.recovery.dup_ack_count = 0;
+
+                                // RTT measurement via timestamps.
+                                if let Some((_tsval, tsecr)) = opts.timestamp
+                                    && tsecr != 0
+                                {
+                                    let our_ts = tsval;
+                                    let rtt_ms = our_ts.wrapping_sub(tsecr) as u64;
+                                    match tcb.srtt {
+                                        None => {
+                                            tcb.srtt = Some(rtt_ms);
+                                            tcb.rttvar = rtt_ms / 2;
+                                        }
+                                        Some(srtt) => {
+                                            let diff = rtt_ms.abs_diff(srtt);
+                                            tcb.rttvar = (3 * tcb.rttvar + diff) / 4;
+                                            tcb.srtt = Some((7 * srtt + rtt_ms) / 8);
+                                        }
+                                    }
+                                    tcb.rto =
+                                        (tcb.srtt.unwrap() + 4 * tcb.rttvar).clamp(1000, 60_000);
+                                }
+
+                                // Window update.
+                                if seq_lt(tcb.snd_wl1, seg_seq)
+                                    || (tcb.snd_wl1 == seg_seq && seq_le(tcb.snd_wl2, seg_ack))
+                                {
+                                    tcb.snd_wnd = tcb.scale_incoming_window(seg_wnd);
+                                    tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
+                                    tcb.snd_wl1 = seg_seq;
+                                    tcb.snd_wl2 = seg_ack;
+                                }
+
+                                // Clear persist timer when window reopens.
+                                if tcb.snd_wnd > 0 && tcb.persist_deadline.is_some() {
+                                    tcb.persist_deadline = None;
+                                    tcb.persist_backoff = 0;
+                                }
+
+                                // SACK scoreboard.
+                                if tcb.sack_enabled {
+                                    let (blocks, count) = opts.sack_blocks;
+                                    for (left, right) in blocks.iter().take(count).flatten() {
+                                        tcb.sack_scoreboard
+                                            .insert(*left, right.wrapping_sub(*left));
+                                    }
+                                    let snd_una = tcb.snd_una;
+                                    tcb.sack_scoreboard.retain(|&start, _| {
+                                        !crate::net::wire::tcp::seq_lt(start, snd_una)
+                                    });
+                                }
+
+                                // ECN congestion response.
+                                if tcb.ecn_enabled
+                                    && seg_flags & flags::ECE != 0
+                                    && !tcb.ecn_cwr_sent
+                                {
+                                    tcb.cubic.on_ecn();
+                                    tcb.ecn_cwr_sent = true;
+                                }
+
+                                // Data write (in-order, no OOO to drain).
+                                let payload =
+                                    &frame[payload_offset..payload_offset + payload_len];
+                                let written = tcb.recv_buffer.write(payload);
+                                tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(written as u32);
+                                tcb.last_activity = now;
+                                tcb.keep_alive_probes_sent = 0;
+
+                                // Delayed ACK.
+                                tcb.ack_delay_count += 1;
+                                if tcb.ack_delay_count >= MAX_DELAYED_ACK_COUNT {
+                                    let ts = tcb.ts_option(tsval);
+                                    SegmentBuilder::build_ack(
+                                        tcb.id.local_addr,
+                                        tcb.id.remote_addr,
+                                        tcb.id.local_port,
+                                        tcb.id.remote_port,
+                                        tcb.snd_nxt,
+                                        tcb.rcv_nxt,
+                                        tcb.advertised_window(),
+                                        ack_flags,
+                                        ts,
+                                        src_mac,
+                                        dst_mac,
+                                        self.tx_offload,
+                                        free_frames,
+                                        tx_return,
+                                    );
+                                    tcb.update_advertised_edge();
+                                    tcb.ack_pending = false;
+                                    tcb.ack_delay_count = 0;
+                                    tcb.delayed_ack_deadline = None;
+                                } else {
+                                    tcb.ack_pending = true;
+                                    if tcb.delayed_ack_deadline.is_none() {
+                                        tcb.delayed_ack_deadline = Some(
+                                            now + coarsetime::Duration::from_millis(
+                                                tcb.delayed_ack_ms,
+                                            ),
+                                        );
+                                    }
+                                }
+
+                                rx_return.push(frame);
+                                return;
+                            }
+                        }
+                    }
+                    // ts_enabled but no timestamp in packet — fall through to slow path.
+                } else {
+                    // Timestamps not enabled — fast path without PAWS.
+
+                    // Segment acceptability (simplified: seg_seq == rcv_nxt, payload > 0).
+                    if self.connections[idx].recv_buffer.free_space() > 0 {
+                        let tcb = &mut self.connections[idx];
+
+                        // ACK advancement.
+                        let bytes_acked = seg_ack.wrapping_sub(tcb.snd_una) as usize;
+                        tcb.snd_una = seg_ack;
+                        tcb.send_buffer.advance(bytes_acked);
+                        tcb.last_activity = now;
+                        tcb.keep_alive_probes_sent = 0;
+
+                        // F-RTO check.
+                        let mut frto_handled = false;
+                        if tcb.frto.is_active() {
+                            let action = tcb.frto.on_ack(seg_ack);
+                            match action {
+                                FRtoAction::SpuriousRto => {
+                                    tcb.cubic.restore_after_spurious_rto();
+                                    frto_handled = true;
+                                }
+                                FRtoAction::SendNewData => {
+                                    frto_handled = true;
+                                }
+                                FRtoAction::GenuineLoss | FRtoAction::None => {}
+                            }
+                        }
+
+                        // Congestion control.
+                        if !frto_handled {
+                            let rtt_ms = tcb.srtt.unwrap_or(tcb.rto);
+                            tcb.cubic
+                                .on_ack(bytes_acked as u32, now, rtt_ms, tcb.max_snd_wnd);
+                        }
+                        tcb.recovery.dup_ack_count = 0;
+
+                        // RTT measurement via last_send_time (fallback).
+                        if let Some(send_time) = tcb.last_send_time {
+                            let rtt_ms = now.duration_since(send_time).as_millis();
+                            match tcb.srtt {
+                                None => {
+                                    tcb.srtt = Some(rtt_ms);
+                                    tcb.rttvar = rtt_ms / 2;
+                                }
+                                Some(srtt) => {
+                                    let diff = rtt_ms.abs_diff(srtt);
+                                    tcb.rttvar = (3 * tcb.rttvar + diff) / 4;
+                                    tcb.srtt = Some((7 * srtt + rtt_ms) / 8);
+                                }
+                            }
+                            let srtt = tcb.srtt.unwrap();
+                            tcb.rto = (srtt + 4 * tcb.rttvar).clamp(1000, 60_000);
+                            tcb.last_send_time = None;
+                        }
+
+                        // Window update.
+                        if seq_lt(tcb.snd_wl1, seg_seq)
+                            || (tcb.snd_wl1 == seg_seq && seq_le(tcb.snd_wl2, seg_ack))
+                        {
+                            tcb.snd_wnd = tcb.scale_incoming_window(seg_wnd);
+                            tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
+                            tcb.snd_wl1 = seg_seq;
+                            tcb.snd_wl2 = seg_ack;
+                        }
+
+                        // Clear persist timer when window reopens.
+                        if tcb.snd_wnd > 0 && tcb.persist_deadline.is_some() {
+                            tcb.persist_deadline = None;
+                            tcb.persist_backoff = 0;
+                        }
+
+                        // SACK scoreboard.
+                        if tcb.sack_enabled {
+                            let (blocks, count) = opts.sack_blocks;
+                            for (left, right) in blocks.iter().take(count).flatten() {
+                                tcb.sack_scoreboard
+                                    .insert(*left, right.wrapping_sub(*left));
+                            }
+                            let snd_una = tcb.snd_una;
+                            tcb.sack_scoreboard.retain(|&start, _| {
+                                !crate::net::wire::tcp::seq_lt(start, snd_una)
+                            });
+                        }
+
+                        // ECN congestion response.
+                        if tcb.ecn_enabled
+                            && seg_flags & flags::ECE != 0
+                            && !tcb.ecn_cwr_sent
+                        {
+                            tcb.cubic.on_ecn();
+                            tcb.ecn_cwr_sent = true;
+                        }
+
+                        // Data write (in-order, no OOO to drain).
+                        let payload = &frame[payload_offset..payload_offset + payload_len];
+                        let written = tcb.recv_buffer.write(payload);
+                        tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(written as u32);
+                        tcb.last_activity = now;
+                        tcb.keep_alive_probes_sent = 0;
+
+                        // Delayed ACK.
+                        tcb.ack_delay_count += 1;
+                        if tcb.ack_delay_count >= MAX_DELAYED_ACK_COUNT {
+                            let ts = tcb.ts_option(tsval);
+                            SegmentBuilder::build_ack(
+                                tcb.id.local_addr,
+                                tcb.id.remote_addr,
+                                tcb.id.local_port,
+                                tcb.id.remote_port,
+                                tcb.snd_nxt,
+                                tcb.rcv_nxt,
+                                tcb.advertised_window(),
+                                ack_flags,
+                                ts,
+                                src_mac,
+                                dst_mac,
+                                self.tx_offload,
+                                free_frames,
+                                tx_return,
+                            );
+                            tcb.update_advertised_edge();
+                            tcb.ack_pending = false;
+                            tcb.ack_delay_count = 0;
+                            tcb.delayed_ack_deadline = None;
+                        } else {
+                            tcb.ack_pending = true;
+                            if tcb.delayed_ack_deadline.is_none() {
+                                tcb.delayed_ack_deadline = Some(
+                                    now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms),
+                                );
+                            }
+                        }
+
+                        rx_return.push(frame);
+                        return;
+                    }
+                    // No window space — fall through to slow path.
+                }
+            }
+        }
+        // Fall through to existing slow path.
+
         // PAWS check (RFC 7323 §5).
         if self.connections[idx].ts_enabled
             && let Some((tsval, _)) = opts.timestamp
