@@ -288,6 +288,8 @@ impl TcpHandler {
             ecn_cwr_sent: false,
             persist_deadline: None,
             persist_backoff: 0,
+            max_snd_wnd: 0,
+            last_advertised_right_edge: 0,
         };
 
         // Send SYN.
@@ -865,6 +867,8 @@ impl TcpHandler {
                 ecn_cwr_sent: false,
                 persist_deadline: None,
                 persist_backoff: 0,
+                max_snd_wnd: 0,
+                last_advertised_right_edge: 0,
             };
 
             // Send SYN-ACK.
@@ -1024,6 +1028,7 @@ impl TcpHandler {
                 tcb.state = TcpState::Established;
                 tcb.snd_una = seg_ack;
                 tcb.snd_wnd = seg_wnd;
+                tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
                 tcb.snd_wl1 = seg_seq;
                 tcb.snd_wl2 = seg_ack;
                 tcb.retransmit_deadline = None;
@@ -1164,6 +1169,7 @@ impl TcpHandler {
                 let tcb = &mut self.connections[idx];
                 tcb.state = TcpState::Established;
                 tcb.snd_wnd = seg_wnd;
+                tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
                 tcb.snd_wl1 = seg_seq;
                 tcb.snd_wl2 = seg_ack;
                 tcb.retransmit_deadline = None;
@@ -1201,6 +1207,7 @@ impl TcpHandler {
                 tcb.state = TcpState::SynReceived;
                 tcb.from_passive_open = false;
                 tcb.snd_wnd = seg_wnd;
+                tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
                 tcb.snd_wl1 = seg_seq;
                 tcb.snd_wl2 = seg_ack;
 
@@ -1532,6 +1539,7 @@ impl TcpHandler {
                     || (tcb.snd_wl1 == seg_seq && seq_le(tcb.snd_wl2, seg_ack))
                 {
                     tcb.snd_wnd = tcb.scale_incoming_window(seg_wnd);
+                    tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
                     tcb.snd_wl1 = seg_seq;
                     tcb.snd_wl2 = seg_ack;
                 }
@@ -1604,6 +1612,7 @@ impl TcpHandler {
                     || (tcb.snd_wl1 == seg_seq && seq_le(tcb.snd_wl2, seg_ack))
                 {
                     tcb.snd_wnd = new_wnd;
+                    tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
                     tcb.snd_wl1 = seg_seq;
                     tcb.snd_wl2 = seg_ack;
                 }
@@ -1679,6 +1688,7 @@ impl TcpHandler {
                         free_frames,
                         tx_return,
                     );
+                    tcb.update_advertised_edge();
                     tcb.ack_pending = false;
                     tcb.ack_delay_count = 0;
                     tcb.delayed_ack_deadline = None;
@@ -1860,6 +1870,7 @@ impl TcpHandler {
                     free_frames,
                     tx_return,
                 );
+                tcb.update_advertised_edge();
                 tcb.ack_pending = false;
                 tcb.ack_delay_count = 0;
                 tcb.delayed_ack_deadline = None;
@@ -2234,8 +2245,14 @@ impl TcpHandler {
             let can_send = send_window.saturating_sub(bytes_in_flight);
             let data_available = tcb.send_buffer.available().saturating_sub(bytes_in_flight);
 
+            // Sender SWS avoidance (MUST-38): don't send sub-MSS data unless
+            // the usable window is large enough or all remaining data fits.
+            let sws_ok = can_send >= tcb.eff_snd_mss as usize
+                || can_send >= (tcb.max_snd_wnd as usize / 2).max(1)
+                || data_available <= can_send; // all remaining data fits
+
             // Send data if possible.
-            if can_send > 0 && data_available > 0 {
+            if can_send > 0 && data_available > 0 && sws_ok {
                 let to_send = can_send.min(data_available).min(tcb.eff_snd_mss as usize);
 
                 // Nagle algorithm: hold small segments when data is in flight.
@@ -2305,6 +2322,7 @@ impl TcpHandler {
                     }
 
                     // Piggyback: data segment carries ACK, so clear delayed ACK state.
+                    tcb.update_advertised_edge();
                     tcb.ack_pending = false;
                     tcb.ack_delay_count = 0;
                     tcb.delayed_ack_deadline = None;
@@ -2766,6 +2784,7 @@ impl TcpHandler {
                         let buf_advance = bytes_acked.min(tcb.send_buffer.available());
                         tcb.send_buffer.advance(buf_advance);
                         tcb.snd_wnd = tcb.scale_incoming_window(seg_wnd);
+                        tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
                     }
                 }
 
@@ -2970,6 +2989,7 @@ impl TcpHandler {
                                 && crate::net::wire::tcp::seq_le(tcb.snd_wl2, seg_ack))
                         {
                             tcb.snd_wnd = tcb.scale_incoming_window(seg_wnd);
+                            tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
                             tcb.snd_wl1 = seg_seq;
                             tcb.snd_wl2 = seg_ack;
                         }
@@ -10424,5 +10444,153 @@ mod tests {
             handler.connections[0].snd_wnd, 32000,
             "send window must be updated from ACK"
         );
+    }
+
+    #[test]
+    fn sender_sws_avoidance_holds_small_sends() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        let mss = handler.connections[0].eff_snd_mss;
+
+        // Set max_snd_wnd high (simulates the peer previously advertised a large window).
+        handler.connections[0].max_snd_wnd = 65535;
+        // Set current snd_wnd to 10 bytes — much less than MSS and max_snd_wnd/2.
+        handler.connections[0].snd_wnd = 10;
+
+        // Write more data than can_send (10 bytes) so data_available > can_send.
+        handler.connections[0].send_buffer.write(&[0x41u8; 100]);
+
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        // SWS check: can_send=10, eff_snd_mss=1460, max_snd_wnd/2=32767, data_available=100.
+        // 10 < 1460 (not full MSS), 10 < 32767 (not half max window), 100 > 10 (not all data fits).
+        // sws_ok = false → no send.
+        assert_eq!(tx.num_frames(), 0, "sender SWS should hold: window too small");
+
+        // Now set snd_wnd to eff_snd_mss — should send.
+        handler.connections[0].snd_wnd = mss as u32;
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        assert_eq!(tx.num_frames(), 1, "should send when can_send >= eff_snd_mss");
+    }
+
+    #[test]
+    fn sender_sws_allows_send_when_all_data_fits() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        // Set max_snd_wnd high, snd_wnd to 5 bytes (small window).
+        handler.connections[0].max_snd_wnd = 65535;
+        handler.connections[0].snd_wnd = 5;
+
+        // Write only 3 bytes — all data fits in the window.
+        handler.connections[0].send_buffer.write(b"abc");
+
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        // SWS: can_send=5, data_available=3, 3 <= 5 → all data fits → sws_ok = true.
+        assert_eq!(tx.num_frames(), 1, "should send when all data fits in window");
     }
 }

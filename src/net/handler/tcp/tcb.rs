@@ -275,6 +275,12 @@ pub struct Tcb {
     pub persist_deadline: Option<Instant>,
     /// Exponential backoff counter for persist probes (cap at 6).
     pub persist_backoff: u8,
+
+    // --- SWS avoidance ---
+    /// Largest send window ever advertised by peer (for sender SWS).
+    pub max_snd_wnd: u32,
+    /// Right edge of last advertised receive window (rcv_nxt + wnd at ACK time).
+    pub last_advertised_right_edge: u32,
 }
 
 impl Tcb {
@@ -293,14 +299,44 @@ impl Tcb {
 
     /// Compute the window value to advertise in outgoing segments.
     /// Downscales by `rcv_wscale` if window scaling is enabled.
+    /// Applies receiver SWS avoidance (MUST-39): don't open the window
+    /// until we can advertise at least min(MSS, buffer/2) of new space.
     #[inline]
     pub fn advertised_window(&self) -> u16 {
         let free = self.recv_buffer.free_space();
-        if self.wscale_enabled {
-            (free >> self.rcv_wscale as usize).min(u16::MAX as usize) as u16
+        let threshold = (self.rcv_mss as usize).min(self.recv_buffer.capacity() / 2);
+
+        // SWS avoidance (MUST-39): don't open the window until we can
+        // advertise at least min(MSS, buffer/2) of new space.
+        let right_edge = self.rcv_nxt.wrapping_add(free as u32);
+        let prev_right_edge = self.last_advertised_right_edge;
+
+        let effective_free = if prev_right_edge != 0 {
+            let new_space = right_edge.wrapping_sub(prev_right_edge) as i32;
+            if new_space > 0 && (new_space as usize) < threshold {
+                // Not enough new space — clamp to previous right edge.
+                let clamped = prev_right_edge.wrapping_sub(self.rcv_nxt);
+                (clamped as usize).min(free)
+            } else {
+                free
+            }
         } else {
-            free.min(u16::MAX as usize) as u16
+            free
+        };
+
+        if self.wscale_enabled {
+            (effective_free >> self.rcv_wscale as usize).min(u16::MAX as usize) as u16
+        } else {
+            effective_free.min(u16::MAX as usize) as u16
         }
+    }
+
+    /// Update the last advertised right edge after sending an ACK.
+    /// Call this after any path that sends an ACK with our advertised window.
+    #[inline]
+    pub fn update_advertised_edge(&mut self) {
+        self.last_advertised_right_edge =
+            self.rcv_nxt.wrapping_add(self.recv_buffer.free_space() as u32);
     }
 
     /// Scale an incoming window value by `snd_wscale`.
@@ -386,6 +422,8 @@ mod tests {
             ecn_cwr_sent: false,
             persist_deadline: None,
             persist_backoff: 0,
+            max_snd_wnd: 0,
+            last_advertised_right_edge: 0,
         }
     }
 
@@ -414,5 +452,68 @@ mod tests {
         // snd_wscale = 3 → 500 << 3 = 4000
         let tcb = make_tcb(true, 3, 0, 1024);
         assert_eq!(tcb.scale_incoming_window(500), 4000);
+    }
+
+    #[test]
+    fn receiver_sws_avoidance_holds_small_window_opens() {
+        // Buffer capacity = 64, rcv_mss = 1460.
+        // threshold = min(1460, 64/2) = 32.
+        let mut tcb = make_tcb(false, 0, 0, 64);
+        tcb.rcv_nxt = 1000;
+
+        // Initially, no previous right edge — full window advertised.
+        assert_eq!(tcb.advertised_window(), 64);
+
+        // Simulate: buffer was full, we advertised right edge at rcv_nxt + 64.
+        tcb.last_advertised_right_edge = 1000u32.wrapping_add(64);
+
+        // Fill 48 bytes of the buffer, leaving 16 bytes free.
+        tcb.recv_buffer.write(&[0u8; 48]);
+
+        // Free space = 16, new_space = (1000+16) - (1000+64) = -48 (negative, no new space).
+        // Since new_space is not positive, effective_free = free = 16.
+        assert_eq!(tcb.advertised_window(), 16);
+
+        // Now simulate the app reads 48 bytes → buffer is fully free (64 bytes).
+        let mut drain = [0u8; 48];
+        tcb.recv_buffer.read(&mut drain);
+
+        // Free space = 64, right_edge = 1000+64, prev = 1064.
+        // new_space = 1064 - 1064 = 0, not > 0 → effective_free = 64.
+        assert_eq!(tcb.advertised_window(), 64);
+
+        // Now advance rcv_nxt by 48 (data was received and consumed).
+        tcb.rcv_nxt = 1048;
+        // Fill 54 bytes leaving 10 free.
+        tcb.recv_buffer.write(&[0u8; 54]);
+        // Free space = 10, right_edge = 1048+10 = 1058, prev = 1064.
+        // new_space = 1058 - 1064 = -6 (negative) → effective_free = 10.
+        assert_eq!(tcb.advertised_window(), 10);
+
+        // App reads 10 bytes → 20 free.
+        let mut drain2 = [0u8; 10];
+        tcb.recv_buffer.read(&mut drain2);
+        // Free = 20, right_edge = 1048+20 = 1068, prev = 1064.
+        // new_space = 1068 - 1064 = 4 < threshold(32) → clamped.
+        // clamped = 1064 - 1048 = 16. min(16, 20) = 16.
+        assert_eq!(tcb.advertised_window(), 16, "SWS holds: only 4 bytes of new space < threshold 32");
+
+        // App reads 34 more bytes → 54 free.
+        let mut drain3 = [0u8; 34];
+        tcb.recv_buffer.read(&mut drain3);
+        // Free = 54, right_edge = 1048+54 = 1102, prev = 1064.
+        // new_space = 1102 - 1064 = 38 >= threshold(32) → opens.
+        assert_eq!(tcb.advertised_window(), 54, "SWS opens: 38 bytes of new space >= threshold 32");
+    }
+
+    #[test]
+    fn update_advertised_edge_sets_right_edge() {
+        let mut tcb = make_tcb(false, 0, 0, 128);
+        tcb.rcv_nxt = 5000;
+        assert_eq!(tcb.last_advertised_right_edge, 0);
+
+        tcb.update_advertised_edge();
+        // free_space = 128 (empty buffer).
+        assert_eq!(tcb.last_advertised_right_edge, 5000u32.wrapping_add(128));
     }
 }
