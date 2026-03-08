@@ -25,6 +25,12 @@ impl TcpHandler {
                 continue;
             }
 
+            let tsval = if tcb.ts_enabled {
+                now.duration_since(tcb.ts_offset).as_millis() as u32
+            } else {
+                0
+            };
+
             // Send as many segments as the window allows.
             loop {
                 let bytes_in_flight = tcb.snd_nxt.wrapping_sub(tcb.snd_una) as usize;
@@ -92,12 +98,7 @@ impl TcpHandler {
                     .lookup(now, &tcb.id.remote_addr)
                     .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
 
-                let ts = if tcb.ts_enabled {
-                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                    Some((tsval, tcb.ts_recent))
-                } else {
-                    None
-                };
+                let ts = tcb.ts_option(tsval);
                 let remaining_after_send = data_available.saturating_sub(to_send);
                 let mut data_flags = if remaining_after_send == 0 || to_send >= can_send {
                     flags::ACK | flags::PSH
@@ -178,12 +179,7 @@ impl TcpHandler {
                     .lookup(now, &tcb.id.remote_addr)
                     .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
 
-                let ts = if tcb.ts_enabled {
-                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                    Some((tsval, tcb.ts_recent))
-                } else {
-                    None
-                };
+                let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_data(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
@@ -255,12 +251,7 @@ impl TcpHandler {
                     let dst_mac = neighbor_handler
                         .lookup(now, &id.remote_addr)
                         .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
-                    let ts = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                        Some((tsval, tcb.ts_recent))
-                    } else {
-                        None
-                    };
+                    let ts = tcb.ts_option(tsval);
                     SegmentBuilder::build_fin_ack(
                         id.local_addr,
                         id.remote_addr,

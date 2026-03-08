@@ -32,6 +32,11 @@ impl TcpHandler {
             if !tcb.ack_pending {
                 continue;
             }
+            let tsval = if tcb.ts_enabled {
+                now.duration_since(tcb.ts_offset).as_millis() as u32
+            } else {
+                0
+            };
             if let Some(deadline) = tcb.delayed_ack_deadline
                 && now >= deadline
             {
@@ -39,12 +44,7 @@ impl TcpHandler {
                 let dst_mac = neighbor_handler
                     .lookup(now, &id.remote_addr)
                     .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
-                let ts = if tcb.ts_enabled {
-                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                    Some((tsval, tcb.ts_recent))
-                } else {
-                    None
-                };
+                let ts = tcb.ts_option(tsval);
                 let ack_flags = if tcb.ecn_ce_received {
                     flags::ACK | flags::ECE
                 } else {
@@ -80,6 +80,12 @@ impl TcpHandler {
                 continue;
             }
 
+            let tsval = if tcb.ts_enabled {
+                now.duration_since(tcb.ts_offset).as_millis() as u32
+            } else {
+                0
+            };
+
             let idle_ms = now.duration_since(tcb.last_activity).as_millis();
 
             let probe_threshold = if tcb.keep_alive_probes_sent == 0 {
@@ -102,12 +108,7 @@ impl TcpHandler {
                 let dst_mac = neighbor_handler
                     .lookup(now, &id.remote_addr)
                     .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
-                let ts = if tcb.ts_enabled {
-                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                    Some((tsval, tcb.ts_recent))
-                } else {
-                    None
-                };
+                let ts = tcb.ts_option(tsval);
                 let ack_flags = if tcb.ecn_ce_received {
                     flags::ACK | flags::ECE
                 } else {
@@ -147,6 +148,12 @@ impl TcpHandler {
                 continue;
             }
 
+            let tsval = if tcb.ts_enabled {
+                now.duration_since(tcb.ts_offset).as_millis() as u32
+            } else {
+                0
+            };
+
             // Recompute pipe estimate.
             tcb.recovery.set_pipe(
                 tcb.snd_una,
@@ -180,12 +187,7 @@ impl TcpHandler {
                         .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
 
                     let payload = tcb.send_buffer.peek_slices(offset, retransmit_len);
-                    let ts = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                        Some((tsval, tcb.ts_recent))
-                    } else {
-                        None
-                    };
+                    let ts = tcb.ts_option(tsval);
                     SegmentBuilder::build_data_from_slices(
                         id.local_addr,
                         id.remote_addr,
@@ -227,6 +229,12 @@ impl TcpHandler {
                 continue;
             }
 
+            let tsval = if tcb.ts_enabled {
+                now.duration_since(tcb.ts_offset).as_millis() as u32
+            } else {
+                0
+            };
+
             // Check R2 threshold.
             let total_elapsed_ms = {
                 let base_rto = INITIAL_RTO_MS;
@@ -253,7 +261,6 @@ impl TcpHandler {
             match tcb.state {
                 TcpState::SynSent => {
                     let ts_opt = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
                         Some((tsval, 0u32))
                     } else {
                         None
@@ -283,12 +290,7 @@ impl TcpHandler {
                     } else {
                         None
                     };
-                    let ts_opt = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                        Some((tsval, tcb.ts_recent))
-                    } else {
-                        None
-                    };
+                    let ts_opt = tcb.ts_option(tsval);
                     SegmentBuilder::build_syn_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -313,12 +315,7 @@ impl TcpHandler {
                     let retransmit_len = tcb.send_buffer.available().min(tcb.eff_snd_mss as usize);
                     if retransmit_len > 0 {
                         let payload = tcb.send_buffer.peek_slices(0, retransmit_len);
-                        let ts = if tcb.ts_enabled {
-                            let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                            Some((tsval, tcb.ts_recent))
-                        } else {
-                            None
-                        };
+                        let ts = tcb.ts_option(tsval);
                         SegmentBuilder::build_data_from_slices(
                             id.local_addr,
                             id.remote_addr,
@@ -349,12 +346,7 @@ impl TcpHandler {
                 }
                 TcpState::FinWait1 | TcpState::Closing | TcpState::LastAck => {
                     // Retransmit FIN-ACK.
-                    let ts = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                        Some((tsval, tcb.ts_recent))
-                    } else {
-                        None
-                    };
+                    let ts = tcb.ts_option(tsval);
                     if let Some(fin_seq) = tcb.fin_seq {
                         SegmentBuilder::build_fin_ack(
                             id.local_addr,
