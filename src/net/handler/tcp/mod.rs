@@ -1141,6 +1141,7 @@ impl TcpHandler {
             let peer_wscale = parse_window_scale(options);
             tcb.snd_mss = peer_mss;
             tcb.eff_snd_mss = peer_mss.min(tcb.rcv_mss);
+            tcb.cubic.set_mss(tcb.eff_snd_mss);
 
             if let Some(ws) = peer_wscale {
                 tcb.snd_wscale = ws;
