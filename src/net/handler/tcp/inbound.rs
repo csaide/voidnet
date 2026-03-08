@@ -1412,20 +1412,24 @@ impl TcpHandler {
                 let ts = tcb.ts_option(tsval);
 
                 let max_blocks = if tcb.ts_enabled { 3 } else { 4 };
-                let mut sack_blocks: Vec<(u32, u32)> = Vec::new();
+                let mut sack_buf = [(0u32, 0u32); 4];
+                let mut sack_count = 0usize;
                 if tcb.sack_enabled {
                     // Most recently received range first (per RFC 2018 §3).
-                    sack_blocks.push((seg_seq, seg_seq.wrapping_add(payload_len as u32)));
+                    sack_buf[0] = (seg_seq, seg_seq.wrapping_add(payload_len as u32));
+                    sack_count = 1;
                     for (&start, &len) in tcb.ooo_ranges.iter().rev() {
-                        if sack_blocks.len() >= max_blocks {
+                        if sack_count >= max_blocks {
                             break;
                         }
                         let end = start.wrapping_add(len);
                         if start != seg_seq {
-                            sack_blocks.push((start, end));
+                            sack_buf[sack_count] = (start, end);
+                            sack_count += 1;
                         }
                     }
                 }
+                let sack_blocks = &sack_buf[..sack_count];
 
                 SegmentBuilder::build_ack_with_sack(
                     tcb.id.local_addr,
@@ -1437,7 +1441,7 @@ impl TcpHandler {
                     tcb.advertised_window(),
                     ack_flags,
                     ts,
-                    &sack_blocks,
+                    sack_blocks,
                     src_mac,
                     dst_mac,
                     self.tx_offload,

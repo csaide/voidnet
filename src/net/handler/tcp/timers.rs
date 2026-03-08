@@ -74,7 +74,8 @@ impl TcpHandler {
         }
 
         // Keep-alive probe pass — send probes for idle established connections.
-        let mut keep_alive_removals: Vec<usize> = Vec::new();
+        let mut keep_alive_removals = [0usize; 64];
+        let mut keep_alive_removal_count = 0usize;
         for (i, tcb) in self.connections.iter_mut().enumerate() {
             if tcb.state != TcpState::Established || !tcb.keep_alive_enabled {
                 continue;
@@ -99,7 +100,10 @@ impl TcpHandler {
                 if tcb.keep_alive_probes_sent >= tcb.keep_alive_count {
                     // Max probes exceeded — abort connection.
                     tcb.event_queue.push(TcpEvent::Timeout);
-                    keep_alive_removals.push(i);
+                    if keep_alive_removal_count < 64 {
+                        keep_alive_removals[keep_alive_removal_count] = i;
+                        keep_alive_removal_count += 1;
+                    }
                     continue;
                 }
 
@@ -136,7 +140,7 @@ impl TcpHandler {
         }
 
         // Remove connections that exceeded keep-alive probes (reverse order).
-        for idx in keep_alive_removals.into_iter().rev() {
+        for &idx in keep_alive_removals[..keep_alive_removal_count].iter().rev() {
             let id = self.connections[idx].id;
             self.decrement_syn_received(&id);
             self.connections.remove(idx);
@@ -218,7 +222,8 @@ impl TcpHandler {
         }
 
         // RTO retransmit pass — timer-based.
-        let mut to_remove = Vec::new();
+        let mut to_remove = [0usize; 64];
+        let mut to_remove_count = 0usize;
 
         for (idx, tcb) in self.connections.iter_mut().enumerate() {
             let Some(deadline) = tcb.retransmit_deadline else {
@@ -248,7 +253,10 @@ impl TcpHandler {
             if total_elapsed_ms >= SYN_R2_THRESHOLD_MS {
                 // Timeout — signal and mark for removal.
                 tcb.event_queue.push(TcpEvent::Timeout);
-                to_remove.push(idx);
+                if to_remove_count < 64 {
+                    to_remove[to_remove_count] = idx;
+                    to_remove_count += 1;
+                }
                 continue;
             }
 
@@ -384,7 +392,7 @@ impl TcpHandler {
         }
 
         // Remove timed-out connections (in reverse order to preserve indices).
-        for idx in to_remove.into_iter().rev() {
+        for &idx in to_remove[..to_remove_count].iter().rev() {
             let id = self.connections[idx].id;
             self.decrement_syn_received(&id);
             self.connections.remove(idx);
