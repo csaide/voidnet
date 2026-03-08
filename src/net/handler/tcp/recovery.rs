@@ -142,6 +142,59 @@ impl SackRecovery {
     }
 }
 
+pub struct PrrState {
+    pub prr_delivered: u32,
+    pub prr_out: u32,
+    pub recover_fs: u32,
+}
+
+impl PrrState {
+    pub fn new() -> Self {
+        Self {
+            prr_delivered: 0,
+            prr_out: 0,
+            recover_fs: 0,
+        }
+    }
+
+    /// Enter recovery. `bytes_in_flight` = snd_nxt - snd_una at entry.
+    pub fn enter(&mut self, bytes_in_flight: u32) {
+        self.recover_fs = bytes_in_flight;
+        self.prr_delivered = 0;
+        self.prr_out = 0;
+    }
+
+    /// Reset on recovery exit.
+    pub fn exit(&mut self) {
+        self.prr_delivered = 0;
+        self.prr_out = 0;
+        self.recover_fs = 0;
+    }
+
+    /// Called on each ACK during recovery. Returns snd_cnt (bytes allowed to send).
+    /// `bytes_newly_delivered` = bytes_acked + bytes_newly_sacked.
+    /// `pipe` = current pipe estimate. `ssthresh` = target cwnd.
+    pub fn on_ack(&mut self, bytes_newly_delivered: u32, pipe: u32, ssthresh: u32, eff_mss: u16) -> u32 {
+        self.prr_delivered += bytes_newly_delivered;
+
+        if pipe > ssthresh {
+            // Proportional: snd_cnt = ceil(prr_delivered * ssthresh / recover_fs) - prr_out.
+            let numer = self.prr_delivered as u64 * ssthresh as u64;
+            let target = ((numer + self.recover_fs as u64 - 1) / self.recover_fs as u64) as u32;
+            target.saturating_sub(self.prr_out)
+        } else {
+            // Slow start reduction bound.
+            let limit = self.prr_delivered.saturating_sub(self.prr_out) + eff_mss as u32;
+            ssthresh.saturating_sub(pipe).min(limit)
+        }
+    }
+
+    /// Called after sending bytes during recovery.
+    pub fn on_sent(&mut self, bytes_sent: u32) {
+        self.prr_out += bytes_sent;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +272,39 @@ mod tests {
         // Full ACK -- exits.
         assert!(recovery.on_ack(5000));
         assert!(!recovery.in_recovery);
+    }
+
+    #[test]
+    fn prr_proportional_when_pipe_above_ssthresh() {
+        let mut prr = PrrState::new();
+        prr.enter(10_000); // recover_fs = 10_000.
+        let ssthresh = 7_000u32;
+        let mss = 1460u16;
+
+        // Simulate ACK delivering 1460 bytes.
+        let snd_cnt = prr.on_ack(1460, 8_000, ssthresh, mss);
+        // pipe=8000 > ssthresh=7000 => proportional.
+        // snd_cnt = ceil(1460 * 7000 / 10000) - 0 = ceil(1022) = 1022.
+        assert_eq!(snd_cnt, 1022);
+
+        // After "sending" 1022 bytes.
+        prr.on_sent(1022);
+        // Second ACK (pipe still above ssthresh).
+        let snd_cnt = prr.on_ack(1460, 7_500, ssthresh, mss);
+        // snd_cnt = ceil(2920 * 7000 / 10000) - 1022 = ceil(2044) - 1022 = 1022.
+        assert_eq!(snd_cnt, 1022);
+    }
+
+    #[test]
+    fn prr_slow_start_reduction_when_pipe_below_ssthresh() {
+        let mut prr = PrrState::new();
+        prr.enter(10_000);
+        let ssthresh = 7_000u32;
+        let mss = 1460u16;
+
+        // pipe=5000 < ssthresh.
+        let snd_cnt = prr.on_ack(1460, 5_000, ssthresh, mss);
+        // snd_cnt = min(7000 - 5000, 1460 - 0 + 1460) = min(2000, 2920) = 2000.
+        assert_eq!(snd_cnt, 2000);
     }
 }
