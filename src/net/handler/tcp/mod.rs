@@ -1487,14 +1487,10 @@ impl TcpHandler {
                 tcb.last_activity = now;
                 tcb.keep_alive_probes_sent = 0;
 
-                // Congestion control.
-                let eff_mss = tcb.eff_snd_mss as u32;
-                if tcb.cubic.cwnd < tcb.cubic.ssthresh {
-                    // Slow start.
-                    tcb.cubic.cwnd += eff_mss;
-                } else {
-                    // Congestion avoidance.
-                    tcb.cubic.cwnd += (eff_mss * eff_mss) / tcb.cubic.cwnd;
+                // Congestion control — only update outside recovery.
+                if !tcb.recovery.in_recovery {
+                    let rtt_ms = tcb.srtt.unwrap_or(tcb.rto);
+                    tcb.cubic.on_ack(bytes_acked as u32, now, rtt_ms);
                 }
 
                 tcb.recovery.dup_ack_count = 0;
@@ -1571,8 +1567,7 @@ impl TcpHandler {
                 // ECN congestion response: if peer signals ECE, halve cwnd and
                 // schedule CWR on the next data segment.
                 if tcb.ecn_enabled && seg_flags & flags::ECE != 0 && !tcb.ecn_cwr_sent {
-                    tcb.cubic.ssthresh = (tcb.cubic.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
-                    tcb.cubic.cwnd = tcb.cubic.ssthresh;
+                    tcb.cubic.on_ecn();
                     tcb.ecn_cwr_sent = true;
                 }
             } else if seq_lt(snd_nxt, seg_ack) {
@@ -10598,5 +10593,73 @@ mod tests {
 
         // SWS: can_send=5, data_available=3, 3 <= 5 → all data fits → sws_ok = true.
         assert_eq!(tx.num_frames(), 1, "should send when all data fits in window");
+    }
+
+    #[test]
+    fn cubic_slow_start_on_new_ack() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535,
+            &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        let cwnd_before = handler.connections[0].cubic.cwnd;
+        let mss = handler.connections[0].eff_snd_mss;
+
+        // Send data and get it ACKed.
+        handler.connections[0].send_buffer.write(&[0xAA; 1460]);
+        handler.connections[0].snd_wnd = 65535;
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+
+        // ACK the data.
+        let snd_nxt = handler.connections[0].snd_nxt;
+        let ack = build_tcp_frame(
+            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_nxt, flags::ACK, 65535, &[],
+        );
+        let ack_len = ack.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(ack), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // In slow start: cwnd should increase by MSS (CUBIC slow start same as Reno).
+        let cwnd_after = handler.connections[0].cubic.cwnd;
+        assert_eq!(cwnd_after, cwnd_before + mss as u32, "slow start: cwnd += MSS");
     }
 }
