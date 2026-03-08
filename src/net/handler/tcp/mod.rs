@@ -2950,8 +2950,31 @@ impl TcpHandler {
             }
 
             TcpState::CloseWait => {
-                // Remote already FINed. No new data expected.
-                // Just handle RST (already handled above) and ignore everything else.
+                // Process ACKs — local side can still send data.
+                if seg_flags & flags::ACK != 0 {
+                    let tcb = &mut self.connections[idx];
+                    let snd_una = tcb.snd_una;
+                    let snd_nxt = tcb.snd_nxt;
+
+                    if crate::net::wire::tcp::seq_lt(snd_una, seg_ack)
+                        && crate::net::wire::tcp::seq_le(seg_ack, snd_nxt)
+                    {
+                        let bytes_acked = seg_ack.wrapping_sub(snd_una) as usize;
+                        tcb.snd_una = seg_ack;
+                        let buf_advance = bytes_acked.min(tcb.send_buffer.available());
+                        tcb.send_buffer.advance(buf_advance);
+
+                        // Window update with WL1/WL2 guard.
+                        if crate::net::wire::tcp::seq_lt(tcb.snd_wl1, seg_seq)
+                            || (tcb.snd_wl1 == seg_seq
+                                && crate::net::wire::tcp::seq_le(tcb.snd_wl2, seg_ack))
+                        {
+                            tcb.snd_wnd = tcb.scale_incoming_window(seg_wnd);
+                            tcb.snd_wl1 = seg_seq;
+                            tcb.snd_wl2 = seg_ack;
+                        }
+                    }
+                }
                 rx_return.push(frame);
             }
 
@@ -10263,6 +10286,143 @@ mod tests {
         assert_eq!(
             handler.connections[0].snd_wl1, 1002,
             "stale segment must not regress snd_wl1"
+        );
+    }
+
+    #[test]
+    fn close_wait_processes_ack_for_sent_data() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(32);
+        let mut rx = BasicFrameBuffer::new(32);
+        let mut tx = BasicFrameBuffer::new(32);
+
+        for i in 0..16 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
+        let syn_len = syn_data.len();
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
+        let ack_len = ack_data.len();
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        while tx.pop().is_some() {}
+
+        // Write data into the send buffer.
+        let payload = b"half-close data!";
+        handler.connections[0].send_buffer.write(payload);
+        handler.connections[0].snd_wnd = 65535;
+
+        // poll_send to transmit data (advances snd_nxt).
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+
+        let snd_nxt_after_send = handler.connections[0].snd_nxt;
+        assert_eq!(
+            snd_nxt_after_send,
+            server_iss
+                .wrapping_add(1)
+                .wrapping_add(payload.len() as u32)
+        );
+        // Data still in send buffer until ACKed.
+        assert_eq!(handler.connections[0].send_buffer.available(), payload.len());
+
+        // Transition to CloseWait by receiving FIN+ACK from remote.
+        let fin_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK | flags::FIN,
+            65535,
+            &[],
+        );
+        let fin_len = fin_data.len();
+        handler.process_ipv4(
+            Frame::new(2, leak(fin_data), fin_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        while tx.pop().is_some() {}
+        assert_eq!(handler.connections[0].state, TcpState::CloseWait);
+
+        // Now send an ACK for the data we sent (seg_ack = snd_nxt).
+        let data_ack = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1002, // 1001 + FIN consumes 1
+            snd_nxt_after_send,
+            flags::ACK,
+            32000,
+            &[],
+        );
+        let data_ack_len = data_ack.len();
+        handler.process_ipv4(
+            Frame::new(3, leak(data_ack), data_ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        // snd_una should advance to snd_nxt (all data ACKed).
+        assert_eq!(
+            handler.connections[0].snd_una, snd_nxt_after_send,
+            "snd_una must advance to cover ACKed data"
+        );
+        // Send buffer should be drained.
+        assert_eq!(
+            handler.connections[0].send_buffer.available(),
+            0,
+            "send buffer must be drained after ACK"
+        );
+        // Window should be updated.
+        assert_eq!(
+            handler.connections[0].snd_wnd, 32000,
+            "send window must be updated from ACK"
         );
     }
 }
