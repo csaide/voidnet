@@ -321,34 +321,22 @@ impl<'umem> LocalRuntime<'umem> {
                 return Ok(());
             }
 
-            // Drive TCP retransmission timers every iteration.
-            {
-                // SAFETY: single-threaded, no reentrant handler calls.
-                let tcp_handler = unsafe { &mut *self.tcp_handler.get() };
-                tcp_handler.poll_timers(
-                    now,
-                    self.neighbor_handler.local_mac(),
-                    &self.neighbor_handler,
-                    &mut self.free_frames,
-                    &mut self.tx_return,
-                );
-            }
-
             // Drive TCP data segment transmission.
-            {
-                // SAFETY: single-threaded, no reentrant handler calls.
-                let tcp_handler = unsafe { &mut *self.tcp_handler.get() };
-                tcp_handler.poll_send(
-                    now,
-                    self.neighbor_handler.local_mac(),
-                    &self.neighbor_handler,
-                    &mut self.free_frames,
-                    &mut self.tx_return,
-                );
-            }
+            //
+            // SAFETY: single-threaded, no reentrant handler calls.
+            unsafe { &mut *self.tcp_handler.get() }.poll_send(
+                now,
+                self.neighbor_handler.local_mac(),
+                &self.neighbor_handler,
+                &mut self.free_frames,
+                &mut self.tx_return,
+            );
 
             self.evict_counter = self.evict_counter.wrapping_add(1);
             if self.evict_counter & 65535 == 0 {
+                // Update our current timestamp.
+                now = coarsetime::Instant::now();
+
                 // Evict stale UDP fragments.
                 //
                 // SAFETY: single-threaded, no reentrant handler calls.
@@ -358,19 +346,24 @@ impl<'umem> LocalRuntime<'umem> {
                     &mut self.rx_return,
                 );
 
-                // Evict stale TCP connections (e.g. TIME-WAIT).
+                // Evict stale TCP connections (e.g. TIME-WAIT), and poll timers with the new timestamp.
                 //
                 // SAFETY: single-threaded, no reentrant handler calls.
-                unsafe { &mut *self.tcp_handler.get() }.evict_stale(now, &mut self.rx_return);
+                let tcp_handler = unsafe { &mut *self.tcp_handler.get() };
+                tcp_handler.evict_stale(now, &mut self.rx_return);
+                tcp_handler.poll_timers(
+                    now,
+                    self.neighbor_handler.local_mac(),
+                    &self.neighbor_handler,
+                    &mut self.free_frames,
+                    &mut self.tx_return,
+                );
 
                 // Evict stale neighbor entries.
                 self.neighbor_handler.evict_stale(now);
 
                 // Evict stale PMTU entries.
                 self.pmtu.evict_stale(now);
-
-                // Update our current timestamp.
-                now = coarsetime::Instant::now();
             }
 
             let expected_size = self.tx_return.num_frames() + self.rx_return.num_frames();
