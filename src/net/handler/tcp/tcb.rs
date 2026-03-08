@@ -66,6 +66,11 @@ impl fmt::Display for TcpError {
 /// Default receive MSS advertised by this implementation.
 pub const DEFAULT_RCV_MSS: u16 = 1460;
 
+/// TCP timestamp option overhead: NOP + NOP + Timestamp (10 bytes) = 12 bytes.
+/// When timestamps are negotiated, eff_snd_mss must be reduced by this amount
+/// to avoid exceeding MTU (RFC 7323 §5.1).
+pub const TS_OPTION_LEN: u16 = 12;
+
 /// Default receive window size.
 pub const DEFAULT_RCV_WND: u16 = 65535;
 

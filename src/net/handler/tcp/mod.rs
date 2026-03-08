@@ -1,9 +1,9 @@
+pub(crate) mod congestion;
 mod isn;
+pub(crate) mod recovery;
 pub(crate) mod ring_buffer;
 pub(crate) mod segment;
 pub(crate) mod state;
-pub(crate) mod congestion;
-pub(crate) mod recovery;
 pub(crate) mod tcb;
 
 use coarsetime::Instant;
@@ -30,13 +30,13 @@ use std::collections::BTreeMap;
 
 use congestion::CubicState;
 use isn::IsnGenerator;
-use recovery::{SackRecovery, PrrState, FRtoState, FRtoAction};
+use recovery::{FRtoAction, FRtoState, PrrState, SackRecovery};
 use ring_buffer::RingBuffer;
 use segment::SegmentBuilder;
 use state::TcpState;
 use tcb::{
     ConnectionId, DEFAULT_DELAYED_ACK_MS, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE,
-    MAX_DELAYED_ACK_COUNT, Tcb, TcpConfig, TcpEvent,
+    MAX_DELAYED_ACK_COUNT, TS_OPTION_LEN, Tcb, TcpConfig, TcpEvent,
 };
 
 /// Initial RTO for SYN retransmission (1 second in coarsetime ticks).
@@ -823,7 +823,10 @@ impl TcpHandler {
                 rcv_wnd: DEFAULT_RCV_WND as u32,
                 snd_mss: peer_mss,
                 rcv_mss: DEFAULT_RCV_MSS,
-                eff_snd_mss: peer_mss.min(DEFAULT_RCV_MSS),
+                eff_snd_mss: {
+                    let base = peer_mss.min(DEFAULT_RCV_MSS);
+                    if ts_enabled { base.saturating_sub(TS_OPTION_LEN) } else { base }
+                },
                 snd_wscale,
                 rcv_wscale: if wscale_enabled {
                     DEFAULT_RCV_WSCALE
@@ -837,7 +840,10 @@ impl TcpHandler {
                 send_buffer: RingBuffer::new(send_buffer_size),
                 recv_buffer: RingBuffer::new(recv_buffer_size),
                 ooo_ranges: BTreeMap::new(),
-                cubic: CubicState::new(peer_mss.min(DEFAULT_RCV_MSS)),
+                cubic: CubicState::new({
+                    let base = peer_mss.min(DEFAULT_RCV_MSS);
+                    if ts_enabled { base.saturating_sub(TS_OPTION_LEN) } else { base }
+                }),
                 recovery: SackRecovery::new(),
                 prr: PrrState::new(),
                 frto: FRtoState::new(),
@@ -1140,8 +1146,6 @@ impl TcpHandler {
             let peer_mss = parse_mss(options).unwrap_or(536);
             let peer_wscale = parse_window_scale(options);
             tcb.snd_mss = peer_mss;
-            tcb.eff_snd_mss = peer_mss.min(tcb.rcv_mss);
-            tcb.cubic.set_mss(tcb.eff_snd_mss);
 
             if let Some(ws) = peer_wscale {
                 tcb.snd_wscale = ws;
@@ -1157,6 +1161,15 @@ impl TcpHandler {
                     tcb.ts_enabled = false; // peer doesn't support
                 }
             }
+
+            // Set eff_snd_mss after timestamp negotiation so we know the option overhead.
+            let base_mss = peer_mss.min(tcb.rcv_mss);
+            tcb.eff_snd_mss = if tcb.ts_enabled {
+                base_mss.saturating_sub(TS_OPTION_LEN)
+            } else {
+                base_mss
+            };
+            tcb.cubic.set_mss(tcb.eff_snd_mss);
             // SACK negotiation.
             if tcb.sack_enabled && !parse_sack_permitted(options) {
                 tcb.sack_enabled = false;
@@ -1510,11 +1523,10 @@ impl TcpHandler {
                 }
 
                 // Recovery exit check — must come before congestion control.
-                if tcb.recovery.in_recovery {
-                    if tcb.recovery.on_ack(seg_ack) {
-                        // Exited recovery — full ACK covers recovery_point.
-                        tcb.prr.exit();
-                    }
+                if tcb.recovery.in_recovery && tcb.recovery.on_ack(seg_ack) {
+                    // Exited recovery — full ACK covers recovery_point.
+                    tcb.prr.exit();
+
                     // Note: if still in recovery (partial ACK), we skip cubic.on_ack below
                     // because it's already gated by !tcb.recovery.in_recovery
                 }
@@ -2010,7 +2022,9 @@ impl TcpHandler {
                     tcb.eff_snd_mss,
                 ) {
                     let offset = lost_seq.wrapping_sub(tcb.snd_una) as usize;
-                    let retransmit_len = tcb.send_buffer.available()
+                    let retransmit_len = tcb
+                        .send_buffer
+                        .available()
                         .saturating_sub(offset)
                         .min(tcb.eff_snd_mss as usize);
                     if retransmit_len == 0 {
@@ -2272,123 +2286,141 @@ impl TcpHandler {
                 continue;
             }
 
-            // Compute how many bytes we can send.
+            // Send as many segments as the window allows.
+            loop {
+                let bytes_in_flight = tcb.snd_nxt.wrapping_sub(tcb.snd_una) as usize;
+                let data_available =
+                    tcb.send_buffer.available().saturating_sub(bytes_in_flight);
+
+                let can_send = if tcb.recovery.in_recovery {
+                    tcb.recovery.set_pipe(
+                        tcb.snd_una,
+                        tcb.snd_nxt,
+                        &tcb.sack_scoreboard,
+                        tcb.eff_snd_mss,
+                    );
+                    let pipe = tcb.recovery.pipe as usize;
+                    let cwnd = tcb.cubic.cwnd as usize;
+                    if pipe < cwnd {
+                        (cwnd - pipe).min(tcb.eff_snd_mss as usize)
+                    } else {
+                        0
+                    }
+                } else {
+                    // Limited Transmit (RFC 3042): inflate effective cwnd by
+                    // dup_ack_count * MSS on the 1st/2nd dup ACK.
+                    let effective_cwnd = if tcb.recovery.dup_ack_count > 0
+                        && tcb.recovery.dup_ack_count <= 2
+                        && !tcb.recovery.in_recovery
+                    {
+                        tcb.cubic.cwnd as usize
+                            + tcb.recovery.dup_ack_count as usize
+                                * tcb.eff_snd_mss as usize
+                    } else {
+                        tcb.cubic.cwnd as usize
+                    };
+                    let send_window = (tcb.snd_wnd as usize).min(effective_cwnd);
+                    send_window.saturating_sub(bytes_in_flight)
+                };
+
+                if can_send == 0 || data_available == 0 {
+                    break;
+                }
+
+                // Sender SWS avoidance (MUST-38): don't send sub-MSS data unless
+                // the usable window is large enough or all remaining data fits.
+                let sws_ok = can_send >= tcb.eff_snd_mss as usize
+                    || can_send >= (tcb.max_snd_wnd as usize / 2).max(1)
+                    || data_available <= can_send;
+                if !sws_ok {
+                    break;
+                }
+
+                let to_send = can_send.min(data_available).min(tcb.eff_snd_mss as usize);
+
+                // Nagle algorithm: hold small segments when data is in flight.
+                if tcb.nagle_enabled
+                    && bytes_in_flight > 0
+                    && to_send < tcb.eff_snd_mss as usize
+                {
+                    break;
+                }
+
+                // Peek the data from the send buffer (don't advance — held until ACKed).
+                let payload = tcb.send_buffer.peek_slices(bytes_in_flight, to_send);
+
+                let dst_mac = neighbor_handler
+                    .lookup(now, &tcb.id.remote_addr)
+                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+
+                let ts = if tcb.ts_enabled {
+                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                    Some((tsval, tcb.ts_recent))
+                } else {
+                    None
+                };
+                let remaining_after_send = data_available.saturating_sub(to_send);
+                let mut data_flags = if remaining_after_send == 0 || to_send >= can_send {
+                    flags::ACK | flags::PSH
+                } else {
+                    flags::ACK
+                };
+                if tcb.ecn_ce_received {
+                    data_flags |= flags::ECE;
+                }
+                if tcb.ecn_cwr_sent {
+                    data_flags |= flags::CWR;
+                }
+                SegmentBuilder::build_data_from_slices(
+                    tcb.id.local_addr,
+                    tcb.id.remote_addr,
+                    tcb.id.local_port,
+                    tcb.id.remote_port,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
+                    tcb.advertised_window(),
+                    payload,
+                    data_flags,
+                    tcb.ecn_enabled,
+                    ts,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+
+                tcb.snd_nxt = tcb.snd_nxt.wrapping_add(to_send as u32);
+                tcb.last_send_time = Some(now);
+
+                // Reset keep-alive timer on sent data.
+                tcb.last_activity = now;
+                tcb.keep_alive_probes_sent = 0;
+
+                // Set retransmit timer if not already running.
+                if tcb.retransmit_deadline.is_none() {
+                    tcb.retransmit_deadline =
+                        Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                }
+
+                // Clear CWR after sending (only needs to be on one segment).
+                if tcb.ecn_cwr_sent {
+                    tcb.ecn_cwr_sent = false;
+                }
+
+                // Piggyback: data segment carries ACK, so clear delayed ACK state.
+                tcb.update_advertised_edge();
+                tcb.ack_pending = false;
+                tcb.ack_delay_count = 0;
+                tcb.delayed_ack_deadline = None;
+            }
+
+            // --- Zero-window probing (persist timer) ---
+            // Recompute state after the send loop for persist timer and FIN checks.
             let bytes_in_flight = tcb.snd_nxt.wrapping_sub(tcb.snd_una) as usize;
             let data_available = tcb.send_buffer.available().saturating_sub(bytes_in_flight);
             let send_window = (tcb.snd_wnd as usize).min(tcb.cubic.cwnd as usize);
 
-            let can_send = if tcb.recovery.in_recovery {
-                // During recovery: use pipe + PRR to gate sending.
-                tcb.recovery.set_pipe(
-                    tcb.snd_una,
-                    tcb.snd_nxt,
-                    &tcb.sack_scoreboard,
-                    tcb.eff_snd_mss,
-                );
-                let pipe = tcb.recovery.pipe as usize;
-                let cwnd = tcb.cubic.cwnd as usize;
-                if pipe < cwnd {
-                    (cwnd - pipe).min(tcb.eff_snd_mss as usize)
-                } else {
-                    0
-                }
-            } else {
-                let mut budget = send_window.saturating_sub(bytes_in_flight);
-                // Limited Transmit (RFC 3042): on 1st/2nd dup ACK, allow extra MSS.
-                if tcb.recovery.dup_ack_count > 0
-                    && tcb.recovery.dup_ack_count <= 2
-                    && !tcb.recovery.in_recovery
-                {
-                    budget += tcb.recovery.dup_ack_count as usize * tcb.eff_snd_mss as usize;
-                }
-                budget
-            };
-
-            // Sender SWS avoidance (MUST-38): don't send sub-MSS data unless
-            // the usable window is large enough or all remaining data fits.
-            let sws_ok = can_send >= tcb.eff_snd_mss as usize
-                || can_send >= (tcb.max_snd_wnd as usize / 2).max(1)
-                || data_available <= can_send; // all remaining data fits
-
-            // Send data if possible.
-            if can_send > 0 && data_available > 0 && sws_ok {
-                let to_send = can_send.min(data_available).min(tcb.eff_snd_mss as usize);
-
-                // Nagle algorithm: hold small segments when data is in flight.
-                if tcb.nagle_enabled && bytes_in_flight > 0 && to_send < tcb.eff_snd_mss as usize {
-                    // Don't send — wait for outstanding ACK.
-                } else {
-                    // Peek the data from the send buffer (don't advance — held until ACKed).
-                    let payload = tcb.send_buffer.peek_slices(bytes_in_flight, to_send);
-
-                    let dst_mac = neighbor_handler
-                        .lookup(now, &tcb.id.remote_addr)
-                        .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
-
-                    let ts = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                        Some((tsval, tcb.ts_recent))
-                    } else {
-                        None
-                    };
-                    let remaining_after_send = data_available.saturating_sub(to_send);
-                    let mut data_flags = if remaining_after_send == 0 || to_send >= can_send {
-                        flags::ACK | flags::PSH
-                    } else {
-                        flags::ACK
-                    };
-                    if tcb.ecn_ce_received {
-                        data_flags |= flags::ECE;
-                    }
-                    if tcb.ecn_cwr_sent {
-                        data_flags |= flags::CWR;
-                    }
-                    SegmentBuilder::build_data_from_slices(
-                        tcb.id.local_addr,
-                        tcb.id.remote_addr,
-                        tcb.id.local_port,
-                        tcb.id.remote_port,
-                        tcb.snd_nxt,
-                        tcb.rcv_nxt,
-                        tcb.advertised_window(),
-                        payload,
-                        data_flags,
-                        tcb.ecn_enabled,
-                        ts,
-                        src_mac,
-                        dst_mac,
-                        self.tx_offload,
-                        free_frames,
-                        tx_return,
-                    );
-
-                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(to_send as u32);
-                    tcb.last_send_time = Some(now);
-
-                    // Reset keep-alive timer on sent data.
-                    tcb.last_activity = now;
-                    tcb.keep_alive_probes_sent = 0;
-
-                    // Set retransmit timer if not already running.
-                    if tcb.retransmit_deadline.is_none() {
-                        tcb.retransmit_deadline =
-                            Some(now + coarsetime::Duration::from_millis(tcb.rto));
-                    }
-
-                    // Clear CWR after sending (only needs to be on one segment).
-                    if tcb.ecn_cwr_sent {
-                        tcb.ecn_cwr_sent = false;
-                    }
-
-                    // Piggyback: data segment carries ACK, so clear delayed ACK state.
-                    tcb.update_advertised_edge();
-                    tcb.ack_pending = false;
-                    tcb.ack_delay_count = 0;
-                    tcb.delayed_ack_deadline = None;
-                }
-            }
-
-            // --- Zero-window probing (persist timer) ---
             // A. Arm persist timer when peer advertises window=0 and we have data to send.
             if send_window == 0 && data_available > 0 && tcb.persist_deadline.is_none() {
                 tcb.persist_deadline = Some(now + coarsetime::Duration::from_millis(tcb.rto));
@@ -4125,7 +4157,10 @@ mod tests {
             tcb.cubic.cwnd, tcb.eff_snd_mss as u32,
             "cwnd should be 1 MSS after RTO"
         );
-        assert!(tcb.cubic.ssthresh < cwnd_before, "ssthresh should be reduced");
+        assert!(
+            tcb.cubic.ssthresh < cwnd_before,
+            "ssthresh should be reduced"
+        );
         assert_eq!(tcb.rto_backoff, 1, "rto_backoff should be incremented");
     }
 
@@ -8499,9 +8534,12 @@ mod tests {
 
         // SACK blocks for MSS 2, 3, 4 (gap is the 1st MSS).
         // This gives 3 SACKed segments above snd_una, satisfying DupThresh.
-        tcb.sack_scoreboard.insert(snd_una.wrapping_add(mss as u32), mss as u32);
-        tcb.sack_scoreboard.insert(snd_una.wrapping_add(2 * mss as u32), mss as u32);
-        tcb.sack_scoreboard.insert(snd_una.wrapping_add(3 * mss as u32), mss as u32);
+        tcb.sack_scoreboard
+            .insert(snd_una.wrapping_add(mss as u32), mss as u32);
+        tcb.sack_scoreboard
+            .insert(snd_una.wrapping_add(2 * mss as u32), mss as u32);
+        tcb.sack_scoreboard
+            .insert(snd_una.wrapping_add(3 * mss as u32), mss as u32);
 
         // Enter SACK recovery (simulating what happens on 3 dup ACKs).
         let cwnd_before = tcb.cubic.cwnd;
@@ -8519,7 +8557,10 @@ mod tests {
         let tcb = &handler.connections[0];
         assert!(tcb.recovery.in_recovery, "should still be in recovery");
         // cwnd should be reduced by CUBIC on_loss (beta=0.7).
-        assert!(tcb.cubic.cwnd < cwnd_before, "cwnd should have been reduced");
+        assert!(
+            tcb.cubic.cwnd < cwnd_before,
+            "cwnd should have been reduced"
+        );
         assert_eq!(
             tcb.cubic.cwnd, tcb.cubic.ssthresh,
             "cwnd should equal ssthresh after CUBIC on_loss"
@@ -8567,7 +8608,10 @@ mod tests {
         // This is correct: without SACK blocks, nothing can be determined as lost.
         let tcb = &handler.connections[0];
         assert!(tcb.recovery.in_recovery, "should still be in recovery");
-        assert!(tcb.cubic.cwnd < cwnd_before, "cwnd should have been reduced");
+        assert!(
+            tcb.cubic.cwnd < cwnd_before,
+            "cwnd should have been reduced"
+        );
         assert_eq!(
             tcb.cubic.cwnd, tcb.cubic.ssthresh,
             "cwnd should equal ssthresh after CUBIC on_loss"
@@ -8588,7 +8632,15 @@ mod tests {
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
         let syn_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
         );
         let syn_len = syn_data.len();
         handler.process_ipv4(
@@ -8600,8 +8652,15 @@ mod tests {
         );
         let server_iss = handler.connections[0].iss;
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
@@ -8619,11 +8678,12 @@ mod tests {
 
         // Write 4 MSS of data and simulate 4 segments sent by advancing snd_nxt.
         let data_len = 4 * mss as usize;
-        handler.connections[0].send_buffer.write(&vec![0xAA; data_len]);
+        handler.connections[0]
+            .send_buffer
+            .write(&vec![0xAA; data_len]);
         handler.connections[0].snd_wnd = 65535;
-        handler.connections[0].snd_nxt = handler.connections[0]
-            .snd_una
-            .wrapping_add(data_len as u32);
+        handler.connections[0].snd_nxt =
+            handler.connections[0].snd_una.wrapping_add(data_len as u32);
 
         let snd_una = handler.connections[0].snd_una;
         let cwnd_before = handler.connections[0].cubic.cwnd;
@@ -8631,7 +8691,15 @@ mod tests {
         // Send 3 dup ACKs.
         for i in 0..3 {
             let dup = build_tcp_frame(
-                REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_una, flags::ACK, 65535, &[],
+                REMOTE_IP,
+                LOCAL_IP,
+                12345,
+                80,
+                1001,
+                snd_una,
+                flags::ACK,
+                65535,
+                &[],
             );
             let dup_len = dup.len();
             handler.process_ipv4(
@@ -8667,7 +8735,15 @@ mod tests {
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
         let syn_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
         );
         let syn_len = syn_data.len();
         handler.process_ipv4(
@@ -8679,8 +8755,15 @@ mod tests {
         );
         let server_iss = handler.connections[0].iss;
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack_data.len();
         handler.process_ipv4(
@@ -8698,18 +8781,27 @@ mod tests {
 
         // Write 4 MSS of data and simulate 4 segments sent by advancing snd_nxt.
         let data_len = 4 * mss as usize;
-        handler.connections[0].send_buffer.write(&vec![0xAA; data_len]);
+        handler.connections[0]
+            .send_buffer
+            .write(&vec![0xAA; data_len]);
         handler.connections[0].snd_wnd = 65535;
-        handler.connections[0].snd_nxt = handler.connections[0]
-            .snd_una
-            .wrapping_add(data_len as u32);
+        handler.connections[0].snd_nxt =
+            handler.connections[0].snd_una.wrapping_add(data_len as u32);
 
         let snd_una = handler.connections[0].snd_una;
 
         // 3 dup ACKs -> enter recovery.
         for i in 0..3 {
             let dup = build_tcp_frame(
-                REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_una, flags::ACK, 65535, &[],
+                REMOTE_IP,
+                LOCAL_IP,
+                12345,
+                80,
+                1001,
+                snd_una,
+                flags::ACK,
+                65535,
+                &[],
             );
             let dup_len = dup.len();
             handler.process_ipv4(
@@ -8725,7 +8817,15 @@ mod tests {
         // Partial ACK — advances snd_una by 1 MSS but doesn't reach recovery_point.
         let partial_ack_seq = snd_una.wrapping_add(mss as u32);
         let partial = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, partial_ack_seq, flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            partial_ack_seq,
+            flags::ACK,
+            65535,
+            &[],
         );
         let partial_len = partial.len();
         handler.process_ipv4(
@@ -8806,13 +8906,13 @@ mod tests {
         handler.connections[0].nagle_enabled = false;
 
         let now = coarsetime::Instant::now();
-        // First poll_send: sends MSS bytes, more data remains -> no PSH.
+        // poll_send now sends all segments in one call (fills the window).
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
         assert_eq!(
             tx.num_frames(),
-            1,
-            "expected one data segment from first poll"
+            2,
+            "expected two data segments from poll_send"
         );
 
         let first_frame = tx.pop().unwrap();
@@ -8829,14 +8929,7 @@ mod tests {
             first_flags
         );
 
-        // Second poll_send: sends remaining 100 bytes, no more data -> PSH set.
-        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
-
-        assert_eq!(
-            tx.num_frames(),
-            1,
-            "expected one data segment from second poll"
-        );
+        // Second frame: remaining 100 bytes, no more data -> PSH set.
         let second_frame = tx.pop().unwrap();
         let second_flags = second_frame[tcp_flags_offset];
         assert!(
@@ -9937,7 +10030,15 @@ mod tests {
 
         // SYN from remote.
         let syn = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
         );
         let syn_len = syn.len();
         handler.process_ipv4(
@@ -9951,8 +10052,15 @@ mod tests {
 
         // ACK to complete handshake.
         let ack = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack.len();
         handler.process_ipv4(
@@ -9975,9 +10083,16 @@ mod tests {
         // Send a 20-byte payload — only 12 should fit.
         let payload = [0xBB_u8; 20];
         let data = build_tcp_frame_with_payload(
-            REMOTE_IP, LOCAL_IP, 12345, 80,
-            rcv_nxt_before, server_iss.wrapping_add(1),
-            flags::ACK, 65535, &[], &payload,
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            rcv_nxt_before,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+            &payload,
         );
         let data_len = data.len();
         handler.process_ipv4(
@@ -10332,8 +10447,7 @@ mod tests {
         }
 
         // Establish connection via passive open.
-        let _server_iss =
-            establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+        let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
         let id = ConnectionId {
             local_addr: IpAddress::V4(LOCAL_IP),
@@ -10406,7 +10520,7 @@ mod tests {
             LOCAL_IP,
             12345,
             80,
-            1001, // seq = rcv_nxt (in-window)
+            1001,                                            // seq = rcv_nxt (in-window)
             server_iss.wrapping_add(1).wrapping_add(999999), // ACK for unsent data
             flags::ACK,
             65535,
@@ -10497,8 +10611,14 @@ mod tests {
         while rx.pop().is_some() {}
         while tx.pop().is_some() {}
 
-        assert_eq!(handler.connections[0].snd_wnd, 8000, "window set to 8000 from seg B");
-        assert_eq!(handler.connections[0].snd_wl1, 1002, "snd_wl1 set from seg B");
+        assert_eq!(
+            handler.connections[0].snd_wnd, 8000,
+            "window set to 8000 from seg B"
+        );
+        assert_eq!(
+            handler.connections[0].snd_wl1, 1002,
+            "snd_wl1 set from seg B"
+        );
 
         // Segment A arrives late: lower seg_seq (1001), window = 4000.
         // This is stale — its window must NOT regress.
@@ -10607,7 +10727,10 @@ mod tests {
                 .wrapping_add(payload.len() as u32)
         );
         // Data still in send buffer until ACKed.
-        assert_eq!(handler.connections[0].send_buffer.available(), payload.len());
+        assert_eq!(
+            handler.connections[0].send_buffer.available(),
+            payload.len()
+        );
 
         // Transition to CloseWait by receiving FIN+ACK from remote.
         let fin_data = build_tcp_frame(
@@ -10742,12 +10865,20 @@ mod tests {
         // SWS check: can_send=10, eff_snd_mss=1460, max_snd_wnd/2=32767, data_available=100.
         // 10 < 1460 (not full MSS), 10 < 32767 (not half max window), 100 > 10 (not all data fits).
         // sws_ok = false → no send.
-        assert_eq!(tx.num_frames(), 0, "sender SWS should hold: window too small");
+        assert_eq!(
+            tx.num_frames(),
+            0,
+            "sender SWS should hold: window too small"
+        );
 
         // Now set snd_wnd to eff_snd_mss — should send.
         handler.connections[0].snd_wnd = mss as u32;
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
-        assert_eq!(tx.num_frames(), 1, "should send when can_send >= eff_snd_mss");
+        assert_eq!(
+            tx.num_frames(),
+            1,
+            "should send when can_send >= eff_snd_mss"
+        );
     }
 
     #[test]
@@ -10816,7 +10947,11 @@ mod tests {
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
 
         // SWS: can_send=5, data_available=3, 3 <= 5 → all data fits → sws_ok = true.
-        assert_eq!(tx.num_frames(), 1, "should send when all data fits in window");
+        assert_eq!(
+            tx.num_frames(),
+            1,
+            "should send when all data fits in window"
+        );
     }
 
     #[test]
@@ -10833,7 +10968,15 @@ mod tests {
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
         let syn_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
         );
         let syn_len = syn_data.len();
         handler.process_ipv4(
@@ -10845,7 +10988,14 @@ mod tests {
         );
         let server_iss = handler.connections[0].iss;
         let ack_data = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535,
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
             &[],
         );
         let ack_len = ack_data.len();
@@ -10871,7 +11021,15 @@ mod tests {
         // ACK the data.
         let snd_nxt = handler.connections[0].snd_nxt;
         let ack = build_tcp_frame(
-            REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_nxt, flags::ACK, 65535, &[],
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            snd_nxt,
+            flags::ACK,
+            65535,
+            &[],
         );
         let ack_len = ack.len();
         handler.process_ipv4(
@@ -10884,7 +11042,11 @@ mod tests {
 
         // In slow start: cwnd should increase by MSS (CUBIC slow start same as Reno).
         let cwnd_after = handler.connections[0].cubic.cwnd;
-        assert_eq!(cwnd_after, cwnd_before + mss as u32, "slow start: cwnd += MSS");
+        assert_eq!(
+            cwnd_after,
+            cwnd_before + mss as u32,
+            "slow start: cwnd += MSS"
+        );
     }
 
     #[test]
@@ -10894,22 +11056,58 @@ mod tests {
         let mut free = BasicFrameBuffer::new(64);
         let mut rx = BasicFrameBuffer::new(64);
         let mut tx = BasicFrameBuffer::new(64);
-        for i in 0..32 { free.push(alloc_free_frame(100 + i)); }
+        for i in 0..32 {
+            free.push(alloc_free_frame(100 + i));
+        }
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         // Send 2 MSS of data (poll_send sends 1 MSS per call).
         let mss = handler.connections[0].eff_snd_mss as usize;
-        handler.connections[0].send_buffer.write(&vec![0xAA; mss * 2]);
+        handler.connections[0]
+            .send_buffer
+            .write(&vec![0xAA; mss * 2]);
         handler.connections[0].snd_wnd = 65535;
         let now = coarsetime::Instant::now();
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
@@ -10925,28 +11123,75 @@ mod tests {
         while tx.pop().is_some() {}
 
         // F-RTO should be active.
-        assert!(handler.connections[0].frto.is_active(), "F-RTO should be in Step1");
-        assert_eq!(handler.connections[0].cubic.cwnd, mss as u32, "cwnd should be 1 MSS after RTO");
+        assert!(
+            handler.connections[0].frto.is_active(),
+            "F-RTO should be in Step1"
+        );
+        assert_eq!(
+            handler.connections[0].cubic.cwnd, mss as u32,
+            "cwnd should be 1 MSS after RTO"
+        );
 
         // First ACK advances snd_una.
         let snd_una = handler.connections[0].snd_una;
         let ack1_seq = snd_una.wrapping_add(mss as u32);
-        let ack1 = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, ack1_seq, flags::ACK, 65535, &[]);
+        let ack1 = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            ack1_seq,
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack1_len = ack1.len();
-        handler.process_ipv4(Frame::new(10, leak(ack1), ack1_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(10, leak(ack1), ack1_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
-        assert!(handler.connections[0].frto.is_active(), "F-RTO should be in Step2");
+        assert!(
+            handler.connections[0].frto.is_active(),
+            "F-RTO should be in Step2"
+        );
 
         // Second ACK advances snd_una again => spurious RTO.
         let snd_una = handler.connections[0].snd_una;
         let ack2_seq = snd_una.wrapping_add(mss as u32);
-        let ack2 = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, ack2_seq, flags::ACK, 65535, &[]);
+        let ack2 = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            ack2_seq,
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack2_len = ack2.len();
-        handler.process_ipv4(Frame::new(11, leak(ack2), ack2_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(11, leak(ack2), ack2_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         // cwnd should be restored.
-        assert!(!handler.connections[0].frto.is_active(), "F-RTO should be disabled");
-        assert_eq!(handler.connections[0].cubic.cwnd, cwnd_before_rto, "cwnd should be restored after spurious RTO");
+        assert!(
+            !handler.connections[0].frto.is_active(),
+            "F-RTO should be disabled"
+        );
+        assert_eq!(
+            handler.connections[0].cubic.cwnd, cwnd_before_rto,
+            "cwnd should be restored after spurious RTO"
+        );
     }
 
     #[test]
@@ -10956,22 +11201,58 @@ mod tests {
         let mut free = BasicFrameBuffer::new(64);
         let mut rx = BasicFrameBuffer::new(64);
         let mut tx = BasicFrameBuffer::new(64);
-        for i in 0..32 { free.push(alloc_free_frame(100 + i)); }
+        for i in 0..32 {
+            free.push(alloc_free_frame(100 + i));
+        }
 
         // Complete handshake.
         let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1000,
+            0,
+            flags::SYN,
+            65535,
+            &[],
+        );
         let syn_len = syn_data.len();
-        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(0, leak(syn_data), syn_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         let server_iss = handler.connections[0].iss;
-        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_data = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            65535,
+            &[],
+        );
         let ack_len = ack_data.len();
-        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(1, leak(ack_data), ack_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         let mss = handler.connections[0].eff_snd_mss as usize;
         // Fill send buffer with 6 MSS of data, set cwnd to 3*MSS.
-        handler.connections[0].send_buffer.write(&vec![0xAA; mss * 6]);
+        handler.connections[0]
+            .send_buffer
+            .write(&vec![0xAA; mss * 6]);
         handler.connections[0].snd_wnd = 65535;
         handler.connections[0].cubic.cwnd = (mss * 3) as u32;
 
@@ -10984,9 +11265,25 @@ mod tests {
         let snd_una = handler.connections[0].snd_una;
 
         // First dup ACK.
-        let dup = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_una, flags::ACK, 65535, &[]);
+        let dup = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            snd_una,
+            flags::ACK,
+            65535,
+            &[],
+        );
         let dup_len = dup.len();
-        handler.process_ipv4(Frame::new(10, leak(dup), dup_len, false), &nh, &mut free, &mut rx, &mut tx);
+        handler.process_ipv4(
+            Frame::new(10, leak(dup), dup_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
 
         assert_eq!(handler.connections[0].recovery.dup_ack_count, 1);
 

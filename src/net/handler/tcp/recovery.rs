@@ -60,7 +60,7 @@ impl SackRecovery {
             // Only consider SACK blocks that are above seq.
             if seq_lt(seq, start) {
                 // Count MSS-sized segments within this SACK block.
-                let block_segments = (len + u32::from(eff_mss) - 1) / u32::from(eff_mss);
+                let block_segments = len.div_ceil(u32::from(eff_mss));
                 sacked_segments_above += block_segments;
 
                 // Track the highest SACKed byte.
@@ -175,7 +175,13 @@ impl PrrState {
     /// Called on each ACK during recovery. Returns snd_cnt (bytes allowed to send).
     /// `bytes_newly_delivered` = bytes_acked + bytes_newly_sacked.
     /// `pipe` = current pipe estimate. `ssthresh` = target cwnd.
-    pub fn on_ack(&mut self, bytes_newly_delivered: u32, pipe: u32, ssthresh: u32, eff_mss: u16) -> u32 {
+    pub fn on_ack(
+        &mut self,
+        bytes_newly_delivered: u32,
+        pipe: u32,
+        ssthresh: u32,
+        eff_mss: u16,
+    ) -> u32 {
         self.prr_delivered += bytes_newly_delivered;
 
         if self.recover_fs == 0 {
@@ -185,7 +191,7 @@ impl PrrState {
         if pipe > ssthresh {
             // Proportional: snd_cnt = ceil(prr_delivered * ssthresh / recover_fs) - prr_out.
             let numer = self.prr_delivered as u64 * ssthresh as u64;
-            let target = ((numer + self.recover_fs as u64 - 1) / self.recover_fs as u64) as u32;
+            let target = numer.div_ceil(self.recover_fs as u64) as u32;
             target.saturating_sub(self.prr_out)
         } else {
             // Slow start reduction bound.
