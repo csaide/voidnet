@@ -1527,10 +1527,14 @@ impl TcpHandler {
                     tcb.last_send_time = None; // consumed
                 }
 
-                // Update send window.
-                tcb.snd_wnd = tcb.scale_incoming_window(seg_wnd);
-                tcb.snd_wl1 = seg_seq;
-                tcb.snd_wl2 = seg_ack;
+                // Update send window (RFC 9293 §3.10.7.4 Step 5).
+                if seq_lt(tcb.snd_wl1, seg_seq)
+                    || (tcb.snd_wl1 == seg_seq && seq_le(tcb.snd_wl2, seg_ack))
+                {
+                    tcb.snd_wnd = tcb.scale_incoming_window(seg_wnd);
+                    tcb.snd_wl1 = seg_seq;
+                    tcb.snd_wl2 = seg_ack;
+                }
 
                 // C. Clear persist timer when window reopens.
                 if tcb.snd_wnd > 0 && tcb.persist_deadline.is_some() {
@@ -1594,9 +1598,11 @@ impl TcpHandler {
                     tcb.keep_alive_probes_sent = 0;
                 }
 
-                // Window update may arrive as a duplicate ACK (same ACK, new window).
+                // Window update may arrive as a duplicate ACK (RFC 9293 §3.10.7.4 Step 5).
                 let new_wnd = tcb.scale_incoming_window(seg_wnd);
-                if new_wnd != tcb.snd_wnd {
+                if seq_lt(tcb.snd_wl1, seg_seq)
+                    || (tcb.snd_wl1 == seg_seq && seq_le(tcb.snd_wl2, seg_ack))
+                {
                     tcb.snd_wnd = new_wnd;
                     tcb.snd_wl1 = seg_seq;
                     tcb.snd_wl2 = seg_ack;
@@ -10183,6 +10189,80 @@ mod tests {
         assert_eq!(
             handler.connections[0].rcv_nxt, rcv_nxt_before,
             "rcv_nxt must not change on future ACK"
+        );
+    }
+
+    #[test]
+    fn stale_segment_does_not_regress_window() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(8);
+        let mut rx = BasicFrameBuffer::new(8);
+        let mut tx = BasicFrameBuffer::new(8);
+        for i in 0..6 {
+            free.push(alloc_free_frame(100 + i));
+        }
+
+        let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+        while rx.pop().is_some() {}
+
+        // Segment B arrives first: higher seg_seq (1002), window = 8000.
+        let seg_b = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1002,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            8000,
+            &[],
+        );
+        let seg_b_len = seg_b.len();
+        handler.process_ipv4(
+            Frame::new(10, leak(seg_b), seg_b_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        while rx.pop().is_some() {}
+        while tx.pop().is_some() {}
+
+        assert_eq!(handler.connections[0].snd_wnd, 8000, "window set to 8000 from seg B");
+        assert_eq!(handler.connections[0].snd_wl1, 1002, "snd_wl1 set from seg B");
+
+        // Segment A arrives late: lower seg_seq (1001), window = 4000.
+        // This is stale — its window must NOT regress.
+        let seg_a = build_tcp_frame(
+            REMOTE_IP,
+            LOCAL_IP,
+            12345,
+            80,
+            1001,
+            server_iss.wrapping_add(1),
+            flags::ACK,
+            4000,
+            &[],
+        );
+        let seg_a_len = seg_a.len();
+        handler.process_ipv4(
+            Frame::new(11, leak(seg_a), seg_a_len, false),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+        while rx.pop().is_some() {}
+        while tx.pop().is_some() {}
+
+        assert_eq!(
+            handler.connections[0].snd_wnd, 8000,
+            "stale segment must not regress snd_wnd"
+        );
+        assert_eq!(
+            handler.connections[0].snd_wl1, 1002,
+            "stale segment must not regress snd_wl1"
         );
     }
 }
