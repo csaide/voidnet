@@ -195,6 +195,79 @@ impl PrrState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FRtoPhase {
+    Disabled,
+    Step1,
+    Step2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FRtoAction {
+    /// No F-RTO active — proceed normally.
+    None,
+    /// Send new data (not retransmissions) to probe.
+    SendNewData,
+    /// Spurious RTO detected — restore cwnd.
+    SpuriousRto,
+    /// Genuine loss confirmed — keep reduced cwnd.
+    GenuineLoss,
+}
+
+pub struct FRtoState {
+    pub phase: FRtoPhase,
+    snd_una_at_rto: u32,
+    snd_una_last: u32,
+}
+
+impl FRtoState {
+    pub fn new() -> Self {
+        Self {
+            phase: FRtoPhase::Disabled,
+            snd_una_at_rto: 0,
+            snd_una_last: 0,
+        }
+    }
+
+    /// Arm F-RTO on RTO retransmit.
+    pub fn enter(&mut self, snd_una: u32) {
+        self.phase = FRtoPhase::Step1;
+        self.snd_una_at_rto = snd_una;
+        self.snd_una_last = snd_una;
+    }
+
+    /// Process ACK during F-RTO. `new_snd_una` is the updated snd_una after this ACK.
+    pub fn on_ack(&mut self, new_snd_una: u32) -> FRtoAction {
+        match self.phase {
+            FRtoPhase::Disabled => FRtoAction::None,
+            FRtoPhase::Step1 => {
+                if seq_lt(self.snd_una_last, new_snd_una) {
+                    self.snd_una_last = new_snd_una;
+                    self.phase = FRtoPhase::Step2;
+                    FRtoAction::SendNewData
+                } else {
+                    self.phase = FRtoPhase::Disabled;
+                    FRtoAction::GenuineLoss
+                }
+            }
+            FRtoPhase::Step2 => {
+                if seq_lt(self.snd_una_last, new_snd_una) {
+                    self.phase = FRtoPhase::Disabled;
+                    FRtoAction::SpuriousRto
+                } else {
+                    self.phase = FRtoPhase::Disabled;
+                    FRtoAction::GenuineLoss
+                }
+            }
+        }
+    }
+
+    /// Check if F-RTO is active.
+    pub fn is_active(&self) -> bool {
+        self.phase != FRtoPhase::Disabled
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +379,43 @@ mod tests {
         let snd_cnt = prr.on_ack(1460, 5_000, ssthresh, mss);
         // snd_cnt = min(7000 - 5000, 1460 - 0 + 1460) = min(2000, 2920) = 2000.
         assert_eq!(snd_cnt, 2000);
+    }
+
+    #[test]
+    fn frto_spurious_rto_detected() {
+        let mut frto = FRtoState::new();
+        frto.enter(1000);
+
+        // First ACK advances snd_una.
+        let result = frto.on_ack(2000);
+        assert_eq!(result, FRtoAction::SendNewData);
+
+        // Second ACK advances snd_una again => spurious.
+        let result = frto.on_ack(3000);
+        assert_eq!(result, FRtoAction::SpuriousRto);
+    }
+
+    #[test]
+    fn frto_genuine_loss_on_first_dup_ack() {
+        let mut frto = FRtoState::new();
+        frto.enter(1000);
+
+        // First ACK is dup (snd_una doesn't advance).
+        let result = frto.on_ack(1000);
+        assert_eq!(result, FRtoAction::GenuineLoss);
+    }
+
+    #[test]
+    fn frto_genuine_loss_on_second_dup_ack() {
+        let mut frto = FRtoState::new();
+        frto.enter(1000);
+
+        // First ACK advances.
+        let result = frto.on_ack(2000);
+        assert_eq!(result, FRtoAction::SendNewData);
+
+        // Second ACK is dup.
+        let result = frto.on_ack(2000);
+        assert_eq!(result, FRtoAction::GenuineLoss);
     }
 }
