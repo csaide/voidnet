@@ -53,6 +53,35 @@ impl TcpHandler {
         self.connections.iter_mut().find(|c| c.id == *id)
     }
 
+    /// Find the index of a connection by ID.
+    #[inline]
+    pub fn find_connection_idx(&self, id: &ConnectionId) -> Option<usize> {
+        self.connections.iter().position(|c| c.id == *id)
+    }
+
+    /// Get a mutable reference by cached index, validating the connection ID matches.
+    /// Returns the TCB and the (possibly updated) index, or None if not found.
+    /// Falls back to linear scan if the cached index is stale.
+    #[inline]
+    pub fn get_connection_by_idx_mut(
+        &mut self,
+        idx: usize,
+        id: &ConnectionId,
+    ) -> Option<(usize, &mut Tcb)> {
+        if let Some(tcb) = self.connections.get(idx) {
+            if tcb.id == *id {
+                // SAFETY: we just checked bounds above; re-borrow mutably.
+                return Some((idx, &mut self.connections[idx]));
+            }
+        }
+        // Index is stale — fall back to linear scan.
+        if let Some(new_idx) = self.connections.iter().position(|c| c.id == *id) {
+            Some((new_idx, &mut self.connections[new_idx]))
+        } else {
+            None
+        }
+    }
+
     /// Remove a connection by ConnectionId (used by TcpStream::close).
     pub fn remove_connection<'umem>(
         &mut self,
