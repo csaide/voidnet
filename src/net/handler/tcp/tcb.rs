@@ -8,6 +8,8 @@ use crate::net::{
     wire::ip::IpAddress,
 };
 
+use super::congestion::CubicState;
+use super::recovery::{SackRecovery, PrrState, FRtoState};
 use super::ring_buffer::RingBuffer;
 use super::state::TcpState;
 
@@ -193,12 +195,10 @@ pub struct Tcb {
     pub ooo_ranges: BTreeMap<u32, u32>,
 
     // --- Congestion control ---
-    /// Congestion window in bytes.
-    pub cwnd: u32,
-    /// Slow start threshold.
-    pub ssthresh: u32,
-    /// Duplicate ACK counter for fast retransmit.
-    pub dup_ack_count: u8,
+    pub cubic: CubicState,
+    pub recovery: SackRecovery,
+    pub prr: PrrState,
+    pub frto: FRtoState,
 
     // --- RTT estimation (RFC 6298) ---
     /// Smoothed RTT in microseconds.
@@ -387,9 +387,10 @@ mod tests {
             send_buffer: RingBuffer::new(1024),
             recv_buffer: RingBuffer::new(recv_buf_size),
             ooo_ranges: BTreeMap::new(),
-            cwnd: 0,
-            ssthresh: 0,
-            dup_ack_count: 0,
+            cubic: CubicState::new(DEFAULT_RCV_MSS),
+            recovery: SackRecovery::new(),
+            prr: PrrState::new(),
+            frto: FRtoState::new(),
             srtt: None,
             rttvar: 0,
             rto: 1000,

@@ -28,7 +28,9 @@ use crate::{
 
 use std::collections::BTreeMap;
 
+use congestion::CubicState;
 use isn::IsnGenerator;
+use recovery::{SackRecovery, PrrState, FRtoState};
 use ring_buffer::RingBuffer;
 use segment::SegmentBuilder;
 use state::TcpState;
@@ -255,9 +257,10 @@ impl TcpHandler {
             send_buffer: RingBuffer::new(config.send_buffer_size),
             recv_buffer: RingBuffer::new(config.recv_buffer_size),
             ooo_ranges: BTreeMap::new(),
-            cwnd: 10 * DEFAULT_RCV_MSS as u32,
-            ssthresh: u32::MAX,
-            dup_ack_count: 0,
+            cubic: CubicState::new(DEFAULT_RCV_MSS),
+            recovery: SackRecovery::new(),
+            prr: PrrState::new(),
+            frto: FRtoState::new(),
             srtt: None,
             rttvar: 0,
             rto: 1000,
@@ -834,9 +837,10 @@ impl TcpHandler {
                 send_buffer: RingBuffer::new(send_buffer_size),
                 recv_buffer: RingBuffer::new(recv_buffer_size),
                 ooo_ranges: BTreeMap::new(),
-                cwnd: 10 * peer_mss.min(DEFAULT_RCV_MSS) as u32,
-                ssthresh: u32::MAX,
-                dup_ack_count: 0,
+                cubic: CubicState::new(peer_mss.min(DEFAULT_RCV_MSS)),
+                recovery: SackRecovery::new(),
+                prr: PrrState::new(),
+                frto: FRtoState::new(),
                 srtt: None,
                 rttvar: 0,
                 rto: 1000,
@@ -1485,15 +1489,15 @@ impl TcpHandler {
 
                 // Congestion control.
                 let eff_mss = tcb.eff_snd_mss as u32;
-                if tcb.cwnd < tcb.ssthresh {
+                if tcb.cubic.cwnd < tcb.cubic.ssthresh {
                     // Slow start.
-                    tcb.cwnd += eff_mss;
+                    tcb.cubic.cwnd += eff_mss;
                 } else {
                     // Congestion avoidance.
-                    tcb.cwnd += (eff_mss * eff_mss) / tcb.cwnd;
+                    tcb.cubic.cwnd += (eff_mss * eff_mss) / tcb.cubic.cwnd;
                 }
 
-                tcb.dup_ack_count = 0;
+                tcb.recovery.dup_ack_count = 0;
 
                 // RTT measurement.
                 if tcb.ts_enabled {
@@ -1567,8 +1571,8 @@ impl TcpHandler {
                 // ECN congestion response: if peer signals ECE, halve cwnd and
                 // schedule CWR on the next data segment.
                 if tcb.ecn_enabled && seg_flags & flags::ECE != 0 && !tcb.ecn_cwr_sent {
-                    tcb.ssthresh = (tcb.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
-                    tcb.cwnd = tcb.ssthresh;
+                    tcb.cubic.ssthresh = (tcb.cubic.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
+                    tcb.cubic.cwnd = tcb.cubic.ssthresh;
                     tcb.ecn_cwr_sent = true;
                 }
             } else if seq_lt(snd_nxt, seg_ack) {
@@ -1601,7 +1605,7 @@ impl TcpHandler {
             } else if seg_ack == snd_una && payload_len == 0 {
                 // Duplicate ACK.
                 let tcb = &mut self.connections[idx];
-                tcb.dup_ack_count += 1;
+                tcb.recovery.dup_ack_count += 1;
                 // Keep-alive probe responses arrive as duplicate ACKs — reset timer.
                 if tcb.keep_alive_enabled && tcb.keep_alive_probes_sent > 0 {
                     tcb.last_activity = now;
@@ -1950,7 +1954,7 @@ impl TcpHandler {
         // Fast retransmit pass — independent of timer expiry.
         // Triggered by 3 duplicate ACKs on established connections.
         for tcb in &mut self.connections {
-            if tcb.state != TcpState::Established || tcb.dup_ack_count < 3 {
+            if tcb.state != TcpState::Established || tcb.recovery.dup_ack_count < 3 {
                 continue;
             }
 
@@ -2023,9 +2027,9 @@ impl TcpHandler {
             );
 
             // Fast recovery: halve cwnd.
-            tcb.ssthresh = (tcb.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
-            tcb.cwnd = tcb.ssthresh;
-            tcb.dup_ack_count = 0;
+            tcb.cubic.ssthresh = (tcb.cubic.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
+            tcb.cubic.cwnd = tcb.cubic.ssthresh;
+            tcb.recovery.dup_ack_count = 0;
         }
 
         // RTO retransmit pass — timer-based.
@@ -2152,8 +2156,8 @@ impl TcpHandler {
                         );
                     }
                     // Back to slow start.
-                    tcb.ssthresh = (tcb.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
-                    tcb.cwnd = tcb.eff_snd_mss as u32;
+                    tcb.cubic.ssthresh = (tcb.cubic.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
+                    tcb.cubic.cwnd = tcb.eff_snd_mss as u32;
                     tcb.sack_scoreboard.clear();
                     tcb.rto_backoff += 1;
                     tcb.retransmit_deadline =
@@ -2243,7 +2247,7 @@ impl TcpHandler {
 
             // Compute how many bytes we can send.
             let bytes_in_flight = tcb.snd_nxt.wrapping_sub(tcb.snd_una) as usize;
-            let send_window = (tcb.snd_wnd as usize).min(tcb.cwnd as usize);
+            let send_window = (tcb.snd_wnd as usize).min(tcb.cubic.cwnd as usize);
             let can_send = send_window.saturating_sub(bytes_in_flight);
             let data_available = tcb.send_buffer.available().saturating_sub(bytes_in_flight);
 
@@ -3948,7 +3952,7 @@ mod tests {
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
         while tx.pop().is_some() {} // consume sent segment
 
-        let cwnd_before = handler.connections[0].cwnd;
+        let cwnd_before = handler.connections[0].cubic.cwnd;
 
         // Send 3 duplicate ACKs (ACKing the old snd_una, not the new data).
         let dup_ack_seq = server_iss.wrapping_add(1); // original snd_una
@@ -3974,7 +3978,7 @@ mod tests {
             );
         }
 
-        assert_eq!(handler.connections[0].dup_ack_count, 3);
+        assert_eq!(handler.connections[0].recovery.dup_ack_count, 3);
 
         // poll_timers should trigger fast retransmit.
         handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
@@ -3983,12 +3987,12 @@ mod tests {
         // cwnd should be halved (fast recovery).
         let tcb = &handler.connections[0];
         assert!(
-            tcb.cwnd < cwnd_before,
+            tcb.cubic.cwnd < cwnd_before,
             "cwnd should be reduced after fast retransmit"
         );
-        assert_eq!(tcb.dup_ack_count, 0, "dup_ack_count should be reset");
+        assert_eq!(tcb.recovery.dup_ack_count, 0, "dup_ack_count should be reset");
         assert_eq!(
-            tcb.cwnd, tcb.ssthresh,
+            tcb.cubic.cwnd, tcb.cubic.ssthresh,
             "cwnd should equal ssthresh after fast recovery"
         );
     }
@@ -4055,7 +4059,7 @@ mod tests {
         handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
         while tx.pop().is_some() {}
 
-        let cwnd_before = handler.connections[0].cwnd;
+        let cwnd_before = handler.connections[0].cubic.cwnd;
 
         // Simulate timer expiry by setting a deadline in the past.
         handler.connections[0].retransmit_deadline =
@@ -4069,10 +4073,10 @@ mod tests {
         let tcb = &handler.connections[0];
         // cwnd should be reset to 1 MSS (slow start).
         assert_eq!(
-            tcb.cwnd, tcb.eff_snd_mss as u32,
+            tcb.cubic.cwnd, tcb.eff_snd_mss as u32,
             "cwnd should be 1 MSS after RTO"
         );
-        assert!(tcb.ssthresh < cwnd_before, "ssthresh should be reduced");
+        assert!(tcb.cubic.ssthresh < cwnd_before, "ssthresh should be reduced");
         assert_eq!(tcb.rto_backoff, 1, "rto_backoff should be incremented");
     }
 
@@ -8349,7 +8353,7 @@ mod tests {
         );
 
         let tcb = &handler.connections[0];
-        assert_eq!(tcb.dup_ack_count, 1);
+        assert_eq!(tcb.recovery.dup_ack_count, 1);
         assert_eq!(tcb.sack_scoreboard.len(), 1);
         assert_eq!(tcb.sack_scoreboard.get(&sack_left), Some(&20));
     }
@@ -8450,10 +8454,10 @@ mod tests {
         tcb.sack_scoreboard.insert(sack_start, sack_len);
 
         // Record cwnd before fast retransmit.
-        let cwnd_before = tcb.cwnd;
+        let cwnd_before = tcb.cubic.cwnd;
 
         // Set dup_ack_count = 3 to trigger fast retransmit.
-        tcb.dup_ack_count = 3;
+        tcb.recovery.dup_ack_count = 3;
 
         let now = coarsetime::Instant::now();
         handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
@@ -8463,11 +8467,11 @@ mod tests {
 
         let tcb = &handler.connections[0];
         // dup_ack_count should be reset.
-        assert_eq!(tcb.dup_ack_count, 0, "dup_ack_count should be reset");
+        assert_eq!(tcb.recovery.dup_ack_count, 0, "dup_ack_count should be reset");
         // cwnd should be halved.
-        assert!(tcb.cwnd < cwnd_before, "cwnd should have been halved");
+        assert!(tcb.cubic.cwnd < cwnd_before, "cwnd should have been halved");
         assert_eq!(
-            tcb.cwnd, tcb.ssthresh,
+            tcb.cubic.cwnd, tcb.cubic.ssthresh,
             "cwnd should equal ssthresh after fast recovery"
         );
     }
@@ -8496,11 +8500,11 @@ mod tests {
         tcb.snd_nxt = tcb.snd_una.wrapping_add(3 * mss as u32);
 
         // Record cwnd before.
-        let cwnd_before = tcb.cwnd;
+        let cwnd_before = tcb.cubic.cwnd;
 
         // Scoreboard is empty; dup_ack_count = 3 triggers fallback.
         assert!(tcb.sack_scoreboard.is_empty());
-        tcb.dup_ack_count = 3;
+        tcb.recovery.dup_ack_count = 3;
 
         let now = coarsetime::Instant::now();
         handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
@@ -8512,10 +8516,10 @@ mod tests {
         );
 
         let tcb = &handler.connections[0];
-        assert_eq!(tcb.dup_ack_count, 0, "dup_ack_count should be reset");
-        assert!(tcb.cwnd < cwnd_before, "cwnd should have been halved");
+        assert_eq!(tcb.recovery.dup_ack_count, 0, "dup_ack_count should be reset");
+        assert!(tcb.cubic.cwnd < cwnd_before, "cwnd should have been halved");
         assert_eq!(
-            tcb.cwnd, tcb.ssthresh,
+            tcb.cubic.cwnd, tcb.cubic.ssthresh,
             "cwnd should equal ssthresh after fast recovery"
         );
     }
@@ -8578,7 +8582,7 @@ mod tests {
         handler.connections[0].send_buffer.write(&big_data);
 
         // Ensure cwnd is large enough to allow sending.
-        handler.connections[0].cwnd = (mss as u32) * 10;
+        handler.connections[0].cubic.cwnd = (mss as u32) * 10;
         // Disable Nagle so the second (sub-MSS) segment can be sent.
         handler.connections[0].nagle_enabled = false;
 
@@ -9279,8 +9283,8 @@ mod tests {
         handler.connections[0].ecn_enabled = true;
         handler.connections[0].snd_wnd = 65535;
         let mss = handler.connections[0].eff_snd_mss as u32;
-        handler.connections[0].cwnd = 10 * mss;
-        handler.connections[0].ssthresh = 20 * mss;
+        handler.connections[0].cubic.cwnd = 10 * mss;
+        handler.connections[0].cubic.ssthresh = 20 * mss;
 
         // Send some data so snd_nxt advances.
         handler.connections[0]
@@ -9293,7 +9297,7 @@ mod tests {
         let snd_nxt = handler.connections[0].snd_nxt;
 
         // Record cwnd before receiving ECE.
-        let cwnd_before = handler.connections[0].cwnd;
+        let cwnd_before = handler.connections[0].cubic.cwnd;
 
         // Receive ACK with ECE flag — simulating peer's congestion signal.
         let ece_ack = build_tcp_frame(
@@ -9317,7 +9321,7 @@ mod tests {
         );
 
         // Verify cwnd was reduced (halved after congestion avoidance increment).
-        let cwnd_after = handler.connections[0].cwnd;
+        let cwnd_after = handler.connections[0].cubic.cwnd;
         assert!(
             cwnd_after < cwnd_before,
             "cwnd should be reduced: before={}, after={}",
@@ -9325,11 +9329,11 @@ mod tests {
             cwnd_after,
         );
         assert_eq!(
-            handler.connections[0].cwnd, handler.connections[0].ssthresh,
+            handler.connections[0].cubic.cwnd, handler.connections[0].cubic.ssthresh,
             "cwnd should equal ssthresh after ECN response"
         );
         assert!(
-            handler.connections[0].ssthresh >= 2 * mss,
+            handler.connections[0].cubic.ssthresh >= 2 * mss,
             "ssthresh should be at least 2*MSS"
         );
         assert!(
