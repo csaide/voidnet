@@ -83,9 +83,8 @@ fn main() {
                     stream.remote_port()
                 );
 
-                let mut buf = [0u8; 65535];
                 loop {
-                    let n = match stream.read(&mut buf).await {
+                    match stream.splice(65535).await {
                         Ok(0) => {
                             println!(
                                 "Disconnected from {}:{}",
@@ -94,18 +93,15 @@ fn main() {
                             );
                             break;
                         }
-                        Ok(n) => n,
+                        Ok(n) => {
+                            stats.update(n, false);
+                            stats.maybe_print();
+                        }
                         Err(e) => {
-                            println!("Read error: {:?}", e);
+                            println!("Splice error: {:?}", e);
                             break;
                         }
-                    };
-                    if let Err(e) = stream.write(&buf[..n]).await {
-                        println!("Write error: {:?}", e);
-                        break;
                     }
-                    stats.update(n, false);
-                    stats.maybe_print();
                 }
             }
         })

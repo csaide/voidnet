@@ -333,6 +333,18 @@ impl TcpStream {
         }
     }
 
+    /// Transfer data from recv_buffer directly to send_buffer, avoiding the
+    /// intermediate user buffer copy. Returns a future that resolves when at
+    /// least 1 byte has been transferred, or 0 on EOF.
+    pub fn splice(&self, max_len: usize) -> TcpSplice<'_> {
+        TcpSplice {
+            handler: &self.handler,
+            conn_id: self.conn_id,
+            event_queue: &self.event_queue,
+            max_len,
+        }
+    }
+
     /// Read data from this connection. Returns a future that resolves when
     /// data is available in the receive buffer.
     pub fn read<'a>(&'a self, buf: &'a mut [u8]) -> TcpRead<'a> {
@@ -545,6 +557,45 @@ impl<'stream> Future for TcpRead<'stream> {
             }
         } else {
             Poll::Ready(Err(TcpError::NotConnected)) // connection gone
+        }
+    }
+}
+
+/// Future returned by [`TcpStream::splice()`].
+pub struct TcpSplice<'stream> {
+    handler: &'stream Rc<UnsafeCell<TcpHandler>>,
+    conn_id: ConnectionId,
+    event_queue: &'stream LocalQueue<TcpEvent>,
+    max_len: usize,
+}
+
+impl<'stream> Future for TcpSplice<'stream> {
+    type Output = Result<usize, TcpError>;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+
+        // Check event queue for errors.
+        while let Some(event) = this.event_queue.pop() {
+            match event {
+                TcpEvent::Reset => return Poll::Ready(Err(TcpError::Reset)),
+                TcpEvent::Timeout => return Poll::Ready(Err(TcpError::Timeout)),
+                _ => {}
+            }
+        }
+
+        let handler = unsafe { &mut *this.handler.get() };
+        if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
+            let n = tcb.recv_buffer.transfer(&mut tcb.send_buffer, this.max_len);
+            if n > 0 {
+                Poll::Ready(Ok(n))
+            } else if tcb.state.is_remote_closed() {
+                Poll::Ready(Ok(0)) // EOF
+            } else {
+                Poll::Pending
+            }
+        } else {
+            Poll::Ready(Err(TcpError::NotConnected))
         }
     }
 }

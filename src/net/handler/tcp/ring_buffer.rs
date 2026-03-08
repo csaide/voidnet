@@ -123,6 +123,28 @@ impl RingBuffer {
         self.len += n;
     }
 
+    /// Transfer up to `max_len` bytes from self (as source/read-side) to `dst`
+    /// (as destination/write-side). Reads from self's head, writes to dst's tail.
+    /// Returns the number of bytes transferred.
+    /// Equivalent to read() + write() but avoids the intermediate buffer.
+    #[inline]
+    pub fn transfer(&mut self, dst: &mut RingBuffer, max_len: usize) -> usize {
+        let available = self.available().min(max_len);
+        let to_transfer = available.min(dst.free_space());
+        if to_transfer == 0 {
+            return 0;
+        }
+        // Get source slices (may wrap around).
+        let (s1, s2) = self.peek_slices(0, to_transfer);
+        // Write each slice to destination.
+        let wrote1 = dst.write(s1);
+        let wrote2 = if !s2.is_empty() { dst.write(s2) } else { 0 };
+        let total = wrote1 + wrote2;
+        // Advance source head.
+        self.advance(total);
+        total
+    }
+
     /// Read bytes from the buffer starting at `head`. Returns the number of bytes read.
     /// Advances `head` by the number of bytes read.
     #[inline]
@@ -319,5 +341,69 @@ mod tests {
         let (a, b) = rb.peek_slices(6, 5);
         assert_eq!(a, b"world");
         assert!(b.is_empty());
+    }
+
+    #[test]
+    fn transfer_basic() {
+        let mut src = RingBuffer::new(64);
+        let mut dst = RingBuffer::new(64);
+        src.write(b"hello");
+        let n = src.transfer(&mut dst, 5);
+        assert_eq!(n, 5);
+        assert_eq!(src.available(), 0);
+        assert_eq!(dst.available(), 5);
+        let mut buf = [0u8; 5];
+        dst.read(&mut buf);
+        assert_eq!(&buf, b"hello");
+    }
+
+    #[test]
+    fn transfer_with_source_wrap() {
+        let mut src = RingBuffer::new(16);
+        let mut dst = RingBuffer::new(64);
+        // Move head to position 12.
+        src.write(&[0xAA; 12]);
+        let mut discard = [0u8; 12];
+        src.read(&mut discard);
+        // head=12. Write 8 bytes: 4 at end [12..16], 4 wrap [0..4].
+        src.write(&[0xBB; 8]);
+        let n = src.transfer(&mut dst, 8);
+        assert_eq!(n, 8);
+        assert_eq!(src.available(), 0);
+        assert_eq!(dst.available(), 8);
+        let mut buf = [0u8; 8];
+        dst.read(&mut buf);
+        assert_eq!(buf, [0xBB; 8]);
+    }
+
+    #[test]
+    fn transfer_partial_when_dst_nearly_full() {
+        let mut src = RingBuffer::new(64);
+        let mut dst = RingBuffer::new(16);
+        // Fill dst with 12 bytes, leaving 4 free.
+        dst.write(&[0xCC; 12]);
+        src.write(b"hello world!");
+        let n = src.transfer(&mut dst, 12);
+        assert_eq!(n, 4);
+        assert_eq!(src.available(), 8);
+        assert_eq!(dst.available(), 16);
+    }
+
+    #[test]
+    fn transfer_empty_source() {
+        let mut src = RingBuffer::new(64);
+        let mut dst = RingBuffer::new(64);
+        let n = src.transfer(&mut dst, 100);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn transfer_full_dst() {
+        let mut src = RingBuffer::new(64);
+        let mut dst = RingBuffer::new(16);
+        dst.write(&[0xFF; 16]);
+        src.write(b"hello");
+        let n = src.transfer(&mut dst, 5);
+        assert_eq!(n, 0);
     }
 }

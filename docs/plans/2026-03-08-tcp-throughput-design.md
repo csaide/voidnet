@@ -29,12 +29,6 @@ immediately back to another ring buffer.
 
 Each call re-scans the options byte array. Should be parsed once.
 
-### Software Checksum on VETH
-
-VETH pairs report checksum offload as disabled. Both RX verification and TX computation
-are done in software per-packet. The RX checksum verification is particularly wasteful —
-VETH is a virtual device; frames are never corrupted in transit.
-
 ### Instruction Cache Pressure
 
 `process_established` is ~556 lines with many rarely-taken branches (RST handling, SYN-in-
@@ -118,24 +112,7 @@ loop {
 }
 ```
 
-### 4. Checksum Bypass for Loopback/VETH
-
-For virtual devices (VETH, lo), frames cannot be corrupted in transit. Add an option to
-skip RX checksum verification when the NIC is virtual:
-
-```rust
-impl LocalRuntimeBuilder {
-    /// Skip RX checksum verification. Safe for VETH/loopback where frames
-    /// can't be corrupted. Unsafe for physical NICs.
-    pub fn skip_rx_checksum(mut self, skip: bool) -> Self;
-}
-```
-
-For TX, software checksums are still needed because the peer's stack verifies them. But
-we could add a `skip_tx_checksum` option for testing/benchmarking when both sides are
-ours.
-
-### 5. Tcb Hot/Cold Field Splitting
+### 4. Tcb Hot/Cold Field Splitting
 
 Reorder `Tcb` fields to group frequently-accessed fields in the first 2 cache lines (128B):
 
@@ -151,7 +128,7 @@ Reorder `Tcb` fields to group frequently-accessed fields in the first 2 cache li
 Keep-alive fields, linger, time_wait, congestion control state, recovery state,
 SACK scoreboard, OOO ranges, F-RTO state
 
-### 6. Eliminate Connection Lookup in Socket API
+### 5. Eliminate Connection Lookup in Socket API
 
 Cache a connection index in `TcpStream` and validate on access:
 
@@ -167,7 +144,7 @@ On `TcpRead::poll` / `TcpWrite::poll`, check if `connections[cached_idx].id == c
 If yes, skip the linear scan. If not (connection moved due to removal), fall back to
 linear scan and update cache. For echo with n=1, this saves 2 linear scans per packet.
 
-### 7. Separate Hot/Cold Paths with #[inline] Hints
+### 6. Separate Hot/Cold Paths with #[inline] Hints
 
 Mark rarely-taken branches in `process_established` with `#[cold]` or extract them into
 `#[inline(never)]` helper functions:
@@ -182,7 +159,7 @@ Mark rarely-taken branches in `process_established` with `#[cold]` or extract th
 The hot path (in-order data + valid ACK) stays inline. Cold paths are outlined to reduce
 instruction cache pressure.
 
-### 8. Pre-compute Immutable Per-Connection Values
+### 7. Pre-compute Immutable Per-Connection Values
 
 Several values are recomputed on every packet but don't change within a connection's
 established state:
@@ -200,13 +177,12 @@ At 2M pkt/s per side: 500ns per packet. Minus XDP baseline (~45ns): **455ns for 
 |-----------|---------------|-------------------|---------|
 | process_established | 300–400ns | 150–200ns | 150ns |
 | Ring buffer copies (4→2) | 60ns | 30ns | 30ns |
-| RX checksum (skip on VETH) | 40ns | 0ns | 40ns |
 | Options parsing (3→1) | 15ns | 5ns | 10ns |
 | Socket API lookups (2→0) | 10ns | 2ns | 8ns |
 | poll_send | 96ns | 80ns | 16ns |
 | Segment building | 100ns | 90ns | 10ns |
 | Tcb cache improvement | — | — | 50–100ns |
-| **Total** | **~845ns** | **~400–500ns** | **~400ns** |
+| **Total** | **~805ns** | **~400–460ns** | **~360ns** |
 
 Expected result: **1.5–2.5M pkt/s** (3–4.5x improvement).
 
@@ -221,11 +197,10 @@ Expected result: **1.5–2.5M pkt/s** (3–4.5x improvement).
 
 ## Implementation Order
 
-1. Consolidated options parsing (low risk, clear improvement)
-2. Checksum bypass for VETH (low risk, measurable improvement)
-3. Fast-path in process_established (medium risk, biggest improvement)
-4. RingBuffer::transfer() + TcpStream::splice() (medium risk, API addition)
-5. Tcb field reordering (low risk, cache improvement)
-6. Connection index caching in TcpStream (low risk)
-7. Cold path extraction with #[inline(never)] (low risk)
-8. Pre-compute immutable values (low risk)
+1. Consolidated options parsing (low risk, clear improvement) — DONE
+2. Fast-path in process_established (medium risk, biggest improvement)
+3. RingBuffer::transfer() + TcpStream::splice() (medium risk, API addition)
+4. Tcb field reordering (low risk, cache improvement)
+5. Connection index caching in TcpStream (low risk)
+6. Cold path extraction with #[inline(never)] (low risk)
+7. Pre-compute immutable values (low risk)
