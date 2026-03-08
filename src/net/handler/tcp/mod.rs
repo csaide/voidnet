@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 
 use congestion::CubicState;
 use isn::IsnGenerator;
-use recovery::{SackRecovery, PrrState, FRtoState};
+use recovery::{SackRecovery, PrrState, FRtoState, FRtoAction};
 use ring_buffer::RingBuffer;
 use segment::SegmentBuilder;
 use state::TcpState;
@@ -1487,6 +1487,27 @@ impl TcpHandler {
                 tcb.last_activity = now;
                 tcb.keep_alive_probes_sent = 0;
 
+                // F-RTO check — must come before recovery/congestion control.
+                let mut frto_handled = false;
+                if tcb.frto.is_active() {
+                    let action = tcb.frto.on_ack(seg_ack);
+                    match action {
+                        FRtoAction::SpuriousRto => {
+                            tcb.cubic.restore_after_spurious_rto();
+                            frto_handled = true;
+                        }
+                        FRtoAction::GenuineLoss => {
+                            // Keep reduced cwnd — proceed normally.
+                        }
+                        FRtoAction::SendNewData => {
+                            // F-RTO Step1→Step2: prefer sending new data in poll_send.
+                            // No cwnd changes here.
+                            frto_handled = true;
+                        }
+                        FRtoAction::None => {}
+                    }
+                }
+
                 // Recovery exit check — must come before congestion control.
                 if tcb.recovery.in_recovery {
                     if tcb.recovery.on_ack(seg_ack) {
@@ -1497,8 +1518,8 @@ impl TcpHandler {
                     // because it's already gated by !tcb.recovery.in_recovery
                 }
 
-                // Congestion control — only update outside recovery.
-                if !tcb.recovery.in_recovery {
+                // Congestion control — only update outside recovery and F-RTO.
+                if !tcb.recovery.in_recovery && !frto_handled {
                     let rtt_ms = tcb.srtt.unwrap_or(tcb.rto);
                     tcb.cubic.on_ack(bytes_acked as u32, now, rtt_ms);
                 }
@@ -2159,9 +2180,10 @@ impl TcpHandler {
                             tx_return,
                         );
                     }
-                    // Back to slow start.
-                    tcb.cubic.ssthresh = (tcb.cubic.cwnd / 2).max(2 * tcb.eff_snd_mss as u32);
-                    tcb.cubic.cwnd = tcb.eff_snd_mss as u32;
+                    // F-RTO + CUBIC RTO response.
+                    tcb.frto.enter(tcb.snd_una);
+                    tcb.cubic.on_rto();
+                    tcb.recovery.exit();
                     tcb.sack_scoreboard.clear();
                     tcb.rto_backoff += 1;
                     tcb.retransmit_deadline =
@@ -10836,5 +10858,67 @@ mod tests {
         // In slow start: cwnd should increase by MSS (CUBIC slow start same as Reno).
         let cwnd_after = handler.connections[0].cubic.cwnd;
         assert_eq!(cwnd_after, cwnd_before + mss as u32, "slow start: cwnd += MSS");
+    }
+
+    #[test]
+    fn frto_restores_cwnd_on_spurious_rto() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(64);
+        let mut rx = BasicFrameBuffer::new(64);
+        let mut tx = BasicFrameBuffer::new(64);
+        for i in 0..32 { free.push(alloc_free_frame(100 + i)); }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        // Send 2 MSS of data (poll_send sends 1 MSS per call).
+        let mss = handler.connections[0].eff_snd_mss as usize;
+        handler.connections[0].send_buffer.write(&vec![0xAA; mss * 2]);
+        handler.connections[0].snd_wnd = 65535;
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+
+        let cwnd_before_rto = handler.connections[0].cubic.cwnd;
+
+        // Trigger RTO by setting deadline in the past.
+        handler.connections[0].retransmit_deadline = Some(now);
+        let rto_time = now + coarsetime::Duration::from_millis(1100);
+        handler.poll_timers(rto_time, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+
+        // F-RTO should be active.
+        assert!(handler.connections[0].frto.is_active(), "F-RTO should be in Step1");
+        assert_eq!(handler.connections[0].cubic.cwnd, mss as u32, "cwnd should be 1 MSS after RTO");
+
+        // First ACK advances snd_una.
+        let snd_una = handler.connections[0].snd_una;
+        let ack1_seq = snd_una.wrapping_add(mss as u32);
+        let ack1 = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, ack1_seq, flags::ACK, 65535, &[]);
+        let ack1_len = ack1.len();
+        handler.process_ipv4(Frame::new(10, leak(ack1), ack1_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        assert!(handler.connections[0].frto.is_active(), "F-RTO should be in Step2");
+
+        // Second ACK advances snd_una again => spurious RTO.
+        let snd_una = handler.connections[0].snd_una;
+        let ack2_seq = snd_una.wrapping_add(mss as u32);
+        let ack2 = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, ack2_seq, flags::ACK, 65535, &[]);
+        let ack2_len = ack2.len();
+        handler.process_ipv4(Frame::new(11, leak(ack2), ack2_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        // cwnd should be restored.
+        assert!(!handler.connections[0].frto.is_active(), "F-RTO should be disabled");
+        assert_eq!(handler.connections[0].cubic.cwnd, cwnd_before_rto, "cwnd should be restored after spurious RTO");
     }
 }
