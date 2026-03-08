@@ -1,0 +1,223 @@
+use std::collections::BTreeMap;
+
+use crate::net::wire::tcp::{seq_le, seq_lt};
+
+const DUP_THRESH: u32 = 3;
+
+pub struct SackRecovery {
+    pub in_recovery: bool,
+    pub recovery_point: u32,
+    pub pipe: u32,
+    pub dup_ack_count: u8,
+}
+
+impl SackRecovery {
+    pub fn new() -> Self {
+        Self {
+            in_recovery: false,
+            recovery_point: 0,
+            pipe: 0,
+            dup_ack_count: 0,
+        }
+    }
+
+    /// Enter SACK recovery. `snd_nxt` is the recovery point.
+    pub fn enter(&mut self, snd_nxt: u32) {
+        self.in_recovery = true;
+        self.recovery_point = snd_nxt;
+        self.dup_ack_count = 0;
+    }
+
+    /// Exit recovery, reset state.
+    pub fn exit(&mut self) {
+        self.in_recovery = false;
+        self.recovery_point = 0;
+        self.pipe = 0;
+        self.dup_ack_count = 0;
+    }
+
+    /// Process a new ACK during recovery. Returns true if recovery is complete
+    /// (seg_ack >= recovery_point).
+    pub fn on_ack(&mut self, seg_ack: u32) -> bool {
+        if seq_le(self.recovery_point, seg_ack) {
+            self.exit();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// RFC 6675 S4: IsLost predicate. A segment starting at `seq` is lost if
+    /// DupThresh (3) segments above it have been SACKed, or the byte distance
+    /// exceeds DupThresh * MSS.
+    pub fn is_lost(&self, seq: u32, scoreboard: &BTreeMap<u32, u32>, eff_mss: u16) -> bool {
+        let mut sacked_segments_above = 0u32;
+        let mut highest_sacked_end: Option<u32> = None;
+
+        for (&start, &len) in scoreboard {
+            let end = start.wrapping_add(len);
+            // Only consider SACK blocks that are above seq.
+            if seq_lt(seq, start) {
+                // Count MSS-sized segments within this SACK block.
+                let block_segments = (len + u32::from(eff_mss) - 1) / u32::from(eff_mss);
+                sacked_segments_above += block_segments;
+
+                // Track the highest SACKed byte.
+                match highest_sacked_end {
+                    Some(prev) if seq_lt(prev, end) => highest_sacked_end = Some(end),
+                    None => highest_sacked_end = Some(end),
+                    _ => {}
+                }
+            }
+        }
+
+        if sacked_segments_above >= DUP_THRESH {
+            return true;
+        }
+
+        // Check byte distance from seq to highest SACKed end.
+        if let Some(high) = highest_sacked_end {
+            let byte_distance = high.wrapping_sub(seq);
+            if byte_distance > DUP_THRESH * u32::from(eff_mss) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// RFC 6675 S4.1: SetPipe -- estimate bytes in the network.
+    /// Iterates MSS-sized blocks from snd_una to snd_nxt.
+    pub fn set_pipe(
+        &mut self,
+        snd_una: u32,
+        snd_nxt: u32,
+        scoreboard: &BTreeMap<u32, u32>,
+        eff_mss: u16,
+    ) {
+        let mss = u32::from(eff_mss);
+        let mut pipe: u32 = 0;
+        let mut seq = snd_una;
+
+        while seq_lt(seq, snd_nxt) {
+            if !self.is_sacked(seq, scoreboard) && !self.is_lost(seq, scoreboard, eff_mss) {
+                pipe += mss;
+            }
+            seq = seq.wrapping_add(mss);
+        }
+
+        self.pipe = pipe;
+    }
+
+    /// Check if a sequence number falls within a SACKed range.
+    fn is_sacked(&self, seq: u32, scoreboard: &BTreeMap<u32, u32>) -> bool {
+        for (&start, &len) in scoreboard {
+            let end = start.wrapping_add(len);
+            if seq_le(start, seq) && seq_lt(seq, end) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Find the lowest lost sequence number >= `from` for retransmission.
+    pub fn next_lost_segment(
+        &self,
+        from: u32,
+        snd_nxt: u32,
+        scoreboard: &BTreeMap<u32, u32>,
+        eff_mss: u16,
+    ) -> Option<u32> {
+        let mss = u32::from(eff_mss);
+        let mut seq = from;
+
+        while seq_lt(seq, snd_nxt) {
+            if !self.is_sacked(seq, scoreboard) && self.is_lost(seq, scoreboard, eff_mss) {
+                return Some(seq);
+            }
+            seq = seq.wrapping_add(mss);
+        }
+
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_lost_with_3_sacked_above() {
+        let recovery = SackRecovery::new();
+        let mut scoreboard = BTreeMap::new();
+        // SACKed: [2000..3000], [3000..4000], [4000..5000] -- 3 blocks above seq 1000.
+        scoreboard.insert(2000u32, 1000u32);
+        scoreboard.insert(3000u32, 1000u32);
+        scoreboard.insert(4000u32, 1000u32);
+        assert!(recovery.is_lost(1000, &scoreboard, 1000));
+    }
+
+    #[test]
+    fn is_lost_with_large_gap() {
+        let recovery = SackRecovery::new();
+        let mut scoreboard = BTreeMap::new();
+        // Single SACK at [5000..6000] -- 4000 bytes above seq 1000, > 3*MSS.
+        scoreboard.insert(5000u32, 1000u32);
+        assert!(recovery.is_lost(1000, &scoreboard, 1000));
+    }
+
+    #[test]
+    fn not_lost_with_insufficient_sacks() {
+        let recovery = SackRecovery::new();
+        let mut scoreboard = BTreeMap::new();
+        // Only 2 blocks above.
+        scoreboard.insert(2000u32, 1000u32);
+        scoreboard.insert(3000u32, 1000u32);
+        assert!(!recovery.is_lost(1000, &scoreboard, 1000));
+    }
+
+    #[test]
+    fn set_pipe_counts_in_flight() {
+        let mut recovery = SackRecovery::new();
+        let mut scoreboard = BTreeMap::new();
+        // snd_una=1000, snd_nxt=5000 => 4 MSS-sized blocks.
+        // All 3 blocks [2000..5000] SACKed. Block [1000..2000] is lost (3 SACKed above).
+        scoreboard.insert(2000u32, 1000u32);
+        scoreboard.insert(3000u32, 1000u32);
+        scoreboard.insert(4000u32, 1000u32);
+        recovery.set_pipe(1000, 5000, &scoreboard, 1000);
+        assert_eq!(recovery.pipe, 0); // all either SACKed or lost
+    }
+
+    #[test]
+    fn set_pipe_counts_unacked_unsacked_as_in_flight() {
+        let mut recovery = SackRecovery::new();
+        let mut scoreboard = BTreeMap::new();
+        // snd_una=1000, snd_nxt=6000 => 5 MSS blocks.
+        // Only [2000..3000] SACKed.
+        scoreboard.insert(2000u32, 1000u32);
+        // [1000..2000]: not SACKed, only 1 block above -- not lost => in flight.
+        // [2000..3000]: SACKed.
+        // [3000..4000]: not SACKed, 0 blocks above => in flight.
+        // [4000..5000]: not SACKed, 0 blocks above => in flight.
+        // [5000..6000]: not SACKed, 0 blocks above => in flight.
+        recovery.set_pipe(1000, 6000, &scoreboard, 1000);
+        assert_eq!(recovery.pipe, 4000); // 4 blocks in flight
+    }
+
+    #[test]
+    fn enter_and_exit_recovery() {
+        let mut recovery = SackRecovery::new();
+        recovery.enter(5000);
+        assert!(recovery.in_recovery);
+        assert_eq!(recovery.recovery_point, 5000);
+
+        // Partial ACK -- doesn't exit.
+        assert!(!recovery.on_ack(3000));
+        assert!(recovery.in_recovery);
+
+        // Full ACK -- exits.
+        assert!(recovery.on_ack(5000));
+        assert!(!recovery.in_recovery);
+    }
+}
