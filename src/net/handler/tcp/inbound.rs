@@ -272,12 +272,18 @@ impl TcpHandler {
         };
 
         if let Some(idx) = self.connections.iter().position(|c| c.id == conn_id) {
+            let tsval = if self.connections[idx].ts_enabled {
+                now.duration_since(self.connections[idx].ts_offset).as_millis() as u32
+            } else {
+                0
+            };
             let state = self.connections[idx].state;
             match state {
                 TcpState::SynSent => {
                     self.process_syn_sent(
                         idx,
                         now,
+                        tsval,
                         seg_seq,
                         seg_ack,
                         seg_flags,
@@ -294,6 +300,7 @@ impl TcpHandler {
                     self.process_syn_received(
                         idx,
                         now,
+                        tsval,
                         seg_seq,
                         seg_ack,
                         seg_flags,
@@ -313,6 +320,7 @@ impl TcpHandler {
                         idx,
                         frame,
                         now,
+                        tsval,
                         seg_seq,
                         seg_ack,
                         seg_flags,
@@ -340,6 +348,7 @@ impl TcpHandler {
                         idx,
                         frame,
                         now,
+                        tsval,
                         seg_seq,
                         seg_ack,
                         seg_flags,
@@ -612,7 +621,8 @@ impl TcpHandler {
     fn process_syn_received<'umem>(
         &mut self,
         idx: usize,
-        now: Instant,
+        _now: Instant,
+        tsval: u32,
         seg_seq: u32,
         seg_ack: u32,
         seg_flags: u8,
@@ -637,12 +647,7 @@ impl TcpHandler {
             // Out of window — if not RST, send challenge ACK.
             if seg_flags & flags::RST == 0 {
                 let tcb = &self.connections[idx];
-                let ts = if tcb.ts_enabled {
-                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                    Some((tsval, tcb.ts_recent))
-                } else {
-                    None
-                };
+                let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
@@ -687,12 +692,7 @@ impl TcpHandler {
         if seg_flags & flags::SYN != 0 && seg_flags & flags::ACK == 0 {
             // Send challenge ACK per RFC 5961.
             let tcb = &self.connections[idx];
-            let ts = if tcb.ts_enabled {
-                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                Some((tsval, tcb.ts_recent))
-            } else {
-                None
-            };
+            let ts = tcb.ts_option(tsval);
             SegmentBuilder::build_ack(
                 tcb.id.local_addr,
                 tcb.id.remote_addr,
@@ -768,6 +768,7 @@ impl TcpHandler {
         &mut self,
         idx: usize,
         now: Instant,
+        tsval: u32,
         seg_seq: u32,
         seg_ack: u32,
         seg_flags: u8,
@@ -883,12 +884,7 @@ impl TcpHandler {
 
                 // Send ACK.
                 let id = tcb.id;
-                let ts = if tcb.ts_enabled {
-                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                    Some((tsval, tcb.ts_recent))
-                } else {
-                    None
-                };
+                let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_ack(
                     id.local_addr,
                     id.remote_addr,
@@ -924,12 +920,7 @@ impl TcpHandler {
                 } else {
                     None
                 };
-                let ts_opt = if tcb.ts_enabled {
-                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                    Some((tsval, tcb.ts_recent))
-                } else {
-                    None
-                };
+                let ts_opt = tcb.ts_option(tsval);
                 SegmentBuilder::build_syn_ack(
                     id.local_addr,
                     id.remote_addr,
@@ -967,6 +958,7 @@ impl TcpHandler {
         idx: usize,
         frame: Frame<'umem>,
         now: Instant,
+        tsval: u32,
         seg_seq: u32,
         seg_ack: u32,
         seg_flags: u8,
@@ -1019,12 +1011,7 @@ impl TcpHandler {
                         return;
                     }
                     let tcb = &self.connections[idx];
-                    let ts = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                        Some((tsval, tcb.ts_recent))
-                    } else {
-                        None
-                    };
+                    let ts = tcb.ts_option(tsval);
                     SegmentBuilder::build_ack(
                         tcb.id.local_addr,
                         tcb.id.remote_addr,
@@ -1058,12 +1045,7 @@ impl TcpHandler {
                     rx_return.push(frame);
                     return;
                 }
-                let ts = if tcb.ts_enabled {
-                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                    Some((tsval, tcb.ts_recent))
-                } else {
-                    None
-                };
+                let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
@@ -1098,12 +1080,7 @@ impl TcpHandler {
             }
             // In-window but not exact: send challenge ACK, drop segment.
             let tcb = &self.connections[idx];
-            let ts = if tcb.ts_enabled {
-                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                Some((tsval, tcb.ts_recent))
-            } else {
-                None
-            };
+            let ts = tcb.ts_option(tsval);
             SegmentBuilder::build_ack(
                 tcb.id.local_addr,
                 tcb.id.remote_addr,
@@ -1127,12 +1104,7 @@ impl TcpHandler {
         // Step 4: SYN check (RFC 5961 — challenge ACK for SYN in synchronized state).
         if seg_flags & flags::SYN != 0 {
             let tcb = &self.connections[idx];
-            let ts = if tcb.ts_enabled {
-                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                Some((tsval, tcb.ts_recent))
-            } else {
-                None
-            };
+            let ts = tcb.ts_option(tsval);
             SegmentBuilder::build_ack(
                 tcb.id.local_addr,
                 tcb.id.remote_addr,
@@ -1231,7 +1203,7 @@ impl TcpHandler {
                     if let Some((_tsval, tsecr)) = parse_timestamp(options)
                         && tsecr != 0
                     {
-                        let our_ts = now.duration_since(tcb.ts_offset).as_millis() as u32;
+                        let our_ts = tsval;
                         let rtt_ms = our_ts.wrapping_sub(tsecr) as u64;
                         match tcb.srtt {
                             None => {
@@ -1303,12 +1275,7 @@ impl TcpHandler {
             } else if seq_lt(snd_nxt, seg_ack) {
                 // ACK for unsent data — send ACK and drop (RFC 9293 §3.10.7.4 Step 5).
                 let tcb = &self.connections[idx];
-                let ts = if tcb.ts_enabled {
-                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                    Some((tsval, tcb.ts_recent))
-                } else {
-                    None
-                };
+                let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
@@ -1405,12 +1372,7 @@ impl TcpHandler {
                 tcb.ack_delay_count += 1;
                 if tcb.ack_delay_count >= MAX_DELAYED_ACK_COUNT {
                     // Flush: ACK every other segment (RFC 5681 §4.2).
-                    let ts = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                        Some((tsval, tcb.ts_recent))
-                    } else {
-                        None
-                    };
+                    let ts = tcb.ts_option(tsval);
                     SegmentBuilder::build_ack(
                         tcb.id.local_addr,
                         tcb.id.remote_addr,
@@ -1447,12 +1409,7 @@ impl TcpHandler {
                 tcb.ooo_ranges.insert(seg_seq, payload_len as u32);
 
                 // Send duplicate ACK (with current rcv_nxt) and SACK blocks.
-                let ts = if tcb.ts_enabled {
-                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                    Some((tsval, tcb.ts_recent))
-                } else {
-                    None
-                };
+                let ts = tcb.ts_option(tsval);
 
                 let max_blocks = if tcb.ts_enabled { 3 } else { 4 };
                 let mut sack_blocks: Vec<(u32, u32)> = Vec::new();
@@ -1490,12 +1447,7 @@ impl TcpHandler {
             } else {
                 // Duplicate data (seg_seq < rcv_nxt) — just ACK.
                 let tcb = &self.connections[idx];
-                let ts = if tcb.ts_enabled {
-                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                    Some((tsval, tcb.ts_recent))
-                } else {
-                    None
-                };
+                let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
@@ -1531,12 +1483,7 @@ impl TcpHandler {
             let snd_nxt = tcb.snd_nxt;
             let new_rcv_nxt = tcb.rcv_nxt;
             let window = tcb.advertised_window();
-            let ts = if tcb.ts_enabled {
-                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                Some((tsval, tcb.ts_recent))
-            } else {
-                None
-            };
+            let ts = tcb.ts_option(tsval);
             SegmentBuilder::build_ack(
                 id.local_addr,
                 id.remote_addr,
@@ -1568,6 +1515,7 @@ impl TcpHandler {
         idx: usize,
         frame: Frame<'umem>,
         now: Instant,
+        tsval: u32,
         seg_seq: u32,
         seg_ack: u32,
         seg_flags: u8,
@@ -1598,12 +1546,7 @@ impl TcpHandler {
                         return;
                     }
                     let tcb = &self.connections[idx];
-                    let ts = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                        Some((tsval, tcb.ts_recent))
-                    } else {
-                        None
-                    };
+                    let ts = tcb.ts_option(tsval);
                     SegmentBuilder::build_ack(
                         tcb.id.local_addr,
                         tcb.id.remote_addr,
@@ -1637,12 +1580,7 @@ impl TcpHandler {
                     rx_return.push(frame);
                     return;
                 }
-                let ts = if tcb.ts_enabled {
-                    let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                    Some((tsval, tcb.ts_recent))
-                } else {
-                    None
-                };
+                let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
@@ -1680,12 +1618,7 @@ impl TcpHandler {
             }
             // In-window but not exact: send challenge ACK, drop segment.
             let tcb = &self.connections[idx];
-            let ts = if tcb.ts_enabled {
-                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                Some((tsval, tcb.ts_recent))
-            } else {
-                None
-            };
+            let ts = tcb.ts_option(tsval);
             SegmentBuilder::build_ack(
                 tcb.id.local_addr,
                 tcb.id.remote_addr,
@@ -1709,12 +1642,7 @@ impl TcpHandler {
         // Step 4: SYN check (RFC 5961 — challenge ACK for SYN in synchronized state).
         if seg_flags & flags::SYN != 0 {
             let tcb = &self.connections[idx];
-            let ts = if tcb.ts_enabled {
-                let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                Some((tsval, tcb.ts_recent))
-            } else {
-                None
-            };
+            let ts = tcb.ts_option(tsval);
             SegmentBuilder::build_ack(
                 tcb.id.local_addr,
                 tcb.id.remote_addr,
@@ -1808,12 +1736,7 @@ impl TcpHandler {
                     let id = tcb.id;
                     let snd_nxt = tcb.snd_nxt;
                     let rcv_nxt = tcb.rcv_nxt;
-                    let ts = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                        Some((tsval, tcb.ts_recent))
-                    } else {
-                        None
-                    };
+                    let ts = tcb.ts_option(tsval);
                     SegmentBuilder::build_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -1858,12 +1781,7 @@ impl TcpHandler {
                     let id = tcb.id;
                     let snd_nxt = tcb.snd_nxt;
                     let rcv_nxt = tcb.rcv_nxt;
-                    let ts = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                        Some((tsval, tcb.ts_recent))
-                    } else {
-                        None
-                    };
+                    let ts = tcb.ts_option(tsval);
                     SegmentBuilder::build_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -1923,12 +1841,7 @@ impl TcpHandler {
                     let id = tcb.id;
                     let snd_nxt = tcb.snd_nxt;
                     let rcv_nxt = tcb.rcv_nxt;
-                    let ts = if tcb.ts_enabled {
-                        let tsval = now.duration_since(tcb.ts_offset).as_millis() as u32;
-                        Some((tsval, tcb.ts_recent))
-                    } else {
-                        None
-                    };
+                    let ts = tcb.ts_option(tsval);
                     SegmentBuilder::build_ack(
                         id.local_addr,
                         id.remote_addr,

@@ -344,6 +344,17 @@ impl Tcb {
             self.rcv_nxt.wrapping_add(self.recv_buffer.free_space() as u32);
     }
 
+    /// Build the timestamp option tuple using a pre-computed tsval.
+    /// `ts_recent` is read at call time since it may change during segment processing.
+    #[inline(always)]
+    pub(super) fn ts_option(&self, tsval: u32) -> Option<(u32, u32)> {
+        if self.ts_enabled {
+            Some((tsval, self.ts_recent))
+        } else {
+            None
+        }
+    }
+
     /// Scale an incoming window value by `snd_wscale`.
     /// Only call after SYN exchange (Established onward).
     #[inline]
