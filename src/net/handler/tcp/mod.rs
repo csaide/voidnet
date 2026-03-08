@@ -2273,9 +2273,35 @@ impl TcpHandler {
 
             // Compute how many bytes we can send.
             let bytes_in_flight = tcb.snd_nxt.wrapping_sub(tcb.snd_una) as usize;
-            let send_window = (tcb.snd_wnd as usize).min(tcb.cubic.cwnd as usize);
-            let can_send = send_window.saturating_sub(bytes_in_flight);
             let data_available = tcb.send_buffer.available().saturating_sub(bytes_in_flight);
+            let send_window = (tcb.snd_wnd as usize).min(tcb.cubic.cwnd as usize);
+
+            let can_send = if tcb.recovery.in_recovery {
+                // During recovery: use pipe + PRR to gate sending.
+                tcb.recovery.set_pipe(
+                    tcb.snd_una,
+                    tcb.snd_nxt,
+                    &tcb.sack_scoreboard,
+                    tcb.eff_snd_mss,
+                );
+                let pipe = tcb.recovery.pipe as usize;
+                let cwnd = tcb.cubic.cwnd as usize;
+                if pipe < cwnd {
+                    (cwnd - pipe).min(tcb.eff_snd_mss as usize)
+                } else {
+                    0
+                }
+            } else {
+                let mut budget = send_window.saturating_sub(bytes_in_flight);
+                // Limited Transmit (RFC 3042): on 1st/2nd dup ACK, allow extra MSS.
+                if tcb.recovery.dup_ack_count > 0
+                    && tcb.recovery.dup_ack_count <= 2
+                    && !tcb.recovery.in_recovery
+                {
+                    budget += tcb.recovery.dup_ack_count as usize * tcb.eff_snd_mss as usize;
+                }
+                budget
+            };
 
             // Sender SWS avoidance (MUST-38): don't send sub-MSS data unless
             // the usable window is large enough or all remaining data fits.
@@ -10920,5 +10946,57 @@ mod tests {
         // cwnd should be restored.
         assert!(!handler.connections[0].frto.is_active(), "F-RTO should be disabled");
         assert_eq!(handler.connections[0].cubic.cwnd, cwnd_before_rto, "cwnd should be restored after spurious RTO");
+    }
+
+    #[test]
+    fn limited_transmit_sends_on_first_dup_ack() {
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut free = BasicFrameBuffer::new(64);
+        let mut rx = BasicFrameBuffer::new(64);
+        let mut tx = BasicFrameBuffer::new(64);
+        for i in 0..32 { free.push(alloc_free_frame(100 + i)); }
+
+        // Complete handshake.
+        let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+        let syn_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::SYN, 65535, &[]);
+        let syn_len = syn_data.len();
+        handler.process_ipv4(Frame::new(0, leak(syn_data), syn_len, false), &nh, &mut free, &mut rx, &mut tx);
+        let server_iss = handler.connections[0].iss;
+        let ack_data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, server_iss.wrapping_add(1), flags::ACK, 65535, &[]);
+        let ack_len = ack_data.len();
+        handler.process_ipv4(Frame::new(1, leak(ack_data), ack_len, false), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        let mss = handler.connections[0].eff_snd_mss as usize;
+        // Fill send buffer with 6 MSS of data, set cwnd to 3*MSS.
+        handler.connections[0].send_buffer.write(&vec![0xAA; mss * 6]);
+        handler.connections[0].snd_wnd = 65535;
+        handler.connections[0].cubic.cwnd = (mss * 3) as u32;
+
+        // Send 3 segments (fills cwnd).
+        let now = coarsetime::Instant::now();
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        while tx.pop().is_some() {}
+
+        let snd_nxt_before = handler.connections[0].snd_nxt;
+        let snd_una = handler.connections[0].snd_una;
+
+        // First dup ACK.
+        let dup = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1001, snd_una, flags::ACK, 65535, &[]);
+        let dup_len = dup.len();
+        handler.process_ipv4(Frame::new(10, leak(dup), dup_len, false), &nh, &mut free, &mut rx, &mut tx);
+
+        assert_eq!(handler.connections[0].recovery.dup_ack_count, 1);
+
+        // poll_send should allow 1 MSS of new data (limited transmit).
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+
+        let snd_nxt_after = handler.connections[0].snd_nxt;
+        assert_eq!(
+            snd_nxt_after.wrapping_sub(snd_nxt_before) as usize,
+            mss,
+            "limited transmit: 1 MSS sent on first dup ACK"
+        );
     }
 }
