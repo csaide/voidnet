@@ -1534,7 +1534,7 @@ impl TcpHandler {
                 // Congestion control — only update outside recovery and F-RTO.
                 if !tcb.recovery.in_recovery && !frto_handled {
                     let rtt_ms = tcb.srtt.unwrap_or(tcb.rto);
-                    tcb.cubic.on_ack(bytes_acked as u32, now, rtt_ms);
+                    tcb.cubic.on_ack(bytes_acked as u32, now, rtt_ms, tcb.max_snd_wnd);
                 }
 
                 tcb.recovery.dup_ack_count = 0;

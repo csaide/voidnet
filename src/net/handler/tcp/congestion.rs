@@ -42,14 +42,23 @@ impl CubicState {
     }
 
     /// Called on each new ACK (that advances snd_una). NOT called during recovery.
-    pub fn on_ack(&mut self, bytes_acked: u32, now: Instant, rtt_ms: u64) {
+    ///
+    /// `receiver_window` is the largest window advertised by the peer
+    /// (`max_snd_wnd`). `cwnd` is clamped to this value after growth to
+    /// prevent unbounded increase on lossless links.
+    pub fn on_ack(&mut self, bytes_acked: u32, now: Instant, rtt_ms: u64, receiver_window: u32) {
         let mss = self.eff_mss as u32;
         if self.cwnd < self.ssthresh {
             // Slow start.
-            self.cwnd += mss;
+            self.cwnd = self.cwnd.saturating_add(mss);
         } else {
             // Congestion avoidance — stub for now (Task 2 replaces this).
             self.cubic_update(bytes_acked, now, rtt_ms);
+        }
+        // Cap cwnd at receiver window — growing beyond the peer's buffer is
+        // pointless since the effective send window is min(cwnd, snd_wnd).
+        if receiver_window > 0 {
+            self.cwnd = self.cwnd.min(receiver_window);
         }
     }
 
@@ -143,7 +152,7 @@ impl CubicState {
         if target > self.cwnd {
             let delta = target - self.cwnd;
             let inc = ((delta as u64 * mss as u64) / self.cwnd as u64) as u32;
-            self.cwnd += inc.max(1);
+            self.cwnd = self.cwnd.saturating_add(inc.max(1));
         }
     }
 }
@@ -152,14 +161,18 @@ impl CubicState {
 mod tests {
     use super::*;
 
+    /// Large receiver window used in tests so the cap doesn't interfere
+    /// with the property being tested.
+    const TEST_RWND: u32 = u32::MAX;
+
     #[test]
     fn slow_start_increases_cwnd_by_mss_per_ack() {
         let mut cubic = CubicState::new(1460);
         // IW = 10 * MSS = 14600, ssthresh = MAX => slow start.
         let now = Instant::now();
-        cubic.on_ack(1460, now, 100);
+        cubic.on_ack(1460, now, 100, TEST_RWND);
         assert_eq!(cubic.cwnd, 14600 + 1460);
-        cubic.on_ack(1460, now, 100);
+        cubic.on_ack(1460, now, 100, TEST_RWND);
         assert_eq!(cubic.cwnd, 14600 + 2 * 1460);
     }
 
@@ -222,7 +235,7 @@ mod tests {
         for i in 0..400 {
             let elapsed_ms = (i as u64) * rtt_ms;
             let now = start + coarsetime::Duration::from_millis(elapsed_ms);
-            cubic.on_ack(1460, now, rtt_ms);
+            cubic.on_ack(1460, now, rtt_ms, TEST_RWND);
         }
         // After enough time, cwnd should exceed w_max.
         assert!(
@@ -246,7 +259,7 @@ mod tests {
         let mss = 1460u32;
         for i in 0..200 {
             let now = start + coarsetime::Duration::from_millis(i * rtt_ms);
-            cubic.on_ack(1460, now, rtt_ms);
+            cubic.on_ack(1460, now, rtt_ms, TEST_RWND);
             // Reno: cwnd += MSS^2 / cwnd per ACK.
             reno_cwnd += (mss * mss) / reno_cwnd;
         }
@@ -256,5 +269,32 @@ mod tests {
             cubic.cwnd,
             reno_cwnd
         );
+    }
+
+    #[test]
+    fn cwnd_capped_at_receiver_window() {
+        let mut cubic = CubicState::new(1460);
+        // IW = 14600, ssthresh = MAX => slow start.
+        let now = Instant::now();
+        let receiver_window = 20_000u32;
+        // Grow past receiver window.
+        for _ in 0..100 {
+            cubic.on_ack(1460, now, 100, receiver_window);
+        }
+        assert_eq!(
+            cubic.cwnd, receiver_window,
+            "cwnd should be capped at receiver window"
+        );
+    }
+
+    #[test]
+    fn cwnd_does_not_overflow_in_slow_start() {
+        let mut cubic = CubicState::new(1460);
+        // Manually set cwnd near u32::MAX to verify saturating_add.
+        cubic.cwnd = u32::MAX - 500;
+        let now = Instant::now();
+        // Without saturating_add this would panic.
+        cubic.on_ack(1460, now, 100, u32::MAX);
+        assert_eq!(cubic.cwnd, u32::MAX);
     }
 }
