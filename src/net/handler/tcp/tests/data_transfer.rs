@@ -119,8 +119,13 @@ fn established_receives_in_order_data() {
         &mut tx,
     );
 
-    // Second segment flushes the ACK.
-    assert_eq!(tx.num_frames(), 1, "ACK flushed on second segment");
+    // ACK is now deferred to poll_send for piggyback opportunity.
+    assert_eq!(tx.num_frames(), 0, "ACK deferred until poll_send");
+    assert!(handler.connections[0].ack_pending, "ack_pending should be true");
+
+    // poll_send generates pure ACK since no data to piggyback.
+    handler.poll_send(coarsetime::Instant::now(), nh.local_mac(), &nh, &mut free, &mut tx);
+    assert_eq!(tx.num_frames(), 1, "ACK flushed by poll_send");
 
     // Verify: data is in the receive ring buffer.
     let tcb = &handler.connections[0];

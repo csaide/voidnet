@@ -195,7 +195,13 @@ fn delayed_ack_flushes_on_second_segment() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(tx.num_frames(), 1, "second segment flushes ACK");
+    // ACK is now deferred to poll_send for piggyback opportunity.
+    assert_eq!(tx.num_frames(), 0, "ACK deferred until poll_send");
+    assert!(handler.connections[0].ack_pending, "ack_pending should be true after second segment");
+
+    // poll_send generates pure ACK since no data to piggyback.
+    handler.poll_send(coarsetime::Instant::now(), nh.local_mac(), &nh, &mut free, &mut tx);
+    assert_eq!(tx.num_frames(), 1, "poll_send flushes ACK");
 
     let tcb = &handler.connections[0];
     assert!(!tcb.ack_pending, "ack_pending should be false after flush");

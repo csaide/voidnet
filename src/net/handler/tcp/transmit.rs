@@ -5,7 +5,10 @@ use crate::{
     xdp::frame::FrameBuffer,
 };
 
-use super::{TcpHandler, segment::SegmentBuilder, state::TcpState, tcb::TcpEvent};
+use super::{
+    TcpHandler, segment::SegmentBuilder, state::TcpState,
+    tcb::{MAX_DELAYED_ACK_COUNT, TcpEvent},
+};
 
 impl TcpHandler {
     // --- Data transmission ---
@@ -149,6 +152,42 @@ impl TcpHandler {
                 }
 
                 // Piggyback: data segment carries ACK, so clear delayed ACK state.
+                tcb.update_advertised_edge();
+                tcb.ack_pending = false;
+                tcb.ack_delay_count = 0;
+                tcb.delayed_ack_deadline = None;
+            }
+
+            // Delayed ACK fallback: if the data send loop didn't piggyback an ACK
+            // and enough segments have arrived to require an immediate ACK, send a
+            // pure ACK now. This defers ACK generation from inbound processing to
+            // give data segments a chance to piggyback the ACK first.
+            if tcb.ack_pending && tcb.ack_delay_count >= MAX_DELAYED_ACK_COUNT {
+                let dst_mac = neighbor_handler
+                    .lookup(now, &tcb.id.remote_addr)
+                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+
+                let ts = tcb.ts_option(tsval);
+                let mut ack_flags = flags::ACK;
+                if tcb.ecn_ce_received {
+                    ack_flags |= flags::ECE;
+                }
+                SegmentBuilder::build_ack(
+                    tcb.id.local_addr,
+                    tcb.id.remote_addr,
+                    tcb.id.local_port,
+                    tcb.id.remote_port,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
+                    tcb.advertised_window(),
+                    ack_flags,
+                    ts,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
+                );
                 tcb.update_advertised_edge();
                 tcb.ack_pending = false;
                 tcb.ack_delay_count = 0;

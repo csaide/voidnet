@@ -27,7 +27,7 @@ use super::ring_buffer::RingBuffer;
 use super::segment::SegmentBuilder;
 use super::state::TcpState;
 use super::tcb::{
-    ConnectionId, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE, MAX_DELAYED_ACK_COUNT,
+    ConnectionId, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE,
     TS_OPTION_LEN, Tcb, TcpEvent,
 };
 
@@ -1268,39 +1268,15 @@ impl TcpHandler {
                                 tcb.last_activity = now;
                                 tcb.keep_alive_probes_sent = 0;
 
-                                // Delayed ACK.
+                                // Delayed ACK — defer to poll_send for piggyback opportunity.
                                 tcb.ack_delay_count += 1;
-                                if tcb.ack_delay_count >= MAX_DELAYED_ACK_COUNT {
-                                    let ts = tcb.ts_option(tsval);
-                                    SegmentBuilder::build_ack(
-                                        tcb.id.local_addr,
-                                        tcb.id.remote_addr,
-                                        tcb.id.local_port,
-                                        tcb.id.remote_port,
-                                        tcb.snd_nxt,
-                                        tcb.rcv_nxt,
-                                        tcb.advertised_window(),
-                                        ack_flags,
-                                        ts,
-                                        src_mac,
-                                        dst_mac,
-                                        self.tx_offload,
-                                        free_frames,
-                                        tx_return,
+                                tcb.ack_pending = true;
+                                if tcb.delayed_ack_deadline.is_none() {
+                                    tcb.delayed_ack_deadline = Some(
+                                        now + coarsetime::Duration::from_millis(
+                                            tcb.delayed_ack_ms,
+                                        ),
                                     );
-                                    tcb.update_advertised_edge();
-                                    tcb.ack_pending = false;
-                                    tcb.ack_delay_count = 0;
-                                    tcb.delayed_ack_deadline = None;
-                                } else {
-                                    tcb.ack_pending = true;
-                                    if tcb.delayed_ack_deadline.is_none() {
-                                        tcb.delayed_ack_deadline = Some(
-                                            now + coarsetime::Duration::from_millis(
-                                                tcb.delayed_ack_ms,
-                                            ),
-                                        );
-                                    }
                                 }
 
                                 rx_return.push(frame);
@@ -1411,37 +1387,13 @@ impl TcpHandler {
                         tcb.last_activity = now;
                         tcb.keep_alive_probes_sent = 0;
 
-                        // Delayed ACK.
+                        // Delayed ACK — defer to poll_send for piggyback opportunity.
                         tcb.ack_delay_count += 1;
-                        if tcb.ack_delay_count >= MAX_DELAYED_ACK_COUNT {
-                            let ts = tcb.ts_option(tsval);
-                            SegmentBuilder::build_ack(
-                                tcb.id.local_addr,
-                                tcb.id.remote_addr,
-                                tcb.id.local_port,
-                                tcb.id.remote_port,
-                                tcb.snd_nxt,
-                                tcb.rcv_nxt,
-                                tcb.advertised_window(),
-                                ack_flags,
-                                ts,
-                                src_mac,
-                                dst_mac,
-                                self.tx_offload,
-                                free_frames,
-                                tx_return,
+                        tcb.ack_pending = true;
+                        if tcb.delayed_ack_deadline.is_none() {
+                            tcb.delayed_ack_deadline = Some(
+                                now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms),
                             );
-                            tcb.update_advertised_edge();
-                            tcb.ack_pending = false;
-                            tcb.ack_delay_count = 0;
-                            tcb.delayed_ack_deadline = None;
-                        } else {
-                            tcb.ack_pending = true;
-                            if tcb.delayed_ack_deadline.is_none() {
-                                tcb.delayed_ack_deadline = Some(
-                                    now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms),
-                                );
-                            }
                         }
 
                         rx_return.push(frame);
@@ -1787,38 +1739,13 @@ impl TcpHandler {
                     }
                 }
 
-                // Defer ACK (delayed ACK).
+                // Defer ACK (delayed ACK) — defer to poll_send for piggyback opportunity.
                 let tcb = &mut self.connections[idx];
                 tcb.ack_delay_count += 1;
-                if tcb.ack_delay_count >= MAX_DELAYED_ACK_COUNT {
-                    // Flush: ACK every other segment (RFC 5681 §4.2).
-                    let ts = tcb.ts_option(tsval);
-                    SegmentBuilder::build_ack(
-                        tcb.id.local_addr,
-                        tcb.id.remote_addr,
-                        tcb.id.local_port,
-                        tcb.id.remote_port,
-                        tcb.snd_nxt,
-                        tcb.rcv_nxt,
-                        tcb.advertised_window(),
-                        ack_flags,
-                        ts,
-                        src_mac,
-                        dst_mac,
-                        self.tx_offload,
-                        free_frames,
-                        tx_return,
-                    );
-                    tcb.update_advertised_edge();
-                    tcb.ack_pending = false;
-                    tcb.ack_delay_count = 0;
-                    tcb.delayed_ack_deadline = None;
-                } else {
-                    tcb.ack_pending = true;
-                    if tcb.delayed_ack_deadline.is_none() {
-                        tcb.delayed_ack_deadline =
-                            Some(now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms));
-                    }
+                tcb.ack_pending = true;
+                if tcb.delayed_ack_deadline.is_none() {
+                    tcb.delayed_ack_deadline =
+                        Some(now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms));
                 }
             } else if seq_lt(rcv_nxt, seg_seq) {
                 // Out-of-order data.

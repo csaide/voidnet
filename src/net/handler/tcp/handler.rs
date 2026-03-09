@@ -1,8 +1,5 @@
 use crate::{
-    net::wire::{
-        ethernet::MacAddress,
-        tcp::flags,
-    },
+    net::wire::{ethernet::MacAddress, tcp::flags},
     xdp::frame::FrameBuffer,
 };
 
@@ -68,11 +65,11 @@ impl TcpHandler {
         idx: usize,
         id: &ConnectionId,
     ) -> Option<(usize, &mut Tcb)> {
-        if let Some(tcb) = self.connections.get(idx) {
-            if tcb.id == *id {
-                // SAFETY: we just checked bounds above; re-borrow mutably.
-                return Some((idx, &mut self.connections[idx]));
-            }
+        if let Some(tcb) = self.connections.get(idx)
+            && tcb.id == *id
+        {
+            // SAFETY: we just checked bounds above; re-borrow mutably.
+            return Some((idx, &mut self.connections[idx]));
         }
         // Index is stale — fall back to linear scan.
         if let Some(new_idx) = self.connections.iter().position(|c| c.id == *id) {
