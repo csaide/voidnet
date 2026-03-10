@@ -67,6 +67,13 @@ impl<'umem> FrameBuffer<'umem> for BasicFrameBuffer<'umem> {
         self.frames.push_back(frame);
     }
 
+    fn pop(&mut self) -> Option<Frame<'umem>> {
+        self.frames.pop_front().inspect(|_| {
+            self.free_space += 1;
+            self.num_frames -= 1;
+        })
+    }
+
     fn take_frames(&mut self) -> Self::Drain<'_> {
         self.drain(..)
     }
@@ -90,20 +97,6 @@ impl<'umem> FromIterator<Frame<'umem>> for BasicFrameBuffer<'umem> {
             free_space,
             num_frames,
         }
-    }
-}
-
-impl<'umem> Extend<Frame<'umem>> for BasicFrameBuffer<'umem> {
-    fn extend<T: IntoIterator<Item = Frame<'umem>>>(&mut self, iter: T) {
-        let frames: VecDeque<Frame<'umem>> = iter.into_iter().collect();
-        debug_assert!(
-            self.free_space >= frames.len(),
-            "free space is less than the number of frames to extend"
-        );
-
-        self.free_space -= frames.len();
-        self.num_frames += frames.len();
-        self.frames.extend(frames);
     }
 }
 
@@ -211,20 +204,5 @@ mod tests {
         let buffer = BasicFrameBuffer::from_iter(frames);
         assert_eq!(buffer.num_frames(), 2);
         assert_eq!(buffer.free_space(), 0);
-    }
-
-    #[test]
-    fn test_basic_frame_buffer_extend() {
-        let mut buffer = BasicFrameBuffer::new(10);
-        let mut data0 = [0u8; 10];
-        let mut data1 = [0u8; 10];
-        let frames = vec![
-            Frame::new(1, &mut data0, 10, false),
-            Frame::new(2, &mut data1, 10, false),
-        ];
-
-        buffer.extend(frames);
-        assert_eq!(buffer.num_frames(), 2);
-        assert_eq!(buffer.free_space(), 8);
     }
 }

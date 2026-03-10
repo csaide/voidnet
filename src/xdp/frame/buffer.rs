@@ -30,6 +30,9 @@ pub trait FrameBuffer<'umem> {
     /// Pushes a frame into the buffer, note again that the XDP subsystem will use free_space above to determine how many frames to push this should be infalible in every way.
     fn push(&mut self, frame: Frame<'umem>);
 
+    /// Pops a frame from the buffer.
+    fn pop(&mut self) -> Option<Frame<'umem>>;
+
     /// Drain all frames from the buffer and pass off ownership to the caller, this is used to take the frames and pass them off to the kernel.
     fn take_frames(&mut self) -> Self::Drain<'_>;
 
@@ -75,6 +78,11 @@ impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for &mut B {
     }
 
     #[inline(always)]
+    fn pop(&mut self) -> Option<Frame<'umem>> {
+        B::pop(self)
+    }
+
+    #[inline(always)]
     fn take_frames(&mut self) -> Self::Drain<'_> {
         B::take_frames(self)
     }
@@ -111,32 +119,37 @@ impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for std::sync::MutexGuard<
 
     #[inline(always)]
     fn free_space(&self) -> usize {
-        B::free_space(&*self)
+        B::free_space(self)
     }
 
     #[inline(always)]
     fn num_frames(&self) -> usize {
-        B::num_frames(&*self)
+        B::num_frames(self)
     }
 
     #[inline(always)]
     fn push(&mut self, frame: Frame<'umem>) {
-        B::push(&mut *self, frame)
+        B::push(self, frame)
+    }
+
+    #[inline(always)]
+    fn pop(&mut self) -> Option<Frame<'umem>> {
+        B::pop(self)
     }
 
     #[inline(always)]
     fn take_frames(&mut self) -> Self::Drain<'_> {
-        B::take_frames(&mut *self)
+        B::take_frames(self)
     }
 
     #[inline(always)]
     fn iter_frames(&self) -> Self::Iter<'_> {
-        B::iter_frames(&*self)
+        B::iter_frames(self)
     }
 
     #[inline(always)]
     fn iter_frames_mut(&mut self) -> Self::IterMut<'_> {
-        B::iter_frames_mut(&mut *self)
+        B::iter_frames_mut(self)
     }
 }
 
@@ -162,40 +175,48 @@ impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for futures_util::lock::Mu
 
     #[inline(always)]
     fn free_space(&self) -> usize {
-        B::free_space(&*self)
+        B::free_space(self)
     }
 
     #[inline(always)]
     fn num_frames(&self) -> usize {
-        B::num_frames(&*self)
+        B::num_frames(self)
     }
 
     #[inline(always)]
     fn push(&mut self, frame: Frame<'umem>) {
-        B::push(&mut *self, frame)
+        B::push(self, frame)
+    }
+
+    #[inline(always)]
+    fn pop(&mut self) -> Option<Frame<'umem>> {
+        B::pop(self)
     }
 
     #[inline(always)]
     fn take_frames(&mut self) -> Self::Drain<'_> {
-        B::take_frames(&mut *self)
+        B::take_frames(self)
     }
 
     #[inline(always)]
     fn iter_frames(&self) -> Self::Iter<'_> {
-        B::iter_frames(&*self)
+        B::iter_frames(self)
     }
 
     #[inline(always)]
     fn iter_frames_mut(&mut self) -> Self::IterMut<'_> {
-        B::iter_frames_mut(&mut *self)
+        B::iter_frames_mut(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{
+        VecDeque,
+        vec_deque::{Drain, Iter, IterMut},
+    };
+
     use super::*;
-    use std::collections::VecDeque;
-    use std::collections::vec_deque::{Drain, Iter, IterMut};
 
     struct MockFrameBuffer<'umem> {
         frames: VecDeque<Frame<'umem>>,
@@ -238,6 +259,10 @@ mod tests {
 
         fn push(&mut self, frame: Frame<'umem>) {
             self.frames.push_back(frame);
+        }
+
+        fn pop(&mut self) -> Option<Frame<'umem>> {
+            self.frames.pop_front()
         }
 
         fn take_frames(&mut self) -> Self::Drain<'_> {
