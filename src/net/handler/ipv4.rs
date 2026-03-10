@@ -1,13 +1,19 @@
+use coarsetime::Instant;
+
 use crate::{
     net::{
+        PmtuCache,
         checksum::verify_ipv4_checksum,
         wire::{
             ethernet::EthernetFrame,
-            ip::{IPV4_MIN_FRAME_LEN, Ipv4Header},
+            icmpv4::Icmpv4Codes,
+            ip::{IPV4_MIN_FRAME_LEN, IpProtocols, Ipv4Header},
         },
     },
     xdp::frame::{Frame, FrameBuffer},
 };
+
+use super::icmpv4;
 
 /// Layer-3 handler for incoming IPv4 frames.
 ///
@@ -39,7 +45,10 @@ impl Ipv4Handler {
     pub fn handle<'umem>(
         &mut self,
         frame: Frame<'umem>,
+        pmtu: &PmtuCache,
+        now: Instant,
         rx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         if frame.len() < IPV4_MIN_FRAME_LEN {
             rx_return.push(frame);
@@ -80,7 +89,26 @@ impl Ipv4Handler {
             }
         }
 
-        rx_return.push(frame);
+        let protocol = ip.protocol;
+        match protocol {
+            IpProtocols::Icmp => icmpv4::handle_icmpv4(
+                frame,
+                pmtu,
+                now,
+                self.rx_offload,
+                self.tx_offload,
+                rx_return,
+                tx_return,
+            ),
+            _ => icmpv4::send_destination_unreachable(
+                frame,
+                Icmpv4Codes::ProtocolUnreachable,
+                0,
+                self.tx_offload,
+                rx_return,
+                tx_return,
+            ),
+        }
     }
 }
 
@@ -142,11 +170,19 @@ mod tests {
         let mut data = [0u8; 30];
         let mut handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
 
         let frame = Frame::new(0, &mut data, 30, false);
 
-        handler.handle(frame, &mut rx);
+        handler.handle(
+            frame,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
+        assert_eq!(tx.num_frames(), 0);
     }
 
     #[test]
@@ -159,12 +195,20 @@ mod tests {
 
         let mut handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut rx);
+        handler.handle(
+            frame,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
+        assert_eq!(tx.num_frames(), 0);
     }
 
     #[test]
@@ -174,12 +218,20 @@ mod tests {
 
         let mut handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut rx);
+        handler.handle(
+            frame,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
+        assert_eq!(tx.num_frames(), 0);
     }
 
     #[test]
@@ -189,12 +241,20 @@ mod tests {
 
         let mut handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut rx);
+        handler.handle(
+            frame,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
+        assert_eq!(tx.num_frames(), 0);
     }
 
     #[test]
@@ -212,11 +272,88 @@ mod tests {
 
         let mut handler = new_handler();
         let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut rx);
+        handler.handle(
+            frame,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
+        assert_eq!(tx.num_frames(), 0);
+    }
+
+    #[test]
+    fn icmp_echo_request_generates_reply() {
+        let eth_len = size_of::<EthernetFrame>();
+        let icmp_len = 8 + 8;
+        let ip_total = IPV4_MIN_HEADER_LEN + icmp_len;
+        let frame_len = eth_len + ip_total;
+        let mut data = vec![0u8; 256];
+
+        data[12] = 0x08;
+        data[13] = 0x00;
+        data[14] = 0x45;
+        data[16..18].copy_from_slice(&(ip_total as u16).to_be_bytes());
+        data[20] = 0x40;
+        data[22] = 64;
+        data[23] = IpProtocols::Icmp;
+        let src_bytes: [u8; 4] = REMOTE_IP.into();
+        data[26..30].copy_from_slice(&src_bytes);
+        let dst_bytes: [u8; 4] = LOCAL_IP.into();
+        data[30..34].copy_from_slice(&dst_bytes);
+        let cksum = compute_ipv4_checksum(&data[14..34]);
+        data[24] = cksum[0];
+        data[25] = cksum[1];
+
+        let icmp_off = eth_len + IPV4_MIN_HEADER_LEN;
+        data[icmp_off] = 8; // Echo Request
+        let cksum = compute_ipv4_checksum(&data[icmp_off..icmp_off + icmp_len]);
+        data[icmp_off + 2] = cksum[0];
+        data[icmp_off + 3] = cksum[1];
+
+        let mut handler = new_handler();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+
+        let frame = Frame::new(0, &mut data, frame_len, false);
+        handler.handle(
+            frame,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
+
+        assert_eq!(rx.num_frames(), 0);
+        assert_eq!(tx.num_frames(), 1);
+    }
+
+    #[test]
+    fn unknown_protocol_sends_dest_unreachable() {
+        let raw = build_ipv4_frame(REMOTE_IP, LOCAL_IP, 255, 64, &[0; 8]);
+        let mut data = vec![0u8; 256];
+        data[..raw.len()].copy_from_slice(&raw);
+
+        let mut handler = new_handler();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+
+        let frame = Frame::new(0, &mut data, raw.len(), false);
+
+        handler.handle(
+            frame,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(rx.num_frames(), 0);
+        assert_eq!(tx.num_frames(), 1);
     }
 }

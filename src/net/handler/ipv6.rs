@@ -1,14 +1,22 @@
+use coarsetime::Instant;
+
 use crate::{
-    net::wire::{
-        ethernet::EthernetFrame,
-        ip::{
-            EXT_AH, EXT_DESTINATION, EXT_FRAGMENT, EXT_HOP_BY_HOP, EXT_ROUTING,
-            FRAGMENT_EXT_LEN, IPV6_HEADER_LEN, IPV6_MIN_FRAME_LEN, Ipv6Header,
-            NO_NEXT_HEADER,
+    net::{
+        NeighborHandler, PmtuCache,
+        wire::{
+            ethernet::EthernetFrame,
+            icmpv6::{Icmpv6Codes, Icmpv6Types},
+            ip::{
+                EXT_AH, EXT_DESTINATION, EXT_FRAGMENT, EXT_HOP_BY_HOP, EXT_ROUTING,
+                FRAGMENT_EXT_LEN, IPV6_HEADER_LEN, IPV6_MIN_FRAME_LEN, IpProtocols, Ipv6Header,
+                NO_NEXT_HEADER,
+            },
         },
     },
     xdp::frame::{Frame, FrameBuffer},
 };
+
+use super::icmpv6;
 
 /// Result of walking IPv6 extension headers.
 pub(crate) enum NextHeaderResult {
@@ -139,10 +147,17 @@ impl Ipv6Handler {
     ///
     /// Validates the header, walks extension headers, and dispatches to
     /// the appropriate protocol handler. The frame is always consumed.
+    ///
+    /// NDP messages (ICMPv6 types 133-137) are dispatched to
+    /// `neighbor_handler` instead of the generic ICMPv6 handler.
     pub fn handle<'umem>(
         &mut self,
         frame: Frame<'umem>,
+        neighbor_handler: &NeighborHandler,
+        pmtu: &PmtuCache,
+        now: Instant,
         rx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         if frame.len() < IPV6_MIN_FRAME_LEN {
             rx_return.push(frame);
@@ -164,14 +179,74 @@ impl Ipv6Handler {
             return;
         }
 
-        rx_return.push(frame);
+        let first_next_header = ip.next_header;
+        let ext_start = eth_len + IPV6_HEADER_LEN;
+        let ip_end = ext_start + payload_length;
+        let initial_nh_offset = eth_len + 6; // IPv6 Next Header field
+
+        match walk_extension_headers(
+            &frame[..ip_end],
+            first_next_header,
+            ext_start,
+            initial_nh_offset,
+        ) {
+            NextHeaderResult::Protocol {
+                protocol,
+                payload_offset,
+                next_header_offset,
+            } => match protocol {
+                IpProtocols::IcmpV6 => {
+                    let icmpv6_len = ip_end - payload_offset;
+                    icmpv6::handle_icmpv6(
+                        frame,
+                        payload_offset,
+                        icmpv6_len,
+                        neighbor_handler,
+                        pmtu,
+                        now,
+                        self.rx_offload,
+                        self.tx_offload,
+                        rx_return,
+                        tx_return,
+                    );
+                }
+                _ => {
+                    // RFC 4443 §3.4: send Parameter Problem (code 1) with
+                    // pointer to the unrecognized Next Header field.
+                    let pointer = (next_header_offset - eth_len) as u32;
+                    icmpv6::send_icmpv6_error(
+                        frame,
+                        Icmpv6Types::ParameterProblem,
+                        Icmpv6Codes::UnrecognizedNextHeader,
+                        pointer.to_be_bytes(),
+                        protocol,
+                        payload_offset,
+                        self.tx_offload,
+                        rx_return,
+                        tx_return,
+                    );
+                }
+            },
+            NextHeaderResult::Fragment { .. } => {
+                rx_return.push(frame);
+            }
+            NextHeaderResult::Malformed | NextHeaderResult::NoPayload => {
+                rx_return.push(frame);
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use coarsetime::Duration;
+
     use crate::{
-        net::wire::ip::{IpProtocols, Ipv6Address},
+        net::checksum::{compute_icmpv6_checksum, compute_udp_checksum_v6},
+        net::wire::{
+            ip::{IpAddress, Ipv6Address},
+            udp::UDP_HEADER_LEN,
+        },
         xdp::frame::BasicFrameBuffer,
     };
 
@@ -184,6 +259,10 @@ mod tests {
 
     fn new_handler() -> Ipv6Handler {
         Ipv6Handler::new(false, false)
+    }
+
+    fn new_neighbor_handler() -> NeighborHandler {
+        NeighborHandler::new("test0", Duration::from_secs(60)).unwrap()
     }
 
     /// Builds a valid Ethernet + IPv6 frame with no extension headers.
@@ -414,12 +493,22 @@ mod tests {
         let mut data = [0u8; 50];
 
         let mut handler = new_handler();
+        let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
 
         let frame = Frame::new(0, &mut data, 50, false);
 
-        handler.handle(frame, &mut rx);
+        handler.handle(
+            frame,
+            &nh,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
+        assert_eq!(tx.num_frames(), 0);
     }
 
     #[test]
@@ -428,13 +517,23 @@ mod tests {
         data[14] = (data[14] & 0x0F) | 0x40; // version 4 instead of 6
 
         let mut handler = new_handler();
+        let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut rx);
+        handler.handle(
+            frame,
+            &nh,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
+        assert_eq!(tx.num_frames(), 0);
     }
 
     #[test]
@@ -445,12 +544,180 @@ mod tests {
         data[19] = 100; // claim 100 bytes but only 8 available
 
         let mut handler = new_handler();
+        let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        handler.handle(frame, &mut rx);
+        handler.handle(
+            frame,
+            &nh,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
         assert_eq!(rx.num_frames(), 1);
+        assert_eq!(tx.num_frames(), 0);
+    }
+
+    #[test]
+    fn fragment_goes_to_rx() {
+        let mut data =
+            build_ipv6_with_fragment(REMOTE_IP, LOCAL_IP, IpProtocols::Udp, 0, true, &[0; 8]);
+
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+
+        let len = data.len();
+        let frame = Frame::new(0, &mut data, len, false);
+
+        handler.handle(
+            frame,
+            &nh,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(rx.num_frames(), 1);
+        assert_eq!(tx.num_frames(), 0);
+    }
+
+    #[test]
+    fn icmpv6_echo_request_generates_reply() {
+        let eth_len = size_of::<EthernetFrame>();
+        let icmpv6_len = 16;
+        let frame_len = eth_len + IPV6_HEADER_LEN + icmpv6_len;
+        let mut data = vec![0u8; 512];
+
+        data[12] = 0x86;
+        data[13] = 0xDD;
+        data[14] = 0x60;
+        data[18..20].copy_from_slice(&(icmpv6_len as u16).to_be_bytes());
+        data[20] = IpProtocols::IcmpV6;
+        data[21] = 64;
+        let src_bytes: [u8; 16] = REMOTE_IP.into();
+        data[22..38].copy_from_slice(&src_bytes);
+        let dst_bytes: [u8; 16] = LOCAL_IP.into();
+        data[38..54].copy_from_slice(&dst_bytes);
+
+        let icmp_off = eth_len + IPV6_HEADER_LEN;
+        data[icmp_off] = Icmpv6Types::EchoRequest;
+        let cksum = compute_icmpv6_checksum(
+            &REMOTE_IP,
+            &LOCAL_IP,
+            &data[icmp_off..icmp_off + icmpv6_len],
+        );
+        data[icmp_off + 2] = cksum[0];
+        data[icmp_off + 3] = cksum[1];
+
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+
+        let frame = Frame::new(0, &mut data, frame_len, false);
+        handler.handle(
+            frame,
+            &nh,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
+
+        assert_eq!(rx.num_frames(), 0);
+        assert_eq!(tx.num_frames(), 1);
+    }
+
+    #[test]
+    fn unknown_protocol_sends_parameter_problem() {
+        let raw = build_ipv6_frame(REMOTE_IP, LOCAL_IP, 255, 64, &[0; 8]);
+        let mut data = vec![0u8; 2048];
+        data[..raw.len()].copy_from_slice(&raw);
+
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+
+        let frame = Frame::new(0, &mut data, raw.len(), false);
+
+        handler.handle(
+            frame,
+            &nh,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(rx.num_frames(), 0);
+        assert_eq!(tx.num_frames(), 1);
+    }
+
+    #[test]
+    fn no_next_header_goes_to_rx() {
+        let mut data = build_ipv6_frame(REMOTE_IP, LOCAL_IP, NO_NEXT_HEADER, 64, &[]);
+
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+
+        let len = data.len();
+        let frame = Frame::new(0, &mut data, len, false);
+
+        handler.handle(
+            frame,
+            &nh,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(rx.num_frames(), 1);
+        assert_eq!(tx.num_frames(), 0);
+    }
+
+    #[test]
+    fn malformed_extension_goes_to_rx() {
+        // Build frame with Hop-by-Hop next header but only 2 bytes of ext header data
+        // (claims to need 8 bytes via Hdr Ext Len=0).
+        let eth_len = size_of::<EthernetFrame>();
+        let mut data = vec![0u8; eth_len + IPV6_HEADER_LEN + 2];
+        data[12] = 0x86;
+        data[13] = 0xDD;
+        data[14] = 0x60;
+        data[18..20].copy_from_slice(&2u16.to_be_bytes());
+        data[20] = EXT_HOP_BY_HOP;
+        data[21] = 64;
+
+        let ext_start = eth_len + IPV6_HEADER_LEN;
+        data[ext_start] = IpProtocols::Udp;
+        data[ext_start + 1] = 0;
+
+        let mut handler = new_handler();
+        let nh = new_neighbor_handler();
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+
+        let len = data.len();
+        let frame = Frame::new(0, &mut data, len, false);
+
+        handler.handle(
+            frame,
+            &nh,
+            &PmtuCache::new(),
+            Instant::now(),
+            &mut rx,
+            &mut tx,
+        );
+        assert_eq!(rx.num_frames(), 1);
+        assert_eq!(tx.num_frames(), 0);
     }
 }
