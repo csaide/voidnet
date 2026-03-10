@@ -3,7 +3,7 @@ use coarsetime::Instant;
 use crate::{
     net::{
         NeighborHandler, PmtuCache,
-        handler::{ipv4::Ipv4Handler, ipv6::Ipv6Handler},
+        handler::{ipv4::Ipv4Handler, ipv6::Ipv6Handler, udp::UdpHandler},
         wire::ethernet::{EtherTypes, EthernetFrame},
     },
     xdp::frame::{Frame, FrameBuffer},
@@ -17,6 +17,7 @@ impl EthernetHandler {
         frame: Frame<'umem>,
         ipv4_handler: &mut Ipv4Handler,
         ipv6_handler: &mut Ipv6Handler,
+        udp_handler: &mut UdpHandler<'umem>,
         neighbor_handler: &NeighborHandler,
         pmtu: &PmtuCache,
         now: Instant,
@@ -28,6 +29,7 @@ impl EthernetHandler {
             EtherTypes::IPv4 => {
                 ipv4_handler.handle(
                     frame,
+                    udp_handler,
                     pmtu,
                     now,
                     rx_return,
@@ -38,6 +40,7 @@ impl EthernetHandler {
                 ipv6_handler.handle(
                     frame,
                     neighbor_handler,
+                    udp_handler,
                     pmtu,
                     now,
                     rx_return,
@@ -61,6 +64,7 @@ mod tests {
     use crate::{
         net::{
             checksum::{compute_ipv4_checksum, compute_udp_checksum},
+            handler::udp::UdpHandler,
             wire::{
                 ethernet::{EtherType, MacAddress, write_ethernet_header},
                 ip::{IPV4_MIN_HEADER_LEN, Ipv4Address},
@@ -76,19 +80,21 @@ mod tests {
     const DST_IP: Ipv4Address = Ipv4Address::new([10, 0, 0, 2]);
     const ETH_LEN: usize = size_of::<EthernetFrame>();
 
-    fn new_handlers() -> (
+    fn new_handlers<'umem>() -> (
         EthernetHandler,
         Ipv4Handler,
         Ipv6Handler,
+        UdpHandler<'umem>,
         NeighborHandler,
         PmtuCache,
     ) {
         let eth = EthernetHandler;
         let ipv4 = Ipv4Handler::new(false, false);
         let ipv6 = Ipv6Handler::new(false, false);
+        let udp = UdpHandler::new(256, false);
         let neighbor = NeighborHandler::new("test0", Duration::from_secs(60)).unwrap();
         let pmtu = PmtuCache::new();
-        (eth, ipv4, ipv6, neighbor, pmtu)
+        (eth, ipv4, ipv6, udp, neighbor, pmtu)
     }
 
     fn new_buffers<'umem>() -> (
@@ -156,7 +162,7 @@ mod tests {
 
     #[test]
     fn unknown_ether_type_returns_frame_to_rx() {
-        let (mut eth, mut ipv4, mut ipv6, neighbor, pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, neighbor, pmtu) = new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -168,7 +174,7 @@ mod tests {
         let frame = Frame::new(0, &mut data, len, false);
 
         eth.handle(
-            frame, &mut ipv4, &mut ipv6, &neighbor, &pmtu, now, &mut rx, &mut tx,
+            frame, &mut ipv4, &mut ipv6, &mut udp, &neighbor, &pmtu, now, &mut rx, &mut tx,
         );
 
         assert_eq!(rx.num_frames(), 1);
@@ -177,7 +183,7 @@ mod tests {
 
     #[test]
     fn ipv4_frame_dispatches_to_ipv4_handler() {
-        let (mut eth, mut ipv4, mut ipv6, neighbor, pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, neighbor, pmtu) = new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -186,7 +192,7 @@ mod tests {
         let frame = Frame::new(0, &mut data, len, false);
 
         eth.handle(
-            frame, &mut ipv4, &mut ipv6, &neighbor, &pmtu, now, &mut rx, &mut tx,
+            frame, &mut ipv4, &mut ipv6, &mut udp, &neighbor, &pmtu, now, &mut rx, &mut tx,
         );
 
         // Frame was consumed by ipv4_handler. No UDP binding so it ends up
@@ -197,7 +203,7 @@ mod tests {
 
     #[test]
     fn ipv4_short_frame_dispatches_to_ipv4_handler() {
-        let (mut eth, mut ipv4, mut ipv6, neighbor, pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, neighbor, pmtu) = new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -207,7 +213,7 @@ mod tests {
         let frame = Frame::new(0, &mut data, len, false);
 
         eth.handle(
-            frame, &mut ipv4, &mut ipv6, &neighbor, &pmtu, now, &mut rx, &mut tx,
+            frame, &mut ipv4, &mut ipv6, &mut udp, &neighbor, &pmtu, now, &mut rx, &mut tx,
         );
 
         // ipv4_handler rejects the short frame back to rx_return.
@@ -217,7 +223,7 @@ mod tests {
 
     #[test]
     fn ipv6_short_frame_dispatches_to_ipv6_handler() {
-        let (mut eth, mut ipv4, mut ipv6, neighbor, pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, neighbor, pmtu) = new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -228,7 +234,7 @@ mod tests {
         let frame = Frame::new(0, &mut data, len, false);
 
         eth.handle(
-            frame, &mut ipv4, &mut ipv6, &neighbor, &pmtu, now, &mut rx, &mut tx,
+            frame, &mut ipv4, &mut ipv6, &mut udp, &neighbor, &pmtu, now, &mut rx, &mut tx,
         );
 
         // ipv6_handler rejects the short frame back to rx_return.
@@ -238,7 +244,7 @@ mod tests {
 
     #[test]
     fn arp_frame_dispatches_to_neighbor_handler() {
-        let (mut eth, mut ipv4, mut ipv6, neighbor, pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, neighbor, pmtu) = new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -247,7 +253,7 @@ mod tests {
         let frame = Frame::new(0, &mut data, len, false);
 
         eth.handle(
-            frame, &mut ipv4, &mut ipv6, &neighbor, &pmtu, now, &mut rx, &mut tx,
+            frame, &mut ipv4, &mut ipv6, &mut udp, &neighbor, &pmtu, now, &mut rx, &mut tx,
         );
 
         // neighbor_handler processes (and discards) the malformed ARP.
@@ -271,14 +277,14 @@ mod tests {
         ];
 
         for etype in types {
-            let (mut eth, mut ipv4, mut ipv6, neighbor, pmtu) = new_handlers();
+            let (mut eth, mut ipv4, mut ipv6, mut udp, neighbor, pmtu) = new_handlers();
             let (mut rx, mut tx) = new_buffers();
             let mut data = build_eth_frame(etype);
             let len = data.len();
             let frame = Frame::new(0, &mut data, len, false);
 
             eth.handle(
-                frame, &mut ipv4, &mut ipv6, &neighbor, &pmtu, now, &mut rx, &mut tx,
+                frame, &mut ipv4, &mut ipv6, &mut udp, &neighbor, &pmtu, now, &mut rx, &mut tx,
             );
 
             let total = rx.num_frames() + tx.num_frames();
