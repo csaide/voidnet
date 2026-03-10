@@ -61,7 +61,12 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for LocalCompFuture<'que, 'umem,
         // Those accesses are also guaranteed to not move self or the fields themselves.
         let this = unsafe { self.get_unchecked_mut() };
 
-        if let Ok(_) = this.completion_queue.inner.process_queue(&mut this.batch) {
+        if this
+            .completion_queue
+            .inner
+            .process_queue(&mut this.batch)
+            .is_ok()
+        {
             return Poll::Ready(Ok(()));
         }
 

@@ -69,7 +69,7 @@ impl Poller {
         let n = unsafe {
             epoll_wait(
                 self.poll_fd,
-                self.events.as_mut_ptr() as *mut epoll_event,
+                self.events.as_mut_ptr(),
                 MAX_EVENTS as i32,
                 timeout_ms,
             )

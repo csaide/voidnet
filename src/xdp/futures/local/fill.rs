@@ -69,11 +69,9 @@ impl<'que, 'umem, 'fd, B: FrameBuffer<'umem>> Future for LocalFillFuture<'que, '
             }
         }
 
-        this.fill_queue.inner.process_queue(&mut this.batch);
-        if this.batch.num_frames() == 0 {
-            return Poll::Ready(Ok(()));
+        match this.fill_queue.inner.process_queue(&mut this.batch) {
+            Ok(_) => Poll::Ready(Ok(())),
+            Err(_) => Poll::Pending,
         }
-
-        Poll::Pending
     }
 }

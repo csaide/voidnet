@@ -83,7 +83,9 @@ async fn worker_task<'umem>(
         // - Return the data to the kernel by means of the fill queue. Which is what will be doing here.
         {
             let mut guard = frame_stack.lock().await;
-            guard.extend(frames.drain(..));
+            for frame in frames.drain(..) {
+                guard.push(frame);
+            }
         }
 
         // Maybe print the stats for this iteration.

@@ -54,7 +54,7 @@ fn test_sync() {
 
         // Wake up the fill queue and process the fill queue
         umem_inner.maybe_wake_fill_queue(socket_inner.fd()).unwrap();
-        umem_inner.process_fill_queue(&mut rx_buffer);
+        umem_inner.process_fill_queue(&mut rx_buffer).unwrap();
 
         let mut count = 0;
         while count < target_count {
@@ -70,7 +70,7 @@ fn test_sync() {
             }
 
             umem_inner.maybe_wake_fill_queue(socket_inner.fd()).unwrap();
-            umem_inner.process_fill_queue(&mut rx_buffer);
+            let _ = umem_inner.process_fill_queue(&mut rx_buffer);
         }
         assert!(count >= target_count, "did not receive enough packets");
     });
@@ -117,7 +117,7 @@ fn test_sync() {
                 }
             };
 
-            while let Err(_) = umem_outer.process_completion_queue(&mut tx_buffer) {
+            while umem_outer.process_completion_queue(&mut tx_buffer).is_err() {
                 socket_outer.maybe_wake().unwrap();
             }
 

@@ -71,7 +71,12 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for TokioCompFuture<'que, 'umem,
         // Those accesses are also guaranteed to not move self or the fields themselves.
         let this = unsafe { self.get_unchecked_mut() };
 
-        if let Ok(_) = this.completion_queue.inner.process_queue(&mut this.batch) {
+        if this
+            .completion_queue
+            .inner
+            .process_queue(&mut this.batch)
+            .is_ok()
+        {
             return Poll::Ready(Ok(()));
         }
 
@@ -79,7 +84,7 @@ impl<'que, 'umem, B: FrameBuffer<'umem>> Future for TokioCompFuture<'que, 'umem,
         loop {
             let mut guard = ready!(async_fd.poll_write_ready(cx))?;
 
-            if let Ok(_) = inner.process_queue(&mut this.batch) {
+            if inner.process_queue(&mut this.batch).is_ok() {
                 return Poll::Ready(Ok(()));
             }
 

@@ -18,7 +18,7 @@ use pnet::{
     },
     util::MacAddr,
 };
-use rand::RngCore;
+use rand::Rng;
 
 pub struct Stats {
     pub id: Option<usize>,
@@ -29,6 +29,7 @@ pub struct Stats {
     pub last_fragments_received: u64,
     pub last_bytes_received: u64,
     pub last_time: u64,
+    pub packets_per_print: u64,
 }
 
 impl Stats {
@@ -45,8 +46,17 @@ impl Stats {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
+            packets_per_print: 20_000_000,
         }
     }
+
+    pub fn new_with_packets_per_print(packets_per_print: u64) -> Self {
+        Self {
+            packets_per_print,
+            ..Self::new()
+        }
+    }
+
     pub fn new_with_id(id: usize) -> Self {
         Self {
             id: Some(id),
@@ -71,8 +81,7 @@ impl Stats {
 
     #[inline(always)]
     pub fn maybe_print(&mut self) {
-        const PACKETS_PER_PRINT: u64 = 20_000_000;
-        if self.packets_received - self.last_packets_received < PACKETS_PER_PRINT {
+        if self.packets_received - self.last_packets_received < self.packets_per_print {
             return;
         }
 
@@ -125,6 +134,7 @@ impl Stats {
     }
 }
 
+#[inline(always)]
 pub fn swap_addresses(frame: &mut [u8]) -> Option<()> {
     let mut ether = MutableEthernetPacket::new(frame)?;
 
@@ -309,7 +319,7 @@ pub struct BaseArgs {
     pub unaligned: bool,
     #[arg(
         long,
-        default_value = "2048",
+        default_value = "4096",
         help = "The number of slots in the RX ring in the socket."
     )]
     pub rx_ring_size: u32,

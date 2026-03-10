@@ -77,8 +77,7 @@ impl<'que, 'umem, 'fd, B: FrameBuffer<'umem>> Future for SmolFillFuture<'que, 'u
             }
         }
 
-        this.fill_queue.inner.process_queue(&mut this.batch);
-        if this.batch.num_frames() == 0 {
+        if this.fill_queue.inner.process_queue(&mut this.batch).is_ok() {
             return Poll::Ready(Ok(()));
         }
 
@@ -86,8 +85,7 @@ impl<'que, 'umem, 'fd, B: FrameBuffer<'umem>> Future for SmolFillFuture<'que, 'u
         loop {
             ready!(async_fd.poll_writable(cx))?;
 
-            inner.process_queue(&mut this.batch);
-            if this.batch.num_frames() == 0 {
+            if inner.process_queue(&mut this.batch).is_ok() {
                 return Poll::Ready(Ok(()));
             }
         }
