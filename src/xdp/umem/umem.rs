@@ -149,7 +149,7 @@ impl UmemBuilder {
     pub fn build_local<'umem>(mut self) -> Result<LocalUmem<'umem>> {
         let (owner, fq, cq) = self.build_internal()?.split();
 
-        Ok(LocalUmem::new(owner, fq, cq)?)
+        LocalUmem::new(owner, fq, cq)
     }
 
     #[cfg(feature = "smol")]
@@ -190,7 +190,7 @@ impl<'umem> Umem<'umem> {
         let mut opts = xsk_umem_opts {
             sz: size_of::<xsk_umem_opts>(),
             fd: 0,
-            size: size,
+            size,
             fill_size: fill_ring_size,
             comp_size: completion_ring_size,
             frame_size: frame_size as u32,
@@ -211,7 +211,7 @@ impl<'umem> Umem<'umem> {
         if huge_tables {
             map_opts.huge(None);
         }
-        let mut mmap = map_opts.map_anon().map_err(|e| Error::MmapAllocate(e))?;
+        let mut mmap = map_opts.map_anon().map_err(Error::MmapAllocate)?;
 
         let umem = unsafe {
             xsk_umem__create_opts(
@@ -258,6 +258,18 @@ impl<'umem> Umem<'umem> {
         &self.owner
     }
 
+    /// Returns the number of frames in the UMEM.
+    #[inline(always)]
+    pub fn num_frames(&self) -> usize {
+        self.owner.num_frames()
+    }
+
+    /// Returns the size of the frames in the UMEM.
+    #[inline(always)]
+    pub fn frame_size(&self) -> usize {
+        self.owner.frame_size()
+    }
+
     /// Initialize the frame buffer with the frames from the UMEM, its then up to the caller what to do with these frames, you can push them into the fill queue, use them
     /// for writing packets, or some combination of the two. This can only be called once on the [UmemOwner] instance, and will return None on every subsequent call.
     pub fn init_buffer<B: FrameBuffer<'umem> + FromIterator<Frame<'umem>>>(&self) -> Option<B> {
@@ -274,7 +286,7 @@ impl<'umem> Umem<'umem> {
 
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
-    pub fn process_fill_queue<B: FrameBuffer<'umem>>(&mut self, batch: B) {
+    pub fn process_fill_queue<B: FrameBuffer<'umem>>(&mut self, batch: B) -> NonBlocking<u32> {
         self.fill_queue.process_queue(batch)
     }
 
@@ -290,11 +302,12 @@ impl<'umem> Umem<'umem> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::xdp::{
         flags::AF_XDP_RESERVED,
         frame::{BasicFrameBuffer, FrameBuffer},
     };
+
+    use super::*;
 
     #[test]
     fn test_builder_defaults() {

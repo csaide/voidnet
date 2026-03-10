@@ -120,6 +120,18 @@ impl<'umem> UmemOwner<'umem> {
                 .collect(),
         )
     }
+
+    /// Returns the number of frames in the UMEM.
+    #[inline(always)]
+    pub fn num_frames(&self) -> usize {
+        self.num_frames
+    }
+
+    /// Returns the size of the frames in the UMEM.
+    #[inline(always)]
+    pub fn frame_size(&self) -> usize {
+        self.frame_size
+    }
 }
 
 impl<'umem> Drop for UmemOwner<'umem> {
@@ -133,11 +145,11 @@ impl<'umem> Drop for UmemOwner<'umem> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::xdp::context::XdpContext;
-    use crate::xdp::frame::BasicFrameBuffer;
-    use crate::xdp::umem::Umem;
     use std::thread;
+
+    use crate::xdp::{context::XdpContext, frame::BasicFrameBuffer, umem::Umem};
+
+    use super::*;
 
     fn create_umem<'umem>(
         num_frames: usize,
@@ -195,7 +207,7 @@ mod tests {
 
         // Write different data to each frame
         for (i, frame) in buffer.iter_frames_mut().enumerate() {
-            frame.copy_from(&[i as u8; 4]);
+            frame.copy_from([i as u8; 4]);
         }
 
         // Verify isolation: each frame retains its own data

@@ -60,12 +60,14 @@ impl<'umem> SocketTx<'umem> {
     #[inline(always)]
     pub fn send<B: FrameBuffer<'umem>>(&mut self, mut frames: B) -> NonBlocking<u32> {
         // Take exactly the number of frames we need to send.
-        let (mut idx_tx, ready) = self.ring.reserve(frames.num_frames() as u32);
+        let batch_size = frames.num_frames().min(self.ring.size() as usize);
+        let (mut idx_tx, ready) = self.ring.reserve(batch_size as u32);
         if ready == 0 {
             return Err(WouldBlock);
         }
 
-        for frame in frames.take_frames() {
+        for _ in 0..ready {
+            let frame = frames.pop().unwrap();
             let desc = self.ring.tx_desc(idx_tx);
             unsafe {
                 (*desc).addr = frame.addr();

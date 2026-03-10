@@ -166,7 +166,7 @@ impl<'if_name> SocketBuilder<'if_name> {
     ) -> Result<LocalSocket<'umem>> {
         let (owner, rx, tx) = self.build_internal(ctx, umem)?.split();
 
-        Ok(LocalSocket::new(owner, rx, tx)?)
+        LocalSocket::new(owner, rx, tx)
     }
 
     /// Builds the socket as a [SmolSocket].
@@ -241,7 +241,7 @@ impl<'umem> Socket<'umem> {
             xsk_socket__create(
                 xsk_ptr,
                 if_name_c.as_ptr(),
-                queue as u32,
+                queue,
                 umem.as_ptr(),
                 rx.as_mut_ptr(),
                 tx.as_mut_ptr(),
@@ -362,11 +362,13 @@ fn setup_busy_poll(fd: c_int, busy_poll_timeout_us: i32, batch_size: usize) -> R
 mod tests {
     use std::time::{Duration, Instant};
 
-    use crate::xdp::context::XdpContext;
-    use crate::xdp::frame::{BasicFrameBuffer, FrameBuffer};
-    use crate::xdp::program::AttachMode;
-    use crate::xdp::test_utils::TestVethPair;
-    use crate::xdp::umem::Umem;
+    use crate::xdp::{
+        context::XdpContext,
+        frame::{BasicFrameBuffer, FrameBuffer},
+        program::AttachMode,
+        test_utils::TestVethPair,
+        umem::Umem,
+    };
 
     use super::*;
 
@@ -440,7 +442,9 @@ mod tests {
         for frame in rx_buffer.drain(..rx_prime_count) {
             prime_buffer.push(frame);
         }
-        fq_inner.process_queue(&mut prime_buffer);
+        fq_inner
+            .process_queue(&mut prime_buffer)
+            .expect("failed to process fill queue");
         fq_inner
             .maybe_wake(socket_inner.fd())
             .expect("failed to wake fill queue");
@@ -605,7 +609,8 @@ mod tests {
         for frame in buffer.drain(..8) {
             prime_buffer.push(frame);
         }
-        fq.process_queue(&mut prime_buffer);
+        fq.process_queue(&mut prime_buffer)
+            .expect("failed to process fill queue");
 
         // Try to receive with no packets pending
         let mut recv_buffer = BasicFrameBuffer::new(8);
@@ -650,7 +655,7 @@ mod tests {
         let mut send_buffer = BasicFrameBuffer::new(4);
         for frame in buffer.drain(..4) {
             let mut f = frame;
-            f.copy_from(&[0u8; 64]);
+            f.copy_from([0u8; 64]);
             send_buffer.push(f);
         }
 
@@ -664,7 +669,7 @@ mod tests {
         let mut more_buffer = BasicFrameBuffer::new(4);
         for frame in buffer.drain(..) {
             let mut f = frame;
-            f.copy_from(&[0u8; 64]);
+            f.copy_from([0u8; 64]);
             more_buffer.push(f);
         }
 

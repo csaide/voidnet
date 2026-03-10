@@ -4,7 +4,7 @@ use errno::errno;
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, c_int, recvfrom};
 
 use crate::xdp::{
-    error::{Error, Result},
+    error::{Error, NonBlocking, Result, WouldBlock},
     frame::FrameBuffer,
     ring::{Init, Producer},
 };
@@ -56,19 +56,22 @@ impl<'umem> FillQueue<'umem> {
 
     /// Processes the fill queue, allocating new frames from the frame stack and submitting them to the fill ring up to the size of the fill ring.
     #[inline(always)]
-    pub fn process_queue<B: FrameBuffer<'umem>>(&mut self, mut batch: B) {
-        let (mut idx, ready) = self.ring.reserve(batch.num_frames() as u32);
+    pub fn process_queue<B: FrameBuffer<'umem>>(&mut self, mut batch: B) -> NonBlocking<u32> {
+        let batch_size = batch.num_frames().min(self.ring.size() as usize);
+        let (mut idx, ready) = self.ring.reserve(batch_size as u32);
         if ready == 0 {
-            return;
+            return Err(WouldBlock);
         }
 
-        for frame in batch.take_frames() {
+        for _ in 0..ready {
+            let frame = batch.pop().unwrap();
             let ptr = self.ring.fill_addr(idx);
             unsafe { *ptr = frame.addr() };
             idx += 1;
         }
 
         self.ring.submit(ready);
+        Ok(ready)
     }
 }
 
@@ -82,12 +85,11 @@ impl<'umem> Deref for FillQueue<'umem> {
 
 #[cfg(test)]
 mod tests {
+    use crate::xdp::{
+        context::XdpContext, flags::AF_XDP_RESERVED, frame::BasicFrameBuffer, umem::Umem,
+    };
+
     use super::*;
-    use crate::xdp::context::XdpContext;
-    use crate::xdp::flags::AF_XDP_RESERVED;
-    use crate::xdp::frame::{BasicFrameBuffer, FrameBuffer};
-    use crate::xdp::umem::Umem;
-    use std::sync::Arc;
 
     struct TestContext {
         _ctx: XdpContext,
@@ -149,7 +151,9 @@ mod tests {
         ); // Sequential addresses
 
         // Process drains buffer completely
-        ctx.fq.process_queue(&mut ctx.buffer);
+        ctx.fq
+            .process_queue(&mut ctx.buffer)
+            .expect("failed to process fill queue");
         assert_eq!(ctx.buffer.num_frames(), 0);
         assert_eq!(ctx.buffer.free_space(), 4); // Free space restored
     }
@@ -163,7 +167,8 @@ mod tests {
         assert_eq!(ctx.buffer.num_frames(), 0);
 
         // Processing empty buffer is safe no-op
-        ctx.fq.process_queue(&mut ctx.buffer);
+        let err = ctx.fq.process_queue(&mut ctx.buffer);
+        assert_eq!(err, Err(WouldBlock));
         assert_eq!(ctx.buffer.num_frames(), 0);
     }
 
@@ -206,8 +211,12 @@ mod tests {
         );
 
         // Process sequentially
-        ctx.fq.process_queue(&mut batch1);
-        ctx.fq.process_queue(&mut batch2);
+        ctx.fq
+            .process_queue(&mut batch1)
+            .expect("failed to process fill queue");
+        ctx.fq
+            .process_queue(&mut batch2)
+            .expect("failed to process fill queue");
 
         assert_eq!(batch1.num_frames(), 0);
         assert_eq!(batch2.num_frames(), 0);
@@ -218,14 +227,17 @@ mod tests {
         let mut ctx = create_fq(4, false);
 
         // Fill the ring completely
-        ctx.fq.process_queue(&mut ctx.buffer);
+        ctx.fq
+            .process_queue(&mut ctx.buffer)
+            .expect("failed to process fill queue");
         assert_eq!(ctx.buffer.num_frames(), 0);
 
         // Create new frames (simulating returned frames)
         let mut new_buffer = BasicFrameBuffer::new(4);
         // We can't easily create new frames without owner access in this test,
         // but we can verify empty buffer behavior
-        ctx.fq.process_queue(&mut new_buffer);
+        let err = ctx.fq.process_queue(&mut new_buffer);
+        assert_eq!(err, Err(WouldBlock));
         assert_eq!(new_buffer.num_frames(), 0);
     }
 }
