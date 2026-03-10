@@ -29,6 +29,10 @@ pub struct XdpInfo {
     ///
     /// Note this is an additional field that we use in this library, its not part of the original xdp_info struct in libxdp.
     pub mtu: u32,
+    /// Whether the XDP program supports RX checksum offloading.
+    pub rx_offload: bool,
+    /// Whether the XDP program supports TX checksum offloading.
+    pub tx_offload: bool,
 }
 
 impl XdpInfo {
@@ -121,6 +125,8 @@ impl std::fmt::Debug for XdpInfo {
             .field("attach_mode", &self.attach_mode)
             .field("max_fragments", &self.xdp_zc_max_segs)
             .field("mtu", &self.mtu)
+            .field("rx_offload", &self.rx_offload)
+            .field("tx_offload", &self.tx_offload)
             .field("features", &features)
             .finish()
     }
@@ -186,17 +192,21 @@ mod tests {
 
     #[test]
     fn test_xdp_info_max_fragments() {
-        let mut info = XdpInfo::default();
-        info.xdp_zc_max_segs = 16;
+        let info = XdpInfo {
+            xdp_zc_max_segs: 16,
+            ..Default::default()
+        };
         assert_eq!(info.max_fragments(), 16);
     }
 
     #[test]
     fn test_xdp_info_debug_display() {
-        let mut info = XdpInfo::default();
-        info.prog_id = 42;
-        info.feature_flags = NETDEV_XDP_ACT_BASIC | NETDEV_XDP_ACT_REDIRECT;
-        info.mtu = 1500;
+        let info = XdpInfo {
+            prog_id: 42,
+            feature_flags: NETDEV_XDP_ACT_BASIC | NETDEV_XDP_ACT_REDIRECT,
+            mtu: 1500,
+            ..Default::default()
+        };
 
         let debug_str = format!("{:?}", info);
         assert!(debug_str.contains("XdpInfo"));

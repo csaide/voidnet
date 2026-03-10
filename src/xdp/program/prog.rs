@@ -8,19 +8,11 @@ use libxdp_sys::{
     xdp_program__attach, xdp_program__bpf_obj, xdp_program__close, xdp_program__detach,
     xdp_program__from_bpf_obj, xdp_program__set_xdp_frags_support,
 };
-use neli::{
-    consts::{
-        nl::NlmF,
-        rtnl::{Ifla, RtAddrFamily, Rtm},
-        socket::NlFamily,
-    },
-    nl::NlPayload,
-    router::synchronous::NlRouter,
-    rtnl::{Ifinfomsg, IfinfomsgBuilder},
-    utils::Groups,
-};
 
-use crate::xdp::error::{Error, Result, get_xdp_error_message};
+use crate::{
+    netlink::{get_checksum_offload, get_mtu},
+    xdp::error::{Error, Result, get_xdp_error_message},
+};
 
 use super::{AttachMode, Map, XdpInfo};
 
@@ -92,6 +84,10 @@ impl XdpProgram {
         }
 
         info.mtu = get_mtu(if_index)?;
+
+        let (rx_offload, tx_offload) = get_checksum_offload(if_index)?;
+        info.rx_offload = rx_offload;
+        info.tx_offload = tx_offload;
 
         Ok(Self {
             program,
@@ -169,38 +165,4 @@ impl Drop for XdpProgram {
             xdp_program__close(self.program);
         }
     }
-}
-
-fn get_mtu(if_index: i32) -> Result<u32> {
-    let (rtnl, _) = NlRouter::connect(NlFamily::Route, None, Groups::empty())
-        .map_err(|e| Error::GetMtu(e.to_string()))?;
-
-    let ifinfomsg = IfinfomsgBuilder::default()
-        .ifi_family(RtAddrFamily::Netlink)
-        .ifi_index(if_index)
-        .build()
-        .map_err(|e| Error::GetMtu(e.to_string()))?;
-
-    let recv = rtnl
-        .send::<_, _, Rtm, Ifinfomsg>(
-            Rtm::Getlink,
-            NlmF::DUMP_FILTERED | NlmF::REQUEST,
-            NlPayload::Payload(ifinfomsg),
-        )
-        .map_err(|e| Error::GetMtu(e.to_string()))?;
-
-    for response in recv {
-        let mut response = response.map_err(|e| Error::GetMtu(e.to_string()))?;
-        if let Some(payload) = response.get_payload() {
-            return payload
-                .rtattrs()
-                .get_attr_handle()
-                .get_attr_payload_as::<u32>(Ifla::Mtu)
-                .map_err(|e| Error::GetMtu(e.to_string()));
-        }
-        if let Some(err) = response.get_err() {
-            return Err(Error::GetMtu(err.to_string()));
-        }
-    }
-    Err(Error::GetMtu(format!("Interface {} not found", if_index)))
 }
