@@ -8,6 +8,7 @@ pub mod socket;
 pub mod wire;
 
 pub use fragment::{FragmentReader, FragmentWriter, Packet, ReassembledPacket, TransportHeader};
+pub use handler::tcp::tcb::{ConnectionId, TcpError, TcpEvent};
 pub use handler::udp::{BindError, ReceivedUdpPacket};
 pub use neighbor::NeighborHandler;
 pub use pmtu::PmtuCache;
