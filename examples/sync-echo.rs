@@ -107,7 +107,8 @@ fn main() {
 
     // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
     let mut frames = umem.init_buffer::<BasicFrameBuffer>().unwrap();
-    umem.process_fill_queue(&mut frames);
+    umem.process_fill_queue(&mut frames)
+        .expect("Failed to process fill queue");
 
     // Loop forever reading packets from the socket.
     while !exit.load(Ordering::Relaxed) {
@@ -124,10 +125,10 @@ fn main() {
         debug_assert_eq!(frames.num_frames(), received as usize);
 
         // For each received frame, attempt to swap the addresses.
-        for mut frame in frames.iter_frames_mut() {
+        for frame in frames.iter_frames_mut() {
             stats.update(frame.len(), frame.is_fragment());
 
-            swap_addresses(&mut frame).unwrap();
+            swap_addresses(frame).unwrap();
         }
 
         // Send the updated frames to the socket.
@@ -137,13 +138,14 @@ fn main() {
         debug_assert_eq!(frames.num_frames(), 0);
 
         // So we "sent" the packets but now we need to actually drive the completion of those sends.
-        while let Err(_) = umem.process_completion_queue(&mut frames) {
+        while umem.process_completion_queue(&mut frames).is_err() {
             socket.maybe_wake().expect("Failed to wake tx queue");
         }
 
         // Now give back all our frames to the kernel by means of the fill queue.
         umem.maybe_wake_fill_queue(socket.fd()).unwrap();
-        umem.process_fill_queue(&mut frames);
+        umem.process_fill_queue(&mut frames)
+            .expect("Failed to process fill queue");
 
         stats.maybe_print();
     }

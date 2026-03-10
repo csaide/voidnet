@@ -137,7 +137,7 @@ fn main() {
         // Process any outstanding descriptors on the completion queue retrieving the sent frames.
         //
         // This should be a loop because the kernel can only transmit a limited number of frames at a time.
-        while let Err(_) = umem.process_completion_queue(&mut write_frames) {
+        while umem.process_completion_queue(&mut write_frames).is_err() {
             socket.maybe_wake().expect("Failed to wake tx queue");
         }
 

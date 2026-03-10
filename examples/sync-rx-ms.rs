@@ -82,7 +82,12 @@ fn worker_thread<'umem>(
 
         // Now we need to give back the frames to the kernel so hand them back to the main umem frame stack,
         // the Umem thread will handle the heavy lifting of submitting them to the fill queue.
-        frame_stack.lock().unwrap().extend(frames.drain(..));
+        {
+            let mut guard = frame_stack.lock().unwrap();
+            for frame in frames.drain(..) {
+                guard.push(frame);
+            }
+        }
 
         stats.maybe_print();
     }
@@ -101,7 +106,8 @@ fn umem_thread<'umem>(
 
         {
             let guard = frame_stack.lock().unwrap();
-            umem.process_fill_queue(guard);
+            umem.process_fill_queue(guard)
+                .expect("Failed to process fill queue");
         }
     }
 }
@@ -153,7 +159,8 @@ fn main() {
     // For reads to work we need to hand some buffers to the kernel, so it can start reading data into them.
     // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
     let mut frames = umem.init_buffer::<BasicFrameBuffer>().unwrap();
-    umem.process_fill_queue(&mut frames);
+    umem.process_fill_queue(&mut frames)
+        .expect("Failed to process fill queue");
 
     // Since we are going to be using multiple threads, we need to wrap up our frame stack in a arc/mutex to
     // share it between the workers and umem threads

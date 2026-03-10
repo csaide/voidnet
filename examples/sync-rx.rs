@@ -105,7 +105,8 @@ fn main() {
 
     // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
     let mut frames = umem.init_buffer::<BasicFrameBuffer>().unwrap();
-    umem.process_fill_queue(&mut frames);
+    umem.process_fill_queue(&mut frames)
+        .expect("Failed to process fill queue");
 
     // Loop forever reading packets from the socket.
     while !exit.load(Ordering::Relaxed) {
@@ -139,7 +140,8 @@ fn main() {
         umem.maybe_wake_fill_queue(socket.fd()).unwrap();
 
         // Process the frame buffer, this will consume the entire buffer and submit them to the fill queue.
-        umem.process_fill_queue(&mut frames);
+        umem.process_fill_queue(&mut frames)
+            .expect("Failed to process fill queue");
 
         stats.maybe_print();
     }
