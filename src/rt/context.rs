@@ -1,6 +1,7 @@
 use std::{
     cell::{Cell, UnsafeCell},
     rc::Rc,
+    task::Waker,
 };
 
 use crate::{
@@ -8,6 +9,7 @@ use crate::{
         handler::{tcp::TcpHandler, udp::UdpHandler},
         {NeighborHandler, PmtuCache},
     },
+    rt::task::TaskQueue,
     xdp::frame::SharedFrameBuffer,
 };
 
@@ -49,6 +51,10 @@ pub(crate) struct RuntimeContext<'umem> {
     pub tcp_handler: Rc<UnsafeCell<TcpHandler>>,
     /// TX checksum offload.
     pub tx_offload: bool,
+    /// Task queue for spawned tasks.
+    pub task_queue: UnsafeCell<TaskQueue>,
+    /// Wakers for futures blocked on frame/buffer capacity.
+    pub capacity_wakers: UnsafeCell<Vec<Waker>>,
 }
 
 /// Called by `UdpSocket::new()` to access the current runtime context.
@@ -72,4 +78,15 @@ pub(crate) fn with_runtime_context<'umem, R>(f: impl FnOnce(&RuntimeContext<'ume
         let ctx = unsafe { &*(ptr as *const RuntimeContext<'umem>) };
         f(ctx)
     })
+}
+
+/// Register a waker to be called when frame capacity is freed.
+///
+/// Called by capacity-driven futures (SendTo, Echo, TcpWrite) when
+/// they return Pending due to insufficient buffer space.
+pub(crate) fn register_capacity_waker(waker: &Waker) {
+    with_runtime_context(|ctx| {
+        let wakers = unsafe { &mut *ctx.capacity_wakers.get() };
+        wakers.push(waker.clone());
+    });
 }

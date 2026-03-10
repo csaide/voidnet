@@ -122,7 +122,7 @@ pub struct Accept<'listener> {
 impl<'listener> Future for Accept<'listener> {
     type Output = TcpStream;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         match this.accept_queue.pop() {
             Some(conn_id) => {
@@ -140,10 +140,14 @@ impl<'listener> Future for Accept<'listener> {
                 } else {
                     // Connection was removed (e.g. by RST) before we accepted it.
                     // Keep polling for the next one.
+                    this.accept_queue.register_waker(cx.waker());
                     Poll::Pending
                 }
             }
-            None => Poll::Pending,
+            None => {
+                this.accept_queue.register_waker(cx.waker());
+                Poll::Pending
+            }
         }
     }
 }
@@ -460,7 +464,7 @@ pub struct Connect {
 impl Future for Connect {
     type Output = Result<TcpStream, TcpError>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         match this.event_queue.pop() {
             Some(TcpEvent::Connected) => {
@@ -479,7 +483,10 @@ impl Future for Connect {
             Some(TcpEvent::Timeout) => Poll::Ready(Err(TcpError::Timeout)),
             Some(TcpEvent::Reset) => Poll::Ready(Err(TcpError::Reset)),
             Some(TcpEvent::RemoteClose) => Poll::Ready(Err(TcpError::Reset)),
-            None => Poll::Pending,
+            None => {
+                this.event_queue.register_waker(cx.waker());
+                Poll::Pending
+            }
         }
     }
 }
@@ -498,7 +505,7 @@ pub struct TcpWrite<'stream> {
 impl<'stream> Future for TcpWrite<'stream> {
     type Output = Result<usize, TcpError>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
         // Check event queue for errors
@@ -523,6 +530,8 @@ impl<'stream> Future for TcpWrite<'stream> {
             if this.written == this.data.len() {
                 Poll::Ready(Ok(this.written))
             } else {
+                tcb.send_buffer.register_write_waker(cx.waker());
+                this.event_queue.register_waker(cx.waker());
                 Poll::Pending
             }
         } else {
@@ -543,7 +552,7 @@ pub struct TcpRead<'stream> {
 impl<'stream> Future for TcpRead<'stream> {
     type Output = Result<usize, TcpError>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
         // Check event queue for errors
@@ -565,6 +574,8 @@ impl<'stream> Future for TcpRead<'stream> {
             } else if tcb.state.is_remote_closed() {
                 Poll::Ready(Ok(0)) // EOF — remote has sent FIN and buffer is drained
             } else {
+                tcb.recv_buffer.register_read_waker(cx.waker());
+                this.event_queue.register_waker(cx.waker());
                 Poll::Pending
             }
         } else {
@@ -585,7 +596,7 @@ pub struct TcpSplice<'stream> {
 impl<'stream> Future for TcpSplice<'stream> {
     type Output = Result<usize, TcpError>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
         // Check event queue for errors.
@@ -607,6 +618,8 @@ impl<'stream> Future for TcpSplice<'stream> {
             } else if tcb.state.is_remote_closed() {
                 Poll::Ready(Ok(0)) // EOF
             } else {
+                tcb.recv_buffer.register_read_waker(cx.waker());
+                this.event_queue.register_waker(cx.waker());
                 Poll::Pending
             }
         } else {

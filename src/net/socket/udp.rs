@@ -272,10 +272,14 @@ pub struct RecvFrom<'sock, 'umem> {
 impl<'sock, 'umem> Future for RecvFrom<'sock, 'umem> {
     type Output = ReceivedUdpPacket<'umem>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.get_mut().rx_queue.pop() {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        match this.rx_queue.pop() {
             Some(packet) => Poll::Ready(packet),
-            None => Poll::Pending,
+            None => {
+                this.rx_queue.register_waker(cx.waker());
+                Poll::Pending
+            }
         }
     }
 }
@@ -288,10 +292,14 @@ pub struct RecvStream<'sock, 'umem> {
 impl<'sock, 'umem> futures_core::Stream for RecvStream<'sock, 'umem> {
     type Item = ReceivedUdpPacket<'umem>;
 
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.get_mut().rx_queue.pop() {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this.rx_queue.pop() {
             Some(packet) => Poll::Ready(Some(packet)),
-            None => Poll::Pending,
+            None => {
+                this.rx_queue.register_waker(cx.waker());
+                Poll::Pending
+            }
         }
     }
 }
@@ -437,19 +445,23 @@ impl<'sock, 'buf, 'umem> SendTo<'sock, 'buf, 'umem> {
 impl<'sock, 'buf, 'umem> Future for SendTo<'sock, 'buf, 'umem> {
     type Output = u32;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
         let pkt = match std::mem::take(&mut this.pkt) {
             Packet::Empty => match this.prepare_udp_packet() {
                 Ok(pkt) => pkt,
-                Err(_) => return Poll::Pending,
+                Err(_) => {
+                    crate::rt::context::register_capacity_waker(cx.waker());
+                    return Poll::Pending;
+                }
             },
             pkt => pkt,
         };
 
         if this.tx_return.free_space() < pkt.num_frames() {
             this.pkt = pkt;
+            crate::rt::context::register_capacity_waker(cx.waker());
             return Poll::Pending;
         }
 
@@ -468,10 +480,11 @@ pub struct Echo<'sock, 'umem> {
 impl<'sock, 'umem> Future for Echo<'sock, 'umem> {
     type Output = u32;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
         if this.tx_return.free_space() < this.pkt.num_frames() {
+            crate::rt::context::register_capacity_waker(cx.waker());
             return Poll::Pending;
         }
 
@@ -487,7 +500,10 @@ mod tests {
     use coarsetime::Duration;
 
     use crate::{
-        rt::context::{ContextDropGuard, RuntimeContext},
+        rt::{
+            context::{ContextDropGuard, RuntimeContext},
+            task::TaskQueue,
+        },
         xdp::frame::BasicFrameBuffer,
     };
 
@@ -515,6 +531,8 @@ mod tests {
             udp_handler,
             tcp_handler,
             tx_offload: false,
+            task_queue: UnsafeCell::new(TaskQueue::new()),
+            capacity_wakers: UnsafeCell::new(Vec::new()),
         };
         {
             let _guard = ContextDropGuard::new(ctx);

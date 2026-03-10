@@ -19,6 +19,7 @@ use crate::{
             udp::UdpHandler,
         },
     },
+    rt::task::TaskQueue,
     xdp::{
         context::{XdpContext, XdpContextBuilder},
         error::Result,
@@ -29,10 +30,7 @@ use crate::{
     },
 };
 
-use super::{
-    context::{ContextDropGuard, RuntimeContext},
-    waker,
-};
+use super::context::{ContextDropGuard, RuntimeContext};
 
 const DEFAULT_ARP_TTL: Duration = Duration::from_secs(60);
 
@@ -251,11 +249,14 @@ impl<'umem> LocalRuntime<'umem> {
     /// Runs the event loop until `exit` is set or `fut` completes.
     ///
     /// Each iteration: receive frames, dispatch through the protocol stack,
-    /// poll `fut`, drive TCP timers, evict stale state, and transmit.
+    /// poll `fut` (if woken), poll spawned tasks, drive TCP timers, evict
+    /// stale state, transmit, and wake capacity-blocked futures.
     pub fn run<F>(&mut self, exit: Arc<AtomicBool>, fut: F) -> Result<()>
     where
         F: Future<Output = ()>,
     {
+        use super::waker::MainWaker;
+
         // Drop guard ensures the context is cleared even on early return/panic.
         let _guard = ContextDropGuard::new(RuntimeContext {
             free_frames: self.free_frames.clone(),
@@ -266,6 +267,8 @@ impl<'umem> LocalRuntime<'umem> {
             udp_handler: self.udp_handler.clone(),
             tcp_handler: self.tcp_handler.clone(),
             tx_offload: self.ctx.info().tx_offload,
+            task_queue: UnsafeCell::new(TaskQueue::new()),
+            capacity_wakers: UnsafeCell::new(Vec::new()),
         });
 
         // Before we can operate properly we need to seed the kernel with free frames to read into.
@@ -276,13 +279,21 @@ impl<'umem> LocalRuntime<'umem> {
 
         let expected_free_frames = self.free_frames.num_frames();
 
-        let waker = waker();
-        let mut cx = Context::from_waker(&waker);
+        // Main future gets a real waker (initialized to woken for first poll).
+        let main_waker = MainWaker::new();
+        let main_std_waker = main_waker.waker();
+        let mut main_cx = Context::from_waker(&main_std_waker);
         pin_mut!(fut);
+
+        // Task queue uses a no-op top-level waker — FuturesUnordered manages
+        // its own per-task wakers internally. We poll it every iteration.
+        let task_waker = super::waker::task_queue_waker();
+        let mut task_cx = Context::from_waker(&task_waker);
 
         let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
         let mut now = coarsetime::Instant::now();
         while !exit.load(Ordering::Relaxed) {
+            // ---- Receive & Protocol Dispatch ----
             let received = match self.socket.recv(&mut buffer) {
                 Err(_) => 0,
                 Ok(received) => {
@@ -317,11 +328,18 @@ impl<'umem> LocalRuntime<'umem> {
                 }
             };
 
-            if fut.as_mut().poll(&mut cx).is_ready() {
+            // ---- Poll Main Future (only if woken) ----
+            if main_waker.take_woken() && fut.as_mut().poll(&mut main_cx).is_ready() {
                 return Ok(());
             }
 
-            // Drive TCP data segment transmission.
+            // ---- Poll Spawned Tasks ----
+            crate::rt::context::with_runtime_context(|ctx| {
+                let tq = unsafe { &mut *ctx.task_queue.get() };
+                tq.poll(&mut task_cx);
+            });
+
+            // ---- TCP Timers & Send ----
             //
             // SAFETY: single-threaded, no reentrant handler calls.
             unsafe { &mut *self.tcp_handler.get() }.poll_send(
@@ -334,11 +352,8 @@ impl<'umem> LocalRuntime<'umem> {
 
             self.evict_counter = self.evict_counter.wrapping_add(1);
             if self.evict_counter & 65535 == 0 {
-                // Update our current timestamp.
                 now = coarsetime::Instant::now();
 
-                // Evict stale UDP fragments.
-                //
                 // SAFETY: single-threaded, no reentrant handler calls.
                 unsafe { &mut *self.udp_handler.get() }.evict_stale(
                     now,
@@ -346,8 +361,6 @@ impl<'umem> LocalRuntime<'umem> {
                     &mut self.rx_return,
                 );
 
-                // Evict stale TCP connections (e.g. TIME-WAIT), and poll timers with the new timestamp.
-                //
                 // SAFETY: single-threaded, no reentrant handler calls.
                 let tcp_handler = unsafe { &mut *self.tcp_handler.get() };
                 tcp_handler.evict_stale(now, &mut self.rx_return);
@@ -359,16 +372,13 @@ impl<'umem> LocalRuntime<'umem> {
                     &mut self.tx_return,
                 );
 
-                // Evict stale neighbor entries.
                 self.neighbor_handler.evict_stale(now);
-
-                // Evict stale PMTU entries.
                 self.pmtu.evict_stale(now);
             }
 
+            // ---- Transmit & Frame Recycling ----
             let expected_size = self.tx_return.num_frames() + self.rx_return.num_frames();
 
-            // We have frames to send, so send them.
             while self.tx_return.num_frames() > 0 {
                 if self.socket.send(&mut self.tx_return).is_err() {
                     self.socket.maybe_wake()?;
@@ -376,7 +386,6 @@ impl<'umem> LocalRuntime<'umem> {
                 }
             }
 
-            // Fully flush the writes from above.
             while self.rx_return.num_frames() < expected_size {
                 if self
                     .umem
@@ -387,16 +396,26 @@ impl<'umem> LocalRuntime<'umem> {
                 }
             }
 
-            // Take care of refilling our free frames.
             while self.rx_return.num_frames() > received as usize {
                 self.free_frames.push(self.rx_return.pop().unwrap());
             }
 
-            // Anything left goes back to the fill queue.
             while self.rx_return.num_frames() > 0 {
                 if self.umem.process_fill_queue(&mut self.rx_return).is_err() {
                     self.umem.maybe_wake_fill_queue(self.socket.fd())?;
                 }
+            }
+
+            // ---- Capacity-Driven Wakes ----
+            // After frame recycling, wake any futures blocked on capacity.
+            if expected_size > 0 {
+                main_waker.set_woken();
+                crate::rt::context::with_runtime_context(|ctx| {
+                    let wakers = unsafe { &mut *ctx.capacity_wakers.get() };
+                    for waker in wakers.drain(..) {
+                        waker.wake();
+                    }
+                });
             }
 
             debug_assert_eq!(self.rx_return.num_frames(), 0);

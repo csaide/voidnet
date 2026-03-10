@@ -1,3 +1,5 @@
+use std::task::Waker;
+
 /// Fixed-capacity ring buffer for TCP send/receive data.
 ///
 /// Capacity must be a power of two. Uses bitwise AND for index wrapping
@@ -8,6 +10,10 @@ pub struct RingBuffer {
     tail: usize,
     len: usize,
     mask: usize,
+    /// Waker for tasks waiting to read (fires when data is written/committed).
+    read_waker: Option<Waker>,
+    /// Waker for tasks waiting to write (fires when space is freed via read/advance).
+    write_waker: Option<Waker>,
 }
 
 impl RingBuffer {
@@ -23,7 +29,19 @@ impl RingBuffer {
             tail: 0,
             len: 0,
             mask: capacity - 1,
+            read_waker: None,
+            write_waker: None,
         }
+    }
+
+    /// Register a waker to be called when data becomes available for reading.
+    pub fn register_read_waker(&mut self, waker: &Waker) {
+        self.read_waker = Some(waker.clone());
+    }
+
+    /// Register a waker to be called when space becomes available for writing.
+    pub fn register_write_waker(&mut self, waker: &Waker) {
+        self.write_waker = Some(waker.clone());
     }
 
     /// Number of bytes available to read.
@@ -60,6 +78,9 @@ impl RingBuffer {
         }
         self.tail = self.tail.wrapping_add(to_write);
         self.len += to_write;
+        if let Some(waker) = self.read_waker.take() {
+            waker.wake();
+        }
         to_write
     }
 
@@ -112,6 +133,11 @@ impl RingBuffer {
         debug_assert!(n <= self.len);
         self.head = self.head.wrapping_add(n);
         self.len -= n;
+        if n > 0
+            && let Some(waker) = self.write_waker.take()
+        {
+            waker.wake();
+        }
     }
 
     /// Advance `tail` and `len` to mark bytes as available for reading.
@@ -121,6 +147,11 @@ impl RingBuffer {
         debug_assert!(n <= self.free_space());
         self.tail = self.tail.wrapping_add(n);
         self.len += n;
+        if n > 0
+            && let Some(waker) = self.read_waker.take()
+        {
+            waker.wake();
+        }
     }
 
     /// Transfer up to `max_len` bytes from self (as source/read-side) to `dst`
@@ -161,6 +192,9 @@ impl RingBuffer {
         }
         self.head = self.head.wrapping_add(to_read);
         self.len -= to_read;
+        if let Some(waker) = self.write_waker.take() {
+            waker.wake();
+        }
         to_read
     }
 }
@@ -168,6 +202,20 @@ impl RingBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::task::Wake;
+
+    struct TestWaker {
+        woken: AtomicBool,
+    }
+    impl Wake for TestWaker {
+        fn wake(self: Arc<Self>) {
+            self.woken.store(true, Ordering::Relaxed);
+        }
+    }
 
     #[test]
     fn new_ring_buffer() {
@@ -405,5 +453,46 @@ mod tests {
         src.write(b"hello");
         let n = src.transfer(&mut dst, 5);
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn ring_buffer_wakes_read_on_write() {
+        let mut buf = RingBuffer::new(64);
+        let tw = Arc::new(TestWaker {
+            woken: AtomicBool::new(false),
+        });
+        let waker = Waker::from(tw.clone());
+        buf.register_read_waker(&waker);
+        buf.write(b"hello");
+        assert!(tw.woken.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn ring_buffer_wakes_write_on_read() {
+        let mut buf = RingBuffer::new(64);
+        buf.write(b"hello");
+        let tw = Arc::new(TestWaker {
+            woken: AtomicBool::new(false),
+        });
+        let waker = Waker::from(tw.clone());
+        buf.register_write_waker(&waker);
+        let mut out = [0u8; 5];
+        buf.read(&mut out);
+        assert!(tw.woken.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn ring_buffer_read_waker_cleared_after_wake() {
+        let mut buf = RingBuffer::new(64);
+        let tw = Arc::new(TestWaker {
+            woken: AtomicBool::new(false),
+        });
+        let waker = Waker::from(tw.clone());
+        buf.register_read_waker(&waker);
+        buf.write(b"hello");
+        assert!(tw.woken.load(Ordering::Relaxed));
+        tw.woken.store(false, Ordering::Relaxed);
+        buf.write(b"world");
+        assert!(!tw.woken.load(Ordering::Relaxed));
     }
 }

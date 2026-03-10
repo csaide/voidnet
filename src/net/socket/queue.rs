@@ -5,6 +5,7 @@ use std::{
     ops::RangeBounds,
     rc::Rc,
     sync::Arc,
+    task::Waker,
 };
 
 use crossbeam_queue::ArrayQueue;
@@ -78,6 +79,7 @@ impl<T> fmt::Debug for SharedQueue<T> {
 /// entry and returns it to the caller — matching `SharedQueue` semantics.
 pub struct LocalQueue<T> {
     inner: Rc<UnsafeCell<VecDeque<T>>>,
+    waker: Rc<UnsafeCell<Option<Waker>>>,
     capacity: usize,
 }
 
@@ -86,6 +88,7 @@ impl<T> LocalQueue<T> {
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: Rc::new(UnsafeCell::new(VecDeque::with_capacity(capacity))),
+            waker: Rc::new(UnsafeCell::new(None)),
             capacity,
         }
     }
@@ -100,7 +103,18 @@ impl<T> LocalQueue<T> {
             None
         };
         q.push_back(item);
+        let waker_slot = unsafe { &mut *self.waker.get() };
+        if let Some(waker) = waker_slot.take() {
+            waker.wake();
+        }
         evicted
+    }
+
+    /// Register a waker to be called when data is pushed to this queue.
+    /// Only one waker is stored — re-registering replaces the previous.
+    #[inline(always)]
+    pub fn register_waker(&self, waker: &Waker) {
+        unsafe { *self.waker.get() = Some(waker.clone()) };
     }
 
     /// Pop an item. Returns the oldest item if the queue was not empty.
@@ -138,6 +152,7 @@ impl<T> Clone for LocalQueue<T> {
     fn clone(&self) -> Self {
         Self {
             inner: Rc::clone(&self.inner),
+            waker: Rc::clone(&self.waker),
             capacity: self.capacity,
         }
     }
@@ -285,6 +300,63 @@ mod tests {
         assert_eq!(q.pop(), Some(4));
         assert_eq!(q.pop(), Some(5));
         assert_eq!(q.pop(), None);
+    }
+
+    #[test]
+    fn local_queue_wakes_on_push() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use std::task::Wake;
+
+        struct TestWaker {
+            woken: AtomicBool,
+        }
+        impl Wake for TestWaker {
+            fn wake(self: Arc<Self>) {
+                self.woken.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let q = LocalQueue::new(8);
+        let test_waker = Arc::new(TestWaker {
+            woken: AtomicBool::new(false),
+        });
+        let waker = Waker::from(test_waker.clone());
+        q.register_waker(&waker);
+        q.push(42);
+        assert!(test_waker.woken.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn local_queue_waker_cleared_after_wake() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use std::task::Wake;
+
+        struct TestWaker {
+            woken: AtomicBool,
+        }
+        impl Wake for TestWaker {
+            fn wake(self: Arc<Self>) {
+                self.woken.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let q = LocalQueue::new(8);
+        let test_waker = Arc::new(TestWaker {
+            woken: AtomicBool::new(false),
+        });
+        let waker = Waker::from(test_waker.clone());
+        q.register_waker(&waker);
+        q.push(1);
+        assert!(test_waker.woken.load(Ordering::Relaxed));
+        test_waker.woken.store(false, Ordering::Relaxed);
+        q.push(2);
+        assert!(!test_waker.woken.load(Ordering::Relaxed));
     }
 
     #[test]

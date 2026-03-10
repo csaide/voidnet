@@ -9,8 +9,11 @@ use std::{
 use clap::Parser;
 use coarsetime::Duration;
 
-use libvoid::net::{socket::TcpListener, wire::ip::SocketAddr};
 use libvoid::rt::LocalRuntime;
+use libvoid::{
+    net::{socket::TcpListener, wire::ip::SocketAddr},
+    rt::spawn,
+};
 
 mod common;
 use common::{BaseArgs, Stats};
@@ -39,7 +42,6 @@ impl DerefMut for Args {
 }
 
 fn main() {
-    let mut stats = Stats::new_with_packets_per_print(1_000_000);
     let args = Args::parse();
 
     let mut runtime = LocalRuntime::builder(&args.if_name, args.queue)
@@ -83,26 +85,32 @@ fn main() {
                     stream.remote_port()
                 );
 
-                loop {
-                    match stream.splice(65535).await {
-                        Ok(0) => {
-                            println!(
-                                "Disconnected from {}:{}",
-                                stream.remote_addr(),
-                                stream.remote_port()
-                            );
-                            break;
-                        }
-                        Ok(n) => {
-                            stats.update(n, false);
-                            stats.maybe_print();
-                        }
-                        Err(e) => {
-                            println!("Splice error: {:?}", e);
-                            break;
+                spawn(async move {
+                    let mut stats = Stats::new_with_id_and_packets_per_print(
+                        stream.remote_port() as usize,
+                        1_000_000,
+                    );
+                    loop {
+                        match stream.splice(65535).await {
+                            Ok(0) => {
+                                println!(
+                                    "Disconnected from {}:{}",
+                                    stream.remote_addr(),
+                                    stream.remote_port()
+                                );
+                                break;
+                            }
+                            Ok(n) => {
+                                stats.update(n, false);
+                                stats.maybe_print();
+                            }
+                            Err(e) => {
+                                println!("Splice error: {:?}", e);
+                                break;
+                            }
                         }
                     }
-                }
+                });
             }
         })
         .expect("Failed to run runtime");

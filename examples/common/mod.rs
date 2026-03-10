@@ -64,6 +64,14 @@ impl Stats {
         }
     }
 
+    pub fn new_with_id_and_packets_per_print(id: usize, packets_per_print: u64) -> Self {
+        Self {
+            id: Some(id),
+            packets_per_print,
+            ..Self::new()
+        }
+    }
+
     #[inline(always)]
     pub fn update(&mut self, bytes: usize, is_fragment: bool) {
         self.bytes_received += bytes as u64;
