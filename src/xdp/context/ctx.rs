@@ -8,7 +8,7 @@ use crate::xdp::{
 };
 
 /// Embedded XDP BPF program for round-robin packet routing to AF_XDP sockets.
-static XDP_PROG_DATA: &'static [u8] = include_bytes!("../../../bpf/xdp_kern.o");
+static XDP_PROG_DATA: &[u8] = include_bytes!("../../../bpf/xdp_kern.o");
 
 /// Builder for creating an XdpContext.
 ///
@@ -25,7 +25,15 @@ pub struct XdpContextBuilder<'name> {
 }
 
 impl<'name> XdpContextBuilder<'name> {
-    fn new(if_name: &'name str) -> Self {
+    /// Creates a new XdpContextBuilder.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use libvoid::xdp::context::XdpContextBuilder;
+    /// let builder = XdpContextBuilder::new("eth0");
+    /// ```
+    pub fn new(if_name: &'name str) -> Self {
         Self {
             if_name,
             attach_mode: AttachMode::default(),
@@ -47,7 +55,7 @@ impl<'name> XdpContextBuilder<'name> {
 
     /// Builds the XdpContext.
     pub fn build(self) -> Result<XdpContext> {
-        XdpContext::new(&self.if_name, self.attach_mode, self.enable_fragmentation)
+        XdpContext::new(self.if_name, self.attach_mode, self.enable_fragmentation)
     }
 }
 
@@ -161,8 +169,9 @@ impl XdpContext {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::xdp::test_utils::TestVethPair;
+
+    use super::*;
 
     /// Tests that XdpContext can be created with default attach mode and fragmentation enabled.
     #[test]

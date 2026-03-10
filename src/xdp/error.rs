@@ -59,6 +59,8 @@ pub enum Error {
     QueryXdpFeatures(Errno),
     #[error("failed while getting MTU: {0}")]
     GetMtu(String),
+    #[error("failed to query checksum offload capabilities: {0}")]
+    GetChecksumOffload(String),
     #[error("fragmentation not supported by the network interface")]
     FragmentationNotSupported,
     #[error("zero copy not supported by the network interface")]
@@ -71,6 +73,10 @@ pub enum Error {
     EpollWait(Errno),
     #[error("failed to register file descriptor with epoll instance: {0}")]
     EpollCtl(Errno),
+    #[error("{0}")]
+    Other(String),
+    #[error("Exiting runtime")]
+    ExitRuntime,
 }
 
 /// A simple ZST error variant for would block scenarios, this is explicitly a ZST to avoid the allocations and eventual drop calls of the error case.

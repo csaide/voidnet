@@ -50,10 +50,10 @@
 //!     .build()?;
 //!
 //! // 2. Create shared memory
-//! let mut umem = Umem::builder(&mut ctx).num_frames(4096).build()?;
+//! let mut umem = Umem::builder().num_frames(4096).build()?;
 //!
 //! // 3. Create an AF_XDP socket
-//! let socket = Socket::builder(&mut ctx, "eth0", 0).build(umem.owner().clone())?;
+//! let socket = Socket::builder("eth0", 0).build(&mut ctx, umem.owner().clone())?;
 //!
 //! // 4. Process packets via RX/TX rings...
 //! # Ok::<(), libvoid::xdp::error::Error>(())
@@ -71,4 +71,4 @@
 
 mod ctx;
 
-pub use ctx::XdpContext;
+pub use ctx::{XdpContext, XdpContextBuilder};
