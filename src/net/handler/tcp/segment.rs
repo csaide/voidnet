@@ -6,9 +6,8 @@ use crate::net::{
             IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, IpProtocols, Ipv4Address, Ipv6Address,
         },
         tcp::{
-            TCP_HEADER_LEN, TcpHeader, flags, options, write_mss_option,
-            write_sack_option, write_sack_permitted_option, write_timestamp_option,
-            write_window_scale_option,
+            TCP_HEADER_LEN, TcpHeader, flags, options, write_mss_option, write_sack_option,
+            write_sack_permitted_option, write_timestamp_option, write_window_scale_option,
         },
     },
 };
@@ -136,7 +135,11 @@ impl SegmentBuilder {
             opt_len += write_sack_permitted_option(&mut opt_buf[opt_len..]);
         }
 
-        let syn_flags = if ecn { flags::SYN | flags::ECE | flags::CWR } else { flags::SYN };
+        let syn_flags = if ecn {
+            flags::SYN | flags::ECE | flags::CWR
+        } else {
+            flags::SYN
+        };
 
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
@@ -218,7 +221,11 @@ impl SegmentBuilder {
             opt_len += write_sack_permitted_option(&mut opt_buf[opt_len..]);
         }
 
-        let syn_ack_flags = if ecn { flags::SYN | flags::ACK | flags::ECE } else { flags::SYN | flags::ACK };
+        let syn_ack_flags = if ecn {
+            flags::SYN | flags::ACK | flags::ECE
+        } else {
+            flags::SYN | flags::ACK
+        };
 
         match (local_addr, remote_addr) {
             (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {

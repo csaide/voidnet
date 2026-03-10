@@ -173,8 +173,7 @@ fn rto_retransmit_on_timer_expiry() {
     let cwnd_before = handler.connections[0].cubic.cwnd;
 
     // Simulate timer expiry by setting a deadline in the past.
-    handler.connections[0].retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
+    handler.connections[0].retransmit_deadline = Some(now - coarsetime::Duration::from_millis(1));
     handler.connections[0].rto_backoff = 0;
 
     // poll_timers should trigger RTO retransmit.
@@ -409,4 +408,3 @@ fn limited_transmit_sends_on_first_dup_ack() {
         "limited transmit: 1 MSS sent on first dup ACK"
     );
 }
-

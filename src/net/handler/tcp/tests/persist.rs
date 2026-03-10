@@ -126,4 +126,3 @@ fn persist_timer_clears_when_window_reopens() {
         "persist_backoff should be reset"
     );
 }
-

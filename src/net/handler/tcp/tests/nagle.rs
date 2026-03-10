@@ -91,14 +91,8 @@ fn tcp_no_delay_sends_small_data_immediately() {
         tcp_no_delay: true,
         ..Default::default()
     };
-    let _iss = active_open_handshake_with_config(
-        &mut handler,
-        &nh,
-        config,
-        &mut free,
-        &mut rx,
-        &mut tx,
-    );
+    let _iss =
+        active_open_handshake_with_config(&mut handler, &nh, config, &mut free, &mut rx, &mut tx);
 
     // Verify nagle is disabled.
     assert!(
@@ -124,4 +118,3 @@ fn tcp_no_delay_sends_small_data_immediately() {
         "TCP_NODELAY should bypass Nagle and send immediately"
     );
 }
-

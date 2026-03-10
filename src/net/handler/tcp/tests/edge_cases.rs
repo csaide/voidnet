@@ -24,7 +24,14 @@ fn unmatched_syn_generates_rst() {
     let len = data.len();
     let frame = Frame::new(0, leak(data), len, false);
 
-    handler.process_ipv4(frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(
+        frame,
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(rx.num_frames(), 1, "original frame returned to rx");
     assert_eq!(tx.num_frames(), 1, "RST generated on tx");
@@ -43,7 +50,14 @@ fn rst_to_unbound_port_silently_dropped() {
     let len = data.len();
     let frame = Frame::new(0, leak(data), len, false);
 
-    handler.process_ipv4(frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(
+        frame,
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(rx.num_frames(), 1, "frame returned to rx");
     assert_eq!(tx.num_frames(), 0, "no RST for RST");
@@ -75,7 +89,14 @@ fn invalid_checksum_dropped() {
     let len = leaked.len();
     let frame = Frame::new(0, leaked, len, false);
 
-    handler.process_ipv4(frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(
+        frame,
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(rx.num_frames(), 1, "frame returned to rx");
     assert_eq!(tx.num_frames(), 0, "no RST for bad checksum");
@@ -109,7 +130,14 @@ fn truncated_tcp_header_dropped() {
     let len = data.len();
     let frame = Frame::new(0, leak(data), len, false);
 
-    handler.process_ipv4(frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(
+        frame,
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(rx.num_frames(), 1, "truncated frame returned to rx");
     assert_eq!(tx.num_frames(), 0, "no response");
@@ -139,7 +167,14 @@ fn frame_accounting_after_rst() {
     let len = data.len();
     let frame = Frame::new(0, leak(data), len, false);
 
-    handler.process_ipv4(frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(
+        frame,
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     let total = free.num_frames() + rx.num_frames() + tx.num_frames();
     assert_eq!(total, 2, "all frames accounted for (1 rx + 1 tx)");
@@ -671,4 +706,3 @@ fn sender_sws_allows_send_when_all_data_fits() {
         "should send when all data fits in window"
     );
 }
-

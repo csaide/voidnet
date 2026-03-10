@@ -905,4 +905,3 @@ fn ecn_ce_received_cleared_on_cwr() {
         "ecn_ce_received should be cleared after receiving CWR"
     );
 }
-

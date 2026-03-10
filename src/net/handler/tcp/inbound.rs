@@ -27,13 +27,18 @@ use super::ring_buffer::RingBuffer;
 use super::segment::SegmentBuilder;
 use super::state::TcpState;
 use super::tcb::{
-    ConnectionId, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE,
-    TS_OPTION_LEN, Tcb, TcpEvent,
+    ConnectionId, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE, TS_OPTION_LEN, Tcb,
+    TcpEvent,
 };
 
 /// Check segment acceptability per RFC 9293 §3.10.7.4.
 #[inline]
-pub(super) fn is_segment_acceptable(seg_seq: u32, seg_len: u32, rcv_nxt: u32, rcv_wnd: u32) -> bool {
+pub(super) fn is_segment_acceptable(
+    seg_seq: u32,
+    seg_len: u32,
+    rcv_nxt: u32,
+    rcv_wnd: u32,
+) -> bool {
     use crate::net::wire::tcp::{seq_le, seq_lt};
 
     if seg_len == 0 {
@@ -274,7 +279,8 @@ impl TcpHandler {
 
         if let Some(idx) = self.connections.iter().position(|c| c.id == conn_id) {
             let tsval = if self.connections[idx].ts_enabled {
-                now.duration_since(self.connections[idx].ts_offset).as_millis() as u32
+                now.duration_since(self.connections[idx].ts_offset)
+                    .as_millis() as u32
             } else {
                 0
             };
@@ -523,7 +529,11 @@ impl TcpHandler {
                 rcv_mss: DEFAULT_RCV_MSS,
                 eff_snd_mss: {
                     let base = peer_mss.min(DEFAULT_RCV_MSS);
-                    if ts_enabled { base.saturating_sub(TS_OPTION_LEN) } else { base }
+                    if ts_enabled {
+                        base.saturating_sub(TS_OPTION_LEN)
+                    } else {
+                        base
+                    }
                 },
                 snd_wscale,
                 rcv_wscale: if wscale_enabled {
@@ -540,7 +550,11 @@ impl TcpHandler {
                 ooo_ranges: BTreeMap::new(),
                 cubic: CubicState::new({
                     let base = peer_mss.min(DEFAULT_RCV_MSS);
-                    if ts_enabled { base.saturating_sub(TS_OPTION_LEN) } else { base }
+                    if ts_enabled {
+                        base.saturating_sub(TS_OPTION_LEN)
+                    } else {
+                        base
+                    }
                 }),
                 recovery: SackRecovery::new(),
                 prr: PrrState::new(),
@@ -1196,8 +1210,12 @@ impl TcpHandler {
                                 // Congestion control (fast path is never in recovery).
                                 if !frto_handled {
                                     let rtt_ms = tcb.srtt.unwrap_or(tcb.rto);
-                                    tcb.cubic
-                                        .on_ack(bytes_acked as u32, now, rtt_ms, tcb.max_snd_wnd);
+                                    tcb.cubic.on_ack(
+                                        bytes_acked as u32,
+                                        now,
+                                        rtt_ms,
+                                        tcb.max_snd_wnd,
+                                    );
                                 }
                                 tcb.recovery.dup_ack_count = 0;
 
@@ -1261,8 +1279,7 @@ impl TcpHandler {
                                 }
 
                                 // Data write (in-order, no OOO to drain).
-                                let payload =
-                                    &frame[payload_offset..payload_offset + payload_len];
+                                let payload = &frame[payload_offset..payload_offset + payload_len];
                                 let written = tcb.recv_buffer.write(payload);
                                 tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(written as u32);
                                 tcb.last_activity = now;
@@ -1273,9 +1290,7 @@ impl TcpHandler {
                                 tcb.ack_pending = true;
                                 if tcb.delayed_ack_deadline.is_none() {
                                     tcb.delayed_ack_deadline = Some(
-                                        now + coarsetime::Duration::from_millis(
-                                            tcb.delayed_ack_ms,
-                                        ),
+                                        now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms),
                                     );
                                 }
 
@@ -1362,20 +1377,15 @@ impl TcpHandler {
                         if tcb.sack_enabled {
                             let (blocks, count) = opts.sack_blocks;
                             for (left, right) in blocks.iter().take(count).flatten() {
-                                tcb.sack_scoreboard
-                                    .insert(*left, right.wrapping_sub(*left));
+                                tcb.sack_scoreboard.insert(*left, right.wrapping_sub(*left));
                             }
                             let snd_una = tcb.snd_una;
-                            tcb.sack_scoreboard.retain(|&start, _| {
-                                !crate::net::wire::tcp::seq_lt(start, snd_una)
-                            });
+                            tcb.sack_scoreboard
+                                .retain(|&start, _| !crate::net::wire::tcp::seq_lt(start, snd_una));
                         }
 
                         // ECN congestion response.
-                        if tcb.ecn_enabled
-                            && seg_flags & flags::ECE != 0
-                            && !tcb.ecn_cwr_sent
-                        {
+                        if tcb.ecn_enabled && seg_flags & flags::ECE != 0 && !tcb.ecn_cwr_sent {
                             tcb.cubic.on_ecn();
                             tcb.ecn_cwr_sent = true;
                         }
@@ -1391,9 +1401,8 @@ impl TcpHandler {
                         tcb.ack_delay_count += 1;
                         tcb.ack_pending = true;
                         if tcb.delayed_ack_deadline.is_none() {
-                            tcb.delayed_ack_deadline = Some(
-                                now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms),
-                            );
+                            tcb.delayed_ack_deadline =
+                                Some(now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms));
                         }
 
                         rx_return.push(frame);
@@ -1482,7 +1491,14 @@ impl TcpHandler {
         // Step 2: RST check (RFC 5961).
         if seg_flags & flags::RST != 0 {
             self.handle_rst_established(
-                idx, seg_seq, tsval, ack_flags, src_mac, dst_mac, free_frames, tx_return,
+                idx,
+                seg_seq,
+                tsval,
+                ack_flags,
+                src_mac,
+                dst_mac,
+                free_frames,
+                tx_return,
             );
             rx_return.push(frame);
             return;
@@ -1491,7 +1507,13 @@ impl TcpHandler {
         // Step 4: SYN check (RFC 5961 — challenge ACK for SYN in synchronized state).
         if seg_flags & flags::SYN != 0 {
             self.handle_syn_established(
-                idx, tsval, ack_flags, src_mac, dst_mac, free_frames, tx_return,
+                idx,
+                tsval,
+                ack_flags,
+                src_mac,
+                dst_mac,
+                free_frames,
+                tx_return,
             );
             rx_return.push(frame);
             return;
@@ -1564,7 +1586,8 @@ impl TcpHandler {
                 // Congestion control — only update outside recovery and F-RTO.
                 if !tcb.recovery.in_recovery && !frto_handled {
                     let rtt_ms = tcb.srtt.unwrap_or(tcb.rto);
-                    tcb.cubic.on_ack(bytes_acked as u32, now, rtt_ms, tcb.max_snd_wnd);
+                    tcb.cubic
+                        .on_ack(bytes_acked as u32, now, rtt_ms, tcb.max_snd_wnd);
                 }
 
                 tcb.recovery.dup_ack_count = 0;
@@ -1750,8 +1773,17 @@ impl TcpHandler {
             } else if seq_lt(rcv_nxt, seg_seq) {
                 // Out-of-order data.
                 self.handle_ooo_data(
-                    idx, &frame, seg_seq, tsval, payload_offset, payload_len, ack_flags, src_mac,
-                    dst_mac, free_frames, tx_return,
+                    idx,
+                    &frame,
+                    seg_seq,
+                    tsval,
+                    payload_offset,
+                    payload_len,
+                    ack_flags,
+                    src_mac,
+                    dst_mac,
+                    free_frames,
+                    tx_return,
                 );
             } else {
                 // Duplicate data (seg_seq < rcv_nxt) — just ACK.

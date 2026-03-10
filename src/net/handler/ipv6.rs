@@ -219,7 +219,15 @@ impl Ipv6Handler {
                     udp_handler.process_ipv6(frame, None, payload_offset, rx_return);
                 }
                 IpProtocols::Tcp => {
-                    tcp_handler.process_ipv6(frame, payload_offset, now, neighbor_handler, free_frames, rx_return, tx_return);
+                    tcp_handler.process_ipv6(
+                        frame,
+                        payload_offset,
+                        now,
+                        neighbor_handler,
+                        free_frames,
+                        rx_return,
+                        tx_return,
+                    );
                 }
                 _ => {
                     // RFC 4443 §3.4: send Parameter Problem (code 1) with

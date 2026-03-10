@@ -6,7 +6,9 @@ use crate::{
 };
 
 use super::{
-    TcpHandler, segment::SegmentBuilder, state::TcpState,
+    TcpHandler,
+    segment::SegmentBuilder,
+    state::TcpState,
     tcb::{MAX_DELAYED_ACK_COUNT, TcpEvent},
 };
 
@@ -37,8 +39,7 @@ impl TcpHandler {
             // Send as many segments as the window allows.
             loop {
                 let bytes_in_flight = tcb.snd_nxt.wrapping_sub(tcb.snd_una) as usize;
-                let data_available =
-                    tcb.send_buffer.available().saturating_sub(bytes_in_flight);
+                let data_available = tcb.send_buffer.available().saturating_sub(bytes_in_flight);
 
                 let can_send = if tcb.recovery.in_recovery {
                     tcb.recovery.set_pipe(
@@ -62,8 +63,7 @@ impl TcpHandler {
                         && !tcb.recovery.in_recovery
                     {
                         tcb.cubic.cwnd as usize
-                            + tcb.recovery.dup_ack_count as usize
-                                * tcb.eff_snd_mss as usize
+                            + tcb.recovery.dup_ack_count as usize * tcb.eff_snd_mss as usize
                     } else {
                         tcb.cubic.cwnd as usize
                     };
@@ -87,10 +87,7 @@ impl TcpHandler {
                 let to_send = can_send.min(data_available).min(tcb.eff_snd_mss as usize);
 
                 // Nagle algorithm: hold small segments when data is in flight.
-                if tcb.nagle_enabled
-                    && bytes_in_flight > 0
-                    && to_send < tcb.eff_snd_mss as usize
-                {
+                if tcb.nagle_enabled && bytes_in_flight > 0 && to_send < tcb.eff_snd_mss as usize {
                     break;
                 }
 

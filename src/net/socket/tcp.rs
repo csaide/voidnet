@@ -9,14 +9,8 @@ use coarsetime::Instant;
 
 use crate::{
     net::{
-        handler::{
-            tcp::TcpHandler,
-            udp::BindError,
-        },
-        wire::{
-            ethernet::MacAddress,
-            ip::IpAddress,
-        },
+        handler::{tcp::TcpHandler, udp::BindError},
+        wire::{ethernet::MacAddress, ip::IpAddress},
     },
     rt::context::with_runtime_context,
 };

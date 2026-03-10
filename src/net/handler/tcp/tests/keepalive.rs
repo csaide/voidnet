@@ -953,4 +953,3 @@ fn linger_zero_immediate_rst() {
         "TcpEvent::Reset should be emitted for linger(0) abort"
     );
 }
-

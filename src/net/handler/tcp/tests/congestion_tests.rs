@@ -246,4 +246,3 @@ fn frto_restores_cwnd_on_spurious_rto() {
         "cwnd should be restored after spurious RTO"
     );
 }
-

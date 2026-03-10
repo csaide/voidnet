@@ -9,8 +9,8 @@ use crate::net::wire::ip::IpAddress;
 use crate::xdp::frame::FrameBuffer;
 
 use super::TcpHandler;
-use super::handler::INITIAL_RTO_MS;
 use super::congestion::CubicState;
+use super::handler::INITIAL_RTO_MS;
 use super::recovery::{FRtoState, PrrState, SackRecovery};
 use super::ring_buffer::RingBuffer;
 use super::segment::SegmentBuilder;
@@ -98,9 +98,7 @@ impl TcpHandler {
             snd_wscale: 0,
             rcv_wscale: DEFAULT_RCV_WSCALE,
             wscale_enabled: false,
-            retransmit_deadline: Some(
-                now + coarsetime::Duration::from_millis(INITIAL_RTO_MS),
-            ),
+            retransmit_deadline: Some(now + coarsetime::Duration::from_millis(INITIAL_RTO_MS)),
             rto_backoff: 0,
             event_queue: event_queue.clone(),
             send_buffer: RingBuffer::new(config.send_buffer_size),

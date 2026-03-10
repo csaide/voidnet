@@ -106,14 +106,8 @@ mod tests {
         (eth, ipv4, ipv6, udp, tcp, neighbor, pmtu)
     }
 
-    fn new_buffers<'umem>() -> (
-        BasicFrameBuffer<'umem>,
-        BasicFrameBuffer<'umem>,
-    ) {
-        (
-            BasicFrameBuffer::new(4),
-            BasicFrameBuffer::new(4),
-        )
+    fn new_buffers<'umem>() -> (BasicFrameBuffer<'umem>, BasicFrameBuffer<'umem>) {
+        (BasicFrameBuffer::new(4), BasicFrameBuffer::new(4))
     }
 
     /// Builds a minimal Ethernet frame with only the 14-byte header set.
@@ -183,7 +177,17 @@ mod tests {
         let frame = Frame::new(0, &mut data, len, false);
 
         eth.handle(
-            frame, &mut ipv4, &mut ipv6, &mut udp, &mut tcp, &neighbor, &pmtu, now, &mut BasicFrameBuffer::new(4), &mut rx, &mut tx,
+            frame,
+            &mut ipv4,
+            &mut ipv6,
+            &mut udp,
+            &mut tcp,
+            &neighbor,
+            &pmtu,
+            now,
+            &mut BasicFrameBuffer::new(4),
+            &mut rx,
+            &mut tx,
         );
 
         assert_eq!(rx.num_frames(), 1);
@@ -201,7 +205,17 @@ mod tests {
         let frame = Frame::new(0, &mut data, len, false);
 
         eth.handle(
-            frame, &mut ipv4, &mut ipv6, &mut udp, &mut tcp, &neighbor, &pmtu, now, &mut BasicFrameBuffer::new(4), &mut rx, &mut tx,
+            frame,
+            &mut ipv4,
+            &mut ipv6,
+            &mut udp,
+            &mut tcp,
+            &neighbor,
+            &pmtu,
+            now,
+            &mut BasicFrameBuffer::new(4),
+            &mut rx,
+            &mut tx,
         );
 
         // Frame was consumed by ipv4_handler. No UDP binding so it ends up
@@ -222,7 +236,17 @@ mod tests {
         let frame = Frame::new(0, &mut data, len, false);
 
         eth.handle(
-            frame, &mut ipv4, &mut ipv6, &mut udp, &mut tcp, &neighbor, &pmtu, now, &mut BasicFrameBuffer::new(4), &mut rx, &mut tx,
+            frame,
+            &mut ipv4,
+            &mut ipv6,
+            &mut udp,
+            &mut tcp,
+            &neighbor,
+            &pmtu,
+            now,
+            &mut BasicFrameBuffer::new(4),
+            &mut rx,
+            &mut tx,
         );
 
         // ipv4_handler rejects the short frame back to rx_return.
@@ -243,7 +267,17 @@ mod tests {
         let frame = Frame::new(0, &mut data, len, false);
 
         eth.handle(
-            frame, &mut ipv4, &mut ipv6, &mut udp, &mut tcp, &neighbor, &pmtu, now, &mut BasicFrameBuffer::new(4), &mut rx, &mut tx,
+            frame,
+            &mut ipv4,
+            &mut ipv6,
+            &mut udp,
+            &mut tcp,
+            &neighbor,
+            &pmtu,
+            now,
+            &mut BasicFrameBuffer::new(4),
+            &mut rx,
+            &mut tx,
         );
 
         // ipv6_handler rejects the short frame back to rx_return.
@@ -262,7 +296,17 @@ mod tests {
         let frame = Frame::new(0, &mut data, len, false);
 
         eth.handle(
-            frame, &mut ipv4, &mut ipv6, &mut udp, &mut tcp, &neighbor, &pmtu, now, &mut BasicFrameBuffer::new(4), &mut rx, &mut tx,
+            frame,
+            &mut ipv4,
+            &mut ipv6,
+            &mut udp,
+            &mut tcp,
+            &neighbor,
+            &pmtu,
+            now,
+            &mut BasicFrameBuffer::new(4),
+            &mut rx,
+            &mut tx,
         );
 
         // neighbor_handler processes (and discards) the malformed ARP.
@@ -293,7 +337,17 @@ mod tests {
             let frame = Frame::new(0, &mut data, len, false);
 
             eth.handle(
-                frame, &mut ipv4, &mut ipv6, &mut udp, &mut tcp, &neighbor, &pmtu, now, &mut BasicFrameBuffer::new(4), &mut rx, &mut tx,
+                frame,
+                &mut ipv4,
+                &mut ipv6,
+                &mut udp,
+                &mut tcp,
+                &neighbor,
+                &pmtu,
+                now,
+                &mut BasicFrameBuffer::new(4),
+                &mut rx,
+                &mut tx,
             );
 
             let total = rx.num_frames() + tx.num_frames();

@@ -3,13 +3,10 @@ use std::fmt;
 
 use coarsetime::Instant;
 
-use crate::net::{
-    socket::LocalQueue,
-    wire::ip::IpAddress,
-};
+use crate::net::{socket::LocalQueue, wire::ip::IpAddress};
 
 use super::congestion::CubicState;
-use super::recovery::{SackRecovery, PrrState, FRtoState};
+use super::recovery::{FRtoState, PrrState, SackRecovery};
 use super::ring_buffer::RingBuffer;
 use super::state::TcpState;
 
@@ -142,7 +139,6 @@ impl Default for TcpConfig {
 /// Hot fields (accessed every packet) are packed into the first 1-2 cache lines.
 pub struct Tcb {
     // === HOT: accessed every packet ===
-
     /// Next sequence number expected on incoming segments.
     pub rcv_nxt: u32,
     /// Next sequence number to send.
@@ -180,7 +176,6 @@ pub struct Tcb {
     pub from_passive_open: bool,
 
     // === WARM: accessed most packets (data transfer) ===
-
     pub id: ConnectionId,
     /// Send ring buffer — user data is copied in, segments built from here.
     pub send_buffer: RingBuffer,
@@ -194,7 +189,6 @@ pub struct Tcb {
     pub delayed_ack_ms: u64,
 
     // === ACK processing ===
-
     /// Segment sequence number used for last window update.
     pub snd_wl1: u32,
     /// Segment acknowledgment number used for last window update.
@@ -213,14 +207,12 @@ pub struct Tcb {
     pub snd_mss: u16,
 
     // === Congestion/recovery ===
-
     pub cubic: CubicState,
     pub recovery: SackRecovery,
     pub prr: PrrState,
     pub frto: FRtoState,
 
     // === RTT estimation (RFC 6298) ===
-
     /// Smoothed RTT in milliseconds.
     pub srtt: Option<u64>,
     /// RTT variance in milliseconds.
@@ -235,7 +227,6 @@ pub struct Tcb {
     pub ts_offset: Instant,
 
     // === COLD: rarely accessed ===
-
     /// Deadline for retransmitting unacknowledged SYN or SYN-ACK.
     pub retransmit_deadline: Option<Instant>,
     /// Exponential backoff counter for retransmissions.
@@ -322,8 +313,9 @@ impl Tcb {
     /// Call this after any path that sends an ACK with our advertised window.
     #[inline]
     pub fn update_advertised_edge(&mut self) {
-        self.last_advertised_right_edge =
-            self.rcv_nxt.wrapping_add(self.recv_buffer.free_space() as u32);
+        self.last_advertised_right_edge = self
+            .rcv_nxt
+            .wrapping_add(self.recv_buffer.free_space() as u32);
     }
 
     /// Build the timestamp option tuple using a pre-computed tsval.
@@ -351,15 +343,19 @@ impl Tcb {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::ring_buffer::RingBuffer;
+    use super::*;
 
     fn make_tcb(wscale_enabled: bool, snd_wscale: u8, rcv_wscale: u8, recv_buf_size: usize) -> Tcb {
         Tcb {
             id: ConnectionId {
-                local_addr: IpAddress::V4(crate::net::wire::ip::Ipv4Address { octets: [127, 0, 0, 1] }),
+                local_addr: IpAddress::V4(crate::net::wire::ip::Ipv4Address {
+                    octets: [127, 0, 0, 1],
+                }),
                 local_port: 1234,
-                remote_addr: IpAddress::V4(crate::net::wire::ip::Ipv4Address { octets: [127, 0, 0, 1] }),
+                remote_addr: IpAddress::V4(crate::net::wire::ip::Ipv4Address {
+                    octets: [127, 0, 0, 1],
+                }),
                 remote_port: 5678,
             },
             state: TcpState::Established,
@@ -495,14 +491,22 @@ mod tests {
         // Free = 20, right_edge = 1048+20 = 1068, prev = 1064.
         // new_space = 1068 - 1064 = 4 < threshold(32) → clamped.
         // clamped = 1064 - 1048 = 16. min(16, 20) = 16.
-        assert_eq!(tcb.advertised_window(), 16, "SWS holds: only 4 bytes of new space < threshold 32");
+        assert_eq!(
+            tcb.advertised_window(),
+            16,
+            "SWS holds: only 4 bytes of new space < threshold 32"
+        );
 
         // App reads 34 more bytes → 54 free.
         let mut drain3 = [0u8; 34];
         tcb.recv_buffer.read(&mut drain3);
         // Free = 54, right_edge = 1048+54 = 1102, prev = 1064.
         // new_space = 1102 - 1064 = 38 >= threshold(32) → opens.
-        assert_eq!(tcb.advertised_window(), 54, "SWS opens: 38 bytes of new space >= threshold 32");
+        assert_eq!(
+            tcb.advertised_window(),
+            54,
+            "SWS opens: 38 bytes of new space >= threshold 32"
+        );
     }
 
     #[test]

@@ -570,8 +570,7 @@ fn sack_recovery_enters_on_3_dup_acks() {
         .send_buffer
         .write(&vec![0xAA; data_len]);
     handler.connections[0].snd_wnd = 65535;
-    handler.connections[0].snd_nxt =
-        handler.connections[0].snd_una.wrapping_add(data_len as u32);
+    handler.connections[0].snd_nxt = handler.connections[0].snd_una.wrapping_add(data_len as u32);
 
     let snd_una = handler.connections[0].snd_una;
     let cwnd_before = handler.connections[0].cubic.cwnd;
@@ -676,8 +675,7 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
         .send_buffer
         .write(&vec![0xAA; data_len]);
     handler.connections[0].snd_wnd = 65535;
-    handler.connections[0].snd_nxt =
-        handler.connections[0].snd_una.wrapping_add(data_len as u32);
+    handler.connections[0].snd_nxt = handler.connections[0].snd_una.wrapping_add(data_len as u32);
 
     let snd_una = handler.connections[0].snd_una;
 
@@ -735,4 +733,3 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
     );
     assert_eq!(handler.connections[0].snd_una, partial_ack_seq);
 }
-

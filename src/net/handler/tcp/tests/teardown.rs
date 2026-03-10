@@ -1738,4 +1738,3 @@ fn out_of_order_fin_does_not_transition_to_close_wait() {
         "rcv_nxt should advance by 1 for the FIN"
     );
 }
-

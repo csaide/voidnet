@@ -312,4 +312,3 @@ fn paws_accepts_stale_ts_recent() {
         "data should be accepted when ts_recent is stale"
     );
 }
-

@@ -1,18 +1,16 @@
 use coarsetime::Instant;
 
 use crate::{
-    net::{
-        NeighborHandler,
-        wire::tcp::flags,
-    },
+    net::{NeighborHandler, wire::tcp::flags},
     xdp::frame::FrameBuffer,
 };
 
 use super::{
+    TcpHandler,
+    handler::{INITIAL_RTO_MS, SYN_R2_THRESHOLD_MS},
     segment::SegmentBuilder,
     state::TcpState,
     tcb::{DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE, TcpEvent},
-    TcpHandler, handler::{INITIAL_RTO_MS, SYN_R2_THRESHOLD_MS},
 };
 
 impl TcpHandler {

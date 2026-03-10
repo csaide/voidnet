@@ -141,8 +141,7 @@ impl CubicState {
         if rtt_ms > 0 {
             let rtt_sec = rtt_ms as f64 / 1000.0;
             let acks_since_epoch = t / rtt_sec;
-            let reno_inc =
-                (3.0 * (1.0 - CUBIC_BETA) / (1.0 + CUBIC_BETA)) * acks_since_epoch;
+            let reno_inc = (3.0 * (1.0 - CUBIC_BETA) / (1.0 + CUBIC_BETA)) * acks_since_epoch;
             self.tcp_cwnd =
                 ((self.origin_point as f64 * CUBIC_BETA) + reno_inc * mss as f64) as u32;
         }

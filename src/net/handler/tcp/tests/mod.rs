@@ -11,10 +11,10 @@ use crate::{
     xdp::frame::{BasicFrameBuffer, Frame},
 };
 
-use super::*;
 use super::inbound::is_segment_acceptable;
 use super::state::TcpState;
 use super::tcb::{ConnectionId, DEFAULT_RCV_WSCALE, TcpConfig, TcpEvent};
+use super::*;
 
 use crate::xdp::frame::FrameBuffer;
 
@@ -119,8 +119,7 @@ pub(super) fn build_tcp_frame_with_payload(
     let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
     let data_offset = (tcp_header_len / 4) as u8;
     let total_ip_len = (IPV4_MIN_HEADER_LEN + tcp_header_len + payload.len()) as u16;
-    let mut buf =
-        vec![0u8; ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + tcp_header_len + payload.len()];
+    let mut buf = vec![0u8; ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + tcp_header_len + payload.len()];
 
     // Ethernet header.
     buf[0..6].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]); // dst mac
