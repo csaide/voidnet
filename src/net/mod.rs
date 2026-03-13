@@ -4,6 +4,7 @@ mod neighbor;
 mod pmtu;
 
 pub mod handler;
+pub mod http;
 pub mod socket;
 pub mod wire;
 

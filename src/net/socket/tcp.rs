@@ -297,6 +297,22 @@ impl TcpStream {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_accepted_for_test(
+        conn_id: ConnectionId,
+        event_queue: LocalQueue<TcpEvent>,
+        handler: Rc<UnsafeCell<TcpHandler>>,
+    ) -> Self {
+        Self {
+            conn_id,
+            event_queue,
+            handler,
+            cached_idx: Cell::new(0),
+            closed: false,
+            write_closed: false,
+        }
+    }
+
     /// Returns the connection's 4-tuple identifier.
     pub fn conn_id(&self) -> &ConnectionId {
         &self.conn_id
