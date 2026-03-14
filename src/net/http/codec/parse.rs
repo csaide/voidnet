@@ -2,6 +2,7 @@ use crate::net::http::{
     error::ParseError,
     request::{HeaderOffset, Method, Version},
 };
+use memchr::{memchr, memrchr, memmem};
 
 // ── Private helpers ──────────────────────────────────────────────────────────
 
@@ -16,8 +17,8 @@ fn bytes_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
 
 /// Find the position of the first `\n` byte in `buf`.
 #[inline]
-pub(crate) fn memchr_newline(buf: &[u8]) -> Option<usize> {
-    buf.iter().position(|&b| b == b'\n')
+pub fn memchr_newline(buf: &[u8]) -> Option<usize> {
+    memchr(b'\n', buf)
 }
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -79,7 +80,7 @@ pub(crate) fn parse_method(token: &[u8]) -> Result<Method, ParseError> {
 ///
 /// Uses `rposition` on the first-line slice for the second space so that paths
 /// that themselves contain spaces are handled correctly.
-pub(crate) fn parse_request_line(
+pub fn parse_request_line(
     buf: &[u8],
     buf_offset: usize,
 ) -> Option<Result<RequestLine, ParseError>> {
@@ -101,7 +102,7 @@ pub(crate) fn parse_request_line(
     }
 
     // First space separates method from the rest.
-    let first_space = match line.iter().position(|&b| b == b' ') {
+    let first_space = match memchr(b' ', line) {
         Some(p) => p,
         None => return Some(Err(ParseError::InvalidRequestLine)),
     };
@@ -114,7 +115,7 @@ pub(crate) fn parse_request_line(
 
     // Last space separates path from version token.
     let after_method = &line[first_space + 1..];
-    let last_space = match after_method.iter().rposition(|&b| b == b' ') {
+    let last_space = match memrchr(b' ', after_method) {
         Some(p) => p,
         None => return Some(Err(ParseError::InvalidRequestLine)),
     };
@@ -162,7 +163,7 @@ const MAX_HEADERS: usize = 64;
 /// Offsets are **local** (0-based into `buf`). Call [`absolutize_headers`] to
 /// convert them to absolute ReadBuffer positions before storing in a
 /// [`Request`].
-pub(crate) fn parse_headers(
+pub fn parse_headers(
     buf: &[u8],
 ) -> Option<Result<(Vec<HeaderOffset>, usize), ParseError>> {
     // We need \r\n\r\n (or \n\n) to know we have a complete header block.
@@ -245,7 +246,7 @@ fn parse_header_line(
     line_start: usize,
     headers: &mut Vec<HeaderOffset>,
 ) -> Option<ParseError> {
-    let colon = match line.iter().position(|&b| b == b':') {
+    let colon = match memchr(b':', line) {
         Some(c) => c,
         None => return Some(ParseError::InvalidHeader),
     };
@@ -282,10 +283,10 @@ fn parse_header_line(
 ///
 /// Returns `(start_of_terminator, terminator_byte_length)`.
 fn find_header_terminator(buf: &[u8]) -> Option<(usize, usize)> {
-    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+    if let Some(pos) = memmem::find(buf, b"\r\n\r\n") {
         return Some((pos, 4));
     }
-    if let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
+    if let Some(pos) = memmem::find(buf, b"\n\n") {
         return Some((pos, 2));
     }
     None
@@ -359,7 +360,7 @@ pub(crate) fn detect_version(buf: &[u8]) -> Option<Result<Version, ParseError>> 
     let line = &buf[..line_end];
 
     // Look for the last space on the line.
-    match line.iter().rposition(|&b| b == b' ') {
+    match memrchr(b' ', line) {
         None => {
             // No space at all — HTTP/0.9 bare request (e.g. "GET /path").
             // (Actually HTTP/0.9 has one space between method and path, but no

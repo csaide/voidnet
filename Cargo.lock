@@ -1983,6 +1983,7 @@ dependencies = [
  "libc",
  "libxdp-sys",
  "macro_rules_attribute",
+ "memchr",
  "memmap2",
  "neli",
  "pnet",

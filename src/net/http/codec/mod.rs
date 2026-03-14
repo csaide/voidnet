@@ -1,4 +1,5 @@
-pub(crate) mod parse;
+#[doc(hidden)]
+pub mod parse;
 pub(crate) mod v0_9;
 pub(crate) mod v1_0;
 pub(crate) mod v1_1;

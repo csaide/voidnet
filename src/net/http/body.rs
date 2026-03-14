@@ -1,5 +1,6 @@
 use crate::net::http::{HttpError, buffer::ReadBuffer, error::ParseError, request::BodyFraming};
 use crate::net::socket::TcpStream;
+use memchr::memchr;
 
 /// Reads the request body according to the body framing.
 ///
@@ -201,7 +202,7 @@ impl<'conn> BodyReader<'conn> {
     async fn read_chunk_size(&mut self) -> Result<usize, HttpError> {
         loop {
             let buffered = self.read_buf.unconsumed();
-            if let Some(pos) = buffered.iter().position(|&b| b == b'\n') {
+            if let Some(pos) = memchr(b'\n', buffered) {
                 let line_end = if pos > 0 && buffered[pos - 1] == b'\r' {
                     pos - 1
                 } else {

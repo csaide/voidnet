@@ -1,6 +1,7 @@
 mod body;
 mod buffer;
-pub(crate) mod codec;
+#[doc(hidden)]
+pub mod codec;
 mod connection;
 mod error;
 mod handler;

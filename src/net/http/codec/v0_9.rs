@@ -52,7 +52,7 @@ impl Codec for Http09Codec {
         }
 
         // Find the space separating method from path
-        let space_pos = match line.iter().position(|&b| b == b' ') {
+        let space_pos = match memchr(b' ', line) {
             Some(pos) => pos,
             None => {
                 // No space — could be just "GET" with no path
@@ -107,6 +107,7 @@ impl Codec for Http09Codec {
 }
 
 use super::parse::memchr_newline;
+use memchr::memchr;
 
 #[cfg(test)]
 mod tests {
