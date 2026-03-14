@@ -130,3 +130,7 @@ path = "examples/std-tcp-echo-server.rs"
 [[example]]
 name = "std-tcp-echo-client"
 path = "examples/std-tcp-echo-client.rs"
+
+[[bench]]
+name = "checksum"
+harness = false

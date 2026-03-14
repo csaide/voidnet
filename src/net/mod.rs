@@ -1,4 +1,5 @@
-pub(crate) mod checksum;
+#[doc(hidden)]
+pub mod checksum;
 mod fragment;
 mod neighbor;
 mod pmtu;

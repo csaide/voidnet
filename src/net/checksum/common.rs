@@ -5,7 +5,7 @@ use crate::net::wire::ip::{Ipv4Address, Ipv6Address};
 /// Uses a `u64` accumulator and processes 32 bytes (sixteen 16-bit words)
 /// per iteration to reduce loop overhead and let the CPU pipeline loads.
 #[inline]
-pub(crate) fn sum_words(data: &[u8]) -> u64 {
+pub fn sum_words(data: &[u8]) -> u64 {
     let (mut sum, pending) = sum_words_carry(data, 0, None);
     if let Some(hi) = pending {
         sum += (hi as u64) << 8;
@@ -19,7 +19,7 @@ pub(crate) fn sum_words(data: &[u8]) -> u64 {
 /// packets without heap-allocating a `Vec` of slices. Call it once per
 /// fragment and thread the `(sum, pending)` state through.
 #[inline]
-pub(crate) fn sum_words_carry(data: &[u8], mut sum: u64, pending: Option<u8>) -> (u64, Option<u8>) {
+pub fn sum_words_carry(data: &[u8], mut sum: u64, pending: Option<u8>) -> (u64, Option<u8>) {
     let len = data.len();
     let mut i = 0;
 
@@ -29,6 +29,15 @@ pub(crate) fn sum_words_carry(data: &[u8], mut sum: u64, pending: Option<u8>) ->
             i = 1;
         } else {
             return (sum, Some(hi));
+        }
+    }
+
+    // NEON fast path for large data on aarch64.
+    #[cfg(target_arch = "aarch64")]
+    {
+        if len - i >= 32 {
+            // Safety: aarch64 always has NEON.
+            return unsafe { super::neon::sum_words_carry_neon(&data[i..], sum, None) };
         }
     }
 
