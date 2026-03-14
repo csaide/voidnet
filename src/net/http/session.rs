@@ -3,6 +3,7 @@ use crate::net::http::{
     codec::{DecodeResult, HttpCodec, v0_9::Http09Codec},
     request::{Request, Version},
 };
+use crate::net::http::codec::parse::ConnectionDirective;
 
 /// Connection-level state machine for HTTP request/response lifecycle.
 ///
@@ -10,20 +11,28 @@ use crate::net::http::{
 pub(crate) struct Session {
     codec: HttpCodec,
     state: SessionState,
+    connection_directive: ConnectionDirective,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum SessionState {
     /// Ready to decode the next request.
     AwaitingRequest,
     /// Request has been decoded, waiting for response to begin.
     RequestReady,
+    /// Request body is being read.
+    ReadingBody,
+    /// Waiting to send 100 Continue.
+    ExpectContinue,
     /// Response is being written.
     ResponseInProgress,
     /// A parse error occurred. Connection should close.
     Failed,
     /// Connection lifecycle is complete.
     Done,
+    /// Response finished, connection kept alive, waiting for next request setup.
+    AwaitingNext,
 }
 
 impl Session {
@@ -32,12 +41,22 @@ impl Session {
         Self {
             codec,
             state: SessionState::AwaitingRequest,
+            connection_directive: ConnectionDirective::None,
         }
     }
 
     /// Create a new session with the default HTTP/0.9 codec.
+    #[allow(dead_code)]
     pub fn http09() -> Self {
         Self::new(HttpCodec::Http09(Http09Codec::new()))
+    }
+
+    /// Create a new session in version-detecting mode.
+    ///
+    /// The codec will peek at the first request line to determine the HTTP
+    /// version and transition to the appropriate codec automatically.
+    pub fn detecting() -> Self {
+        Self::new(HttpCodec::Detecting)
     }
 
     /// Try to decode a request from the buffer.
@@ -53,12 +72,17 @@ impl Session {
         buf: &[u8],
         buf_offset: usize,
     ) -> Result<Option<(Request, usize)>, HttpError> {
-        debug_assert_eq!(self.state, SessionState::AwaitingRequest);
+        debug_assert!(
+            self.state == SessionState::AwaitingRequest,
+            "try_decode_request called in state {:?}",
+            self.state
+        );
 
         let outcome = self.codec.decode(buf, buf_offset);
         match outcome.result {
             DecodeResult::Complete(req) => {
                 self.state = SessionState::RequestReady;
+                self.connection_directive = req.connection_directive;
                 Ok(Some((req, outcome.consumed)))
             }
             DecodeResult::Incomplete => Ok(None),
@@ -71,23 +95,46 @@ impl Session {
 
     /// Mark that the response has started.
     pub fn begin_response(&mut self) {
-        debug_assert_eq!(self.state, SessionState::RequestReady);
+        debug_assert!(
+            self.state == SessionState::RequestReady
+                || self.state == SessionState::ReadingBody,
+            "begin_response called in state {:?}",
+            self.state
+        );
         self.state = SessionState::ResponseInProgress;
     }
 
     /// Mark that the response is finished.
     ///
     /// Returns `true` if the connection should stay alive (keep-alive).
-    /// For HTTP/0.9, always returns `false`.
     pub fn finish_response(&mut self) -> bool {
         debug_assert_eq!(self.state, SessionState::ResponseInProgress);
 
-        match self.codec.version() {
-            Version::Http09 => {
-                self.state = SessionState::Done;
-                false
+        let keep_alive = match self.codec.version() {
+            Version::Http09 => false,
+            Version::Http10 => {
+                self.connection_directive == ConnectionDirective::KeepAlive
             }
+            Version::Http11 => {
+                self.connection_directive != ConnectionDirective::Close
+            }
+        };
+
+        if keep_alive {
+            self.state = SessionState::AwaitingNext;
+        } else {
+            self.state = SessionState::Done;
         }
+
+        keep_alive
+    }
+
+    /// Transition from AwaitingNext to AwaitingRequest for the next request
+    /// on a keep-alive connection.
+    pub fn prepare_next_request(&mut self) {
+        debug_assert_eq!(self.state, SessionState::AwaitingNext);
+        self.connection_directive = ConnectionDirective::None;
+        self.state = SessionState::AwaitingRequest;
     }
 
     /// Whether the session is done (connection should close).
@@ -163,5 +210,74 @@ mod tests {
     fn version_delegates_to_codec() {
         let session = new_session();
         assert_eq!(session.version(), Version::Http09);
+    }
+
+    #[test]
+    fn session_http10_close_by_default() {
+        let mut session = Session::new(HttpCodec::Http10(
+            crate::net::http::codec::v1_0::Http10Codec::new()
+        ));
+        let buf = b"GET /test HTTP/1.0\r\nHost: test\r\n\r\n";
+        session.try_decode_request(buf, 0).unwrap();
+        session.begin_response();
+        let keep_alive = session.finish_response();
+        assert!(!keep_alive);
+        assert!(session.is_done());
+    }
+
+    #[test]
+    fn session_http11_keep_alive_by_default() {
+        let mut session = Session::new(HttpCodec::Http11(
+            crate::net::http::codec::v1_1::Http11Codec::new()
+        ));
+        let buf = b"GET /test HTTP/1.1\r\nHost: test\r\n\r\n";
+        let result = session.try_decode_request(buf, 0).unwrap();
+        assert!(result.is_some());
+        session.begin_response();
+        let keep_alive = session.finish_response();
+        assert!(keep_alive);
+        assert!(!session.is_done());
+    }
+
+    #[test]
+    fn session_http11_connection_close() {
+        let mut session = Session::new(HttpCodec::Http11(
+            crate::net::http::codec::v1_1::Http11Codec::new()
+        ));
+        let buf = b"GET /test HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
+        let result = session.try_decode_request(buf, 0).unwrap();
+        assert!(result.is_some());
+        session.begin_response();
+        let keep_alive = session.finish_response();
+        assert!(!keep_alive);
+        assert!(session.is_done());
+    }
+
+    #[test]
+    fn session_http10_keep_alive_header() {
+        let mut session = Session::new(HttpCodec::Http10(
+            crate::net::http::codec::v1_0::Http10Codec::new()
+        ));
+        let buf = b"GET /test HTTP/1.0\r\nConnection: keep-alive\r\n\r\n";
+        let result = session.try_decode_request(buf, 0).unwrap();
+        assert!(result.is_some());
+        session.begin_response();
+        let keep_alive = session.finish_response();
+        assert!(keep_alive);
+        assert!(!session.is_done());
+    }
+
+    #[test]
+    fn session_awaiting_next_to_awaiting_request() {
+        let mut session = Session::new(HttpCodec::Http11(
+            crate::net::http::codec::v1_1::Http11Codec::new()
+        ));
+        let buf = b"GET /test HTTP/1.1\r\nHost: test\r\n\r\n";
+        session.try_decode_request(buf, 0).unwrap();
+        session.begin_response();
+        let keep_alive = session.finish_response();
+        assert!(keep_alive);
+        session.prepare_next_request();
+        assert!(!session.is_done());
     }
 }

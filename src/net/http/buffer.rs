@@ -57,6 +57,7 @@ impl ReadBuffer {
     /// Append bytes from a slice into the buffer. Returns the number
     /// of bytes actually written (may be less than `data.len()` if
     /// the buffer is nearly full).
+    #[allow(dead_code)]
     pub fn append(&mut self, data: &[u8]) -> usize {
         let to_write = data.len().min(self.remaining_capacity());
         if to_write == 0 {

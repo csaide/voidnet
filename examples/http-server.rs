@@ -95,7 +95,7 @@ fn main() {
                                     }
                                 };
 
-                                let mut writer = conn.respond();
+                                let mut writer = conn.respond(&req);
                                 if writer.write_body(body).await.is_err() {
                                     break;
                                 }

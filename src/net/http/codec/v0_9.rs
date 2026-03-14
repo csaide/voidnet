@@ -1,7 +1,8 @@
 use crate::net::http::{
     error::ParseError,
-    request::{Method, Request, Version},
+    request::{BodyFraming, Method, Request, Version},
 };
+use super::parse::ConnectionDirective;
 
 use super::{Codec, DecodeOutcome, DecodeResult};
 
@@ -91,6 +92,10 @@ impl Codec for Http09Codec {
                 path_start,
                 path_end,
                 Version::Http09,
+                Vec::new(),
+                BodyFraming::None,
+                false,
+                ConnectionDirective::None,
             )),
             consumed,
         }
@@ -101,11 +106,7 @@ impl Codec for Http09Codec {
     }
 }
 
-/// Find the position of the first `\n` byte in `buf`.
-#[inline]
-fn memchr_newline(buf: &[u8]) -> Option<usize> {
-    buf.iter().position(|&b| b == b'\n')
-}
+use super::parse::memchr_newline;
 
 #[cfg(test)]
 mod tests {

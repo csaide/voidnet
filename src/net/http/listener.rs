@@ -31,7 +31,7 @@ impl HttpListener {
     /// with a fresh HTTP/0.9 session.
     pub async fn accept(&self) -> Result<HttpConnection, HttpError> {
         let stream = self.inner.accept().await;
-        Ok(HttpConnection::new(stream, Session::http09()))
+        Ok(HttpConnection::new(stream, Session::detecting()))
     }
 
     /// Convenience method: accept loop + spawn a task per connection.
@@ -46,10 +46,14 @@ impl HttpListener {
                 loop {
                     match conn.next_request().await {
                         Ok(Some(req)) => {
-                            let writer = conn.respond();
+                            let writer = conn.respond(&req);
                             if handler.handle(req, writer).await.is_err() {
                                 break;
                             }
+                            if conn.session.is_done() {
+                                break;
+                            }
+                            conn.prepare_next();
                         }
                         Ok(None) => break,
                         Err(_) => break,

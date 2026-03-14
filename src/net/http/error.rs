@@ -53,6 +53,18 @@ pub enum ParseError {
     RequestTooLarge,
     /// Unsupported HTTP method (for HTTP/0.9: anything other than GET)
     UnsupportedMethod,
+    /// HTTP version is not supported by this implementation
+    UnsupportedVersion,
+    /// A header line is malformed
+    InvalidHeader,
+    /// The number of headers exceeds the implementation limit
+    TooManyHeaders,
+    /// HTTP/1.1 request is missing the required Host header
+    MissingHostHeader,
+    /// The Content-Length header value is not a valid integer
+    InvalidContentLength,
+    /// The Transfer-Encoding: chunked encoding is malformed
+    InvalidChunkEncoding,
 }
 
 impl fmt::Display for ParseError {
@@ -61,6 +73,12 @@ impl fmt::Display for ParseError {
             ParseError::InvalidRequestLine => write!(f, "invalid request line"),
             ParseError::RequestTooLarge => write!(f, "request too large"),
             ParseError::UnsupportedMethod => write!(f, "unsupported method"),
+            ParseError::UnsupportedVersion => write!(f, "unsupported version"),
+            ParseError::InvalidHeader => write!(f, "invalid header"),
+            ParseError::TooManyHeaders => write!(f, "too many headers"),
+            ParseError::MissingHostHeader => write!(f, "missing host header"),
+            ParseError::InvalidContentLength => write!(f, "invalid content-length"),
+            ParseError::InvalidChunkEncoding => write!(f, "invalid chunk encoding"),
         }
     }
 }
@@ -68,6 +86,34 @@ impl fmt::Display for ParseError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_parse_error_display() {
+        assert_eq!(
+            format!("{}", ParseError::UnsupportedVersion),
+            "unsupported version"
+        );
+        assert_eq!(
+            format!("{}", ParseError::InvalidHeader),
+            "invalid header"
+        );
+        assert_eq!(
+            format!("{}", ParseError::TooManyHeaders),
+            "too many headers"
+        );
+        assert_eq!(
+            format!("{}", ParseError::MissingHostHeader),
+            "missing host header"
+        );
+        assert_eq!(
+            format!("{}", ParseError::InvalidContentLength),
+            "invalid content-length"
+        );
+        assert_eq!(
+            format!("{}", ParseError::InvalidChunkEncoding),
+            "invalid chunk encoding"
+        );
+    }
 
     #[test]
     fn parse_error_display() {

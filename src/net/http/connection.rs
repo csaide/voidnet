@@ -2,7 +2,7 @@ use crate::net::http::{
     HttpError,
     buffer::{ReadBuffer, WriteBuffer},
     error::ParseError,
-    request::Request,
+    request::{Method, Request},
     response::ResponseWriter,
     session::Session,
 };
@@ -18,7 +18,7 @@ pub struct HttpConnection {
     stream: TcpStream,
     pub(crate) read_buf: ReadBuffer,
     write_buf: WriteBuffer,
-    session: Session,
+    pub(crate) session: Session,
 }
 
 impl HttpConnection {
@@ -78,8 +78,25 @@ impl HttpConnection {
     ///
     /// The returned `ResponseWriter` borrows the connection's write buffer
     /// and TcpStream. When dropped or finished, it transitions the session.
-    pub fn respond(&mut self) -> ResponseWriter<'_> {
-        ResponseWriter::new(&mut self.write_buf, &self.stream, &mut self.session)
+    pub fn respond(&mut self, req: &Request) -> ResponseWriter<'_> {
+        let is_head = req.method == Method::Head;
+        let version = self.session.version();
+        ResponseWriter::new(
+            &mut self.write_buf,
+            &mut self.read_buf,
+            &self.stream,
+            &mut self.session,
+            version,
+            is_head,
+            req.body_framing,
+            req.expect_continue,
+        )
+    }
+
+    /// Prepare for the next request on a keep-alive connection.
+    pub(crate) fn prepare_next(&mut self) {
+        self.read_buf.compact();
+        self.session.prepare_next_request();
     }
 
     /// Resolve a request's path offsets against the read buffer.
@@ -92,6 +109,8 @@ impl HttpConnection {
 mod tests {
     use super::*;
     use crate::net::http::{Method, Version};
+    use crate::net::http::request::BodyFraming;
+    use crate::net::http::codec::parse::ConnectionDirective;
 
     use std::cell::UnsafeCell;
     use std::rc::Rc;
@@ -118,7 +137,7 @@ mod tests {
         let mut conn = new_test_connection();
         // Simulate data in the read buffer
         conn.read_buf.append(b"GET /hello\r\n");
-        let req = Request::new(Method::Get, 4, 10, Version::Http09);
+        let req = Request::new(Method::Get, 4, 10, Version::Http09, Vec::new(), BodyFraming::None, false, ConnectionDirective::None);
         assert_eq!(conn.request_path(&req), b"/hello");
     }
 }

@@ -1,3 +1,4 @@
+mod body;
 mod buffer;
 pub(crate) mod codec;
 mod connection;
@@ -12,5 +13,6 @@ pub use connection::HttpConnection;
 pub use error::{HttpError, ParseError};
 pub use handler::HttpHandler;
 pub use listener::HttpListener;
-pub use request::{Method, Request, Version};
+pub use request::{BodyFraming, HeaderOffset, Method, Request, Version};
+pub use body::BodyReader;
 pub use response::ResponseWriter;
