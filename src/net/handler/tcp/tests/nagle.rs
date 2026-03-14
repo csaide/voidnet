@@ -20,7 +20,7 @@ fn nagle_holds_small_data_when_bytes_in_flight() {
 
     // 3. poll_send — first send goes (nothing in flight).
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(tx.num_frames(), 1, "first small segment should send");
 
     // 4. Pop tx frame.
@@ -30,7 +30,7 @@ fn nagle_holds_small_data_when_bytes_in_flight() {
     handler.connections[0].send_buffer.write(b"world");
 
     // 6. poll_send — Nagle holds it.
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(
         tx.num_frames(),
         0,
@@ -57,7 +57,7 @@ fn nagle_allows_full_mss_even_with_bytes_in_flight() {
     // 2. Write small data, send it (creates bytes_in_flight), pop tx.
     handler.connections[0].send_buffer.write(b"hi");
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
     // 3. Write MSS-worth of data.
@@ -66,7 +66,7 @@ fn nagle_allows_full_mss_even_with_bytes_in_flight() {
     handler.connections[0].send_buffer.write(&mss_data);
 
     // 4. poll_send — full MSS always sends even with bytes in flight.
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(
         tx.num_frames(),
         1,
@@ -103,7 +103,7 @@ fn tcp_no_delay_sends_small_data_immediately() {
     // 2. Write small data, poll_send (first send), pop tx.
     handler.connections[0].send_buffer.write(b"hello");
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(tx.num_frames(), 1);
     while tx.pop().is_some() {}
 
@@ -111,7 +111,7 @@ fn tcp_no_delay_sends_small_data_immediately() {
     handler.connections[0].send_buffer.write(b"world");
 
     // 4. poll_send — TCP_NODELAY bypasses Nagle.
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(
         tx.num_frames(),
         1,

@@ -27,7 +27,14 @@ pub(super) fn new_handler() -> TcpHandler {
 }
 
 pub(super) fn new_neighbor_handler() -> NeighborHandler {
-    NeighborHandler::new("test0", coarsetime::Duration::from_secs(60)).unwrap()
+    let nh = NeighborHandler::new("test0", coarsetime::Duration::from_secs(60)).unwrap();
+    // Seed cache so lookup_or_resolve returns a MAC for REMOTE_IP.
+    nh.learn_from_traffic(
+        coarsetime::Instant::now(),
+        IpAddress::V4(REMOTE_IP),
+        MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),
+    );
+    nh
 }
 
 /// Build a valid Ethernet + IPv4 + TCP frame.
@@ -210,6 +217,11 @@ pub(super) fn establish_connection(
     tx: &mut BasicFrameBuffer<'static>,
 ) -> u32 {
     let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+    nh.learn_from_traffic(
+        coarsetime::Instant::now(),
+        IpAddress::V4(REMOTE_IP),
+        MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),
+    );
     let syn_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -265,6 +277,11 @@ pub(super) fn establish_connection_with_sack(
 ) -> u32 {
     use crate::net::wire::tcp::options as tcp_options;
     let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+    nh.learn_from_traffic(
+        coarsetime::Instant::now(),
+        IpAddress::V4(REMOTE_IP),
+        MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),
+    );
     let sack_perm_opts = [tcp_options::SACK_PERMITTED, 2];
     let syn_data = build_tcp_frame(
         REMOTE_IP,
@@ -328,6 +345,11 @@ pub(super) fn active_open_handshake(
         crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
     let dst_mac =
         crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    nh.learn_from_traffic(
+        coarsetime::Instant::now(),
+        IpAddress::V4(REMOTE_IP),
+        MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),
+    );
 
     // connect sends SYN.
     let _event_queue = handler
@@ -389,6 +411,11 @@ pub(super) fn active_open_handshake_with_config(
         crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
     let dst_mac =
         crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    nh.learn_from_traffic(
+        coarsetime::Instant::now(),
+        IpAddress::V4(REMOTE_IP),
+        MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),
+    );
 
     let _event_queue = handler
         .connect_with_config(

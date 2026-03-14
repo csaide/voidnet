@@ -132,6 +132,7 @@ fn established_receives_in_order_data() {
         nh.local_mac(),
         &nh,
         &mut free,
+        &mut rx,
         &mut tx,
     );
     assert_eq!(tx.num_frames(), 1, "ACK flushed by poll_send");
@@ -338,7 +339,7 @@ fn poll_send_builds_data_segment() {
     handler.connections[0].snd_wnd = 65535;
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(tx.num_frames(), 1, "data segment built");
     let tcb = &handler.connections[0];
@@ -478,7 +479,7 @@ fn poll_send_sets_psh_on_last_segment() {
     handler.connections[0].send_buffer.write(b"Hello");
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(tx.num_frames(), 1, "expected one data segment");
     let frame = tx.pop().unwrap();
@@ -525,7 +526,7 @@ fn poll_send_no_psh_on_first_segment_when_more_data() {
 
     let now = coarsetime::Instant::now();
     // poll_send now sends all segments in one call (fills the window).
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(
         tx.num_frames(),

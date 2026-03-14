@@ -20,7 +20,7 @@ fn persist_timer_activates_on_zero_window() {
     assert!(handler.connections[0].persist_deadline.is_none());
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // Persist timer should now be armed.
     assert!(
@@ -49,14 +49,14 @@ fn persist_probe_sent_when_deadline_expires() {
     handler.connections[0].snd_wnd = 0;
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert!(handler.connections[0].persist_deadline.is_some());
     assert_eq!(handler.connections[0].persist_backoff, 0);
 
     // Simulate time passing beyond the deadline by setting it to the past.
     handler.connections[0].persist_deadline = Some(now);
 
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // A 1-byte probe should have been sent.
     assert_eq!(tx.num_frames(), 1, "probe segment should be sent");
@@ -90,7 +90,7 @@ fn persist_timer_clears_when_window_reopens() {
     handler.connections[0].snd_wnd = 0;
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert!(handler.connections[0].persist_deadline.is_some());
     handler.connections[0].persist_backoff = 3; // simulate some backoff
 

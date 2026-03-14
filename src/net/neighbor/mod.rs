@@ -3,5 +3,5 @@ mod entry;
 mod handler;
 mod ndp;
 
-use entry::NeighborEntry;
+use entry::NeighborState;
 pub use handler::NeighborHandler;

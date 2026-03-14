@@ -23,6 +23,7 @@ impl TcpHandler {
         src_mac: crate::net::wire::ethernet::MacAddress,
         neighbor_handler: &NeighborHandler,
         free_frames: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>, // NEW
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         for tcb in &mut self.connections {
@@ -94,9 +95,16 @@ impl TcpHandler {
                 // Peek the data from the send buffer (don't advance — held until ACKed).
                 let payload = tcb.send_buffer.peek_slices(bytes_in_flight, to_send);
 
-                let dst_mac = neighbor_handler
-                    .lookup(now, &tcb.id.remote_addr)
-                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
+                    now,
+                    &tcb.id.remote_addr,
+                    &tcb.id.local_addr,
+                    free_frames,
+                    rx_return,
+                    tx_return,
+                ) else {
+                    break; // exit inner loop — TCP retransmit will retry later
+                };
 
                 let ts = tcb.ts_option(tsval);
                 let remaining_after_send = data_available.saturating_sub(to_send);
@@ -160,9 +168,16 @@ impl TcpHandler {
             // pure ACK now. This defers ACK generation from inbound processing to
             // give data segments a chance to piggyback the ACK first.
             if tcb.ack_pending && tcb.ack_delay_count >= MAX_DELAYED_ACK_COUNT {
-                let dst_mac = neighbor_handler
-                    .lookup(now, &tcb.id.remote_addr)
-                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
+                    now,
+                    &tcb.id.remote_addr,
+                    &tcb.id.local_addr,
+                    free_frames,
+                    rx_return,
+                    tx_return,
+                ) else {
+                    continue; // skip to next connection
+                };
 
                 let ts = tcb.ts_option(tsval);
                 let mut ack_flags = flags::ACK;
@@ -211,9 +226,16 @@ impl TcpHandler {
                 let mut probe = [0u8; 1];
                 tcb.send_buffer.peek_at(bytes_in_flight, &mut probe);
 
-                let dst_mac = neighbor_handler
-                    .lookup(now, &tcb.id.remote_addr)
-                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
+                    now,
+                    &tcb.id.remote_addr,
+                    &tcb.id.local_addr,
+                    free_frames,
+                    rx_return,
+                    tx_return,
+                ) else {
+                    continue; // skip to next connection
+                };
 
                 let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_data(
@@ -248,9 +270,16 @@ impl TcpHandler {
             {
                 // Send RST to peer.
                 let id = tcb.id;
-                let dst_mac = neighbor_handler
-                    .lookup(now, &id.remote_addr)
-                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
+                    now,
+                    &tcb.id.remote_addr,
+                    &tcb.id.local_addr,
+                    free_frames,
+                    rx_return,
+                    tx_return,
+                ) else {
+                    continue; // skip to next connection
+                };
 
                 // Use build_rst by simulating an "incoming ACK" segment.
                 // This produces: <SEQ=SEG.ACK><CTL=RST> = <SEQ=snd_nxt><CTL=RST>
@@ -284,9 +313,16 @@ impl TcpHandler {
                 // Only send FIN when all data has been sent and ACKed.
                 if data_available == 0 && bytes_in_flight == 0 {
                     let id = tcb.id;
-                    let dst_mac = neighbor_handler
-                        .lookup(now, &id.remote_addr)
-                        .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                    let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
+                        now,
+                        &tcb.id.remote_addr,
+                        &tcb.id.local_addr,
+                        free_frames,
+                        rx_return,
+                        tx_return,
+                    ) else {
+                        continue; // skip to next connection
+                    };
                     let ts = tcb.ts_option(tsval);
                     SegmentBuilder::build_fin_ack(
                         id.local_addr,

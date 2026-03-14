@@ -16,7 +16,7 @@ use crate::{
 };
 
 use super::{
-    NeighborEntry,
+    NeighborState,
     arp::{handle_arp, resolve_v4},
     ndp::{handle_ndp, resolve_v6},
 };
@@ -31,7 +31,7 @@ pub struct NeighborHandler {
     local_mac: MacAddress,
     local_ipv4: Vec<Ipv4Address>,
     local_ipv6: Vec<Ipv6Address>,
-    table: DashMap<IpAddress, NeighborEntry>,
+    table: DashMap<IpAddress, NeighborState>,
     ttl: Duration,
     rx_offload: bool,
     tx_offload: bool,
@@ -108,20 +108,25 @@ impl NeighborHandler {
 
     /// Removes all entries whose TTL has expired.
     pub fn evict_stale(&self, now: Instant) {
-        self.table.retain(|_, entry| !entry.is_expired(now));
+        // First pass: transition expired Reachable → Stale.
+        for mut entry in self.table.iter_mut() {
+            if entry.is_expired(now)
+                && let NeighborState::Reachable { mac, .. } = *entry
+            {
+                *entry = NeighborState::stale(mac, now);
+            }
+        }
+        // Second pass: remove Incomplete and Stale entries past their timeouts.
+        self.table.retain(|_, entry| !entry.should_evict(now));
     }
 
     /// Looks up a cached MAC for the given IP address (v4 or v6).
     ///
     /// Returns `None` if the entry is missing or expired.
     pub fn lookup(&self, now: Instant, ip: &IpAddress) -> Option<MacAddress> {
-        self.table.get(ip).and_then(|e| {
-            if !e.is_expired(now) {
-                Some(e.mac())
-            } else {
-                None
-            }
-        })
+        self.table
+            .get(ip)
+            .and_then(|e| if !e.is_expired(now) { e.mac() } else { None })
     }
 
     /// Convenience wrapper that looks up an IPv4 address in the neighbor cache.
@@ -132,6 +137,26 @@ impl NeighborHandler {
     /// Convenience wrapper that looks up an IPv6 address in the neighbor cache.
     pub fn lookup_v6(&self, now: Instant, ip: &Ipv6Address) -> Option<MacAddress> {
         self.lookup(now, &IpAddress::V6(*ip))
+    }
+
+    /// Learn an IP-to-MAC mapping from an incoming data packet.
+    ///
+    /// Userspace XDP stacks may miss ARP/NDP exchanges that occurred before
+    /// the runtime attached. This method observes source addresses on every
+    /// incoming IP packet to keep the neighbor cache populated, mirroring a
+    /// common pattern in DPDK and other kernel-bypass stacks.
+    ///
+    /// Only non-broadcast, non-unspecified source addresses are learned.
+    #[inline]
+    pub fn learn_from_traffic(&self, now: Instant, ip: IpAddress, mac: MacAddress) {
+        if mac == MacAddress::broadcast() || mac == MacAddress::zero() {
+            return;
+        }
+        if ip.is_unspecified() {
+            return;
+        }
+        self.table
+            .insert(ip, NeighborState::reachable(mac, now + self.ttl));
     }
 
     /// Returns the local MAC address.
@@ -247,6 +272,117 @@ impl NeighborHandler {
             rx_return,
             tx_return,
         );
+    }
+
+    /// Look up a neighbor MAC. On cache miss or expired entry, send an
+    /// ARP request (IPv4) or NDP Neighbor Solicitation (IPv6) and return
+    /// `None` (caller should drop the packet; TCP retransmit recovers).
+    ///
+    /// On Stale hit, returns the MAC optimistically while re-validating.
+    pub fn lookup_or_resolve<'umem>(
+        &self,
+        now: Instant,
+        addr: &IpAddress,
+        src_addr: &IpAddress,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) -> Option<MacAddress> {
+        // Fast path: entry exists.
+        if let Some(mut entry) = self.table.get_mut(addr) {
+            match *entry {
+                NeighborState::Reachable { mac, expires_at } => {
+                    if now < expires_at {
+                        return Some(mac);
+                    }
+                    // Transition to Stale, solicit, return MAC optimistically.
+                    *entry = NeighborState::Stale {
+                        mac,
+                        stale_since: now,
+                        solicited_at: Some(now),
+                    };
+                    drop(entry);
+                    self.send_solicitation(now, addr, src_addr, free_frames, rx_return, tx_return);
+                    return Some(mac);
+                }
+                NeighborState::Stale { mac, .. } => {
+                    let needs_solicit = entry.should_solicit(now);
+                    if needs_solicit {
+                        entry.mark_solicited(now);
+                    }
+                    drop(entry);
+                    if needs_solicit {
+                        self.send_solicitation(
+                            now,
+                            addr,
+                            src_addr,
+                            free_frames,
+                            rx_return,
+                            tx_return,
+                        );
+                    }
+                    return Some(mac);
+                }
+                NeighborState::Incomplete { .. } => {
+                    let needs_solicit = entry.should_solicit(now);
+                    if needs_solicit {
+                        entry.mark_solicited(now);
+                    }
+                    drop(entry);
+                    if needs_solicit {
+                        self.send_solicitation(
+                            now,
+                            addr,
+                            src_addr,
+                            free_frames,
+                            rx_return,
+                            tx_return,
+                        );
+                    }
+                    return None;
+                }
+            }
+        }
+
+        // No entry — insert Incomplete and solicit.
+        self.table.insert(*addr, NeighborState::incomplete(now));
+        self.send_solicitation(now, addr, src_addr, free_frames, rx_return, tx_return);
+        None
+    }
+
+    /// Send an ARP request or NDP NS based on address family.
+    fn send_solicitation<'umem>(
+        &self,
+        _now: Instant,
+        addr: &IpAddress,
+        src_addr: &IpAddress,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        let Some(frame) = free_frames.pop() else {
+            return;
+        };
+        match (src_addr, addr) {
+            (IpAddress::V4(src), IpAddress::V4(dst)) => {
+                resolve_v4(self.local_mac, *src, *dst, frame, rx_return, tx_return);
+            }
+            (IpAddress::V6(src), IpAddress::V6(dst)) => {
+                resolve_v6(
+                    self.local_mac,
+                    *src,
+                    *dst,
+                    self.tx_offload,
+                    frame,
+                    rx_return,
+                    tx_return,
+                );
+            }
+            _ => {
+                // Mismatched address families — return the frame.
+                rx_return.push(frame);
+            }
+        }
     }
 }
 
@@ -399,10 +535,17 @@ mod tests {
 
         assert!(handler.lookup_v4(now, &TEST_REMOTE_IP).is_some());
 
-        let future = now + TEST_TTL + Duration::from_secs(1);
-        handler.evict_stale(future);
+        // First evict transitions Reachable → Stale.
+        let after_ttl = now + TEST_TTL + Duration::from_secs(1);
+        handler.evict_stale(after_ttl);
 
-        assert!(handler.lookup_v4(future, &TEST_REMOTE_IP).is_none());
+        // Entry is now Stale — lookup still returns the MAC (optimistic).
+        assert!(handler.lookup_v4(after_ttl, &TEST_REMOTE_IP).is_some());
+
+        // Second evict after STALE_TIMEOUT removes it.
+        let after_stale = after_ttl + Duration::from_secs(31);
+        handler.evict_stale(after_stale);
+        assert!(handler.lookup_v4(after_stale, &TEST_REMOTE_IP).is_none());
     }
 
     #[test]
@@ -450,12 +593,20 @@ mod tests {
         let frame_b = Frame::new(0, &mut data_b, ARP_FRAME_LEN, false);
         handler.handle_arp(t5, frame_b, &mut rx, &mut tx);
 
-        // At t=11, A is expired but B is still valid
+        // At t=11, A is expired (transitions to Stale), B is still Reachable.
         let t11 = now + Duration::from_secs(11);
         handler.evict_stale(t11);
 
-        assert!(handler.lookup_v4(t11, &ip_a).is_none());
+        // A is now Stale (still returns MAC optimistically).
+        assert_eq!(handler.lookup_v4(t11, &ip_a), Some(mac_a));
         assert_eq!(handler.lookup_v4(t11, &ip_b), Some(mac_b));
+
+        // After STALE_TIMEOUT, A is fully evicted.
+        let t42 = t11 + Duration::from_secs(31);
+        handler.evict_stale(t42);
+        assert!(handler.lookup_v4(t42, &ip_a).is_none());
+        // B is now also expired → Stale (but still returns MAC).
+        assert_eq!(handler.lookup_v4(t42, &ip_b), Some(mac_b));
     }
 
     #[test]
@@ -475,6 +626,177 @@ mod tests {
 
         assert_eq!(tx.num_frames(), 1);
         assert_eq!(rx.num_frames(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // lookup_or_resolve
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lookup_or_resolve_miss_inserts_incomplete_and_sends_arp() {
+        let now = Instant::now();
+        let handler = new_handler();
+        let mut free = BasicFrameBuffer::new(4);
+        free.push(Frame::new(
+            0,
+            Box::leak(vec![0u8; 128].into_boxed_slice()),
+            128,
+            false,
+        ));
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+
+        let addr = IpAddress::V4(TEST_REMOTE_IP);
+        let src = IpAddress::V4(TEST_LOCAL_IP);
+        let result = handler.lookup_or_resolve(now, &addr, &src, &mut free, &mut rx, &mut tx);
+
+        assert!(result.is_none(), "miss should return None");
+        assert_eq!(tx.num_frames(), 1, "ARP request should be sent");
+        // Entry should now be Incomplete.
+        assert!(handler.lookup(now, &addr).is_none());
+    }
+
+    #[test]
+    fn lookup_or_resolve_incomplete_suppresses_solicit_within_guard() {
+        let now = Instant::now();
+        let handler = new_handler();
+        let addr = IpAddress::V4(TEST_REMOTE_IP);
+        let src = IpAddress::V4(TEST_LOCAL_IP);
+
+        // First call: inserts Incomplete + sends ARP.
+        let mut free = BasicFrameBuffer::new(4);
+        free.push(Frame::new(
+            0,
+            Box::leak(vec![0u8; 128].into_boxed_slice()),
+            128,
+            false,
+        ));
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        handler.lookup_or_resolve(now, &addr, &src, &mut free, &mut rx, &mut tx);
+        assert_eq!(tx.num_frames(), 1);
+
+        // Second call within guard: no additional solicitation.
+        free.push(Frame::new(
+            1,
+            Box::leak(vec![0u8; 128].into_boxed_slice()),
+            128,
+            false,
+        ));
+        let mut tx2 = BasicFrameBuffer::new(4);
+        let mut rx2 = BasicFrameBuffer::new(4);
+        handler.lookup_or_resolve(now, &addr, &src, &mut free, &mut rx2, &mut tx2);
+        assert_eq!(tx2.num_frames(), 0, "should not re-solicit within guard");
+    }
+
+    #[test]
+    fn lookup_or_resolve_reachable_returns_mac() {
+        let now = Instant::now();
+        let handler = new_handler();
+        let addr = IpAddress::V4(TEST_REMOTE_IP);
+        handler.learn_from_traffic(now, addr, TEST_REMOTE_MAC);
+
+        let mut free = BasicFrameBuffer::new(4);
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        let result = handler.lookup_or_resolve(
+            now,
+            &addr,
+            &IpAddress::V4(TEST_LOCAL_IP),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        assert_eq!(result, Some(TEST_REMOTE_MAC));
+        assert_eq!(tx.num_frames(), 0, "no solicitation for reachable");
+    }
+
+    #[test]
+    fn lookup_or_resolve_expired_transitions_to_stale_and_solicits() {
+        let now = Instant::now();
+        let handler = new_handler();
+        let addr = IpAddress::V4(TEST_REMOTE_IP);
+        handler.learn_from_traffic(now, addr, TEST_REMOTE_MAC);
+
+        let expired = now + TEST_TTL + Duration::from_secs(1);
+        let mut free = BasicFrameBuffer::new(4);
+        free.push(Frame::new(
+            0,
+            Box::leak(vec![0u8; 128].into_boxed_slice()),
+            128,
+            false,
+        ));
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        let result = handler.lookup_or_resolve(
+            expired,
+            &addr,
+            &IpAddress::V4(TEST_LOCAL_IP),
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+
+        assert_eq!(
+            result,
+            Some(TEST_REMOTE_MAC),
+            "stale returns MAC optimistically"
+        );
+        assert_eq!(tx.num_frames(), 1, "solicitation sent for re-validation");
+    }
+
+    #[test]
+    fn lookup_or_resolve_learn_from_traffic_refreshes_entry() {
+        let now = Instant::now();
+        let handler = new_handler();
+        let addr = IpAddress::V4(TEST_REMOTE_IP);
+        let src = IpAddress::V4(TEST_LOCAL_IP);
+
+        // Create Incomplete entry.
+        let mut free = BasicFrameBuffer::new(4);
+        free.push(Frame::new(
+            0,
+            Box::leak(vec![0u8; 128].into_boxed_slice()),
+            128,
+            false,
+        ));
+        let mut rx = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        assert!(
+            handler
+                .lookup_or_resolve(now, &addr, &src, &mut free, &mut rx, &mut tx)
+                .is_none()
+        );
+
+        // Reply arrives — learn_from_traffic transitions to Reachable.
+        handler.learn_from_traffic(now, addr, TEST_REMOTE_MAC);
+
+        // Now lookup_or_resolve should return the MAC.
+        let mut free2 = BasicFrameBuffer::new(4);
+        let mut rx2 = BasicFrameBuffer::new(4);
+        let mut tx2 = BasicFrameBuffer::new(4);
+        let result = handler.lookup_or_resolve(now, &addr, &src, &mut free2, &mut rx2, &mut tx2);
+        assert_eq!(result, Some(TEST_REMOTE_MAC));
+    }
+
+    #[test]
+    fn evict_stale_transitions_reachable_to_stale_then_evicts() {
+        let now = Instant::now();
+        let handler = new_handler();
+        let addr = IpAddress::V4(TEST_REMOTE_IP);
+        handler.learn_from_traffic(now, addr, TEST_REMOTE_MAC);
+
+        let after_ttl = now + TEST_TTL + Duration::from_secs(1);
+
+        // First evict: Reachable → Stale (MAC still returned).
+        handler.evict_stale(after_ttl);
+        assert_eq!(handler.lookup(after_ttl, &addr), Some(TEST_REMOTE_MAC));
+
+        // Second evict after STALE_TIMEOUT: evicted.
+        let after_stale = after_ttl + Duration::from_secs(31);
+        handler.evict_stale(after_stale);
+        assert!(handler.lookup(after_stale, &addr).is_none());
     }
 
     #[test]

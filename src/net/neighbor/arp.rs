@@ -10,7 +10,7 @@ use crate::{
     xdp::frame::{Frame, FrameBuffer},
 };
 
-use super::NeighborEntry;
+use super::NeighborState;
 
 #[inline(always)]
 pub(super) fn resolve_v4<'umem>(
@@ -62,7 +62,7 @@ pub(super) fn resolve_v4<'umem>(
 
 pub(super) fn handle_arp<'umem>(
     now: Instant,
-    table: &DashMap<IpAddress, NeighborEntry>,
+    table: &DashMap<IpAddress, NeighborState>,
     local_mac: MacAddress,
     local_ipv4: &[Ipv4Address],
     ttl: Duration,
@@ -100,7 +100,7 @@ pub(super) fn handle_arp<'umem>(
     let spa = arp.spa;
 
     // Insert the sender into the neighbor table.
-    table.insert(IpAddress::V4(spa), NeighborEntry::new(sha, now + ttl));
+    table.insert(IpAddress::V4(spa), NeighborState::reachable(sha, now + ttl));
 
     // If we are not dealing with an ARP request or the target IP is not one of our local IPv4 addresses,
     // return the frame to the RX buffer.

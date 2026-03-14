@@ -15,7 +15,7 @@ use crate::{
     xdp::frame::{Frame, FrameBuffer},
 };
 
-use super::NeighborEntry;
+use super::NeighborState;
 
 pub(super) fn resolve_v6<'umem>(
     local_mac: MacAddress,
@@ -81,7 +81,7 @@ pub(super) fn resolve_v6<'umem>(
 pub(super) fn handle_ndp<'umem>(
     now: Instant,
     ttl: Duration,
-    table: &DashMap<IpAddress, NeighborEntry>,
+    table: &DashMap<IpAddress, NeighborState>,
     local_ipv6: &[Ipv6Address],
     local_mac: MacAddress,
     rx_offload: bool,
@@ -162,7 +162,7 @@ pub(super) fn handle_ndp<'umem>(
 fn handle_neighbor_solicitation<'umem>(
     now: Instant,
     ttl: Duration,
-    table: &DashMap<IpAddress, NeighborEntry>,
+    table: &DashMap<IpAddress, NeighborState>,
     local_ipv6: &[Ipv6Address],
     local_mac: MacAddress,
     tx_offload: bool,
@@ -196,7 +196,7 @@ fn handle_neighbor_solicitation<'umem>(
     if !src_addr.is_unspecified()
         && let Some(mac) = sender_mac
     {
-        table.insert(IpAddress::V6(src_addr), NeighborEntry::new(mac, now + ttl));
+        table.insert(IpAddress::V6(src_addr), NeighborState::reachable(mac, now + ttl));
     }
 
     // Check if the target is one of our addresses.
@@ -266,7 +266,7 @@ fn handle_neighbor_solicitation<'umem>(
 fn handle_neighbor_advertisement<'umem>(
     now: Instant,
     ttl: Duration,
-    table: &DashMap<IpAddress, NeighborEntry>,
+    table: &DashMap<IpAddress, NeighborState>,
     frame: Frame<'umem>,
     icmpv6_offset: usize,
     icmpv6_len: usize,
@@ -289,7 +289,7 @@ fn handle_neighbor_advertisement<'umem>(
     if let Some(mac) = parse_ndp_link_layer_option(&frame, options_start, icmpv6_end, 2) {
         table.insert(
             IpAddress::V6(target_addr),
-            NeighborEntry::new(mac, now + ttl),
+            NeighborState::reachable(mac, now + ttl),
         );
     }
 
@@ -299,7 +299,7 @@ fn handle_neighbor_advertisement<'umem>(
 fn handle_router_advertisement<'umem>(
     now: Instant,
     ttl: Duration,
-    table: &DashMap<IpAddress, NeighborEntry>,
+    table: &DashMap<IpAddress, NeighborState>,
     frame: Frame<'umem>,
     icmpv6_offset: usize,
     icmpv6_len: usize,
@@ -319,7 +319,7 @@ fn handle_router_advertisement<'umem>(
     // Parse Source Link-Layer Address option (type=1).
     let options_start = icmpv6_offset + 16; // RA header is 16 bytes
     if let Some(mac) = parse_ndp_link_layer_option(&frame, options_start, icmpv6_end, 1) {
-        table.insert(IpAddress::V6(src_addr), NeighborEntry::new(mac, now + ttl));
+        table.insert(IpAddress::V6(src_addr), NeighborState::reachable(mac, now + ttl));
     }
 
     rx_return.push(frame);

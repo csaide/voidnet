@@ -200,7 +200,7 @@ fn delayed_ack_flushes_on_second_segment() {
     assert!(handler.connections[0].ack_pending, "ack_pending should be true after second segment");
 
     // poll_send generates pure ACK since no data to piggyback.
-    handler.poll_send(coarsetime::Instant::now(), nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(coarsetime::Instant::now(), nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(tx.num_frames(), 1, "poll_send flushes ACK");
 
     let tcb = &handler.connections[0];
@@ -522,12 +522,12 @@ fn delayed_ack_timer_flushes_pending_ack() {
     }
 
     // Before deadline — should NOT flush.
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(tx.num_frames(), 0, "should not flush before deadline");
 
     // After deadline — should flush.
     let later = now + coarsetime::Duration::from_millis(50);
-    handler.poll_timers(later, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(later, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(tx.num_frames(), 1, "should flush after deadline");
 
     let tcb = handler.get_connection(&id).unwrap();
@@ -628,7 +628,7 @@ fn data_send_clears_delayed_ack() {
 
     // 4. poll_send — sends data (piggybacks ACK).
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert!(tx.num_frames() >= 1, "data segment should be sent");
 
     // 5. Verify delayed ACK state is cleared.

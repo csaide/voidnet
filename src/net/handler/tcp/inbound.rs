@@ -702,30 +702,64 @@ impl TcpHandler {
             return;
         }
 
-        // Step 3: Check SYN (duplicate SYN in synchronized state).
-        // A bare SYN (without ACK) is a duplicate — send challenge ACK.
-        // A SYN-ACK is expected during simultaneous open — fall through to
-        // step 5 so the ACK is processed and we transition to ESTABLISHED.
+        // Step 4: Check the SYN bit.
+        // Only handle bare SYN (without ACK). A SYN-ACK in SYN-RECEIVED is
+        // the expected completion segment for simultaneous open — let it
+        // fall through to the ACK check in Step 5.
+        // A duplicate bare SYN means the client didn't receive our SYN-ACK.
+        // Retransmit the SYN-ACK immediately (as Linux does) rather than
+        // returning to LISTEN (which drops the TCB) or sending a bare
+        // challenge ACK (which a SYN-SENT client drops per §3.10.7.3).
         if seg_flags & flags::SYN != 0 && seg_flags & flags::ACK == 0 {
-            // Send challenge ACK per RFC 5961.
-            let tcb = &self.connections[idx];
-            let ts = tcb.ts_option(tsval);
-            SegmentBuilder::build_ack(
-                tcb.id.local_addr,
-                tcb.id.remote_addr,
-                tcb.id.local_port,
-                tcb.id.remote_port,
-                tcb.snd_nxt,
-                tcb.rcv_nxt,
-                DEFAULT_RCV_WND,
-                flags::ACK,
-                ts,
-                src_mac,
-                dst_mac,
-                self.tx_offload,
-                free_frames,
-                tx_return,
-            );
+            if tcb.from_passive_open {
+                // Retransmit SYN-ACK so the client can complete the handshake.
+                let tcb = &self.connections[idx];
+                let wscale_opt = if tcb.wscale_enabled {
+                    Some(tcb.rcv_wscale)
+                } else {
+                    None
+                };
+                let ts_opt = tcb.ts_option(tsval);
+                SegmentBuilder::build_syn_ack(
+                    tcb.id.local_addr,
+                    tcb.id.remote_addr,
+                    tcb.id.local_port,
+                    tcb.id.remote_port,
+                    tcb.iss,
+                    tcb.rcv_nxt,
+                    DEFAULT_RCV_WND,
+                    tcb.rcv_mss,
+                    wscale_opt,
+                    ts_opt,
+                    tcb.sack_enabled,
+                    tcb.ecn_enabled,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+            } else {
+                // Active open (simultaneous): send challenge ACK per RFC 5961.
+                let tcb = &self.connections[idx];
+                let ts = tcb.ts_option(tsval);
+                SegmentBuilder::build_ack(
+                    tcb.id.local_addr,
+                    tcb.id.remote_addr,
+                    tcb.id.local_port,
+                    tcb.id.remote_port,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
+                    DEFAULT_RCV_WND,
+                    flags::ACK,
+                    ts,
+                    src_mac,
+                    dst_mac,
+                    self.tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+            }
             return;
         }
 
@@ -742,7 +776,8 @@ impl TcpHandler {
                 let tcb = &mut self.connections[idx];
                 tcb.state = TcpState::Established;
                 tcb.snd_una = seg_ack;
-                tcb.snd_wnd = seg_wnd;
+                // RFC 7323 §2.2: window scaling applies to all non-SYN segments.
+                tcb.snd_wnd = tcb.scale_incoming_window(seg_wnd);
                 tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
                 tcb.snd_wl1 = seg_seq;
                 tcb.snd_wl2 = seg_ack;

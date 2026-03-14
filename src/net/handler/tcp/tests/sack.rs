@@ -382,7 +382,7 @@ fn sack_scoreboard_cleared_on_rto() {
     handler.connections[0].rto_backoff = 0;
 
     // Trigger poll_timers, which should fire the RTO and clear the scoreboard.
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert!(
         handler.connections[0].sack_scoreboard.is_empty(),
@@ -435,7 +435,7 @@ fn fast_retransmit_uses_sack_gap() {
     tcb.cubic.on_loss();
 
     let now = coarsetime::Instant::now();
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // Verify a segment was emitted (the 1st MSS gap should be retransmitted).
     assert!(tx.pop().is_some(), "expected a retransmitted segment");
@@ -487,7 +487,7 @@ fn fast_retransmit_fallback_when_scoreboard_empty() {
     tcb.cubic.on_loss();
 
     let now = coarsetime::Instant::now();
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // With empty scoreboard, next_lost_segment returns None (nothing marked lost
     // by RFC 6675 criteria), so no retransmit is emitted from the recovery loop.

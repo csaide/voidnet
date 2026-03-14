@@ -23,6 +23,7 @@ impl TcpHandler {
         src_mac: crate::net::wire::ethernet::MacAddress,
         neighbor_handler: &NeighborHandler,
         free_frames: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,  // NEW
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         // Delayed ACK pass — flush pending ACKs whose deadline has expired.
@@ -39,9 +40,16 @@ impl TcpHandler {
                 && now >= deadline
             {
                 let id = tcb.id;
-                let dst_mac = neighbor_handler
-                    .lookup(now, &id.remote_addr)
-                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
+                    now,
+                    &id.remote_addr,
+                    &id.local_addr,
+                    free_frames,
+                    rx_return,
+                    tx_return,
+                ) else {
+                    continue; // skip to next connection
+                };
                 let ts = tcb.ts_option(tsval);
                 let ack_flags = if tcb.ecn_ce_received {
                     flags::ACK | flags::ECE
@@ -107,9 +115,16 @@ impl TcpHandler {
 
                 // Send keep-alive probe: seq = snd_una - 1, no data, ACK.
                 let id = tcb.id;
-                let dst_mac = neighbor_handler
-                    .lookup(now, &id.remote_addr)
-                    .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
+                    now,
+                    &id.remote_addr,
+                    &id.local_addr,
+                    free_frames,
+                    rx_return,
+                    tx_return,
+                ) else {
+                    continue; // skip to next connection
+                };
                 let ts = tcb.ts_option(tsval);
                 let ack_flags = if tcb.ecn_ce_received {
                     flags::ACK | flags::ECE
@@ -184,9 +199,16 @@ impl TcpHandler {
                     }
 
                     let id = tcb.id;
-                    let dst_mac = neighbor_handler
-                        .lookup(now, &id.remote_addr)
-                        .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+                    let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
+                        now,
+                        &id.remote_addr,
+                        &id.local_addr,
+                        free_frames,
+                        rx_return,
+                        tx_return,
+                    ) else {
+                        continue; // skip to next connection
+                    };
 
                     let payload = tcb.send_buffer.peek_slices(offset, retransmit_len);
                     let ts = tcb.ts_option(tsval);
@@ -260,9 +282,19 @@ impl TcpHandler {
 
             // Retransmit.
             let id = tcb.id;
-            let dst_mac = neighbor_handler
-                .lookup(now, &id.remote_addr)
-                .unwrap_or(crate::net::wire::ethernet::MacAddress::broadcast());
+            let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
+                now,
+                &id.remote_addr,
+                &id.local_addr,
+                free_frames,
+                rx_return,
+                tx_return,
+            ) else {
+                // Re-arm retransmit timer so we retry after the solicitation completes.
+                tcb.retransmit_deadline =
+                    Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                continue;
+            };
 
             match tcb.state {
                 TcpState::SynSent => {

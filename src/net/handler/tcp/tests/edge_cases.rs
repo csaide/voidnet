@@ -611,7 +611,7 @@ fn sender_sws_avoidance_holds_small_sends() {
     handler.connections[0].send_buffer.write(&[0x41u8; 100]);
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // SWS check: can_send=10, eff_snd_mss=1460, max_snd_wnd/2=32767, data_available=100.
     // 10 < 1460 (not full MSS), 10 < 32767 (not half max window), 100 > 10 (not all data fits).
@@ -624,7 +624,7 @@ fn sender_sws_avoidance_holds_small_sends() {
 
     // Now set snd_wnd to eff_snd_mss — should send.
     handler.connections[0].snd_wnd = mss as u32;
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(
         tx.num_frames(),
         1,
@@ -697,7 +697,7 @@ fn sender_sws_allows_send_when_all_data_fits() {
     handler.connections[0].send_buffer.write(b"abc");
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // SWS: can_send=5, data_available=3, 3 <= 5 → all data fits → sws_ok = true.
     assert_eq!(

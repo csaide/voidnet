@@ -61,7 +61,7 @@ fn fast_retransmit_on_three_dup_acks() {
     handler.connections[0].send_buffer.write(b"AAAA");
     handler.connections[0].snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {} // consume sent segment
 
     let cwnd_before = handler.connections[0].cubic.cwnd;
@@ -167,7 +167,7 @@ fn rto_retransmit_on_timer_expiry() {
     handler.connections[0].send_buffer.write(b"BBBB");
     handler.connections[0].snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
     let cwnd_before = handler.connections[0].cubic.cwnd;
@@ -177,7 +177,7 @@ fn rto_retransmit_on_timer_expiry() {
     handler.connections[0].rto_backoff = 0;
 
     // poll_timers should trigger RTO retransmit.
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert!(tx.num_frames() >= 1, "retransmitted segment expected");
 
     let tcb = &handler.connections[0];
@@ -254,7 +254,7 @@ fn rtt_estimation_updates_rto() {
     handler.connections[0].send_buffer.write(b"test data");
     handler.connections[0].snd_wnd = 65535;
     let send_time = coarsetime::Instant::now();
-    handler.poll_send(send_time, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(send_time, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
     // Verify last_send_time is set.
@@ -368,7 +368,7 @@ fn limited_transmit_sends_on_first_dup_ack() {
 
     // Send 3 segments (fills cwnd).
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
     let snd_nxt_before = handler.connections[0].snd_nxt;
@@ -399,7 +399,7 @@ fn limited_transmit_sends_on_first_dup_ack() {
     assert_eq!(handler.connections[0].recovery.dup_ack_count, 1);
 
     // poll_send should allow 1 MSS of new data (limited transmit).
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     let snd_nxt_after = handler.connections[0].snd_nxt;
     assert_eq!(

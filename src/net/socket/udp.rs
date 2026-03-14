@@ -323,35 +323,16 @@ pub struct SendTo<'sock, 'buf, 'umem> {
 impl<'sock, 'buf, 'umem> SendTo<'sock, 'buf, 'umem> {
     fn prepare_udp_packet(&mut self) -> Result<Packet<'umem>, WouldBlock> {
         let now = Instant::now();
-        let dst_mac = match self.neighbor_handler.lookup(now, &self.dst_addr) {
+        let dst_mac = match self.neighbor_handler.lookup_or_resolve(
+            now,
+            &self.dst_addr,
+            &self.src_addr,
+            &mut self.free_frames,
+            &mut self.rx_return,
+            &mut self.tx_return,
+        ) {
             Some(mac) => mac,
-            None => {
-                let frame = self.free_frames.pop().ok_or(WouldBlock)?;
-                match (self.src_addr, self.dst_addr) {
-                    (IpAddress::V4(src), IpAddress::V4(dst)) => {
-                        self.neighbor_handler.resolve_v4(
-                            src,
-                            dst,
-                            frame,
-                            &mut self.rx_return,
-                            &mut self.tx_return,
-                        );
-                    }
-                    (IpAddress::V6(src), IpAddress::V6(dst)) => {
-                        self.neighbor_handler.resolve_v6(
-                            src,
-                            dst,
-                            frame,
-                            &mut self.rx_return,
-                            &mut self.tx_return,
-                        );
-                    }
-                    _ => {
-                        self.rx_return.push(frame);
-                    }
-                }
-                return Err(WouldBlock);
-            }
+            None => return Err(WouldBlock),
         };
         let src_mac = self.neighbor_handler.local_mac();
 

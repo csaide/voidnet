@@ -172,7 +172,7 @@ fn keep_alive_probe_sent_after_idle_timeout() {
     std::thread::sleep(std::time::Duration::from_millis(150));
     let now = coarsetime::Instant::now();
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(
         handler.connections[0].keep_alive_probes_sent, 1,
@@ -249,7 +249,7 @@ fn keep_alive_no_probe_when_disabled() {
     std::thread::sleep(std::time::Duration::from_millis(150));
     let now = coarsetime::Instant::now();
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(
         handler.connections[0].keep_alive_probes_sent, 0,
@@ -334,7 +334,7 @@ fn keep_alive_connection_aborted_after_max_probes() {
     std::thread::sleep(std::time::Duration::from_millis(150));
     let now = coarsetime::Instant::now();
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // Connection should be removed.
     assert!(
@@ -429,7 +429,7 @@ fn linger_zero_sends_rst_on_poll_send() {
 
     // Call poll_send — linger deadline is already expired, should send RST.
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // Connection should be removed.
     assert!(
@@ -526,7 +526,7 @@ fn linger_timeout_sets_deadline() {
 
     // Call poll_send immediately — deadline is 5s in the future, should NOT abort.
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // Connection should still exist.
     assert!(
@@ -688,7 +688,7 @@ fn keep_alive_probe_and_recovery() {
     let now = coarsetime::Instant::now();
 
     let tx_before = tx.num_frames();
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // Verify probe was sent.
     assert!(
@@ -821,7 +821,7 @@ fn keep_alive_exhaustion_removes_connection() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     coarsetime::Instant::update();
     let now1 = coarsetime::Instant::now();
-    handler.poll_timers(now1, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now1, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // First probe should have been sent.
     assert_eq!(
@@ -838,7 +838,7 @@ fn keep_alive_exhaustion_removes_connection() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     coarsetime::Instant::update();
     let now2 = coarsetime::Instant::now();
-    handler.poll_timers(now2, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now2, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // Connection should be removed.
     assert!(
@@ -934,7 +934,7 @@ fn linger_zero_immediate_rst() {
 
     // Call poll_send — linger deadline is already expired, should send RST.
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // Connection should be removed.
     assert!(

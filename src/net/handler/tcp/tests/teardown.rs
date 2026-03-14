@@ -238,7 +238,7 @@ fn poll_send_sends_fin_when_pending() {
     handler.connections[0].pending_fin = true;
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // FIN should have been sent.
     assert_eq!(tx.num_frames(), 1, "FIN segment sent");
@@ -311,7 +311,7 @@ fn poll_send_drains_data_before_fin() {
     handler.connections[0].pending_fin = true;
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // Should send data first, NOT FIN yet (data still in flight).
     assert_eq!(tx.num_frames(), 1, "data segment sent");
@@ -383,7 +383,7 @@ fn active_close_fin_wait1_to_fin_wait2() {
     // Active close: set pending_fin, poll_send sends FIN → FinWait1.
     handler.connections[0].pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
     assert_eq!(handler.connections[0].state, TcpState::FinWait1);
     let fin_seq = handler.connections[0].fin_seq.unwrap();
@@ -473,7 +473,7 @@ fn fin_wait2_receives_fin_to_time_wait() {
     // Active close → FinWait1 → FinWait2.
     handler.connections[0].pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
     let fin_seq = handler.connections[0].fin_seq.unwrap();
     let ack = build_tcp_frame(
@@ -586,7 +586,7 @@ fn simultaneous_close_closing_to_time_wait() {
     // Active close → FinWait1.
     handler.connections[0].pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
     assert_eq!(handler.connections[0].state, TcpState::FinWait1);
 
@@ -723,7 +723,7 @@ fn passive_close_last_ack_removes_connection() {
     // We close → pending_fin, poll_send sends FIN → LastAck.
     handler.connections[0].pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
     assert_eq!(handler.connections[0].state, TcpState::LastAck);
     let fin_seq = handler.connections[0].fin_seq.unwrap();
@@ -816,7 +816,7 @@ fn time_wait_ignores_rst() {
     // Full active close → TimeWait.
     handler.connections[0].pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
     let fin_seq = handler.connections[0].fin_seq.unwrap();
     let ack = build_tcp_frame(
@@ -1034,7 +1034,7 @@ fn full_active_close_lifecycle() {
     // 3. Active close.
     handler.connections[0].pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(handler.connections[0].state, TcpState::FinWait1);
     while tx.pop().is_some() {}
 
@@ -1205,7 +1205,7 @@ fn full_passive_close_lifecycle() {
     // 3. We close -> LastAck.
     handler.connections[0].pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(handler.connections[0].state, TcpState::LastAck);
     while tx.pop().is_some() {}
     let fin_seq = handler.connections[0].fin_seq.unwrap();
@@ -1476,7 +1476,7 @@ fn close_wait_processes_ack_for_sent_data() {
 
     // poll_send to transmit data (advances snd_nxt).
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
     let snd_nxt_after_send = handler.connections[0].snd_nxt;
@@ -1589,7 +1589,7 @@ fn fin_retransmitted_in_fin_wait1() {
     }
 
     // poll_timers should retransmit the FIN-ACK.
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // (1) A FIN-ACK segment must be emitted.
     assert!(

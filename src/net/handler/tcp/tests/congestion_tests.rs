@@ -63,7 +63,7 @@ fn cubic_slow_start_on_new_ack() {
     handler.connections[0].send_buffer.write(&[0xAA; 1460]);
     handler.connections[0].snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
     // ACK the data.
@@ -161,8 +161,8 @@ fn frto_restores_cwnd_on_spurious_rto() {
         .write(&vec![0xAA; mss * 2]);
     handler.connections[0].snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
     let cwnd_before_rto = handler.connections[0].cubic.cwnd;
@@ -170,7 +170,7 @@ fn frto_restores_cwnd_on_spurious_rto() {
     // Trigger RTO by setting deadline in the past.
     handler.connections[0].retransmit_deadline = Some(now);
     let rto_time = now + coarsetime::Duration::from_millis(1100);
-    handler.poll_timers(rto_time, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(rto_time, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
     // F-RTO should be active.

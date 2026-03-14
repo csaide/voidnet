@@ -184,6 +184,14 @@ impl Ipv6Handler {
             return;
         }
 
+        // Learn source IP → MAC mapping from every valid incoming packet.
+        let eth = EthernetFrame::from_bytes(&frame);
+        neighbor_handler.learn_from_traffic(
+            now,
+            crate::net::wire::ip::IpAddress::V6(ip.src_addr),
+            eth.src_mac,
+        );
+
         let first_next_header = ip.next_header;
         let ext_start = eth_len + IPV6_HEADER_LEN;
         let ip_end = ext_start + payload_length;

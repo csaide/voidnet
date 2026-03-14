@@ -320,7 +320,7 @@ fn ecn_ect_set_on_outgoing_data() {
     handler.connections[0].send_buffer.write(payload);
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(tx.num_frames(), 1, "should have one data segment");
     let frame = tx.pop().unwrap();
@@ -392,13 +392,13 @@ fn ecn_ect_not_set_on_retransmit() {
     handler.connections[0].send_buffer.write(b"RTO test data");
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     // Drain the initial data segment.
     while tx.pop().is_some() {}
 
     // Expire the retransmit timer to trigger RTO retransmit.
     handler.connections[0].retransmit_deadline = Some(now);
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(tx.num_frames(), 1, "should have one retransmit segment");
     let frame = tx.pop().unwrap();
@@ -595,7 +595,7 @@ fn ecn_ece_sent_when_ce_received() {
     if tx.num_frames() == 0 {
         let now = coarsetime::Instant::now();
         handler.connections[0].delayed_ack_deadline = Some(now);
-        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut tx);
+        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     }
 
     assert!(
@@ -680,7 +680,7 @@ fn ecn_cwnd_halved_on_ece() {
         .send_buffer
         .write(b"test data for ecn");
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
     let snd_nxt = handler.connections[0].snd_nxt;
@@ -797,7 +797,7 @@ fn ecn_cwr_sent_on_next_data() {
     // Write data and poll_send.
     handler.connections[0].send_buffer.write(b"cwr test data");
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut tx);
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(tx.num_frames(), 1, "should have one data segment");
     let frame = tx.pop().unwrap();

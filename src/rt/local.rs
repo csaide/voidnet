@@ -347,6 +347,7 @@ impl<'umem> LocalRuntime<'umem> {
                 self.neighbor_handler.local_mac(),
                 &self.neighbor_handler,
                 &mut self.free_frames,
+                &mut self.rx_return,
                 &mut self.tx_return,
             );
 
@@ -369,6 +370,7 @@ impl<'umem> LocalRuntime<'umem> {
                     self.neighbor_handler.local_mac(),
                     &self.neighbor_handler,
                     &mut self.free_frames,
+                    &mut self.rx_return,
                     &mut self.tx_return,
                 );
 
