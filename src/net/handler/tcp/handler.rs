@@ -92,13 +92,18 @@ impl TcpHandler {
             let tcb = &self.connections[idx];
             // Send RST for now (proper FIN sequence deferred).
             if tcb.state.is_synchronized() || tcb.state == TcpState::SynReceived {
+                // Use snd_nxt as the RST sequence number so the peer's receive
+                // window check accepts it (RFC 9293 §3.10.7.1: <SEQ=SND.NXT><CTL=RST>).
+                // build_rst with ACK set generates <SEQ=incoming_ack><CTL=RST>,
+                // so we pass snd_nxt as incoming_ack.
+                let snd_nxt = tcb.snd_nxt;
                 SegmentBuilder::build_rst(
                     id.local_addr,
                     id.remote_addr,
                     id.local_port,
                     id.remote_port,
                     0,
-                    0,
+                    snd_nxt,
                     flags::ACK,
                     0,
                     src_mac,

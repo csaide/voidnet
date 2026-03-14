@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, btree_map::Entry},
-    hash::Hash,
-};
+use std::{collections::BTreeMap, hash::Hash};
 
 use coarsetime::{Duration, Instant};
 use rustc_hash::FxHashMap;
@@ -44,50 +41,95 @@ struct Ipv6FragmentKey {
 struct ReassemblyEntry<'umem> {
     /// Fragments keyed by byte offset, kept sorted via BTreeMap.
     fragments: BTreeMap<usize, Frame<'umem>>,
+    /// End offset of each fragment, keyed by start offset (parallel to `fragments`).
+    fragment_ends: BTreeMap<usize, usize>,
     /// Known when the final fragment (MF=0) arrives.
     total_len: Option<usize>,
-    /// Sum of all received fragment data lengths.
-    received_len: usize,
     first_received: Instant,
+    /// Set when overlapping fragments are detected. The entry will be
+    /// discarded on the next eviction pass (or immediately for IPv6 per RFC 5722).
+    poisoned: bool,
+}
+
+/// Result of attempting to insert a fragment.
+enum InsertResult<'umem> {
+    /// Fragment accepted.
+    Ok,
+    /// Duplicate fragment (exact same offset already present).
+    Duplicate(Frame<'umem>),
+    /// Fragment overlaps with an existing fragment.
+    Overlap(Frame<'umem>),
 }
 
 impl<'umem> ReassemblyEntry<'umem> {
     fn new() -> Self {
         Self {
             fragments: BTreeMap::new(),
+            fragment_ends: BTreeMap::new(),
             total_len: None,
-            received_len: 0,
             first_received: Instant::now(),
+            poisoned: false,
         }
     }
 
-    /// Insert a fragment by offset. Returns `Some(frame)` if a
-    /// duplicate offset is already present.
+    /// Insert a fragment by offset. Checks for overlaps with existing fragments.
     fn insert(
         &mut self,
         offset: usize,
         data_len: usize,
         more_fragments: bool,
         frame: Frame<'umem>,
-    ) -> Option<Frame<'umem>> {
-        match self.fragments.entry(offset) {
-            Entry::Occupied(_) => Some(frame), // duplicate
-            Entry::Vacant(entry) => {
-                entry.insert(frame);
-                self.received_len += data_len;
-                if !more_fragments {
-                    self.total_len = Some(offset + data_len);
-                }
-                None
-            }
+    ) -> InsertResult<'umem> {
+        // Exact duplicate check.
+        if self.fragments.contains_key(&offset) {
+            return InsertResult::Duplicate(frame);
         }
+
+        let end = offset + data_len;
+
+        // Check for overlap with the fragment immediately before this one.
+        // If any fragment starts at or before `offset` and extends past it, we overlap.
+        if let Some((&prev_start, &prev_end)) = self.fragment_ends.range(..=offset).next_back()
+            && prev_start != offset
+            && prev_end > offset
+        {
+            return InsertResult::Overlap(frame);
+        }
+
+        // Check for overlap with the fragment immediately after this one.
+        // If any fragment starts before `end`, we overlap with it.
+        if let Some((&next_start, _)) = self.fragment_ends.range(offset + 1..).next()
+            && next_start < end
+        {
+            return InsertResult::Overlap(frame);
+        }
+
+        self.fragments.insert(offset, frame);
+        self.fragment_ends.insert(offset, end);
+        if !more_fragments {
+            self.total_len = Some(end);
+        }
+        InsertResult::Ok
     }
 
+    /// Check whether all fragments have been received with no gaps.
+    ///
+    /// Walks the sorted fragment_ends map and verifies that each fragment
+    /// starts exactly where the previous one ended, covering [0..total_len).
     fn is_complete(&self) -> bool {
-        match self.total_len {
-            Some(total) => self.received_len == total,
-            None => false,
+        let total = match self.total_len {
+            Some(t) => t,
+            None => return false,
+        };
+
+        let mut expected = 0;
+        for (&start, &end) in &self.fragment_ends {
+            if start != expected {
+                return false; // gap detected
+            }
+            expected = end;
         }
+        expected == total
     }
 
     fn into_packet(self) -> Packet<'umem> {
@@ -191,13 +233,21 @@ impl<'umem> FragmentReader<'umem> {
             .entry(key)
             .or_insert_with(ReassemblyEntry::new);
 
-        if let Some(dup_frame) = entry.insert(frag_offset_bytes, payload_len, more_fragments, frame)
-        {
-            rx_return.push(dup_frame);
-            return None;
+        match entry.insert(frag_offset_bytes, payload_len, more_fragments, frame) {
+            InsertResult::Duplicate(dup_frame) => {
+                rx_return.push(dup_frame);
+                return None;
+            }
+            InsertResult::Overlap(frame) => {
+                // For IPv4, discard the overlapping fragment and poison the entry.
+                entry.poisoned = true;
+                rx_return.push(frame);
+                return None;
+            }
+            InsertResult::Ok => {}
         }
 
-        if entry.is_complete() {
+        if !entry.poisoned && entry.is_complete() {
             let entry = self.ipv4_reassembly.remove(&remove_key).unwrap();
             let packet = entry.into_packet();
             return Some(ReassembledPacket { packet, protocol });
@@ -269,9 +319,22 @@ impl<'umem> FragmentReader<'umem> {
             .entry(key)
             .or_insert_with(ReassemblyEntry::new);
 
-        if let Some(dup_frame) = entry.insert(frag_offset_bytes, data_len, more_fragments, frame) {
-            rx_return.push(dup_frame);
-            return None;
+        match entry.insert(frag_offset_bytes, data_len, more_fragments, frame) {
+            InsertResult::Duplicate(dup_frame) => {
+                rx_return.push(dup_frame);
+                return None;
+            }
+            InsertResult::Overlap(frame) => {
+                // RFC 5722: IPv6 overlapping fragments MUST cause the entire
+                // datagram to be silently discarded. Drop all held fragments.
+                let entry = self.ipv6_reassembly.remove(&remove_key).unwrap();
+                rx_return.push(frame);
+                for (_, held_frame) in entry.fragments {
+                    rx_return.push(held_frame);
+                }
+                return None;
+            }
+            InsertResult::Ok => {}
         }
 
         if entry.is_complete() {
@@ -717,6 +780,74 @@ mod tests {
             }
         }
         assert_eq!(data, payload);
+    }
+
+    /// Overlapping IPv4 fragments are detected and the overlapping fragment
+    /// is rejected. The entry is poisoned so it never completes.
+    #[test]
+    fn ipv4_overlapping_fragments_rejected() {
+        let mut reader = FragmentReader::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+
+        // Fragment 1: offset=0, 16 bytes payload, MF=1.
+        let mut buf1 = [0u8; 256];
+        let len1 = build_ipv4_fragment(&mut buf1, 55, IpProtocols::Udp, 0, true, &[0xAA; 16]);
+        let f1 = Frame::new(0, &mut buf1, len1, false);
+        let result1 = reader.process_ipv4(f1, &mut rx);
+        assert!(result1.is_none(), "first fragment should not complete");
+        assert_eq!(reader.pending_entries(), 1);
+
+        // Fragment 2: offset=8 bytes (frag_offset_8=1), 16 bytes payload, MF=0.
+        // Overlaps bytes 8–15 with fragment 1.
+        let mut buf2 = [0u8; 256];
+        let len2 = build_ipv4_fragment(&mut buf2, 55, IpProtocols::Udp, 1, false, &[0xBB; 16]);
+        let f2 = Frame::new(1, &mut buf2, len2, false);
+        let result2 = reader.process_ipv4(f2, &mut rx);
+
+        // Overlapping fragment rejected, entry poisoned.
+        assert!(result2.is_none(), "overlapping fragment must not complete");
+        assert_eq!(reader.pending_entries(), 1, "entry remains but is poisoned");
+        // The overlapping frame was returned to rx_return.
+        assert_eq!(rx.num_frames(), 1, "overlapping frame returned to caller");
+    }
+
+    /// Fragments with a gap are not declared complete even when the sum of
+    /// their data lengths equals total_len.
+    #[test]
+    fn ipv4_gap_fragments_not_declared_complete() {
+        let mut reader = FragmentReader::new(16);
+        let mut rx = BasicFrameBuffer::new(16);
+
+        // Fragment 1: offset=0, 8 bytes payload, MF=1.
+        let mut buf1 = [0u8; 256];
+        let len1 = build_ipv4_fragment(&mut buf1, 66, IpProtocols::Udp, 0, true, &[0x11; 8]);
+        let f1 = Frame::new(0, &mut buf1, len1, false);
+        assert!(reader.process_ipv4(f1, &mut rx).is_none());
+
+        // Fragment 2: offset=24 bytes (frag_offset_8=3), 16 bytes payload,
+        // MF=0. Sets total_len = 24+16 = 40.
+        let mut buf2 = [0u8; 256];
+        let len2 = build_ipv4_fragment(&mut buf2, 66, IpProtocols::Udp, 3, false, &[0x33; 16]);
+        let f2 = Frame::new(1, &mut buf2, len2, false);
+        assert!(reader.process_ipv4(f2, &mut rx).is_none());
+
+        // Fragment 3: offset=16 bytes (frag_offset_8=2), 16 bytes payload,
+        // MF=1. Gap at [8..16) remains unfilled.
+        let mut buf3 = [0u8; 256];
+        let len3 = build_ipv4_fragment(&mut buf3, 66, IpProtocols::Udp, 2, true, &[0x22; 16]);
+        let f3 = Frame::new(2, &mut buf3, len3, false);
+        let result = reader.process_ipv4(f3, &mut rx);
+
+        // Contiguity check detects the gap — not declared complete.
+        assert!(
+            result.is_none(),
+            "fragments with gap at [8..16) must not be declared complete"
+        );
+        assert_eq!(
+            reader.pending_entries(),
+            1,
+            "entry stays pending until gap is filled"
+        );
     }
 
     #[test]

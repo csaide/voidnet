@@ -155,7 +155,7 @@ impl Ipv4Header {
     /// The caller must ensure `frame.len() >= IPV4_MIN_FRAME_LEN`.
     #[inline]
     pub fn from_bytes(frame: &[u8]) -> &Self {
-        debug_assert!(frame.len() >= IPV4_MIN_FRAME_LEN);
+        assert!(frame.len() >= IPV4_MIN_FRAME_LEN);
         unsafe { &*(frame.as_ptr().add(size_of::<EthernetFrame>()) as *const Self) }
     }
 
@@ -166,7 +166,7 @@ impl Ipv4Header {
     /// The caller must ensure `frame.len() >= IPV4_MIN_FRAME_LEN`.
     #[inline]
     pub fn from_bytes_mut(frame: &mut [u8]) -> &mut Self {
-        debug_assert!(frame.len() >= IPV4_MIN_FRAME_LEN);
+        assert!(frame.len() >= IPV4_MIN_FRAME_LEN);
         unsafe { &mut *(frame.as_mut_ptr().add(size_of::<EthernetFrame>()) as *mut Self) }
     }
 }
@@ -308,5 +308,12 @@ mod tests {
     fn header_layout() {
         assert_eq!(IPV4_MIN_HEADER_LEN, 20);
         assert_eq!(IPV4_MIN_FRAME_LEN, 34);
+    }
+
+    #[test]
+    #[should_panic(expected = "assertion")]
+    fn from_bytes_rejects_truncated_ipv4() {
+        let short = [0u8; 33]; // IPV4_MIN_FRAME_LEN is 34
+        let _ = Ipv4Header::from_bytes(&short);
     }
 }

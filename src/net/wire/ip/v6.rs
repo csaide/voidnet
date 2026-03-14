@@ -96,7 +96,7 @@ impl Ipv6FragmentHeader {
     /// The caller must ensure `bytes.len() >= offset + FRAGMENT_EXT_LEN`.
     #[inline]
     pub fn from_bytes_at(bytes: &[u8], offset: usize) -> &Self {
-        debug_assert!(bytes.len() >= offset + FRAGMENT_EXT_LEN);
+        assert!(bytes.len() >= offset + FRAGMENT_EXT_LEN);
         unsafe { &*(bytes.as_ptr().add(offset) as *const Self) }
     }
 
@@ -107,7 +107,7 @@ impl Ipv6FragmentHeader {
     /// The caller must ensure `bytes.len() >= offset + FRAGMENT_EXT_LEN`.
     #[inline]
     pub fn from_bytes_at_mut(bytes: &mut [u8], offset: usize) -> &mut Self {
-        debug_assert!(bytes.len() >= offset + FRAGMENT_EXT_LEN);
+        assert!(bytes.len() >= offset + FRAGMENT_EXT_LEN);
         unsafe { &mut *(bytes.as_mut_ptr().add(offset) as *mut Self) }
     }
 }
@@ -169,7 +169,7 @@ impl Ipv6Header {
     /// The caller must ensure `frame.len() >= IPV6_MIN_FRAME_LEN`.
     #[inline]
     pub fn from_bytes(bytes: &[u8]) -> &Self {
-        debug_assert!(bytes.len() >= IPV6_MIN_FRAME_LEN);
+        assert!(bytes.len() >= IPV6_MIN_FRAME_LEN);
         unsafe { &*(bytes.as_ptr().add(size_of::<EthernetFrame>()) as *const Self) }
     }
 
@@ -180,7 +180,7 @@ impl Ipv6Header {
     /// The caller must ensure `frame.len() >= IPV6_MIN_FRAME_LEN`.
     #[inline]
     pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
-        debug_assert!(bytes.len() >= IPV6_MIN_FRAME_LEN);
+        assert!(bytes.len() >= IPV6_MIN_FRAME_LEN);
         unsafe { &mut *(bytes.as_mut_ptr().add(size_of::<EthernetFrame>()) as *mut Self) }
     }
 }

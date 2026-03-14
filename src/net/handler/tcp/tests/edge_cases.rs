@@ -633,6 +633,322 @@ fn sender_sws_avoidance_holds_small_sends() {
 }
 
 #[test]
+fn handshake_with_wrapping_isn() {
+    // Verify that a 3-way handshake completes correctly when the client ISN is
+    // near u32::MAX so that rcv_nxt wraps around the 2^32 boundary.
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(8);
+    let mut rx = BasicFrameBuffer::new(8);
+    let mut tx = BasicFrameBuffer::new(8);
+
+    for i in 0..4 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+
+    // Client ISN chosen so that ISN + 1 = u32::MAX (one step before wrapping to 0).
+    let client_isn: u32 = u32::MAX - 1;
+
+    // Step 1: SYN with wrapping ISN.
+    let syn_data = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        client_isn,
+        0,
+        flags::SYN,
+        65535,
+        &[],
+    );
+    let syn_len = syn_data.len();
+    handler.process_ipv4(
+        Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    // Handler must have created a connection in SynReceived and sent a SYN-ACK.
+    assert_eq!(handler.connections.len(), 1, "connection created");
+    assert_eq!(handler.connections[0].state, TcpState::SynReceived);
+    assert_eq!(tx.num_frames(), 1, "SYN-ACK generated");
+
+    // Inspect the SYN-ACK: ack_num must wrap (ISN + 1 mod 2^32 = 0).
+    let expected_ack = client_isn.wrapping_add(1); // == 0
+    let syn_ack_frame = tx.pop().unwrap();
+    let tcp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+    let syn_ack_ack_num =
+        u32::from_be_bytes(syn_ack_frame[tcp_off + 8..tcp_off + 12].try_into().unwrap());
+    assert_eq!(
+        syn_ack_ack_num, expected_ack,
+        "SYN-ACK ack_number must wrap correctly (expected {})",
+        expected_ack
+    );
+    let syn_ack_flags = syn_ack_frame[tcp_off + 13];
+    assert_eq!(
+        syn_ack_flags & (flags::SYN | flags::ACK),
+        flags::SYN | flags::ACK,
+        "SYN-ACK must have SYN and ACK flags set"
+    );
+
+    // Step 2: Complete the handshake with the final ACK.
+    let server_iss = handler.connections[0].iss;
+    let ack_data = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        client_isn.wrapping_add(1), // == 0
+        server_iss.wrapping_add(1),
+        flags::ACK,
+        65535,
+        &[],
+    );
+    let ack_len = ack_data.len();
+    handler.process_ipv4(
+        Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    assert_eq!(
+        handler.connections[0].state,
+        TcpState::Established,
+        "handshake must complete to Established"
+    );
+    assert_eq!(
+        handler.connections[0].rcv_nxt,
+        client_isn.wrapping_add(1),
+        "rcv_nxt must be ISN+1 (wrapped)"
+    );
+    assert_eq!(accept_queue.len(), 1, "connection in accept queue");
+}
+
+#[test]
+fn data_transfer_across_sequence_wrap() {
+    // Verify that a data segment whose sequence numbers cross the u32::MAX boundary
+    // is received and ACKed correctly.
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(32);
+    let mut rx = BasicFrameBuffer::new(32);
+    let mut tx = BasicFrameBuffer::new(32);
+
+    for i in 0..16 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    // Use an ISN 10 bytes before u32::MAX so that 20 bytes of data cross the wrap.
+    // ISN = u32::MAX - 10 → first data seq = ISN+1 = u32::MAX - 9
+    // After 20 bytes: last byte seq = (ISN+1+19) mod 2^32 = u32::MAX - 9 + 19 = 10
+    let client_isn: u32 = u32::MAX - 10;
+
+    let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+
+    // Manual handshake instead of establish_connection() because that helper
+    // hard-codes ISN=1000 — we need a custom ISN near u32::MAX.
+
+    // SYN.
+    let syn_data = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        client_isn,
+        0,
+        flags::SYN,
+        65535,
+        &[],
+    );
+    let syn_len = syn_data.len();
+    handler.process_ipv4(
+        Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+    assert_eq!(handler.connections[0].state, TcpState::SynReceived);
+    let server_iss = handler.connections[0].iss;
+    while tx.pop().is_some() {}
+
+    // ACK completing handshake.
+    let ack_data = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        client_isn.wrapping_add(1),
+        server_iss.wrapping_add(1),
+        flags::ACK,
+        65535,
+        &[],
+    );
+    let ack_len = ack_data.len();
+    handler.process_ipv4(
+        Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+    assert_eq!(handler.connections[0].state, TcpState::Established);
+    while tx.pop().is_some() {}
+
+    // Send 20 bytes of data starting at seq = client_isn + 1.
+    // This crosses the u32::MAX boundary (10 bytes before wrap, 10 bytes after).
+    let payload = [0x42u8; 20];
+    let data_seq = client_isn.wrapping_add(1);
+    let data_frame = build_tcp_frame_with_payload(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        data_seq,
+        server_iss.wrapping_add(1),
+        flags::ACK | flags::PSH,
+        65535,
+        &[],
+        &payload,
+    );
+    let data_len = data_frame.len();
+    handler.process_ipv4(
+        Frame::new(2, leak(data_frame), data_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    // rcv_nxt must have advanced by 20 bytes (wrapping).
+    let expected_rcv_nxt = data_seq.wrapping_add(20);
+    assert_eq!(
+        handler.connections[0].rcv_nxt, expected_rcv_nxt,
+        "rcv_nxt must advance past wrap boundary"
+    );
+
+    // Flush delayed ACK: send a second data segment (triggers ack_pending),
+    // then call poll_send to emit the pure ACK.
+    let payload2 = [0x43u8; 1];
+    let data2_seq = expected_rcv_nxt;
+    let data_frame2 = build_tcp_frame_with_payload(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        data2_seq,
+        server_iss.wrapping_add(1),
+        flags::ACK | flags::PSH,
+        65535,
+        &[],
+        &payload2,
+    );
+    let data2_len = data_frame2.len();
+    handler.process_ipv4(
+        Frame::new(3, leak(data_frame2), data2_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    // poll_send flushes the pending delayed ACK.
+    handler.poll_send(
+        coarsetime::Instant::now(),
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    // An ACK must have been sent.
+    assert!(
+        tx.num_frames() > 0,
+        "ACK must be sent after poll_send flushes delayed ACK"
+    );
+
+    // The ACK frame's ack_num must equal rcv_nxt after both segments.
+    let ack_frame = tx.pop().unwrap();
+    let tcp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+    let ack_num =
+        u32::from_be_bytes(ack_frame[tcp_off + 8..tcp_off + 12].try_into().unwrap());
+    let expected_final_rcv_nxt = expected_rcv_nxt.wrapping_add(1);
+    assert_eq!(
+        ack_num, expected_final_rcv_nxt,
+        "ACK ack_num must reflect all received data ({})",
+        expected_final_rcv_nxt
+    );
+    assert_eq!(
+        handler.connections[0].rcv_nxt, expected_final_rcv_nxt,
+        "rcv_nxt must reflect all received data after wrap"
+    );
+}
+
+#[test]
+fn remove_connection_sends_rst_with_correct_seq() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(32);
+    let mut rx = BasicFrameBuffer::new(32);
+    let mut tx = BasicFrameBuffer::new(32);
+
+    for i in 0..16 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+    // snd_nxt after handshake = server_iss + 1 (SYN consumed one sequence number).
+    let expected_seq = server_iss.wrapping_add(1);
+
+    // Capture the connection id before calling remove_connection.
+    let id = handler.connections[0].id;
+
+    // MAC addresses matching what the test infrastructure uses.
+    let src_mac = crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    let dst_mac = crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+
+    handler.remove_connection(&id, src_mac, dst_mac, &mut free, &mut tx);
+
+    // The connection should be removed.
+    assert_eq!(handler.connections.len(), 0, "connection removed");
+
+    // A RST frame should have been emitted.
+    assert_eq!(tx.num_frames(), 1, "RST frame generated on remove_connection");
+
+    // Parse the RST frame and check its sequence number.
+    let rst_frame = tx.pop().unwrap();
+    let tcp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+    let rst_seq = u32::from_be_bytes(rst_frame[tcp_off + 4..tcp_off + 8].try_into().unwrap());
+    let rst_flags = rst_frame[tcp_off + 13];
+
+    assert_eq!(
+        rst_flags & flags::RST,
+        flags::RST,
+        "frame must have RST flag set"
+    );
+    assert_ne!(rst_seq, 0, "RST sequence number must not be 0 (would be silently dropped by peer)");
+    assert_eq!(
+        rst_seq, expected_seq,
+        "RST seq must equal snd_nxt = server_iss + 1 = {}",
+        expected_seq
+    );
+}
+
+#[test]
 fn sender_sws_allows_send_when_all_data_fits() {
     let mut handler = new_handler();
     let nh = new_neighbor_handler();

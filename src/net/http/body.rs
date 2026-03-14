@@ -274,6 +274,36 @@ impl<'conn> BodyReader<'conn> {
 mod tests {
     use super::*;
 
+    use std::cell::UnsafeCell;
+    use std::rc::Rc;
+    use crate::net::handler::tcp::TcpHandler;
+    use crate::net::handler::tcp::tcb::ConnectionId;
+    use crate::net::socket::LocalQueue;
+    use crate::net::wire::ip::{IpAddress, Ipv4Address};
+
+    /// Build a fake TcpStream and a pre-filled ReadBuffer for unit testing.
+    ///
+    /// The buffer is pre-populated with `data` via `append()`. All chunked
+    /// parsing logic will consume from the buffer and never fall through to
+    /// the stream (which has no real TCP connection behind it).
+    fn make_reader_parts(data: &[u8]) -> (crate::net::socket::TcpStream, ReadBuffer) {
+        let handler = Rc::new(UnsafeCell::new(TcpHandler::new(false, false)));
+        let conn_id = ConnectionId {
+            local_addr: IpAddress::V4(Ipv4Address::unspecified()),
+            local_port: 0,
+            remote_addr: IpAddress::V4(Ipv4Address::unspecified()),
+            remote_port: 0,
+        };
+        let event_queue = LocalQueue::new(16);
+        let stream = crate::net::socket::TcpStream::from_accepted_for_test(conn_id, event_queue, handler);
+
+        let mut buf = ReadBuffer::new(4096);
+        let written = buf.append(data);
+        assert_eq!(written, data.len(), "test data too large for ReadBuffer");
+
+        (stream, buf)
+    }
+
     #[test]
     fn body_reader_none_is_immediately_finished() {
         let (remaining, finished, _) = match BodyFraming::None {
@@ -316,5 +346,79 @@ mod tests {
         };
         assert!(!finished);
         assert_eq!(chunk_state, ChunkState::AwaitingSize);
+    }
+
+    /// Single chunk: "5\r\nhello\r\n0\r\n\r\n"
+    /// First read should yield "hello" (5 bytes); second read should return 0 (finished).
+    #[test]
+    fn chunked_read_single_chunk() {
+        let payload = b"5\r\nhello\r\n0\r\n\r\n";
+        let (stream, mut buf) = make_reader_parts(payload);
+        let mut reader = BodyReader::new(&stream, &mut buf, BodyFraming::Chunked, false);
+
+        let mut dest = [0u8; 64];
+
+        let n = futures::executor::block_on(reader.read(&mut dest)).expect("first read failed");
+        assert_eq!(n, 5);
+        assert_eq!(&dest[..n], b"hello");
+
+        let n2 = futures::executor::block_on(reader.read(&mut dest)).expect("second read failed");
+        assert_eq!(n2, 0, "expected finished after terminal chunk");
+        assert!(reader.is_finished());
+    }
+
+    /// Multiple chunks: "3\r\nabc\r\n4\r\ndefg\r\n0\r\n\r\n"
+    /// Reads should accumulate "abcdefg" across calls.
+    #[test]
+    fn chunked_read_multiple_chunks() {
+        let payload = b"3\r\nabc\r\n4\r\ndefg\r\n0\r\n\r\n";
+        let (stream, mut buf) = make_reader_parts(payload);
+        let mut reader = BodyReader::new(&stream, &mut buf, BodyFraming::Chunked, false);
+
+        let mut body = Vec::new();
+        let mut dest = [0u8; 64];
+        loop {
+            let n = futures::executor::block_on(reader.read(&mut dest)).expect("read failed");
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&dest[..n]);
+        }
+
+        assert_eq!(body, b"abcdefg");
+        assert!(reader.is_finished());
+    }
+
+    /// Empty body: "0\r\n\r\n" — terminal chunk only.
+    /// First read must return 0 immediately.
+    #[test]
+    fn chunked_read_empty_body() {
+        let payload = b"0\r\n\r\n";
+        let (stream, mut buf) = make_reader_parts(payload);
+        let mut reader = BodyReader::new(&stream, &mut buf, BodyFraming::Chunked, false);
+
+        let mut dest = [0u8; 64];
+        let n = futures::executor::block_on(reader.read(&mut dest)).expect("read failed");
+        assert_eq!(n, 0, "expected immediate EOF for empty chunked body");
+        assert!(reader.is_finished());
+    }
+
+    /// Invalid hex in chunk size line should return a parse error.
+    #[test]
+    fn chunked_read_invalid_hex_returns_error() {
+        let payload = b"XYZ\r\nignored\r\n0\r\n\r\n";
+        let (stream, mut buf) = make_reader_parts(payload);
+        let mut reader = BodyReader::new(&stream, &mut buf, BodyFraming::Chunked, false);
+
+        let mut dest = [0u8; 64];
+        let result = futures::executor::block_on(reader.read(&mut dest));
+        assert!(
+            result.is_err(),
+            "expected a parse error for invalid chunk size, got Ok"
+        );
+        match result.unwrap_err() {
+            HttpError::Parse(crate::net::http::error::ParseError::InvalidChunkEncoding) => {}
+            e => panic!("expected InvalidChunkEncoding, got {:?}", e),
+        }
     }
 }

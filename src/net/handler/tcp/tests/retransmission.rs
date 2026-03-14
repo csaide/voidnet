@@ -408,3 +408,63 @@ fn limited_transmit_sends_on_first_dup_ack() {
         "limited transmit: 1 MSS sent on first dup ACK"
     );
 }
+
+#[test]
+fn rto_backoff_resets_on_new_ack() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(32);
+    let mut rx = BasicFrameBuffer::new(32);
+    let mut tx = BasicFrameBuffer::new(32);
+
+    for i in 0..16 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+    // Put data in server's send buffer and transmit it.
+    handler.connections[0].send_buffer.write(b"CCCC");
+    handler.connections[0].snd_wnd = 65535;
+    let now = coarsetime::Instant::now();
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    while tx.pop().is_some() {}
+
+    // Artificially set rto_backoff as if an RTO had fired.
+    handler.connections[0].rto_backoff = 2;
+    handler.connections[0].retransmit_deadline =
+        Some(coarsetime::Instant::now() + coarsetime::Duration::from_millis(10_000));
+
+    // Client ACKs the server's data (new ACK that advances snd_una).
+    let new_ack = server_iss.wrapping_add(1).wrapping_add(4); // ISS+1 + 4 bytes
+    let client_seq = 1001u32;
+    let data = build_tcp_frame_with_payload(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        client_seq,
+        new_ack,
+        flags::ACK,
+        65535,
+        &[],
+        b"hello",
+    );
+    let data_len = data.len();
+    handler.process_ipv4(
+        Frame::new(10, leak(data), data_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    let tcb = &handler.connections[0];
+    assert_eq!(tcb.rto_backoff, 0, "rto_backoff should be reset on new ACK");
+    // snd_una == snd_nxt (all data ACKed), so retransmit timer should be off.
+    assert!(
+        tcb.retransmit_deadline.is_none(),
+        "retransmit_deadline should be None when all data is ACKed"
+    );
+}

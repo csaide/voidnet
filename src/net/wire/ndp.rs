@@ -45,7 +45,7 @@ impl NdpNsFrame {
 
     #[inline(always)]
     pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
-        debug_assert!(bytes.len() >= NDP_NS_FRAME_LEN);
+        assert!(bytes.len() >= NDP_NS_FRAME_LEN);
         unsafe { &mut *(bytes.as_mut_ptr() as *mut Self) }
     }
 }
@@ -96,7 +96,7 @@ impl NdpNaFrame {
 
     #[inline(always)]
     pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
-        debug_assert!(bytes.len() >= NDP_NA_FRAME_LEN);
+        assert!(bytes.len() >= NDP_NA_FRAME_LEN);
         unsafe { &mut *(bytes.as_mut_ptr() as *mut Self) }
     }
 }

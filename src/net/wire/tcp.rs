@@ -143,7 +143,7 @@ impl TcpHeader {
     /// Caller must ensure `frame.len() >= offset + TCP_HEADER_LEN`.
     #[inline]
     pub unsafe fn from_bytes_at(bytes: &[u8], offset: usize) -> &Self {
-        debug_assert!(offset + TCP_HEADER_LEN <= bytes.len());
+        assert!(offset + TCP_HEADER_LEN <= bytes.len());
         unsafe { &*(bytes.as_ptr().add(offset) as *const Self) }
     }
 
@@ -153,7 +153,7 @@ impl TcpHeader {
     /// Caller must ensure `frame.len() >= offset + TCP_HEADER_LEN`.
     #[inline]
     pub unsafe fn from_bytes_mut_at(bytes: &mut [u8], offset: usize) -> &mut Self {
-        debug_assert!(offset + TCP_HEADER_LEN <= bytes.len());
+        assert!(offset + TCP_HEADER_LEN <= bytes.len());
         unsafe { &mut *(bytes.as_mut_ptr().add(offset) as *mut Self) }
     }
 }
@@ -736,5 +736,20 @@ mod tests {
         assert_eq!(parse_window_scale(&opts[..i]), Some(7));
         assert_eq!(parse_timestamp(&opts[..i]), Some((1000, 2000)));
         assert!(parse_sack_permitted(&opts[..i]));
+    }
+
+    #[test]
+    #[should_panic(expected = "assertion")]
+    fn from_bytes_at_rejects_truncated_tcp() {
+        let short = [0u8; 19]; // TCP_HEADER_LEN is 20
+        let _ = unsafe { TcpHeader::from_bytes_at(&short, 0) };
+    }
+
+    #[test]
+    #[should_panic(expected = "assertion")]
+    fn from_bytes_at_rejects_offset_overflow() {
+        let buf = [0u8; 40];
+        // offset 25 + TCP_HEADER_LEN 20 = 45 > 40
+        let _ = unsafe { TcpHeader::from_bytes_at(&buf, 25) };
     }
 }

@@ -1226,6 +1226,15 @@ impl TcpHandler {
                                 tcb.last_activity = now;
                                 tcb.keep_alive_probes_sent = 0;
 
+                                // RFC 6298 §5.3: manage retransmit timer on new ACK.
+                                tcb.rto_backoff = 0;
+                                if tcb.snd_una == tcb.snd_nxt {
+                                    tcb.retransmit_deadline = None;
+                                } else {
+                                    tcb.retransmit_deadline =
+                                        Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                                }
+
                                 // F-RTO check.
                                 let mut frto_handled = false;
                                 if tcb.frto.is_active() {
@@ -1348,6 +1357,15 @@ impl TcpHandler {
                         tcb.send_buffer.advance(bytes_acked);
                         tcb.last_activity = now;
                         tcb.keep_alive_probes_sent = 0;
+
+                        // RFC 6298 §5.3: manage retransmit timer on new ACK.
+                        tcb.rto_backoff = 0;
+                        if tcb.snd_una == tcb.snd_nxt {
+                            tcb.retransmit_deadline = None;
+                        } else {
+                            tcb.retransmit_deadline =
+                                Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                        }
 
                         // F-RTO check.
                         let mut frto_handled = false;
@@ -1587,6 +1605,15 @@ impl TcpHandler {
                 // Reset keep-alive timer on activity.
                 tcb.last_activity = now;
                 tcb.keep_alive_probes_sent = 0;
+
+                // RFC 6298 §5.3: manage retransmit timer on new ACK.
+                tcb.rto_backoff = 0;
+                if tcb.snd_una == tcb.snd_nxt {
+                    tcb.retransmit_deadline = None;
+                } else {
+                    tcb.retransmit_deadline =
+                        Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                }
 
                 // F-RTO check — must come before recovery/congestion control.
                 let mut frto_handled = false;

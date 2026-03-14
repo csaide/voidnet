@@ -17,9 +17,8 @@ pub struct IsnGenerator {
 
 fn random_u64() -> u64 {
     let mut buf = [0u8; 8];
-    unsafe {
-        libc::getrandom(buf.as_mut_ptr().cast(), 8, 0);
-    }
+    let ret = unsafe { libc::getrandom(buf.as_mut_ptr().cast(), 8, 0) };
+    assert!(ret == 8, "getrandom failed to fill ISN secret: returned {ret}");
     u64::from_ne_bytes(buf)
 }
 

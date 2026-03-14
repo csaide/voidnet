@@ -92,7 +92,7 @@ impl ArpFrame {
     /// Mutable zero-copy borrow of the ARP frame from a received frame.
     #[inline(always)]
     pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
-        debug_assert!(bytes.len() >= ARP_FRAME_LEN);
+        assert!(bytes.len() >= ARP_FRAME_LEN);
         unsafe { &mut *(bytes.as_mut_ptr() as *mut Self) }
     }
 }
@@ -108,7 +108,7 @@ impl ArpPacket {
     ///
     /// The caller must ensure `frame.len() >= ARP_FRAME_LEN`.
     pub fn from_bytes(bytes: &[u8]) -> &Self {
-        debug_assert!(bytes.len() >= ARP_FRAME_LEN);
+        assert!(bytes.len() >= ARP_FRAME_LEN);
         unsafe { &*(bytes.as_ptr().add(size_of::<EthernetFrame>()) as *const Self) }
     }
 
@@ -118,7 +118,7 @@ impl ArpPacket {
     ///
     /// The caller must ensure `frame.len() >= ARP_FRAME_LEN`.
     pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
-        debug_assert!(bytes.len() >= ARP_FRAME_LEN);
+        assert!(bytes.len() >= ARP_FRAME_LEN);
         unsafe { &mut *(bytes.as_mut_ptr().add(size_of::<EthernetFrame>()) as *mut Self) }
     }
 }

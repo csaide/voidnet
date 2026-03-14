@@ -66,7 +66,7 @@ impl UdpHeader {
     /// Caller must ensure `frame.len() >= offset + UDP_HEADER_LEN`.
     #[inline]
     pub unsafe fn from_bytes_at(bytes: &[u8], offset: usize) -> &Self {
-        debug_assert!(offset + UDP_HEADER_LEN <= bytes.len());
+        assert!(offset + UDP_HEADER_LEN <= bytes.len());
         unsafe { &*(bytes.as_ptr().add(offset) as *const Self) }
     }
 
@@ -76,7 +76,7 @@ impl UdpHeader {
     /// Caller must ensure `frame.len() >= offset + UDP_HEADER_LEN`.
     #[inline]
     pub unsafe fn from_bytes_at_mut(bytes: &mut [u8], offset: usize) -> &mut Self {
-        debug_assert!(offset + UDP_HEADER_LEN <= bytes.len());
+        assert!(offset + UDP_HEADER_LEN <= bytes.len());
         unsafe { &mut *(bytes.as_mut_ptr().add(offset) as *mut Self) }
     }
 }

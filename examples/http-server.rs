@@ -79,7 +79,6 @@ fn main() {
 
             loop {
                 let mut conn = listener.accept().await.expect("Failed to accept");
-                println!("Accepted connection");
 
                 spawn(async move {
                     let mut stats = Stats::new_with_id_and_packets_per_print(0, 1_000_000);
@@ -89,10 +88,7 @@ fn main() {
                                 let path = conn.request_path(&req);
                                 let body = match path {
                                     b"/" => b"Hello, World!\n" as &[u8],
-                                    path => {
-                                        println!("Path: {}", String::from_utf8_lossy(path));
-                                        b"Not Found\n" as &[u8]
-                                    }
+                                    _ => b"Not Found\n" as &[u8],
                                 };
 
                                 let mut writer = conn.respond(&req);

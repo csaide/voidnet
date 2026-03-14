@@ -110,7 +110,7 @@ impl EthernetFrame {
     ///
     /// The caller must ensure `frame.len() >= size_of::<EthernetFrame>()`.
     pub fn from_bytes(frame: &[u8]) -> &Self {
-        debug_assert!(frame.len() >= size_of::<EthernetFrame>());
+        assert!(frame.len() >= size_of::<EthernetFrame>());
         unsafe { &*(frame.as_ptr() as *const Self) }
     }
 
@@ -120,7 +120,7 @@ impl EthernetFrame {
     ///
     /// The caller must ensure `frame.len() >= size_of::<EthernetFrame>()`.
     pub fn from_bytes_mut(frame: &mut [u8]) -> &mut Self {
-        debug_assert!(frame.len() >= size_of::<EthernetFrame>());
+        assert!(frame.len() >= size_of::<EthernetFrame>());
         unsafe { &mut *(frame.as_mut_ptr() as *mut Self) }
     }
 }
@@ -179,5 +179,19 @@ mod tests {
     #[test]
     fn ethernet_frame_layout() {
         assert_eq!(size_of::<EthernetFrame>(), 14);
+    }
+
+    #[test]
+    #[should_panic(expected = "assertion")]
+    fn from_bytes_rejects_truncated_frame() {
+        let short = [0u8; 13]; // EthernetFrame needs 14 bytes
+        let _ = EthernetFrame::from_bytes(&short);
+    }
+
+    #[test]
+    fn from_bytes_accepts_minimum_frame() {
+        let exact = [0u8; 14];
+        let frame = EthernetFrame::from_bytes(&exact);
+        let _ = frame.ether_type;
     }
 }
