@@ -1,5 +1,5 @@
 use coarsetime::{Duration, Instant};
-use dashmap::DashMap;
+use rustc_hash::FxHashMap;
 
 use super::wire::ip::IpAddress;
 
@@ -24,7 +24,7 @@ const DEFAULT_PMTU_TTL: Duration = Duration::from_secs(600);
 #[derive(Debug)]
 pub struct PmtuCache {
     /// PMTU table mappings for destination IP addresses.
-    table: DashMap<IpAddress, (u32, Instant)>,
+    table: FxHashMap<IpAddress, (u32, Instant)>,
     /// The default MTU to use when no PMTU is found for a destination.
     default_mtu: u32,
     /// The TTL for PMTU entries.
@@ -37,7 +37,7 @@ impl PmtuCache {
     /// Creates a new PMTU cache with the default MTU and TTL.
     pub fn new() -> Self {
         Self {
-            table: DashMap::new(),
+            table: FxHashMap::default(),
             default_mtu: 1500,
             ttl: DEFAULT_PMTU_TTL,
         }
@@ -46,7 +46,7 @@ impl PmtuCache {
     /// Creates a new PMTU cache with the given MTU and default TTL.
     pub fn with_mtu(mtu: u32) -> Self {
         Self {
-            table: DashMap::new(),
+            table: FxHashMap::default(),
             default_mtu: mtu,
             ttl: DEFAULT_PMTU_TTL,
         }
@@ -55,7 +55,7 @@ impl PmtuCache {
     /// Creates a new PMTU cache with the given MTU and TTL.
     pub fn with_mtu_and_ttl(mtu: u32, ttl: Duration) -> Self {
         Self {
-            table: DashMap::new(),
+            table: FxHashMap::default(),
             default_mtu: mtu,
             ttl,
         }
@@ -65,7 +65,7 @@ impl PmtuCache {
     ///
     /// The value is clamped to the protocol minimum (68 for IPv4,
     /// 1280 for IPv6) before storing.
-    pub fn update(&self, now: Instant, addr: IpAddress, mtu: u32) {
+    pub fn update(&mut self, now: Instant, addr: IpAddress, mtu: u32) {
         let min = match addr {
             IpAddress::V4(_) => IPV4_MIN_MTU,
             IpAddress::V6(_) => IPV6_MIN_MTU,
@@ -78,8 +78,7 @@ impl PmtuCache {
     pub fn get(&self, now: Instant, addr: &IpAddress) -> u32 {
         self.table
             .get(addr)
-            .and_then(|entry| {
-                let (mtu, inserted_at) = *entry.value();
+            .and_then(|&(mtu, inserted_at)| {
                 if now.duration_since(inserted_at) <= self.ttl {
                     Some(mtu)
                 } else {
@@ -90,7 +89,7 @@ impl PmtuCache {
     }
 
     /// Removes all entries older than the configured TTL.
-    pub fn evict_stale(&self, now: Instant) {
+    pub fn evict_stale(&mut self, now: Instant) {
         self.table
             .retain(|_, (_, inserted_at)| now.duration_since(*inserted_at) <= self.ttl);
     }
@@ -113,7 +112,7 @@ mod tests {
     #[test]
     fn insert_and_get_ipv4() {
         let now = Instant::now();
-        let cache = PmtuCache::new();
+        let mut cache = PmtuCache::new();
         let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
         cache.update(now, addr, 1500);
         assert_eq!(cache.get(now, &addr), 1500);
@@ -122,7 +121,7 @@ mod tests {
     #[test]
     fn insert_and_get_ipv6() {
         let now = Instant::now();
-        let cache = PmtuCache::new();
+        let mut cache = PmtuCache::new();
         let addr = IpAddress::V6(Ipv6Address::new([
             0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
         ]));
@@ -133,7 +132,7 @@ mod tests {
     #[test]
     fn clamp_ipv4_to_minimum() {
         let now = Instant::now();
-        let cache = PmtuCache::new();
+        let mut cache = PmtuCache::new();
         let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
         cache.update(now, addr, 20);
         assert_eq!(cache.get(now, &addr), IPV4_MIN_MTU);
@@ -142,7 +141,7 @@ mod tests {
     #[test]
     fn clamp_ipv6_to_minimum() {
         let now = Instant::now();
-        let cache = PmtuCache::new();
+        let mut cache = PmtuCache::new();
         let addr = IpAddress::V6(Ipv6Address::new([
             0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
         ]));
@@ -153,7 +152,7 @@ mod tests {
     #[test]
     fn overwrite_with_smaller_mtu() {
         let now = Instant::now();
-        let cache = PmtuCache::new();
+        let mut cache = PmtuCache::new();
         let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
         cache.update(now, addr, 1500);
         assert_eq!(cache.get(now, &addr), 1500);
@@ -172,7 +171,7 @@ mod tests {
     #[test]
     fn expired_entry_returns_default() {
         let now = Instant::now();
-        let cache = PmtuCache::with_mtu_and_ttl(1500, Duration::from_ticks(0));
+        let mut cache = PmtuCache::with_mtu_and_ttl(1500, Duration::from_ticks(0));
         let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
         cache.update(now, addr, 1200);
         assert_eq!(cache.get(now.add(Duration::from_millis(5)), &addr), 1500);
@@ -181,7 +180,7 @@ mod tests {
     #[test]
     fn evict_stale_removes_expired() {
         let now = Instant::now();
-        let cache = PmtuCache::with_mtu_and_ttl(1500, Duration::from_ticks(0));
+        let mut cache = PmtuCache::with_mtu_and_ttl(1500, Duration::from_ticks(0));
         let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
         cache.update(now, addr, 1200);
         cache.evict_stale(now.add(Duration::from_millis(5)));
@@ -191,7 +190,7 @@ mod tests {
     #[test]
     fn evict_stale_keeps_fresh() {
         let now = Instant::now();
-        let cache = PmtuCache::with_mtu_and_ttl(1500, Duration::from_secs(3600));
+        let mut cache = PmtuCache::with_mtu_and_ttl(1500, Duration::from_secs(3600));
         let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
         cache.update(now, addr, 1200);
         cache.evict_stale(now.add(Duration::from_secs(3600)));

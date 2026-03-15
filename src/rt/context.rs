@@ -42,7 +42,7 @@ pub(crate) struct RuntimeContext<'umem> {
     /// Frames that were read from the network and should be handed back to the kernel for re-use.
     pub rx_return: SharedFrameBuffer<'umem>,
     /// Path MTU cache for handling path MTU discovery.
-    pub pmtu: Rc<PmtuCache>,
+    pub pmtu: Rc<UnsafeCell<PmtuCache>>,
     /// ARP/NDP neighbor handling for IPv4 and IPv6.
     pub neighbor_handler: Rc<NeighborHandler>,
     /// UDP handler is used to bind and send UDP packets, handling things like fragmentation and reassembly.

@@ -36,7 +36,7 @@ pub fn handle_icmpv6<'umem>(
     icmpv6_offset: usize,
     icmpv6_len: usize,
     neighbor_handler: &NeighborHandler,
-    pmtu: &PmtuCache,
+    pmtu: &mut PmtuCache,
     now: Instant,
     rx_offload: bool,
     tx_offload: bool,
@@ -391,7 +391,7 @@ mod tests {
             icmpv6_offset,
             icmpv6_len,
             &neighbor_handler,
-            &PmtuCache::new(),
+            &mut PmtuCache::new(),
             now,
             false,
             false,
@@ -455,7 +455,7 @@ mod tests {
             icmpv6_offset,
             icmpv6_len,
             &neighbor_handler,
-            &PmtuCache::new(),
+            &mut PmtuCache::new(),
             now,
             false,
             false,
@@ -490,7 +490,7 @@ mod tests {
             icmpv6_offset,
             4,
             &neighbor_handler,
-            &PmtuCache::new(),
+            &mut PmtuCache::new(),
             now,
             false,
             false,
@@ -519,7 +519,7 @@ mod tests {
             icmpv6_offset,
             icmpv6_len,
             &neighbor_handler,
-            &PmtuCache::new(),
+            &mut PmtuCache::new(),
             now,
             false,
             false,
@@ -560,7 +560,7 @@ mod tests {
             icmpv6_offset,
             icmpv6_payload.len(),
             &neighbor_handler,
-            &PmtuCache::new(),
+            &mut PmtuCache::new(),
             now,
             false,
             false,
@@ -614,7 +614,7 @@ mod tests {
 
         let icmpv6_offset = eth_len + IPV6_HEADER_LEN;
 
-        let pmtu = PmtuCache::new();
+        let mut pmtu = PmtuCache::new();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         let neighbor_handler = NeighborHandler::new("test", Duration::from_secs(60)).unwrap();
@@ -623,7 +623,7 @@ mod tests {
             icmpv6_offset,
             icmpv6_msg.len(),
             &neighbor_handler,
-            &pmtu,
+            &mut pmtu,
             now,
             false,
             false,

@@ -173,7 +173,7 @@ pub struct LocalRuntime<'umem> {
     // ARP/NDP neighbor handling for IPv4 and IPv6.
     neighbor_handler: Rc<NeighborHandler>,
     // Path MTU cache for handling path MTU discovery.
-    pmtu: Rc<PmtuCache>,
+    pmtu: Rc<UnsafeCell<PmtuCache>>,
     // Ethernet handler is used to handle Ethernet frames.
     ethernet_handler: EthernetHandler,
     // Main IPv4 protocol handler calls into udp_handler and tcp_handler.
@@ -221,7 +221,7 @@ impl<'umem> LocalRuntime<'umem> {
         let mut neighbor_handler = NeighborHandler::new(if_name, arp_ttl)?;
         neighbor_handler.set_offload(rx_offload, tx_offload);
         let neighbor_handler = Rc::new(neighbor_handler);
-        let pmtu = Rc::new(PmtuCache::with_mtu(mtu));
+        let pmtu = Rc::new(UnsafeCell::new(PmtuCache::with_mtu(mtu)));
 
         let tx_return = BasicFrameBuffer::new(umem.num_frames()).into();
         let rx_return = BasicFrameBuffer::new(umem.num_frames()).into();
@@ -300,9 +300,9 @@ impl<'umem> LocalRuntime<'umem> {
                     // SAFETY: single-threaded, no reentrant handler calls.
                     let udp_handler = unsafe { &mut *self.udp_handler.get() };
                     let tcp_handler = unsafe { &mut *self.tcp_handler.get() };
+                    let pmtu = unsafe { &mut *self.pmtu.get() };
                     let Self {
                         neighbor_handler,
-                        pmtu,
                         ethernet_handler,
                         ipv4_handler,
                         ipv6_handler,
@@ -375,7 +375,8 @@ impl<'umem> LocalRuntime<'umem> {
                 );
 
                 self.neighbor_handler.evict_stale(now);
-                self.pmtu.evict_stale(now);
+                // SAFETY: single-threaded, no reentrant access.
+                unsafe { &mut *self.pmtu.get() }.evict_stale(now);
             }
 
             // ---- Transmit & Frame Recycling ----

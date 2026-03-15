@@ -20,7 +20,7 @@ impl EthernetHandler {
         udp_handler: &mut UdpHandler<'umem>,
         tcp_handler: &mut TcpHandler,
         neighbor_handler: &NeighborHandler,
-        pmtu: &PmtuCache,
+        pmtu: &mut PmtuCache,
         now: Instant,
         free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn unknown_ether_type_returns_frame_to_rx() {
-        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) = new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -183,7 +183,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &neighbor,
-            &pmtu,
+            &mut pmtu,
             now,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn ipv4_frame_dispatches_to_ipv4_handler() {
-        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) = new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -211,7 +211,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &neighbor,
-            &pmtu,
+            &mut pmtu,
             now,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn ipv4_short_frame_dispatches_to_ipv4_handler() {
-        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) = new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -242,7 +242,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &neighbor,
-            &pmtu,
+            &mut pmtu,
             now,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn ipv6_short_frame_dispatches_to_ipv6_handler() {
-        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) = new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -273,7 +273,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &neighbor,
-            &pmtu,
+            &mut pmtu,
             now,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn arp_frame_dispatches_to_neighbor_handler() {
-        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) = new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -302,7 +302,7 @@ mod tests {
             &mut udp,
             &mut tcp,
             &neighbor,
-            &pmtu,
+            &mut pmtu,
             now,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
@@ -330,7 +330,7 @@ mod tests {
         ];
 
         for etype in types {
-            let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, pmtu) = new_handlers();
+            let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) = new_handlers();
             let (mut rx, mut tx) = new_buffers();
             let mut data = build_eth_frame(etype);
             let len = data.len();
@@ -343,7 +343,7 @@ mod tests {
                 &mut udp,
                 &mut tcp,
                 &neighbor,
-                &pmtu,
+                &mut pmtu,
                 now,
                 &mut BasicFrameBuffer::new(4),
                 &mut rx,

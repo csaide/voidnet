@@ -43,7 +43,7 @@ pub struct UdpSocket<'umem> {
     free_frames: SharedFrameBuffer<'umem>,
     tx_return: SharedFrameBuffer<'umem>,
     rx_return: SharedFrameBuffer<'umem>,
-    pmtu: Rc<PmtuCache>,
+    pmtu: Rc<UnsafeCell<PmtuCache>>,
     neighbor_handler: Rc<NeighborHandler>,
     handler: Rc<UnsafeCell<UdpHandler<'umem>>>,
     tx_offload: bool,
@@ -113,7 +113,7 @@ impl<'umem> UdpSocket<'umem> {
             free_frames: &mut self.free_frames,
             rx_return: &mut self.rx_return,
             tx_return: &mut self.tx_return,
-            pmtu: &self.pmtu,
+            pmtu: unsafe { &*self.pmtu.get() },
             neighbor_handler: &self.neighbor_handler,
             pkt: Packet::Empty,
             src_addr: self.local_addr,
@@ -162,7 +162,7 @@ impl<'umem> UdpSocket<'umem> {
             free_frames: &mut self.free_frames,
             tx_return: &mut self.tx_return,
             rx_return: &mut self.rx_return,
-            pmtu: &self.pmtu,
+            pmtu: unsafe { &*self.pmtu.get() },
             neighbor_handler: &self.neighbor_handler,
             src_addr: self.local_addr,
             src_port: self.local_port,
@@ -495,7 +495,7 @@ mod tests {
         let free_frames: SharedFrameBuffer = BasicFrameBuffer::new(128).into();
         let tx_return: SharedFrameBuffer = BasicFrameBuffer::new(128).into();
         let rx_return: SharedFrameBuffer = BasicFrameBuffer::new(128).into();
-        let pmtu = Rc::new(PmtuCache::new());
+        let pmtu = Rc::new(UnsafeCell::new(PmtuCache::new()));
         let neighbor_handler =
             Rc::new(NeighborHandler::new("test0", Duration::from_secs(60)).unwrap());
         let udp_handler = Rc::new(UnsafeCell::new(UdpHandler::new(256, false)));

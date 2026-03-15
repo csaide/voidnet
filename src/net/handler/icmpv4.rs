@@ -26,7 +26,7 @@ use crate::{
 /// * All other types are passed to `rx_return`.
 pub fn handle_icmpv4<'umem>(
     mut frame: Frame<'umem>,
-    pmtu: &PmtuCache,
+    pmtu: &mut PmtuCache,
     now: Instant,
     rx_offload: bool,
     tx_offload: bool,
@@ -354,7 +354,7 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(
             frame,
-            &PmtuCache::new(),
+            &mut PmtuCache::new(),
             now,
             false,
             false,
@@ -417,7 +417,7 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(
             frame,
-            &PmtuCache::new(),
+            &mut PmtuCache::new(),
             now,
             false,
             false,
@@ -446,7 +446,7 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(
             frame,
-            &PmtuCache::new(),
+            &mut PmtuCache::new(),
             now,
             false,
             false,
@@ -476,7 +476,7 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(
             frame,
-            &PmtuCache::new(),
+            &mut PmtuCache::new(),
             now,
             false,
             false,
@@ -502,7 +502,7 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(
             frame,
-            &PmtuCache::new(),
+            &mut PmtuCache::new(),
             now,
             false,
             false,
@@ -537,7 +537,7 @@ mod tests {
         let mut tx = BasicFrameBuffer::new(4);
         handle_icmpv4(
             frame,
-            &PmtuCache::new(),
+            &mut PmtuCache::new(),
             now,
             false,
             false,
@@ -774,10 +774,10 @@ mod tests {
         buf[..data.len()].copy_from_slice(&data);
         let frame = Frame::new(0, &mut buf, data.len(), false);
 
-        let pmtu = PmtuCache::new();
+        let mut pmtu = PmtuCache::new();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        handle_icmpv4(frame, &pmtu, now, false, false, &mut rx, &mut tx);
+        handle_icmpv4(frame, &mut pmtu, now, false, false, &mut rx, &mut tx);
 
         // Frame goes to rx (not an echo request)
         assert_eq!(rx.num_frames(), 1);
