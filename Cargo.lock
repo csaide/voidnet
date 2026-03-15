@@ -1989,6 +1989,7 @@ dependencies = [
  "pnet",
  "rand",
  "rustc-hash",
+ "slab",
  "smallvec",
  "smol",
  "smol-macros",
