@@ -8,6 +8,7 @@ use crate::net::{socket::LocalQueue, wire::ip::IpAddress};
 use super::congestion::CubicState;
 use super::recovery::{FRtoState, PrrState, SackRecovery};
 use super::ring_buffer::RingBuffer;
+use super::send_tracker::SendReady;
 use super::state::TcpState;
 
 /// Identifies a TCP connection by its 4-tuple.
@@ -337,6 +338,35 @@ impl Tcb {
             raw_wnd << self.snd_wscale as u32
         } else {
             raw_wnd
+        }
+    }
+
+    /// Mark this connection as having a pending ACK.
+    /// Returns `SendReady` which must be consumed by `SendTracker::mark()`.
+    #[inline]
+    pub fn mark_ack_pending(&mut self) -> SendReady {
+        self.ack_pending = true;
+        SendReady(self.id)
+    }
+
+    /// Set the pending FIN flag.
+    /// Returns `SendReady` which must be consumed by `SendTracker::mark()`.
+    #[inline]
+    pub fn set_pending_fin(&mut self) -> SendReady {
+        self.pending_fin = true;
+        SendReady(self.id)
+    }
+
+    /// Update the send window. Returns `SendReady` only when the window
+    /// transitions from zero to non-zero (peer un-stalls the sender).
+    #[inline]
+    pub fn update_send_window(&mut self, wnd: u32) -> Option<SendReady> {
+        let old = self.snd_wnd;
+        self.snd_wnd = wnd;
+        if old == 0 && wnd > 0 {
+            Some(SendReady(self.id))
+        } else {
+            None
         }
     }
 }

@@ -85,11 +85,18 @@ impl TcpHandler {
         self.listeners
             .retain(|l| !(l.port == port && l.addr == addr));
         // Remove any SYN-RECEIVED connections associated with this listener.
-        self.connections.retain(|_id, c| {
-            !(c.state == TcpState::SynReceived
+        let Self { connections, send_tracker, .. } = self;
+        connections.retain(|id, c| {
+            if c.state == TcpState::SynReceived
                 && c.from_passive_open
                 && c.id.local_port == port
-                && (addr.is_unspecified() || c.id.local_addr == addr))
+                && (addr.is_unspecified() || c.id.local_addr == addr)
+            {
+                send_tracker.unmark(id);
+                false
+            } else {
+                true
+            }
         });
     }
 

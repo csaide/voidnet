@@ -8,6 +8,7 @@ pub(crate) mod options;
 pub(crate) mod recovery;
 pub(crate) mod ring_buffer;
 pub(crate) mod segment;
+pub(crate) mod send_tracker;
 pub(crate) mod state;
 pub(crate) mod tcb;
 mod timers;

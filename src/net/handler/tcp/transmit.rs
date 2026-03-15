@@ -8,25 +8,31 @@ use crate::{
 use super::{
     TcpHandler,
     segment::SegmentBuilder,
+    send_tracker::SendReady,
     state::TcpState,
-    tcb::{MAX_DELAYED_ACK_COUNT, TcpEvent},
+    tcb::{ConnectionId, MAX_DELAYED_ACK_COUNT, TcpEvent},
 };
 
 impl TcpHandler {
     // --- Data transmission ---
 
-    /// Poll established connections for outbound data segments.
+    /// Poll connections with pending send work for outbound data segments.
     /// Called each tick from the runtime loop after receive processing.
+    /// Only iterates connections tracked by the SendTracker.
     pub fn poll_send<'umem>(
         &mut self,
         now: Instant,
         src_mac: crate::net::wire::ethernet::MacAddress,
         neighbor_handler: &NeighborHandler,
         free_frames: &mut impl FrameBuffer<'umem>,
-        rx_return: &mut impl FrameBuffer<'umem>, // NEW
+        rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        for (_id, tcb) in &mut self.connections {
+        let ids: Vec<ConnectionId> = self.send_tracker.drain().collect();
+        for id in ids {
+            let Some(tcb) = self.connections.get_mut(&id) else {
+                continue; // connection was removed
+            };
             if tcb.state != TcpState::Established && tcb.state != TcpState::CloseWait {
                 continue;
             }
@@ -176,6 +182,8 @@ impl TcpHandler {
                     rx_return,
                     tx_return,
                 ) else {
+                    // Neighbor resolution pending — re-mark for next tick.
+                    self.send_tracker.mark(SendReady(id));
                     continue; // skip to next connection
                 };
 
@@ -234,6 +242,8 @@ impl TcpHandler {
                     rx_return,
                     tx_return,
                 ) else {
+                    // Neighbor resolution pending — re-mark for next tick.
+                    self.send_tracker.mark(SendReady(id));
                     continue; // skip to next connection
                 };
 
@@ -278,6 +288,8 @@ impl TcpHandler {
                     rx_return,
                     tx_return,
                 ) else {
+                    // Neighbor resolution pending — re-mark for next tick.
+                    self.send_tracker.mark(SendReady(id));
                     continue; // skip to next connection
                 };
 
@@ -302,7 +314,7 @@ impl TcpHandler {
                 tcb.event_queue.push(TcpEvent::Reset);
                 tcb.state = TcpState::Closed;
                 tcb.pending_fin = false;
-                continue;
+                continue; // connection is Closed, will be cleaned up by retain
             }
 
             // After data sending: check if we should send FIN.
@@ -321,6 +333,8 @@ impl TcpHandler {
                         rx_return,
                         tx_return,
                     ) else {
+                        // Neighbor resolution pending — re-mark for next tick.
+                        self.send_tracker.mark(SendReady(id));
                         continue; // skip to next connection
                     };
                     let ts = tcb.ts_option(tsval);
@@ -358,9 +372,31 @@ impl TcpHandler {
                     }
                 }
             }
+
+            // Re-add to tracker if this connection still has pending work.
+            if let Some(tcb) = self.connections.get(&id) {
+                let bytes_in_flight = tcb.snd_nxt.wrapping_sub(tcb.snd_una) as usize;
+                let has_data = tcb.send_buffer.available().saturating_sub(bytes_in_flight) > 0;
+                let has_work = has_data
+                    || tcb.ack_pending
+                    || tcb.pending_fin
+                    || tcb.persist_deadline.is_some()
+                    || tcb.retransmit_deadline.is_some();
+                if has_work {
+                    self.send_tracker.mark(SendReady(id));
+                }
+            }
         }
 
         // Remove connections aborted by linger deadline.
-        self.connections.retain(|_id, tcb| tcb.state != TcpState::Closed);
+        let Self { connections, send_tracker, .. } = self;
+        connections.retain(|id, tcb| {
+            if tcb.state == TcpState::Closed {
+                send_tracker.unmark(id);
+                false
+            } else {
+                true
+            }
+        });
     }
 }

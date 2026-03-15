@@ -525,14 +525,16 @@ impl<'stream> Future for TcpWrite<'stream> {
             return Poll::Ready(Err(TcpError::NotConnected));
         }
         let handler = unsafe { &mut *this.handler.get() };
-        if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
-            let remaining = &this.data[this.written..];
-            let n = tcb.send_buffer.write(remaining);
+        let remaining = &this.data[this.written..];
+        if let Some(n) = handler.write_to_send_buffer(&this.conn_id, remaining) {
             this.written += n;
             if this.written == this.data.len() {
                 Poll::Ready(Ok(this.written))
             } else {
-                tcb.send_buffer.register_write_waker(cx.waker());
+                // Need to register waker for when send buffer has space.
+                if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
+                    tcb.send_buffer.register_write_waker(cx.waker());
+                }
                 this.event_queue.register_waker(cx.waker());
                 Poll::Pending
             }
@@ -607,14 +609,15 @@ impl<'stream> Future for TcpSplice<'stream> {
         }
 
         let handler = unsafe { &mut *this.handler.get() };
-        if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
-            let n = tcb.recv_buffer.transfer(&mut tcb.send_buffer, this.max_len);
+        if let Some((n, is_remote_closed)) = handler.splice_buffers(&this.conn_id, this.max_len) {
             if n > 0 {
                 Poll::Ready(Ok(n))
-            } else if tcb.state.is_remote_closed() {
+            } else if is_remote_closed {
                 Poll::Ready(Ok(0)) // EOF
             } else {
-                tcb.recv_buffer.register_read_waker(cx.waker());
+                if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
+                    tcb.recv_buffer.register_read_waker(cx.waker());
+                }
                 this.event_queue.register_waker(cx.waker());
                 Poll::Pending
             }

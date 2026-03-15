@@ -15,6 +15,7 @@ use super::recovery::{FRtoState, PrrState, SackRecovery};
 use super::ring_buffer::RingBuffer;
 use super::segment::SegmentBuilder;
 use super::state::TcpState;
+use super::send_tracker::SendReady;
 use super::tcb::{
     ConnectionId, DEFAULT_DELAYED_ACK_MS, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE,
     Tcb, TcpConfig, TcpEvent,
@@ -169,7 +170,10 @@ impl TcpHandler {
             tx_return,
         );
 
-        self.connections.insert(tcb.id, tcb);
+        let id = tcb.id;
+        self.connections.insert(id, tcb);
+        // New connection has a retransmit timer — mark for send tracking.
+        self.send_tracker.mark(SendReady(id));
         Ok(event_queue)
     }
 
@@ -182,7 +186,8 @@ impl TcpHandler {
                 return;
             }
 
-            tcb.pending_fin = true;
+            let ready = tcb.set_pending_fin();
+            self.send_tracker.mark(ready);
             match tcb.linger {
                 Some(0) => {
                     // Linger(0): set deadline to now — poll_send will send RST immediately.

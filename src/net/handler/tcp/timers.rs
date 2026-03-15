@@ -9,6 +9,7 @@ use super::{
     TcpHandler,
     handler::{INITIAL_RTO_MS, SYN_R2_THRESHOLD_MS},
     segment::SegmentBuilder,
+    send_tracker::SendReady,
     state::TcpState,
     tcb::{ConnectionId, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE, TcpEvent},
 };
@@ -23,9 +24,12 @@ impl TcpHandler {
         src_mac: crate::net::wire::ethernet::MacAddress,
         neighbor_handler: &NeighborHandler,
         free_frames: &mut impl FrameBuffer<'umem>,
-        rx_return: &mut impl FrameBuffer<'umem>,  // NEW
+        rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
+        // Collect IDs that need send-tracking after timer processing.
+        let mut to_mark: Vec<ConnectionId> = Vec::new();
+
         // Delayed ACK pass — flush pending ACKs whose deadline has expired.
         for (_id, tcb) in &mut self.connections {
             if !tcb.ack_pending {
@@ -48,6 +52,8 @@ impl TcpHandler {
                     rx_return,
                     tx_return,
                 ) else {
+                    // Neighbor resolution pending — mark for poll_send to retry.
+                    to_mark.push(tcb.id);
                     continue; // skip to next connection
                 };
                 let ts = tcb.ts_option(tsval);
@@ -151,6 +157,7 @@ impl TcpHandler {
         // Remove connections that exceeded keep-alive probes.
         for id in &keep_alive_removals {
             Self::decrement_syn_received(&mut self.listeners, id);
+            self.send_tracker.unmark(id);
             self.connections.remove(id);
         }
 
@@ -175,6 +182,7 @@ impl TcpHandler {
             );
 
             // Send while pipe < cwnd.
+            let mut sent_any = false;
             while tcb.recovery.pipe < tcb.cubic.cwnd {
                 // Try lost segment first.
                 if let Some(lost_seq) = tcb.recovery.next_lost_segment(
@@ -228,11 +236,16 @@ impl TcpHandler {
 
                     tcb.recovery.pipe += tcb.eff_snd_mss as u32;
                     tcb.prr.on_sent(retransmit_len as u32);
+                    sent_any = true;
                 } else {
                     // No more lost segments — could send new data, but that's
                     // handled by poll_send. Break here.
                     break;
                 }
+            }
+            if sent_any {
+                // SACK recovery sent segments — mark for poll_send to send new data.
+                to_mark.push(tcb.id);
             }
         }
 
@@ -372,6 +385,8 @@ impl TcpHandler {
                     tcb.rto_backoff += 1;
                     tcb.retransmit_deadline =
                         Some(now + coarsetime::Duration::from_millis(tcb.rto << tcb.rto_backoff));
+                    // Mark for poll_send — may have more data to send after RTO.
+                    to_mark.push(id);
                 }
                 TcpState::FinWait1 | TcpState::Closing | TcpState::LastAck => {
                     // Retransmit FIN-ACK.
@@ -415,17 +430,25 @@ impl TcpHandler {
         // Remove timed-out connections.
         for id in &to_remove {
             Self::decrement_syn_received(&mut self.listeners, id);
+            self.send_tracker.unmark(id);
             self.connections.remove(id);
+        }
+
+        // Mark connections that need poll_send attention after timer processing.
+        for id in to_mark {
+            self.send_tracker.mark(SendReady(id));
         }
     }
 
     /// Evict stale connections whose TIME-WAIT deadline has passed.
     pub fn evict_stale<'umem>(&mut self, now: Instant, _rx_return: &mut impl FrameBuffer<'umem>) {
-        self.connections.retain(|_id, tcb| {
+        let Self { connections, send_tracker, .. } = self;
+        connections.retain(|id, tcb| {
             if tcb.state == TcpState::TimeWait
                 && let Some(deadline) = tcb.time_wait_deadline
                 && now >= deadline
             {
+                send_tracker.unmark(id);
                 return false; // remove
             }
             true // keep

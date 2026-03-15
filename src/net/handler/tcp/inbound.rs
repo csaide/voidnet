@@ -35,6 +35,7 @@ use super::tcb::{
 };
 
 use super::isn::IsnGenerator;
+use super::send_tracker::SendReady;
 
 /// Actions that must be performed after releasing the `&mut Tcb` borrow.
 enum PostAction {
@@ -290,7 +291,7 @@ impl TcpHandler {
         };
 
         // Destructure self for split borrows.
-        let Self { connections, listeners, isn_generator, tx_offload, rx_offload: _, .. } = self;
+        let Self { connections, listeners, isn_generator, send_tracker, tx_offload, rx_offload: _, .. } = self;
         let tx_offload = *tx_offload;
 
         if let Some(tcb) = connections.get_mut(&conn_id) {
@@ -404,13 +405,28 @@ impl TcpHandler {
             // Handle deferred actions after tcb borrow is released.
             match action {
                 PostAction::RemoveConnection(id) => {
+                    send_tracker.unmark(&id);
                     connections.remove(&id);
                 }
                 PostAction::RemoveAndDecrement(id) => {
                     Self::decrement_syn_received(listeners, &id);
+                    send_tracker.unmark(&id);
                     connections.remove(&id);
                 }
-                PostAction::None => {}
+                PostAction::None => {
+                    // Mark connection for send processing if it has pending work.
+                    if let Some(tcb) = connections.get(&conn_id) {
+                        if tcb.ack_pending
+                            || tcb.pending_fin
+                            || tcb.send_buffer.available() > 0
+                            || tcb.ecn_cwr_sent
+                            || tcb.persist_deadline.is_some()
+                            || tcb.retransmit_deadline.is_some()
+                        {
+                            send_tracker.mark(SendReady(conn_id));
+                        }
+                    }
+                }
             }
             return;
         }
@@ -442,6 +458,16 @@ impl TcpHandler {
                 free_frames,
                 tx_return,
             );
+            // New SynReceived connection needs retransmit timer tracking.
+            let new_conn_id = ConnectionId {
+                local_addr: incoming_dst,
+                local_port: dst_port,
+                remote_addr: incoming_src,
+                remote_port: src_port,
+            };
+            if connections.contains_key(&new_conn_id) {
+                send_tracker.mark(SendReady(new_conn_id));
+            }
             rx_return.push(frame);
             return;
         }

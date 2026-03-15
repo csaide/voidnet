@@ -9,6 +9,7 @@ use super::{
     isn::IsnGenerator,
     listener,
     segment::SegmentBuilder,
+    send_tracker::SendTracker,
     state::TcpState,
     tcb::{ConnectionId, Tcb},
 };
@@ -27,6 +28,7 @@ pub struct TcpHandler {
     pub(super) connections: FxHashMap<ConnectionId, Tcb>,
     pub(super) listeners: Vec<listener::ListenEntry>,
     pub(super) isn_generator: IsnGenerator,
+    pub(crate) send_tracker: SendTracker,
     pub(super) rx_offload: bool,
     pub(super) tx_offload: bool,
 }
@@ -37,6 +39,7 @@ impl TcpHandler {
             connections: FxHashMap::default(),
             listeners: Vec::new(),
             isn_generator: IsnGenerator::new(),
+            send_tracker: SendTracker::new(),
             rx_offload,
             tx_offload,
         }
@@ -83,7 +86,30 @@ impl TcpHandler {
                 tx_return,
             );
         }
+        self.send_tracker.unmark(id);
         self.connections.remove(id);
+    }
+
+    /// Write data to a connection's send buffer and mark it for sending.
+    /// Returns the number of bytes written.
+    pub fn write_to_send_buffer(&mut self, id: &ConnectionId, data: &[u8]) -> Option<usize> {
+        let n = self.connections.get_mut(id)?.send_buffer.write(data);
+        if n > 0 {
+            self.send_tracker.mark(super::send_tracker::SendReady(*id));
+        }
+        Some(n)
+    }
+
+    /// Transfer data from recv_buffer to send_buffer and mark for sending.
+    /// Returns the number of bytes transferred, or None if connection not found.
+    pub fn splice_buffers(&mut self, id: &ConnectionId, max_len: usize) -> Option<(usize, bool)> {
+        let tcb = self.connections.get_mut(id)?;
+        let n = tcb.recv_buffer.transfer(&mut tcb.send_buffer, max_len);
+        if n > 0 {
+            self.send_tracker.mark(super::send_tracker::SendReady(*id));
+        }
+        let is_remote_closed = tcb.state.is_remote_closed();
+        Some((n, is_remote_closed))
     }
 
     /// Get the first connection (test helper).
