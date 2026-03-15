@@ -380,6 +380,7 @@ impl<'umem> LocalRuntime<'umem> {
             }
 
             // ---- Transmit & Frame Recycling ----
+            let free_before = self.free_frames.num_frames();
             let expected_size = self.tx_return.num_frames() + self.rx_return.num_frames();
 
             while self.tx_return.num_frames() > 0 {
@@ -411,7 +412,8 @@ impl<'umem> LocalRuntime<'umem> {
 
             // ---- Capacity-Driven Wakes ----
             // After frame recycling, wake any futures blocked on capacity.
-            if expected_size > 0 {
+            // Only wake if free_frames actually grew (i.e., outbound capacity was freed).
+            if self.free_frames.num_frames() > free_before {
                 main_waker.set_woken();
                 crate::rt::context::with_runtime_context(|ctx| {
                     let wakers = unsafe { &mut *ctx.capacity_wakers.get() };
