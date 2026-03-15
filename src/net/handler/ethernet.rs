@@ -330,7 +330,8 @@ mod tests {
         ];
 
         for etype in types {
-            let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) = new_handlers();
+            let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) =
+                new_handlers();
             let (mut rx, mut tx) = new_buffers();
             let mut data = build_eth_frame(etype);
             let len = data.len();

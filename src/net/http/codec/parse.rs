@@ -2,7 +2,7 @@ use crate::net::http::{
     error::ParseError,
     request::{HeaderOffset, Method, Version},
 };
-use memchr::{memchr, memrchr, memmem};
+use memchr::{memchr, memmem, memrchr};
 
 // ── Private helpers ──────────────────────────────────────────────────────────
 
@@ -12,7 +12,9 @@ fn bytes_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).all(|(x, y)| x.eq_ignore_ascii_case(y))
+    a.iter()
+        .zip(b.iter())
+        .all(|(x, y)| x.eq_ignore_ascii_case(y))
 }
 
 /// Find the position of the first `\n` byte in `buf`.
@@ -163,9 +165,7 @@ const MAX_HEADERS: usize = 64;
 /// Offsets are **local** (0-based into `buf`). Call [`absolutize_headers`] to
 /// convert them to absolute ReadBuffer positions before storing in a
 /// [`Request`].
-pub fn parse_headers(
-    buf: &[u8],
-) -> Option<Result<(Vec<HeaderOffset>, usize), ParseError>> {
+pub fn parse_headers(buf: &[u8]) -> Option<Result<(Vec<HeaderOffset>, usize), ParseError>> {
     // We need \r\n\r\n (or \n\n) to know we have a complete header block.
     let (terminator_pos, terminator_len) = find_header_terminator(buf)?;
     let consumed = terminator_pos + terminator_len;
@@ -273,7 +273,12 @@ fn parse_header_line(
         return Some(ParseError::TooManyHeaders);
     }
 
-    headers.push(HeaderOffset { name_start, name_end, value_start, value_end });
+    headers.push(HeaderOffset {
+        name_start,
+        name_end,
+        value_start,
+        value_end,
+    });
     None
 }
 
@@ -315,7 +320,9 @@ pub(crate) fn find_content_length(
 
 /// Return `true` if any header in `headers` has the given name (case-insensitive).
 pub(crate) fn has_header(headers: &[HeaderOffset], buf: &[u8], name: &[u8]) -> bool {
-    headers.iter().any(|h| bytes_eq_ignore_case(&buf[h.name_start..h.name_end], name))
+    headers
+        .iter()
+        .any(|h| bytes_eq_ignore_case(&buf[h.name_start..h.name_end], name))
 }
 
 // ── header_value_for ─────────────────────────────────────────────────────────
@@ -372,9 +379,7 @@ pub(crate) fn detect_version(buf: &[u8]) -> Option<Result<Version, ParseError>> 
             match token {
                 b"HTTP/1.0" => Some(Ok(Version::Http10)),
                 b"HTTP/1.1" => Some(Ok(Version::Http11)),
-                other if other.starts_with(b"HTTP/") => {
-                    Some(Err(ParseError::UnsupportedVersion))
-                }
+                other if other.starts_with(b"HTTP/") => Some(Err(ParseError::UnsupportedVersion)),
                 _ => {
                     // Token after last space is not an HTTP version string — treat
                     // the whole line as HTTP/0.9 (path might contain spaces).
@@ -528,7 +533,10 @@ mod tests {
 
         // Verify Host header name and value bytes.
         assert_eq!(&buf[headers[0].name_start..headers[0].name_end], b"Host");
-        assert_eq!(&buf[headers[0].value_start..headers[0].value_end], b"example.com");
+        assert_eq!(
+            &buf[headers[0].value_start..headers[0].value_end],
+            b"example.com"
+        );
     }
 
     #[test]
@@ -554,7 +562,10 @@ mod tests {
     fn parse_headers_value_whitespace_trimmed() {
         let buf = b"X-Spaces:   hello world   \r\n\r\n";
         let (headers, _) = parse_headers(buf).unwrap().unwrap();
-        assert_eq!(&buf[headers[0].value_start..headers[0].value_end], b"hello world");
+        assert_eq!(
+            &buf[headers[0].value_start..headers[0].value_end],
+            b"hello world"
+        );
     }
 
     #[test]
@@ -572,10 +583,7 @@ mod tests {
     #[test]
     fn parse_headers_malformed_no_colon() {
         let buf = b"InvalidHeaderLine\r\n\r\n";
-        assert_eq!(
-            parse_headers(buf).unwrap(),
-            Err(ParseError::InvalidHeader)
-        );
+        assert_eq!(parse_headers(buf).unwrap(), Err(ParseError::InvalidHeader));
     }
 
     #[test]
@@ -612,7 +620,10 @@ mod tests {
     fn find_content_length_invalid() {
         let buf = b"Content-Length: abc\r\n\r\n";
         let (headers, _) = parse_headers(buf).unwrap().unwrap();
-        assert_eq!(find_content_length(&headers, buf), Err(ParseError::InvalidContentLength));
+        assert_eq!(
+            find_content_length(&headers, buf),
+            Err(ParseError::InvalidContentLength)
+        );
     }
 
     #[test]
@@ -640,8 +651,14 @@ mod tests {
     fn header_value_for_returns_value() {
         let buf = b"X-Custom: hello\r\n\r\n";
         let (headers, _) = parse_headers(buf).unwrap().unwrap();
-        assert_eq!(header_value_for(&headers, buf, b"x-custom"), Some(b"hello".as_ref()));
-        assert_eq!(header_value_for(&headers, buf, b"X-CUSTOM"), Some(b"hello".as_ref()));
+        assert_eq!(
+            header_value_for(&headers, buf, b"x-custom"),
+            Some(b"hello".as_ref())
+        );
+        assert_eq!(
+            header_value_for(&headers, buf, b"X-CUSTOM"),
+            Some(b"hello".as_ref())
+        );
         assert_eq!(header_value_for(&headers, buf, b"missing"), None);
     }
 
@@ -649,18 +666,27 @@ mod tests {
 
     #[test]
     fn detect_version_http11() {
-        assert_eq!(detect_version(b"GET / HTTP/1.1\r\n"), Some(Ok(Version::Http11)));
+        assert_eq!(
+            detect_version(b"GET / HTTP/1.1\r\n"),
+            Some(Ok(Version::Http11))
+        );
     }
 
     #[test]
     fn detect_version_http10() {
-        assert_eq!(detect_version(b"GET / HTTP/1.0\r\n"), Some(Ok(Version::Http10)));
+        assert_eq!(
+            detect_version(b"GET / HTTP/1.0\r\n"),
+            Some(Ok(Version::Http10))
+        );
     }
 
     #[test]
     fn detect_version_http09() {
         // HTTP/0.9 simple request — no version token after the last space.
-        assert_eq!(detect_version(b"GET /index.html\r\n"), Some(Ok(Version::Http09)));
+        assert_eq!(
+            detect_version(b"GET /index.html\r\n"),
+            Some(Ok(Version::Http09))
+        );
     }
 
     #[test]

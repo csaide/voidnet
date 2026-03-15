@@ -228,7 +228,8 @@ fn established_out_of_order_reassembly() {
         &mut tx,
     );
     assert_eq!(
-        handler.first_connection().rcv_nxt, 1001,
+        handler.first_connection().rcv_nxt,
+        1001,
         "rcv_nxt not advanced for OOO"
     );
     assert_eq!(handler.first_connection().ooo_ranges.len(), 1);
@@ -258,7 +259,8 @@ fn established_out_of_order_reassembly() {
 
     // Both segments should now be contiguous.
     assert_eq!(
-        handler.first_connection().rcv_nxt, 1011,
+        handler.first_connection().rcv_nxt,
+        1011,
         "rcv_nxt advanced past both segments"
     );
     assert_eq!(
@@ -634,7 +636,8 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
     let filler = [0xAA_u8; 20];
     handler.first_connection_mut().recv_buffer.write(&filler);
     // Advance rcv_nxt to account for the filler (as if received normally).
-    handler.first_connection_mut().rcv_nxt = handler.first_connection_mut().rcv_nxt.wrapping_add(20);
+    handler.first_connection_mut().rcv_nxt =
+        handler.first_connection_mut().rcv_nxt.wrapping_add(20);
     let rcv_nxt_before = handler.first_connection().rcv_nxt;
 
     // Send a 20-byte payload — only 12 should fit.

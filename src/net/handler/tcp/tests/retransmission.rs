@@ -173,7 +173,8 @@ fn rto_retransmit_on_timer_expiry() {
     let cwnd_before = handler.first_connection().cubic.cwnd;
 
     // Simulate timer expiry by setting a deadline in the past.
-    handler.first_connection_mut().retransmit_deadline = Some(now - coarsetime::Duration::from_millis(1));
+    handler.first_connection_mut().retransmit_deadline =
+        Some(now - coarsetime::Duration::from_millis(1));
     handler.first_connection_mut().rto_backoff = 0;
 
     // poll_timers should trigger RTO retransmit.
@@ -251,7 +252,10 @@ fn rtt_estimation_updates_rto() {
     while tx.pop().is_some() {}
 
     // Send data.
-    handler.first_connection_mut().send_buffer.write(b"test data");
+    handler
+        .first_connection_mut()
+        .send_buffer
+        .write(b"test data");
     handler.first_connection_mut().snd_wnd = 65535;
     let send_time = coarsetime::Instant::now();
     handler.poll_send(send_time, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
@@ -360,7 +364,8 @@ fn limited_transmit_sends_on_first_dup_ack() {
 
     let mss = handler.first_connection().eff_snd_mss as usize;
     // Fill send buffer with 6 MSS of data, set cwnd to 3*MSS.
-    handler.first_connection_mut()
+    handler
+        .first_connection_mut()
         .send_buffer
         .write(&vec![0xAA; mss * 6]);
     handler.first_connection_mut().snd_wnd = 65535;

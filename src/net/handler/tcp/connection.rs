@@ -14,8 +14,8 @@ use super::handler::INITIAL_RTO_MS;
 use super::recovery::{FRtoState, PrrState, SackRecovery};
 use super::ring_buffer::RingBuffer;
 use super::segment::SegmentBuilder;
-use super::state::TcpState;
 use super::send_tracker::SendReady;
+use super::state::TcpState;
 use super::tcb::{
     ConnectionId, DEFAULT_DELAYED_ACK_MS, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE,
     Tcb, TcpConfig, TcpEvent,

@@ -1,5 +1,5 @@
-use crate::net::http::request::{BodyFraming, Request, Version};
 use super::{Codec, DecodeOutcome, DecodeResult, parse};
+use crate::net::http::request::{BodyFraming, Request, Version};
 
 /// HTTP/1.0 codec.
 ///

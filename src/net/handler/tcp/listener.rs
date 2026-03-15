@@ -85,7 +85,11 @@ impl TcpHandler {
         self.listeners
             .retain(|l| !(l.port == port && l.addr == addr));
         // Remove any SYN-RECEIVED connections associated with this listener.
-        let Self { connections, send_tracker, .. } = self;
+        let Self {
+            connections,
+            send_tracker,
+            ..
+        } = self;
         connections.retain(|id, c| {
             if c.state == TcpState::SynReceived
                 && c.from_passive_open
@@ -101,10 +105,7 @@ impl TcpHandler {
     }
 
     /// Push a ConnectionId to the matching listener's accept queue (associated function for split-borrow).
-    pub(super) fn push_to_accept_queue_on(
-        listeners: &[ListenEntry],
-        id: &ConnectionId,
-    ) {
+    pub(super) fn push_to_accept_queue_on(listeners: &[ListenEntry], id: &ConnectionId) {
         for listener in listeners {
             if listener.port == id.local_port
                 && (listener.addr.is_unspecified() || listener.addr == id.local_addr)
@@ -116,7 +117,7 @@ impl TcpHandler {
     }
 
     /// Decrement syn_received_count on the matching listener (associated function for split-borrow).
-    pub(super) fn decrement_syn_received(listeners: &mut Vec<ListenEntry>, id: &ConnectionId) {
+    pub(super) fn decrement_syn_received(listeners: &mut [ListenEntry], id: &ConnectionId) {
         for listener in listeners.iter_mut() {
             if listener.port == id.local_port
                 && (listener.addr.is_unspecified() || listener.addr == id.local_addr)

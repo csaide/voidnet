@@ -175,7 +175,8 @@ fn keep_alive_probe_sent_after_idle_timeout() {
     handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(
-        handler.first_connection().keep_alive_probes_sent, 1,
+        handler.first_connection().keep_alive_probes_sent,
+        1,
         "one keep-alive probe should have been sent"
     );
     assert!(
@@ -252,7 +253,8 @@ fn keep_alive_no_probe_when_disabled() {
     handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(
-        handler.first_connection().keep_alive_probes_sent, 0,
+        handler.first_connection().keep_alive_probes_sent,
+        0,
         "no probes should be sent when keep-alive is disabled"
     );
     assert_eq!(tx.num_frames(), 0, "no segments should be emitted");
@@ -696,7 +698,8 @@ fn keep_alive_probe_and_recovery() {
         "keep-alive probe should be sent"
     );
     assert_eq!(
-        handler.first_connection().keep_alive_probes_sent, 1,
+        handler.first_connection().keep_alive_probes_sent,
+        1,
         "probes_sent should be 1"
     );
 
@@ -825,7 +828,8 @@ fn keep_alive_exhaustion_removes_connection() {
 
     // First probe should have been sent.
     assert_eq!(
-        handler.first_connection().keep_alive_probes_sent, 1,
+        handler.first_connection().keep_alive_probes_sent,
+        1,
         "first probe sent"
     );
     assert_eq!(
@@ -914,7 +918,10 @@ fn linger_zero_immediate_rst() {
     assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Write some data to send buffer.
-    handler.first_connection_mut().send_buffer.write(b"unsent data");
+    handler
+        .first_connection_mut()
+        .send_buffer
+        .write(b"unsent data");
 
     // Set linger to 0 and capture event queue.
     handler.first_connection_mut().linger = Some(0);

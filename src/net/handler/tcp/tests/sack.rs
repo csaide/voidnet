@@ -566,11 +566,15 @@ fn sack_recovery_enters_on_3_dup_acks() {
 
     // Write 4 MSS of data and simulate 4 segments sent by advancing snd_nxt.
     let data_len = 4 * mss as usize;
-    handler.first_connection_mut()
+    handler
+        .first_connection_mut()
         .send_buffer
         .write(&vec![0xAA; data_len]);
     handler.first_connection_mut().snd_wnd = 65535;
-    handler.first_connection_mut().snd_nxt = handler.first_connection_mut().snd_una.wrapping_add(data_len as u32);
+    handler.first_connection_mut().snd_nxt = handler
+        .first_connection_mut()
+        .snd_una
+        .wrapping_add(data_len as u32);
 
     let snd_una = handler.first_connection().snd_una;
     let cwnd_before = handler.first_connection().cubic.cwnd;
@@ -671,11 +675,15 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
 
     // Write 4 MSS of data and simulate 4 segments sent by advancing snd_nxt.
     let data_len = 4 * mss as usize;
-    handler.first_connection_mut()
+    handler
+        .first_connection_mut()
         .send_buffer
         .write(&vec![0xAA; data_len]);
     handler.first_connection_mut().snd_wnd = 65535;
-    handler.first_connection_mut().snd_nxt = handler.first_connection_mut().snd_una.wrapping_add(data_len as u32);
+    handler.first_connection_mut().snd_nxt = handler
+        .first_connection_mut()
+        .snd_una
+        .wrapping_add(data_len as u32);
 
     let snd_una = handler.first_connection().snd_una;
 

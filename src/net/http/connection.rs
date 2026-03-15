@@ -108,16 +108,16 @@ impl HttpConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::http::{Method, Version};
-    use crate::net::http::request::BodyFraming;
     use crate::net::http::codec::parse::ConnectionDirective;
+    use crate::net::http::request::BodyFraming;
+    use crate::net::http::{Method, Version};
 
-    use std::cell::UnsafeCell;
-    use std::rc::Rc;
     use crate::net::handler::tcp::TcpHandler;
     use crate::net::handler::tcp::tcb::ConnectionId;
     use crate::net::socket::LocalQueue;
     use crate::net::wire::ip::{IpAddress, Ipv4Address};
+    use std::cell::UnsafeCell;
+    use std::rc::Rc;
 
     fn new_test_connection() -> HttpConnection {
         let handler = Rc::new(UnsafeCell::new(TcpHandler::new(false, false)));
@@ -137,7 +137,16 @@ mod tests {
         let mut conn = new_test_connection();
         // Simulate data in the read buffer
         conn.read_buf.append(b"GET /hello\r\n");
-        let req = Request::new(Method::Get, 4, 10, Version::Http09, Vec::new(), BodyFraming::None, false, ConnectionDirective::None);
+        let req = Request::new(
+            Method::Get,
+            4,
+            10,
+            Version::Http09,
+            Vec::new(),
+            BodyFraming::None,
+            false,
+            ConnectionDirective::None,
+        );
         assert_eq!(conn.request_path(&req), b"/hello");
     }
 }

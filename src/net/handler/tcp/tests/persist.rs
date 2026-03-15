@@ -122,7 +122,8 @@ fn persist_timer_clears_when_window_reopens() {
         "persist_deadline should be cleared when window reopens"
     );
     assert_eq!(
-        handler.first_connection().persist_backoff, 0,
+        handler.first_connection().persist_backoff,
+        0,
         "persist_backoff should be reset"
     );
 }

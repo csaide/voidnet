@@ -389,7 +389,10 @@ fn ecn_ect_not_set_on_retransmit() {
     // Enable ECN and send data.
     handler.first_connection_mut().ecn_enabled = true;
     handler.first_connection_mut().snd_wnd = 65535;
-    handler.first_connection_mut().send_buffer.write(b"RTO test data");
+    handler
+        .first_connection_mut()
+        .send_buffer
+        .write(b"RTO test data");
 
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
@@ -676,7 +679,8 @@ fn ecn_cwnd_halved_on_ece() {
     handler.first_connection_mut().cubic.ssthresh = 20 * mss;
 
     // Send some data so snd_nxt advances.
-    handler.first_connection_mut()
+    handler
+        .first_connection_mut()
         .send_buffer
         .write(b"test data for ecn");
     let now = coarsetime::Instant::now();
@@ -719,7 +723,8 @@ fn ecn_cwnd_halved_on_ece() {
         cwnd_after,
     );
     assert_eq!(
-        handler.first_connection().cubic.cwnd, handler.first_connection().cubic.ssthresh,
+        handler.first_connection().cubic.cwnd,
+        handler.first_connection().cubic.ssthresh,
         "cwnd should equal ssthresh after ECN response"
     );
     assert!(
@@ -795,7 +800,10 @@ fn ecn_cwr_sent_on_next_data() {
     handler.first_connection_mut().snd_wnd = 65535;
 
     // Write data and poll_send.
-    handler.first_connection_mut().send_buffer.write(b"cwr test data");
+    handler
+        .first_connection_mut()
+        .send_buffer
+        .write(b"cwr test data");
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 

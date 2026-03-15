@@ -291,7 +291,15 @@ impl TcpHandler {
         };
 
         // Destructure self for split borrows.
-        let Self { connections, listeners, isn_generator, send_tracker, tx_offload, rx_offload: _, .. } = self;
+        let Self {
+            connections,
+            listeners,
+            isn_generator,
+            send_tracker,
+            tx_offload,
+            rx_offload: _,
+            ..
+        } = self;
         let tx_offload = *tx_offload;
 
         if let Some(tcb) = connections.get_mut(&conn_id) {
@@ -344,7 +352,7 @@ impl TcpHandler {
                     let payload_offset = tcp_offset + tcp_header_len;
                     let payload_len = frame.len().saturating_sub(payload_offset);
                     let opts = ParsedOptions::parse(options);
-                    let action = Self::process_established(
+                    Self::process_established(
                         tcb,
                         frame,
                         now,
@@ -363,8 +371,7 @@ impl TcpHandler {
                         free_frames,
                         rx_return,
                         tx_return,
-                    );
-                    action
+                    )
                 }
                 TcpState::FinWait1
                 | TcpState::FinWait2
@@ -375,7 +382,7 @@ impl TcpHandler {
                     let payload_offset = tcp_offset + tcp_header_len;
                     let payload_len = frame.len().saturating_sub(payload_offset);
                     let opts = ParsedOptions::parse(options);
-                    let action = Self::process_teardown(
+                    Self::process_teardown(
                         tcb,
                         frame,
                         now,
@@ -393,8 +400,7 @@ impl TcpHandler {
                         free_frames,
                         rx_return,
                         tx_return,
-                    );
-                    action
+                    )
                 }
                 _ => {
                     rx_return.push(frame);
@@ -415,16 +421,15 @@ impl TcpHandler {
                 }
                 PostAction::None => {
                     // Mark connection for send processing if it has pending work.
-                    if let Some(tcb) = connections.get(&conn_id) {
-                        if tcb.ack_pending
+                    if let Some(tcb) = connections.get(&conn_id)
+                        && (tcb.ack_pending
                             || tcb.pending_fin
                             || tcb.send_buffer.available() > 0
                             || tcb.ecn_cwr_sent
                             || tcb.persist_deadline.is_some()
-                            || tcb.retransmit_deadline.is_some()
-                        {
-                            send_tracker.mark(SendReady(conn_id));
-                        }
+                            || tcb.retransmit_deadline.is_some())
+                    {
+                        send_tracker.mark(SendReady(conn_id));
                     }
                 }
             }
@@ -502,7 +507,7 @@ impl TcpHandler {
 
     fn process_listen<'umem>(
         connections: &mut FxHashMap<ConnectionId, Tcb>,
-        listeners: &mut Vec<ListenEntry>,
+        listeners: &mut [ListenEntry],
         isn_generator: &mut IsnGenerator,
         listener_idx: usize,
         now: Instant,
@@ -709,7 +714,7 @@ impl TcpHandler {
 
     fn process_syn_received<'umem>(
         tcb: &mut Tcb,
-        listeners: &mut Vec<ListenEntry>,
+        listeners: &mut [ListenEntry],
         tsval: u32,
         seg_seq: u32,
         seg_ack: u32,
@@ -1896,9 +1901,7 @@ impl TcpHandler {
         }
 
         // Step 4: Process FIN flag.
-        if seg_flags & flags::FIN != 0
-            && seg_seq.wrapping_add(payload_len as u32) == tcb.rcv_nxt
-        {
+        if seg_flags & flags::FIN != 0 && seg_seq.wrapping_add(payload_len as u32) == tcb.rcv_nxt {
             tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1); // FIN consumes one sequence number
             tcb.state = TcpState::CloseWait;
             tcb.event_queue.push(TcpEvent::RemoteClose);
@@ -2236,13 +2239,12 @@ impl TcpHandler {
 
             TcpState::LastAck => {
                 // Waiting for ACK of our FIN.
-                if seg_flags & flags::ACK != 0 {
-                    if let Some(fin_seq) = tcb.fin_seq
-                        && crate::net::wire::tcp::seq_lt(fin_seq, seg_ack)
-                    {
-                        rx_return.push(frame);
-                        return PostAction::RemoveConnection(tcb.id);
-                    }
+                if seg_flags & flags::ACK != 0
+                    && let Some(fin_seq) = tcb.fin_seq
+                    && crate::net::wire::tcp::seq_lt(fin_seq, seg_ack)
+                {
+                    rx_return.push(frame);
+                    return PostAction::RemoveConnection(tcb.id);
                 }
                 rx_return.push(frame);
             }

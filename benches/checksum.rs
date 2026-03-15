@@ -5,13 +5,9 @@ fn bench_sum_words(c: &mut Criterion) {
     let mut group = c.benchmark_group("sum_words");
     for size in [64, 256, 1500, 9000] {
         let data: Vec<u8> = (0..size).map(|i| (i & 0xFF) as u8).collect();
-        group.bench_with_input(
-            BenchmarkId::new("bytes", size),
-            &data,
-            |b, data| {
-                b.iter(|| std::hint::black_box(sum_words(data)));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("bytes", size), &data, |b, data| {
+            b.iter(|| std::hint::black_box(sum_words(data)));
+        });
     }
     group.finish();
 }

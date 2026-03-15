@@ -201,7 +201,16 @@ mod tests {
 
     #[test]
     fn request_is_clone() {
-        let req = Request::new(Method::Get, 4, 15, Version::Http09, Vec::new(), BodyFraming::None, false, ConnectionDirective::None);
+        let req = Request::new(
+            Method::Get,
+            4,
+            15,
+            Version::Http09,
+            Vec::new(),
+            BodyFraming::None,
+            false,
+            ConnectionDirective::None,
+        );
         let req2 = req.clone();
         assert_eq!(req.method, req2.method);
         assert_eq!(req.version, req2.version);
@@ -216,7 +225,12 @@ mod tests {
             5,
             10,
             Version::Http11,
-            vec![HeaderOffset { name_start: 0, name_end: 4, value_start: 6, value_end: 9 }],
+            vec![HeaderOffset {
+                name_start: 0,
+                name_end: 4,
+                value_start: 6,
+                value_end: 9,
+            }],
             BodyFraming::ContentLength(42),
             false,
             ConnectionDirective::None,
@@ -230,14 +244,32 @@ mod tests {
 
     #[test]
     fn request_path_offsets() {
-        let req = Request::new(Method::Get, 4, 15, Version::Http09, Vec::new(), BodyFraming::None, false, ConnectionDirective::None);
+        let req = Request::new(
+            Method::Get,
+            4,
+            15,
+            Version::Http09,
+            Vec::new(),
+            BodyFraming::None,
+            false,
+            ConnectionDirective::None,
+        );
         let buf = b"GET /index.html\r\n";
         assert_eq!(req.path_from_buf(buf), b"/index.html");
     }
 
     #[test]
     fn request_empty_path() {
-        let req = Request::new(Method::Get, 4, 5, Version::Http09, Vec::new(), BodyFraming::None, false, ConnectionDirective::None);
+        let req = Request::new(
+            Method::Get,
+            4,
+            5,
+            Version::Http09,
+            Vec::new(),
+            BodyFraming::None,
+            false,
+            ConnectionDirective::None,
+        );
         let buf = b"GET /\n";
         assert_eq!(req.path_from_buf(buf), b"/");
     }
@@ -254,7 +286,16 @@ mod tests {
             value_start: 22,
             value_end: 33,
         }];
-        let req = Request::new(Method::Get, 4, 5, Version::Http11, headers, BodyFraming::None, false, ConnectionDirective::None);
+        let req = Request::new(
+            Method::Get,
+            4,
+            5,
+            Version::Http11,
+            headers,
+            BodyFraming::None,
+            false,
+            ConnectionDirective::None,
+        );
         assert_eq!(req.header_value(buf, "Host"), Some(b"example.com".as_ref()));
         assert_eq!(req.header_value(buf, "host"), Some(b"example.com".as_ref()));
         assert_eq!(req.header_value(buf, "HOST"), Some(b"example.com".as_ref()));

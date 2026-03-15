@@ -1,9 +1,9 @@
+use crate::net::http::codec::parse::ConnectionDirective;
 use crate::net::http::{
     HttpError,
     codec::{DecodeResult, HttpCodec, v0_9::Http09Codec},
     request::{Request, Version},
 };
-use crate::net::http::codec::parse::ConnectionDirective;
 
 /// Connection-level state machine for HTTP request/response lifecycle.
 ///
@@ -96,8 +96,7 @@ impl Session {
     /// Mark that the response has started.
     pub fn begin_response(&mut self) {
         debug_assert!(
-            self.state == SessionState::RequestReady
-                || self.state == SessionState::ReadingBody,
+            self.state == SessionState::RequestReady || self.state == SessionState::ReadingBody,
             "begin_response called in state {:?}",
             self.state
         );
@@ -112,12 +111,8 @@ impl Session {
 
         let keep_alive = match self.codec.version() {
             Version::Http09 => false,
-            Version::Http10 => {
-                self.connection_directive == ConnectionDirective::KeepAlive
-            }
-            Version::Http11 => {
-                self.connection_directive != ConnectionDirective::Close
-            }
+            Version::Http10 => self.connection_directive == ConnectionDirective::KeepAlive,
+            Version::Http11 => self.connection_directive != ConnectionDirective::Close,
         };
 
         if keep_alive {
@@ -215,7 +210,7 @@ mod tests {
     #[test]
     fn session_http10_close_by_default() {
         let mut session = Session::new(HttpCodec::Http10(
-            crate::net::http::codec::v1_0::Http10Codec::new()
+            crate::net::http::codec::v1_0::Http10Codec::new(),
         ));
         let buf = b"GET /test HTTP/1.0\r\nHost: test\r\n\r\n";
         session.try_decode_request(buf, 0).unwrap();
@@ -228,7 +223,7 @@ mod tests {
     #[test]
     fn session_http11_keep_alive_by_default() {
         let mut session = Session::new(HttpCodec::Http11(
-            crate::net::http::codec::v1_1::Http11Codec::new()
+            crate::net::http::codec::v1_1::Http11Codec::new(),
         ));
         let buf = b"GET /test HTTP/1.1\r\nHost: test\r\n\r\n";
         let result = session.try_decode_request(buf, 0).unwrap();
@@ -242,7 +237,7 @@ mod tests {
     #[test]
     fn session_http11_connection_close() {
         let mut session = Session::new(HttpCodec::Http11(
-            crate::net::http::codec::v1_1::Http11Codec::new()
+            crate::net::http::codec::v1_1::Http11Codec::new(),
         ));
         let buf = b"GET /test HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
         let result = session.try_decode_request(buf, 0).unwrap();
@@ -256,7 +251,7 @@ mod tests {
     #[test]
     fn session_http10_keep_alive_header() {
         let mut session = Session::new(HttpCodec::Http10(
-            crate::net::http::codec::v1_0::Http10Codec::new()
+            crate::net::http::codec::v1_0::Http10Codec::new(),
         ));
         let buf = b"GET /test HTTP/1.0\r\nConnection: keep-alive\r\n\r\n";
         let result = session.try_decode_request(buf, 0).unwrap();
@@ -270,7 +265,7 @@ mod tests {
     #[test]
     fn session_awaiting_next_to_awaiting_request() {
         let mut session = Session::new(HttpCodec::Http11(
-            crate::net::http::codec::v1_1::Http11Codec::new()
+            crate::net::http::codec::v1_1::Http11Codec::new(),
         ));
         let buf = b"GET /test HTTP/1.1\r\nHost: test\r\n\r\n";
         session.try_decode_request(buf, 0).unwrap();

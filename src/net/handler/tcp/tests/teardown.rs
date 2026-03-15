@@ -306,7 +306,10 @@ fn poll_send_drains_data_before_fin() {
     while tx.pop().is_some() {}
 
     // Write data AND set pending_fin.
-    handler.first_connection_mut().send_buffer.write(b"final data");
+    handler
+        .first_connection_mut()
+        .send_buffer
+        .write(b"final data");
     handler.first_connection_mut().snd_wnd = 65535;
     handler.first_connection_mut().pending_fin = true;
 
@@ -320,7 +323,10 @@ fn poll_send_drains_data_before_fin() {
         TcpState::Established,
         "still Established until data ACKed"
     );
-    assert!(handler.first_connection().pending_fin, "pending_fin still set");
+    assert!(
+        handler.first_connection().pending_fin,
+        "pending_fin still set"
+    );
 }
 
 #[test]
@@ -1540,7 +1546,8 @@ fn close_wait_processes_ack_for_sent_data() {
 
     // snd_una should advance to snd_nxt (all data ACKed).
     assert_eq!(
-        handler.first_connection().snd_una, snd_nxt_after_send,
+        handler.first_connection().snd_una,
+        snd_nxt_after_send,
         "snd_una must advance to cover ACKed data"
     );
     // Send buffer should be drained.
@@ -1551,7 +1558,8 @@ fn close_wait_processes_ack_for_sent_data() {
     );
     // Window should be updated.
     assert_eq!(
-        handler.first_connection().snd_wnd, 32000,
+        handler.first_connection().snd_wnd,
+        32000,
         "send window must be updated from ACK"
     );
 }
@@ -1667,7 +1675,8 @@ fn out_of_order_fin_does_not_transition_to_close_wait() {
         "FIN must not be processed when there is a gap before it"
     );
     assert_eq!(
-        handler.first_connection().rcv_nxt, 1001,
+        handler.first_connection().rcv_nxt,
+        1001,
         "rcv_nxt must not advance past the gap"
     );
 
@@ -1734,7 +1743,8 @@ fn out_of_order_fin_does_not_transition_to_close_wait() {
         "FIN should be processed once all preceding data is received"
     );
     assert_eq!(
-        handler.first_connection().rcv_nxt, 1012,
+        handler.first_connection().rcv_nxt,
+        1012,
         "rcv_nxt should advance by 1 for the FIN"
     );
 }

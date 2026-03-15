@@ -1,8 +1,8 @@
+use super::{Codec, DecodeOutcome, DecodeResult, parse};
 use crate::net::http::{
     error::ParseError,
     request::{BodyFraming, Request, Version},
 };
-use super::{Codec, DecodeOutcome, DecodeResult, parse};
 
 /// HTTP/1.1 codec.
 ///
@@ -71,24 +71,13 @@ impl Codec for Http11Codec {
 
         // Step 5: Determine body framing.
         // Chunked Transfer-Encoding takes priority over Content-Length (RFC 7230 §3.3.3).
-        let body_framing =
-            if let Some(te) = parse::header_value_for(&local_headers, header_buf, b"transfer-encoding") {
-                if te.eq_ignore_ascii_case(b"chunked") {
-                    BodyFraming::Chunked
-                } else {
-                    // Non-chunked TE — fall through to Content-Length check.
-                    match parse::find_content_length(&local_headers, header_buf) {
-                        Err(e) => {
-                            return DecodeOutcome {
-                                result: DecodeResult::Error(e),
-                                consumed: 0,
-                            };
-                        }
-                        Ok(Some(len)) => BodyFraming::ContentLength(len),
-                        Ok(None) => BodyFraming::None,
-                    }
-                }
+        let body_framing = if let Some(te) =
+            parse::header_value_for(&local_headers, header_buf, b"transfer-encoding")
+        {
+            if te.eq_ignore_ascii_case(b"chunked") {
+                BodyFraming::Chunked
             } else {
+                // Non-chunked TE — fall through to Content-Length check.
                 match parse::find_content_length(&local_headers, header_buf) {
                     Err(e) => {
                         return DecodeOutcome {
@@ -99,7 +88,19 @@ impl Codec for Http11Codec {
                     Ok(Some(len)) => BodyFraming::ContentLength(len),
                     Ok(None) => BodyFraming::None,
                 }
-            };
+            }
+        } else {
+            match parse::find_content_length(&local_headers, header_buf) {
+                Err(e) => {
+                    return DecodeOutcome {
+                        result: DecodeResult::Error(e),
+                        consumed: 0,
+                    };
+                }
+                Ok(Some(len)) => BodyFraming::ContentLength(len),
+                Ok(None) => BodyFraming::None,
+            }
+        };
 
         // Step 6: Detect connection directive.
         let connection_directive = parse::detect_connection_directive(&local_headers, header_buf);
@@ -165,7 +166,8 @@ mod tests {
     #[test]
     fn decode_chunked_transfer_encoding() {
         let mut codec = Http11Codec::new();
-        let buf = b"POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let buf =
+            b"POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n";
         let outcome = codec.decode(buf, 0);
         match outcome.result {
             DecodeResult::Complete(req) => {

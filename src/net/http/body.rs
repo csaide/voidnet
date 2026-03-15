@@ -275,12 +275,12 @@ impl<'conn> BodyReader<'conn> {
 mod tests {
     use super::*;
 
-    use std::cell::UnsafeCell;
-    use std::rc::Rc;
     use crate::net::handler::tcp::TcpHandler;
     use crate::net::handler::tcp::tcb::ConnectionId;
     use crate::net::socket::LocalQueue;
     use crate::net::wire::ip::{IpAddress, Ipv4Address};
+    use std::cell::UnsafeCell;
+    use std::rc::Rc;
 
     /// Build a fake TcpStream and a pre-filled ReadBuffer for unit testing.
     ///
@@ -296,7 +296,8 @@ mod tests {
             remote_port: 0,
         };
         let event_queue = LocalQueue::new(16);
-        let stream = crate::net::socket::TcpStream::from_accepted_for_test(conn_id, event_queue, handler);
+        let stream =
+            crate::net::socket::TcpStream::from_accepted_for_test(conn_id, event_queue, handler);
 
         let mut buf = ReadBuffer::new(4096);
         let written = buf.append(data);

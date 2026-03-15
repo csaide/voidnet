@@ -196,7 +196,10 @@ fn handle_neighbor_solicitation<'umem>(
     if !src_addr.is_unspecified()
         && let Some(mac) = sender_mac
     {
-        table.insert(IpAddress::V6(src_addr), NeighborState::reachable(mac, now + ttl));
+        table.insert(
+            IpAddress::V6(src_addr),
+            NeighborState::reachable(mac, now + ttl),
+        );
     }
 
     // Check if the target is one of our addresses.
@@ -319,7 +322,10 @@ fn handle_router_advertisement<'umem>(
     // Parse Source Link-Layer Address option (type=1).
     let options_start = icmpv6_offset + 16; // RA header is 16 bytes
     if let Some(mac) = parse_ndp_link_layer_option(&frame, options_start, icmpv6_end, 1) {
-        table.insert(IpAddress::V6(src_addr), NeighborState::reachable(mac, now + ttl));
+        table.insert(
+            IpAddress::V6(src_addr),
+            NeighborState::reachable(mac, now + ttl),
+        );
     }
 
     rx_return.push(frame);

@@ -86,7 +86,8 @@ impl<'conn> ResponseWriter<'conn> {
         if self.version == Version::Http09 {
             return;
         }
-        self.response_headers.push((name.to_string(), value.to_string()));
+        self.response_headers
+            .push((name.to_string(), value.to_string()));
     }
 
     /// Access the request body reader. Must be called before write_body().
@@ -94,7 +95,11 @@ impl<'conn> ResponseWriter<'conn> {
     /// fully consumed and dropped before calling set_status/add_header/write_body.
     pub fn body(&mut self) -> BodyReader<'_> {
         debug_assert!(!self.body_taken, "body() called twice");
-        debug_assert_eq!(self.state, ResponseState::Headers, "body() called after headers sent");
+        debug_assert_eq!(
+            self.state,
+            ResponseState::Headers,
+            "body() called after headers sent"
+        );
         self.body_taken = true;
         BodyReader::new(
             self.stream,
@@ -134,8 +139,13 @@ impl<'conn> ResponseWriter<'conn> {
     pub async fn finish(mut self) -> Result<(), HttpError> {
         if self.state == ResponseState::Headers && self.version != Version::Http09 {
             // Headers-only response (e.g., 204, 304)
-            if !self.response_headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("content-length")) {
-                self.response_headers.push(("Content-Length".to_string(), "0".to_string()));
+            if !self
+                .response_headers
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case("content-length"))
+            {
+                self.response_headers
+                    .push(("Content-Length".to_string(), "0".to_string()));
             }
             self.flush_headers().await?;
         }
@@ -159,12 +169,16 @@ impl<'conn> ResponseWriter<'conn> {
         self.write_all(status_line.as_bytes()).await?;
 
         // Check if handler set Content-Length
-        let has_content_length = self.response_headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("content-length"));
+        let has_content_length = self
+            .response_headers
+            .iter()
+            .any(|(n, _)| n.eq_ignore_ascii_case("content-length"));
 
         // If no Content-Length and HTTP/1.1, use chunked
         if !has_content_length && self.version == Version::Http11 {
             self.chunked = true;
-            self.response_headers.push(("Transfer-Encoding".to_string(), "chunked".to_string()));
+            self.response_headers
+                .push(("Transfer-Encoding".to_string(), "chunked".to_string()));
         }
 
         let headers = std::mem::take(&mut self.response_headers);

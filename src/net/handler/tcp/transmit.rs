@@ -389,7 +389,11 @@ impl TcpHandler {
         }
 
         // Remove connections aborted by linger deadline.
-        let Self { connections, send_tracker, .. } = self;
+        let Self {
+            connections,
+            send_tracker,
+            ..
+        } = self;
         connections.retain(|id, tcb| {
             if tcb.state == TcpState::Closed {
                 send_tracker.unmark(id);

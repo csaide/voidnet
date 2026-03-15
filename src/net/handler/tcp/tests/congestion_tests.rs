@@ -60,7 +60,10 @@ fn cubic_slow_start_on_new_ack() {
     let mss = handler.first_connection().eff_snd_mss;
 
     // Send data and get it ACKed.
-    handler.first_connection_mut().send_buffer.write(&[0xAA; 1460]);
+    handler
+        .first_connection_mut()
+        .send_buffer
+        .write(&[0xAA; 1460]);
     handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
@@ -156,7 +159,8 @@ fn frto_restores_cwnd_on_spurious_rto() {
 
     // Send 2 MSS of data (poll_send sends 1 MSS per call).
     let mss = handler.first_connection_mut().eff_snd_mss as usize;
-    handler.first_connection_mut()
+    handler
+        .first_connection_mut()
         .send_buffer
         .write(&vec![0xAA; mss * 2]);
     handler.first_connection_mut().snd_wnd = 65535;
@@ -179,7 +183,8 @@ fn frto_restores_cwnd_on_spurious_rto() {
         "F-RTO should be in Step1"
     );
     assert_eq!(
-        handler.first_connection().cubic.cwnd, mss as u32,
+        handler.first_connection().cubic.cwnd,
+        mss as u32,
         "cwnd should be 1 MSS after RTO"
     );
 
@@ -242,7 +247,8 @@ fn frto_restores_cwnd_on_spurious_rto() {
         "F-RTO should be disabled"
     );
     assert_eq!(
-        handler.first_connection().cubic.cwnd, cwnd_before_rto,
+        handler.first_connection().cubic.cwnd,
+        cwnd_before_rto,
         "cwnd should be restored after spurious RTO"
     );
 }

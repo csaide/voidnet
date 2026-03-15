@@ -31,7 +31,7 @@ impl TcpHandler {
         let mut to_mark: Vec<ConnectionId> = Vec::new();
 
         // Delayed ACK pass — flush pending ACKs whose deadline has expired.
-        for (_id, tcb) in &mut self.connections {
+        for tcb in self.connections.values_mut() {
             if !tcb.ack_pending {
                 continue;
             }
@@ -162,7 +162,7 @@ impl TcpHandler {
         }
 
         // SACK recovery pass — RFC 6675 recovery loop.
-        for (_id, tcb) in &mut self.connections {
+        for tcb in self.connections.values_mut() {
             if tcb.state != TcpState::Established || !tcb.recovery.in_recovery {
                 continue;
             }
@@ -295,8 +295,7 @@ impl TcpHandler {
                 tx_return,
             ) else {
                 // Re-arm retransmit timer so we retry after the solicitation completes.
-                tcb.retransmit_deadline =
-                    Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                tcb.retransmit_deadline = Some(now + coarsetime::Duration::from_millis(tcb.rto));
                 continue;
             };
 
@@ -442,7 +441,11 @@ impl TcpHandler {
 
     /// Evict stale connections whose TIME-WAIT deadline has passed.
     pub fn evict_stale<'umem>(&mut self, now: Instant, _rx_return: &mut impl FrameBuffer<'umem>) {
-        let Self { connections, send_tracker, .. } = self;
+        let Self {
+            connections,
+            send_tracker,
+            ..
+        } = self;
         connections.retain(|id, tcb| {
             if tcb.state == TcpState::TimeWait
                 && let Some(deadline) = tcb.time_wait_deadline

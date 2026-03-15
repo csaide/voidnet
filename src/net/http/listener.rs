@@ -1,8 +1,4 @@
-use crate::net::http::{
-    HttpConnection, HttpError,
-    handler::HttpHandler,
-    session::Session,
-};
+use crate::net::http::{HttpConnection, HttpError, handler::HttpHandler, session::Session};
 use crate::net::socket::TcpListener;
 use crate::net::wire::ip::IpAddress;
 use crate::rt::task::spawn;

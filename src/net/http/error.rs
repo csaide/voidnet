@@ -93,10 +93,7 @@ mod tests {
             format!("{}", ParseError::UnsupportedVersion),
             "unsupported version"
         );
-        assert_eq!(
-            format!("{}", ParseError::InvalidHeader),
-            "invalid header"
-        );
+        assert_eq!(format!("{}", ParseError::InvalidHeader), "invalid header");
         assert_eq!(
             format!("{}", ParseError::TooManyHeaders),
             "too many headers"

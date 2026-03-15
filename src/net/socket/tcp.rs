@@ -475,15 +475,13 @@ impl Future for Connect {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         match this.event_queue.pop() {
-            Some(TcpEvent::Connected) => {
-                Poll::Ready(Ok(TcpStream {
-                    conn_id: this.conn_id,
-                    event_queue: this.event_queue.clone(),
-                    handler: this.handler.clone(),
-                    closed: false,
-                    write_closed: false,
-                }))
-            }
+            Some(TcpEvent::Connected) => Poll::Ready(Ok(TcpStream {
+                conn_id: this.conn_id,
+                event_queue: this.event_queue.clone(),
+                handler: this.handler.clone(),
+                closed: false,
+                write_closed: false,
+            })),
             Some(TcpEvent::ConnectionRefused) => Poll::Ready(Err(TcpError::ConnectionRefused)),
             Some(TcpEvent::Timeout) => Poll::Ready(Err(TcpError::Timeout)),
             Some(TcpEvent::Reset) => Poll::Ready(Err(TcpError::Reset)),

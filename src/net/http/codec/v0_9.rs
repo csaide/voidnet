@@ -1,8 +1,8 @@
+use super::parse::ConnectionDirective;
 use crate::net::http::{
     error::ParseError,
     request::{BodyFraming, Method, Request, Version},
 };
-use super::parse::ConnectionDirective;
 
 use super::{Codec, DecodeOutcome, DecodeResult};
 

@@ -326,7 +326,8 @@ fn syn_in_established_sends_challenge_ack() {
 
     // (3) No data should have been processed (rcv_nxt unchanged).
     assert_eq!(
-        handler.first_connection().rcv_nxt, 1001,
+        handler.first_connection().rcv_nxt,
+        1001,
         "rcv_nxt must not advance when SYN is received in Established"
     );
 }
@@ -371,7 +372,8 @@ fn segment_without_ack_is_dropped() {
 
     // (1) No data should be written to recv_buffer (rcv_nxt unchanged).
     assert_eq!(
-        handler.first_connection().rcv_nxt, rcv_nxt_before,
+        handler.first_connection().rcv_nxt,
+        rcv_nxt_before,
         "rcv_nxt must not advance for segment without ACK"
     );
 
@@ -448,15 +450,18 @@ fn ack_beyond_snd_nxt_sends_ack_and_drops() {
 
     // (3) No state changes: snd_una must be unchanged.
     assert_eq!(
-        handler.first_connection().snd_una, snd_una_before,
+        handler.first_connection().snd_una,
+        snd_una_before,
         "snd_una must not change on future ACK"
     );
     assert_eq!(
-        handler.first_connection().snd_nxt, snd_nxt_before,
+        handler.first_connection().snd_nxt,
+        snd_nxt_before,
         "snd_nxt must not change on future ACK"
     );
     assert_eq!(
-        handler.first_connection().rcv_nxt, rcv_nxt_before,
+        handler.first_connection().rcv_nxt,
+        rcv_nxt_before,
         "rcv_nxt must not change on future ACK"
     );
 }
@@ -500,11 +505,13 @@ fn stale_segment_does_not_regress_window() {
     while tx.pop().is_some() {}
 
     assert_eq!(
-        handler.first_connection().snd_wnd, 8000,
+        handler.first_connection().snd_wnd,
+        8000,
         "window set to 8000 from seg B"
     );
     assert_eq!(
-        handler.first_connection().snd_wl1, 1002,
+        handler.first_connection().snd_wl1,
+        1002,
         "snd_wl1 set from seg B"
     );
 
@@ -534,11 +541,13 @@ fn stale_segment_does_not_regress_window() {
     while tx.pop().is_some() {}
 
     assert_eq!(
-        handler.first_connection().snd_wnd, 8000,
+        handler.first_connection().snd_wnd,
+        8000,
         "stale segment must not regress snd_wnd"
     );
     assert_eq!(
-        handler.first_connection().snd_wl1, 1002,
+        handler.first_connection().snd_wl1,
+        1002,
         "stale segment must not regress snd_wl1"
     );
 }
@@ -608,7 +617,10 @@ fn sender_sws_avoidance_holds_small_sends() {
     handler.first_connection_mut().snd_wnd = 10;
 
     // Write more data than can_send (10 bytes) so data_available > can_send.
-    handler.first_connection_mut().send_buffer.write(&[0x41u8; 100]);
+    handler
+        .first_connection_mut()
+        .send_buffer
+        .write(&[0x41u8; 100]);
 
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
@@ -834,7 +846,8 @@ fn data_transfer_across_sequence_wrap() {
     // rcv_nxt must have advanced by 20 bytes (wrapping).
     let expected_rcv_nxt = data_seq.wrapping_add(20);
     assert_eq!(
-        handler.first_connection().rcv_nxt, expected_rcv_nxt,
+        handler.first_connection().rcv_nxt,
+        expected_rcv_nxt,
         "rcv_nxt must advance past wrap boundary"
     );
 
@@ -883,8 +896,7 @@ fn data_transfer_across_sequence_wrap() {
     // The ACK frame's ack_num must equal rcv_nxt after both segments.
     let ack_frame = tx.pop().unwrap();
     let tcp_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
-    let ack_num =
-        u32::from_be_bytes(ack_frame[tcp_off + 8..tcp_off + 12].try_into().unwrap());
+    let ack_num = u32::from_be_bytes(ack_frame[tcp_off + 8..tcp_off + 12].try_into().unwrap());
     let expected_final_rcv_nxt = expected_rcv_nxt.wrapping_add(1);
     assert_eq!(
         ack_num, expected_final_rcv_nxt,
@@ -892,7 +904,8 @@ fn data_transfer_across_sequence_wrap() {
         expected_final_rcv_nxt
     );
     assert_eq!(
-        handler.first_connection().rcv_nxt, expected_final_rcv_nxt,
+        handler.first_connection().rcv_nxt,
+        expected_final_rcv_nxt,
         "rcv_nxt must reflect all received data after wrap"
     );
 }
@@ -918,8 +931,10 @@ fn remove_connection_sends_rst_with_correct_seq() {
     let id = handler.first_connection().id;
 
     // MAC addresses matching what the test infrastructure uses.
-    let src_mac = crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
-    let dst_mac = crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    let src_mac =
+        crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    let dst_mac =
+        crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
 
     handler.remove_connection(&id, src_mac, dst_mac, &mut free, &mut tx);
 
@@ -927,7 +942,11 @@ fn remove_connection_sends_rst_with_correct_seq() {
     assert_eq!(handler.connections.len(), 0, "connection removed");
 
     // A RST frame should have been emitted.
-    assert_eq!(tx.num_frames(), 1, "RST frame generated on remove_connection");
+    assert_eq!(
+        tx.num_frames(),
+        1,
+        "RST frame generated on remove_connection"
+    );
 
     // Parse the RST frame and check its sequence number.
     let rst_frame = tx.pop().unwrap();
@@ -940,7 +959,10 @@ fn remove_connection_sends_rst_with_correct_seq() {
         flags::RST,
         "frame must have RST flag set"
     );
-    assert_ne!(rst_seq, 0, "RST sequence number must not be 0 (would be silently dropped by peer)");
+    assert_ne!(
+        rst_seq, 0,
+        "RST sequence number must not be 0 (would be silently dropped by peer)"
+    );
     assert_eq!(
         rst_seq, expected_seq,
         "RST seq must equal snd_nxt = server_iss + 1 = {}",

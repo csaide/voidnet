@@ -66,8 +66,12 @@ unsafe fn drop_main_waker(data: *const ()) {
     drop(unsafe { Rc::from_raw(data as *const Cell<bool>) });
 }
 
-const MAIN_WAKER_VTABLE: RawWakerVTable =
-    RawWakerVTable::new(clone_main_waker, wake_main, wake_main_by_ref, drop_main_waker);
+const MAIN_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
+    clone_main_waker,
+    wake_main,
+    wake_main_by_ref,
+    drop_main_waker,
+);
 
 // ---- No-op waker for TaskQueue's top-level FuturesUnordered poll ----
 
@@ -81,8 +85,7 @@ unsafe fn noop_clone(_data: *const ()) -> RawWaker {
 
 unsafe fn noop(_data: *const ()) {}
 
-const NOOP_WAKER_VTABLE: RawWakerVTable =
-    RawWakerVTable::new(noop_clone, noop, noop, noop);
+const NOOP_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(noop_clone, noop, noop, noop);
 
 /// No-op waker used for the TaskQueue's top-level FuturesUnordered poll.
 ///
