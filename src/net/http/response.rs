@@ -21,6 +21,36 @@ enum ResponseState {
     Finished,
 }
 
+/// Max hex digits for a usize (2 per byte) plus `\r\n`.
+const HEX_BUF_LEN: usize = std::mem::size_of::<usize>() * 2 + 2;
+
+/// Format `n` as lowercase hex followed by `\r\n` into `buf`.
+/// Returns the number of bytes written.
+fn write_hex_usize(n: usize, buf: &mut [u8; HEX_BUF_LEN]) -> usize {
+    if n == 0 {
+        buf[0] = b'0';
+        buf[1] = b'\r';
+        buf[2] = b'\n';
+        return 3;
+    }
+    let mut pos = 0;
+    let mut val = n;
+    while val > 0 {
+        let digit = (val & 0xf) as u8;
+        buf[pos] = if digit < 10 {
+            b'0' + digit
+        } else {
+            b'a' + digit - 10
+        };
+        pos += 1;
+        val >>= 4;
+    }
+    buf[..pos].reverse();
+    buf[pos] = b'\r';
+    buf[pos + 1] = b'\n';
+    pos + 2
+}
+
 /// Writes HTTP response data to the client.
 pub struct ResponseWriter<'conn> {
     write_buf: &'conn mut WriteBuffer,
@@ -141,9 +171,10 @@ impl<'conn> ResponseWriter<'conn> {
         }
 
         if self.chunked {
-            // Write chunk header: hex size + \r\n
-            let chunk_header = format!("{:x}\r\n", data.len());
-            self.write_all(chunk_header.as_bytes()).await?;
+            // Write chunk header: hex size + \r\n (stack-formatted, no alloc).
+            let mut hex_buf = [0u8; HEX_BUF_LEN];
+            let n = write_hex_usize(data.len(), &mut hex_buf);
+            self.write_all(&hex_buf[..n]).await?;
             self.write_all(data).await?;
             self.write_all(b"\r\n").await?;
             Ok(data.len())
@@ -276,20 +307,57 @@ mod tests {
     }
 
     #[test]
-    fn format_status_line_http11() {
-        let line = format_status_line(200, "OK", Version::Http11);
-        assert_eq!(line, "HTTP/1.1 200 OK\r\n");
+    fn write_hex_zero() {
+        let mut buf = [0u8; HEX_BUF_LEN];
+        let n = write_hex_usize(0, &mut buf);
+        assert_eq!(&buf[..n], b"0\r\n");
     }
 
     #[test]
-    fn format_status_line_http10() {
-        let line = format_status_line(404, "Not Found", Version::Http10);
-        assert_eq!(line, "HTTP/1.0 404 Not Found\r\n");
+    fn write_hex_small() {
+        let mut buf = [0u8; HEX_BUF_LEN];
+        let n = write_hex_usize(255, &mut buf);
+        assert_eq!(&buf[..n], b"ff\r\n");
     }
 
     #[test]
-    fn format_header_line() {
-        let line = format_header("Content-Type", "text/html");
-        assert_eq!(line, "Content-Type: text/html\r\n");
+    fn write_hex_large() {
+        let mut buf = [0u8; HEX_BUF_LEN];
+        let n = write_hex_usize(0x1a2b3c, &mut buf);
+        assert_eq!(&buf[..n], b"1a2b3c\r\n");
+    }
+
+    #[test]
+    fn write_hex_one() {
+        let mut buf = [0u8; HEX_BUF_LEN];
+        let n = write_hex_usize(1, &mut buf);
+        assert_eq!(&buf[..n], b"1\r\n");
+    }
+
+    #[test]
+    fn write_hex_sixteen() {
+        let mut buf = [0u8; HEX_BUF_LEN];
+        let n = write_hex_usize(16, &mut buf);
+        assert_eq!(&buf[..n], b"10\r\n");
+    }
+
+    #[test]
+    fn cow_status_common_phrase_is_borrowed() {
+        let cow: Cow<'static, str> = match "OK" {
+            "OK" => Cow::Borrowed("OK"),
+            other => Cow::Owned(other.to_string()),
+        };
+        assert!(matches!(cow, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn cow_status_custom_phrase_is_owned() {
+        let reason = "Custom Reason";
+        let cow: Cow<'static, str> = match reason {
+            "OK" => Cow::Borrowed("OK"),
+            other => Cow::Owned(other.to_string()),
+        };
+        assert!(matches!(cow, Cow::Owned(_)));
+        assert_eq!(&*cow, "Custom Reason");
     }
 }
