@@ -85,7 +85,7 @@ impl TcpHandler {
         self.listeners
             .retain(|l| !(l.port == port && l.addr == addr));
         // Remove any SYN-RECEIVED connections associated with this listener.
-        self.connections.retain(|c| {
+        self.connections.retain(|_id, c| {
             !(c.state == TcpState::SynReceived
                 && c.from_passive_open
                 && c.id.local_port == port
@@ -93,16 +93,12 @@ impl TcpHandler {
         });
     }
 
-    /// Find a matching listener for the given address and port.
-    pub(super) fn find_listener(&self, addr: IpAddress, port: u16) -> Option<usize> {
-        self.listeners
-            .iter()
-            .position(|l| l.port == port && (l.addr.is_unspecified() || l.addr == addr))
-    }
-
-    /// Push a ConnectionId to the matching listener's accept queue.
-    pub(super) fn push_to_accept_queue(&self, id: &ConnectionId) {
-        for listener in &self.listeners {
+    /// Push a ConnectionId to the matching listener's accept queue (associated function for split-borrow).
+    pub(super) fn push_to_accept_queue_on(
+        listeners: &[ListenEntry],
+        id: &ConnectionId,
+    ) {
+        for listener in listeners {
             if listener.port == id.local_port
                 && (listener.addr.is_unspecified() || listener.addr == id.local_addr)
             {
@@ -112,9 +108,9 @@ impl TcpHandler {
         }
     }
 
-    /// Decrement syn_received_count on the matching listener.
-    pub(super) fn decrement_syn_received(&mut self, id: &ConnectionId) {
-        for listener in &mut self.listeners {
+    /// Decrement syn_received_count on the matching listener (associated function for split-borrow).
+    pub(super) fn decrement_syn_received(listeners: &mut Vec<ListenEntry>, id: &ConnectionId) {
+        for listener in listeners.iter_mut() {
             if listener.port == id.local_port
                 && (listener.addr.is_unspecified() || listener.addr == id.local_addr)
             {

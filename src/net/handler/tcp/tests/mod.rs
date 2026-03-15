@@ -242,7 +242,7 @@ pub(super) fn establish_connection(
         rx,
         tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -303,8 +303,8 @@ pub(super) fn establish_connection_with_sack(
         rx,
         tx,
     );
-    assert!(handler.connections[0].sack_enabled);
-    let server_iss = handler.connections[0].iss;
+    assert!(handler.first_connection().sack_enabled);
+    let server_iss = handler.first_connection().iss;
     while tx.pop().is_some() {}
 
     let ack_data = build_tcp_frame(
@@ -328,7 +328,7 @@ pub(super) fn establish_connection_with_sack(
         tx,
     );
     while tx.pop().is_some() {}
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
     server_iss
 }
 
@@ -367,7 +367,7 @@ pub(super) fn active_open_handshake(
         .unwrap();
     while tx.pop().is_some() {} // consume SYN frame
 
-    let client_iss = handler.connections[0].iss;
+    let client_iss = handler.first_connection().iss;
 
     // Feed SYN-ACK from the remote.
     let syn_ack = build_tcp_frame(
@@ -392,8 +392,8 @@ pub(super) fn active_open_handshake(
     );
     while tx.pop().is_some() {} // consume ACK frame
 
-    assert_eq!(handler.connections[0].state, TcpState::Established);
-    handler.connections[0].snd_wnd = 65535;
+    assert_eq!(handler.first_connection().state, TcpState::Established);
+    handler.first_connection_mut().snd_wnd = 65535;
 
     client_iss
 }
@@ -433,7 +433,7 @@ pub(super) fn active_open_handshake_with_config(
         .unwrap();
     while tx.pop().is_some() {}
 
-    let client_iss = handler.connections[0].iss;
+    let client_iss = handler.first_connection().iss;
 
     let syn_ack = build_tcp_frame(
         REMOTE_IP,
@@ -457,8 +457,8 @@ pub(super) fn active_open_handshake_with_config(
     );
     while tx.pop().is_some() {}
 
-    assert_eq!(handler.connections[0].state, TcpState::Established);
-    handler.connections[0].snd_wnd = 65535;
+    assert_eq!(handler.first_connection().state, TcpState::Established);
+    handler.first_connection_mut().snd_wnd = 65535;
 
     client_iss
 }

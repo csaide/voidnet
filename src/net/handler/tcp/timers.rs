@@ -10,7 +10,7 @@ use super::{
     handler::{INITIAL_RTO_MS, SYN_R2_THRESHOLD_MS},
     segment::SegmentBuilder,
     state::TcpState,
-    tcb::{DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE, TcpEvent},
+    tcb::{ConnectionId, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE, TcpEvent},
 };
 
 impl TcpHandler {
@@ -27,7 +27,7 @@ impl TcpHandler {
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         // Delayed ACK pass — flush pending ACKs whose deadline has expired.
-        for tcb in &mut self.connections {
+        for (_id, tcb) in &mut self.connections {
             if !tcb.ack_pending {
                 continue;
             }
@@ -80,9 +80,8 @@ impl TcpHandler {
         }
 
         // Keep-alive probe pass — send probes for idle established connections.
-        let mut keep_alive_removals = [0usize; 64];
-        let mut keep_alive_removal_count = 0usize;
-        for (i, tcb) in self.connections.iter_mut().enumerate() {
+        let mut keep_alive_removals: Vec<ConnectionId> = Vec::new();
+        for (_id, tcb) in self.connections.iter_mut() {
             if tcb.state != TcpState::Established || !tcb.keep_alive_enabled {
                 continue;
             }
@@ -106,10 +105,7 @@ impl TcpHandler {
                 if tcb.keep_alive_probes_sent >= tcb.keep_alive_count {
                     // Max probes exceeded — abort connection.
                     tcb.event_queue.push(TcpEvent::Timeout);
-                    if keep_alive_removal_count < 64 {
-                        keep_alive_removals[keep_alive_removal_count] = i;
-                        keep_alive_removal_count += 1;
-                    }
+                    keep_alive_removals.push(tcb.id);
                     continue;
                 }
 
@@ -152,15 +148,14 @@ impl TcpHandler {
             }
         }
 
-        // Remove connections that exceeded keep-alive probes (reverse order).
-        for &idx in keep_alive_removals[..keep_alive_removal_count].iter().rev() {
-            let id = self.connections[idx].id;
-            self.decrement_syn_received(&id);
-            self.connections.remove(idx);
+        // Remove connections that exceeded keep-alive probes.
+        for id in &keep_alive_removals {
+            Self::decrement_syn_received(&mut self.listeners, id);
+            self.connections.remove(id);
         }
 
         // SACK recovery pass — RFC 6675 recovery loop.
-        for tcb in &mut self.connections {
+        for (_id, tcb) in &mut self.connections {
             if tcb.state != TcpState::Established || !tcb.recovery.in_recovery {
                 continue;
             }
@@ -242,10 +237,9 @@ impl TcpHandler {
         }
 
         // RTO retransmit pass — timer-based.
-        let mut to_remove = [0usize; 64];
-        let mut to_remove_count = 0usize;
+        let mut to_remove: Vec<ConnectionId> = Vec::new();
 
-        for (idx, tcb) in self.connections.iter_mut().enumerate() {
+        for (_id, tcb) in self.connections.iter_mut() {
             let Some(deadline) = tcb.retransmit_deadline else {
                 continue;
             };
@@ -273,10 +267,7 @@ impl TcpHandler {
             if total_elapsed_ms >= SYN_R2_THRESHOLD_MS {
                 // Timeout — signal and mark for removal.
                 tcb.event_queue.push(TcpEvent::Timeout);
-                if to_remove_count < 64 {
-                    to_remove[to_remove_count] = idx;
-                    to_remove_count += 1;
-                }
+                to_remove.push(tcb.id);
                 continue;
             }
 
@@ -421,17 +412,16 @@ impl TcpHandler {
             }
         }
 
-        // Remove timed-out connections (in reverse order to preserve indices).
-        for &idx in to_remove[..to_remove_count].iter().rev() {
-            let id = self.connections[idx].id;
-            self.decrement_syn_received(&id);
-            self.connections.remove(idx);
+        // Remove timed-out connections.
+        for id in &to_remove {
+            Self::decrement_syn_received(&mut self.listeners, id);
+            self.connections.remove(id);
         }
     }
 
     /// Evict stale connections whose TIME-WAIT deadline has passed.
     pub fn evict_stale<'umem>(&mut self, now: Instant, _rx_return: &mut impl FrameBuffer<'umem>) {
-        self.connections.retain(|tcb| {
+        self.connections.retain(|_id, tcb| {
             if tcb.state == TcpState::TimeWait
                 && let Some(deadline) = tcb.time_wait_deadline
                 && now >= deadline

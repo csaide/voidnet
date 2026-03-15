@@ -1,3 +1,5 @@
+use rustc_hash::FxHashMap;
+
 use crate::{
     net::wire::{ethernet::MacAddress, tcp::flags},
     xdp::frame::FrameBuffer,
@@ -22,7 +24,7 @@ pub(super) const SYN_R2_THRESHOLD_MS: u64 = 180_000;
 /// Manages the connection table, listener table, and dispatches
 /// incoming TCP segments through the appropriate state machine.
 pub struct TcpHandler {
-    pub(super) connections: Vec<Tcb>,
+    pub(super) connections: FxHashMap<ConnectionId, Tcb>,
     pub(super) listeners: Vec<listener::ListenEntry>,
     pub(super) isn_generator: IsnGenerator,
     pub(super) rx_offload: bool,
@@ -32,7 +34,7 @@ pub struct TcpHandler {
 impl TcpHandler {
     pub fn new(rx_offload: bool, tx_offload: bool) -> Self {
         Self {
-            connections: Vec::new(),
+            connections: FxHashMap::default(),
             listeners: Vec::new(),
             isn_generator: IsnGenerator::new(),
             rx_offload,
@@ -42,41 +44,12 @@ impl TcpHandler {
 
     /// Get a reference to the connection for a given ConnectionId.
     pub fn get_connection(&self, id: &ConnectionId) -> Option<&Tcb> {
-        self.connections.iter().find(|c| c.id == *id)
+        self.connections.get(id)
     }
 
     /// Get a mutable reference to the connection for a given ConnectionId.
     pub fn get_connection_mut(&mut self, id: &ConnectionId) -> Option<&mut Tcb> {
-        self.connections.iter_mut().find(|c| c.id == *id)
-    }
-
-    /// Find the index of a connection by ID.
-    #[inline]
-    pub fn find_connection_idx(&self, id: &ConnectionId) -> Option<usize> {
-        self.connections.iter().position(|c| c.id == *id)
-    }
-
-    /// Get a mutable reference by cached index, validating the connection ID matches.
-    /// Returns the TCB and the (possibly updated) index, or None if not found.
-    /// Falls back to linear scan if the cached index is stale.
-    #[inline]
-    pub fn get_connection_by_idx_mut(
-        &mut self,
-        idx: usize,
-        id: &ConnectionId,
-    ) -> Option<(usize, &mut Tcb)> {
-        if let Some(tcb) = self.connections.get(idx)
-            && tcb.id == *id
-        {
-            // SAFETY: we just checked bounds above; re-borrow mutably.
-            return Some((idx, &mut self.connections[idx]));
-        }
-        // Index is stale — fall back to linear scan.
-        if let Some(new_idx) = self.connections.iter().position(|c| c.id == *id) {
-            Some((new_idx, &mut self.connections[new_idx]))
-        } else {
-            None
-        }
+        self.connections.get_mut(id)
     }
 
     /// Remove a connection by ConnectionId (used by TcpStream::close).
@@ -88,32 +61,40 @@ impl TcpHandler {
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        if let Some(idx) = self.connections.iter().position(|c| c.id == *id) {
-            let tcb = &self.connections[idx];
-            // Send RST for now (proper FIN sequence deferred).
-            if tcb.state.is_synchronized() || tcb.state == TcpState::SynReceived {
-                // Use snd_nxt as the RST sequence number so the peer's receive
-                // window check accepts it (RFC 9293 §3.10.7.1: <SEQ=SND.NXT><CTL=RST>).
-                // build_rst with ACK set generates <SEQ=incoming_ack><CTL=RST>,
-                // so we pass snd_nxt as incoming_ack.
-                let snd_nxt = tcb.snd_nxt;
-                SegmentBuilder::build_rst(
-                    id.local_addr,
-                    id.remote_addr,
-                    id.local_port,
-                    id.remote_port,
-                    0,
-                    snd_nxt,
-                    flags::ACK,
-                    0,
-                    src_mac,
-                    dst_mac,
-                    self.tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            self.connections.remove(idx);
+        // Extract what we need before removing (avoids borrow conflict).
+        let should_rst = self.connections.get(id).map(|tcb| {
+            let needs_rst = tcb.state.is_synchronized() || tcb.state == TcpState::SynReceived;
+            (needs_rst, tcb.snd_nxt)
+        });
+        if let Some((true, snd_nxt)) = should_rst {
+            SegmentBuilder::build_rst(
+                id.local_addr,
+                id.remote_addr,
+                id.local_port,
+                id.remote_port,
+                0,
+                snd_nxt,
+                flags::ACK,
+                0,
+                src_mac,
+                dst_mac,
+                self.tx_offload,
+                free_frames,
+                tx_return,
+            );
         }
+        self.connections.remove(id);
+    }
+
+    /// Get the first connection (test helper).
+    #[cfg(test)]
+    pub fn first_connection(&self) -> &Tcb {
+        self.connections.values().next().unwrap()
+    }
+
+    /// Get the first connection mutably (test helper).
+    #[cfg(test)]
+    pub fn first_connection_mut(&mut self) -> &mut Tcb {
+        self.connections.values_mut().next().unwrap()
     }
 }

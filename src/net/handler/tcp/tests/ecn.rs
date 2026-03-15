@@ -52,11 +52,11 @@ fn ecn_negotiated_when_both_sides_support() {
     );
 
     // ecn_enabled should be provisionally true.
-    assert!(handler.connections[0].ecn_enabled);
+    assert!(handler.first_connection().ecn_enabled);
 
     // Send SYN-ACK with ECE (peer supports ECN).
     let server_iss = 2000u32;
-    let client_iss = handler.connections[0].iss;
+    let client_iss = handler.first_connection().iss;
     let syn_ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -80,11 +80,11 @@ fn ecn_negotiated_when_both_sides_support() {
 
     // ECN should remain enabled.
     assert!(
-        handler.connections[0].ecn_enabled,
+        handler.first_connection().ecn_enabled,
         "ecn_enabled should be true after SYN-ACK with ECE"
     );
     assert_eq!(
-        handler.connections[0].state,
+        handler.first_connection().state,
         TcpState::Established,
         "connection should be established"
     );
@@ -121,11 +121,11 @@ fn ecn_disabled_when_peer_doesnt_support() {
     while tx.pop().is_some() {}
 
     // ecn_enabled should be provisionally true.
-    assert!(handler.connections[0].ecn_enabled);
+    assert!(handler.first_connection().ecn_enabled);
 
     // Send SYN-ACK WITHOUT ECE (peer doesn't support ECN).
     let server_iss = 3000u32;
-    let client_iss = handler.connections[0].iss;
+    let client_iss = handler.first_connection().iss;
     let syn_ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -149,11 +149,11 @@ fn ecn_disabled_when_peer_doesnt_support() {
 
     // ECN should be disabled.
     assert!(
-        !handler.connections[0].ecn_enabled,
+        !handler.first_connection().ecn_enabled,
         "ecn_enabled should be false after SYN-ACK without ECE"
     );
     assert_eq!(
-        handler.connections[0].state,
+        handler.first_connection().state,
         TcpState::Established,
         "connection should be established"
     );
@@ -219,12 +219,12 @@ fn ecn_negotiated_on_passive_open() {
 
     // TCB should have ecn_enabled = true.
     assert!(
-        handler.connections[0].ecn_enabled,
+        handler.first_connection().ecn_enabled,
         "ecn_enabled should be true on passive side"
     );
 
     // Complete handshake with final ACK.
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -247,9 +247,9 @@ fn ecn_negotiated_on_passive_open() {
     );
 
     // Connection should be established with ECN still enabled.
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
     assert!(
-        handler.connections[0].ecn_enabled,
+        handler.first_connection().ecn_enabled,
         "ecn_enabled should remain true after handshake"
     );
 }
@@ -288,7 +288,7 @@ fn ecn_ect_set_on_outgoing_data() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -312,12 +312,12 @@ fn ecn_ect_set_on_outgoing_data() {
     while tx.pop().is_some() {}
 
     // Enable ECN on the connection.
-    handler.connections[0].ecn_enabled = true;
-    handler.connections[0].snd_wnd = 65535;
+    handler.first_connection_mut().ecn_enabled = true;
+    handler.first_connection_mut().snd_wnd = 65535;
 
     // Write data into the send buffer.
     let payload = b"Hello ECN!";
-    handler.connections[0].send_buffer.write(payload);
+    handler.first_connection_mut().send_buffer.write(payload);
 
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
@@ -363,7 +363,7 @@ fn ecn_ect_not_set_on_retransmit() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -387,9 +387,9 @@ fn ecn_ect_not_set_on_retransmit() {
     while tx.pop().is_some() {}
 
     // Enable ECN and send data.
-    handler.connections[0].ecn_enabled = true;
-    handler.connections[0].snd_wnd = 65535;
-    handler.connections[0].send_buffer.write(b"RTO test data");
+    handler.first_connection_mut().ecn_enabled = true;
+    handler.first_connection_mut().snd_wnd = 65535;
+    handler.first_connection_mut().send_buffer.write(b"RTO test data");
 
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
@@ -397,7 +397,7 @@ fn ecn_ect_not_set_on_retransmit() {
     while tx.pop().is_some() {}
 
     // Expire the retransmit timer to trigger RTO retransmit.
-    handler.connections[0].retransmit_deadline = Some(now);
+    handler.first_connection_mut().retransmit_deadline = Some(now);
     handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(tx.num_frames(), 1, "should have one retransmit segment");
@@ -440,7 +440,7 @@ fn ecn_ce_detected_on_incoming() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -464,9 +464,9 @@ fn ecn_ce_detected_on_incoming() {
     while tx.pop().is_some() {}
 
     // Enable ECN on the connection.
-    handler.connections[0].ecn_enabled = true;
+    handler.first_connection_mut().ecn_enabled = true;
     assert!(
-        !handler.connections[0].ecn_ce_received,
+        !handler.first_connection().ecn_ce_received,
         "CE should not be set yet"
     );
 
@@ -501,7 +501,7 @@ fn ecn_ce_detected_on_incoming() {
     );
 
     assert!(
-        handler.connections[0].ecn_ce_received,
+        handler.first_connection().ecn_ce_received,
         "ecn_ce_received should be true after receiving CE-marked segment"
     );
 }
@@ -540,7 +540,7 @@ fn ecn_ece_sent_when_ce_received() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -564,8 +564,8 @@ fn ecn_ece_sent_when_ce_received() {
     while tx.pop().is_some() {}
 
     // Enable ECN and set ecn_ce_received.
-    handler.connections[0].ecn_enabled = true;
-    handler.connections[0].ecn_ce_received = true;
+    handler.first_connection_mut().ecn_enabled = true;
+    handler.first_connection_mut().ecn_ce_received = true;
 
     // Send data to trigger an ACK with ECE.
     let data_frame = build_tcp_frame_with_payload(
@@ -594,7 +594,7 @@ fn ecn_ece_sent_when_ce_received() {
     // Force delayed ACK flush if needed.
     if tx.num_frames() == 0 {
         let now = coarsetime::Instant::now();
-        handler.connections[0].delayed_ack_deadline = Some(now);
+        handler.first_connection_mut().delayed_ack_deadline = Some(now);
         handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     }
 
@@ -645,7 +645,7 @@ fn ecn_cwnd_halved_on_ece() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -669,24 +669,24 @@ fn ecn_cwnd_halved_on_ece() {
     while tx.pop().is_some() {}
 
     // Enable ECN and set cwnd to a known value.
-    handler.connections[0].ecn_enabled = true;
-    handler.connections[0].snd_wnd = 65535;
-    let mss = handler.connections[0].eff_snd_mss as u32;
-    handler.connections[0].cubic.cwnd = 10 * mss;
-    handler.connections[0].cubic.ssthresh = 20 * mss;
+    handler.first_connection_mut().ecn_enabled = true;
+    handler.first_connection_mut().snd_wnd = 65535;
+    let mss = handler.first_connection().eff_snd_mss as u32;
+    handler.first_connection_mut().cubic.cwnd = 10 * mss;
+    handler.first_connection_mut().cubic.ssthresh = 20 * mss;
 
     // Send some data so snd_nxt advances.
-    handler.connections[0]
+    handler.first_connection_mut()
         .send_buffer
         .write(b"test data for ecn");
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
-    let snd_nxt = handler.connections[0].snd_nxt;
+    let snd_nxt = handler.first_connection().snd_nxt;
 
     // Record cwnd before receiving ECE.
-    let cwnd_before = handler.connections[0].cubic.cwnd;
+    let cwnd_before = handler.first_connection().cubic.cwnd;
 
     // Receive ACK with ECE flag — simulating peer's congestion signal.
     let ece_ack = build_tcp_frame(
@@ -711,7 +711,7 @@ fn ecn_cwnd_halved_on_ece() {
     );
 
     // Verify cwnd was reduced (halved after congestion avoidance increment).
-    let cwnd_after = handler.connections[0].cubic.cwnd;
+    let cwnd_after = handler.first_connection().cubic.cwnd;
     assert!(
         cwnd_after < cwnd_before,
         "cwnd should be reduced: before={}, after={}",
@@ -719,15 +719,15 @@ fn ecn_cwnd_halved_on_ece() {
         cwnd_after,
     );
     assert_eq!(
-        handler.connections[0].cubic.cwnd, handler.connections[0].cubic.ssthresh,
+        handler.first_connection().cubic.cwnd, handler.first_connection().cubic.ssthresh,
         "cwnd should equal ssthresh after ECN response"
     );
     assert!(
-        handler.connections[0].cubic.ssthresh >= 2 * mss,
+        handler.first_connection().cubic.ssthresh >= 2 * mss,
         "ssthresh should be at least 2*MSS"
     );
     assert!(
-        handler.connections[0].ecn_cwr_sent,
+        handler.first_connection().ecn_cwr_sent,
         "ecn_cwr_sent should be true"
     );
 }
@@ -766,7 +766,7 @@ fn ecn_cwr_sent_on_next_data() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -790,12 +790,12 @@ fn ecn_cwr_sent_on_next_data() {
     while tx.pop().is_some() {}
 
     // Enable ECN and set ecn_cwr_sent to true (simulating ECE reception).
-    handler.connections[0].ecn_enabled = true;
-    handler.connections[0].ecn_cwr_sent = true;
-    handler.connections[0].snd_wnd = 65535;
+    handler.first_connection_mut().ecn_enabled = true;
+    handler.first_connection_mut().ecn_cwr_sent = true;
+    handler.first_connection_mut().snd_wnd = 65535;
 
     // Write data and poll_send.
-    handler.connections[0].send_buffer.write(b"cwr test data");
+    handler.first_connection_mut().send_buffer.write(b"cwr test data");
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
@@ -810,7 +810,7 @@ fn ecn_cwr_sent_on_next_data() {
 
     // Verify ecn_cwr_sent is cleared after sending.
     assert!(
-        !handler.connections[0].ecn_cwr_sent,
+        !handler.first_connection().ecn_cwr_sent,
         "ecn_cwr_sent should be cleared after sending CWR"
     );
 }
@@ -849,7 +849,7 @@ fn ecn_ce_received_cleared_on_cwr() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -873,11 +873,11 @@ fn ecn_ce_received_cleared_on_cwr() {
     while tx.pop().is_some() {}
 
     // Enable ECN and set ecn_ce_received.
-    handler.connections[0].ecn_enabled = true;
-    handler.connections[0].ecn_ce_received = true;
+    handler.first_connection_mut().ecn_enabled = true;
+    handler.first_connection_mut().ecn_ce_received = true;
 
     // Receive a segment with CWR flag from peer (acknowledging our ECE).
-    let rcv_nxt = handler.connections[0].rcv_nxt;
+    let rcv_nxt = handler.first_connection().rcv_nxt;
     let cwr_frame = build_tcp_frame_with_payload(
         REMOTE_IP,
         LOCAL_IP,
@@ -901,7 +901,7 @@ fn ecn_ce_received_cleared_on_cwr() {
     );
 
     assert!(
-        !handler.connections[0].ecn_ce_received,
+        !handler.first_connection().ecn_ce_received,
         "ecn_ce_received should be cleared after receiving CWR"
     );
 }

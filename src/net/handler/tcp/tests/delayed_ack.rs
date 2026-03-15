@@ -34,7 +34,7 @@ fn delayed_ack_defers_ack_for_in_order_data() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -83,7 +83,7 @@ fn delayed_ack_defers_ack_for_in_order_data() {
 
     // No immediate ACK — deferred.
     assert_eq!(tx.num_frames(), 0, "ACK should be deferred");
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert!(tcb.ack_pending, "ack_pending should be true");
     assert!(
         tcb.delayed_ack_deadline.is_some(),
@@ -126,7 +126,7 @@ fn delayed_ack_flushes_on_second_segment() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -197,13 +197,13 @@ fn delayed_ack_flushes_on_second_segment() {
     );
     // ACK is now deferred to poll_send for piggyback opportunity.
     assert_eq!(tx.num_frames(), 0, "ACK deferred until poll_send");
-    assert!(handler.connections[0].ack_pending, "ack_pending should be true after second segment");
+    assert!(handler.first_connection().ack_pending, "ack_pending should be true after second segment");
 
     // poll_send generates pure ACK since no data to piggyback.
     handler.poll_send(coarsetime::Instant::now(), nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(tx.num_frames(), 1, "poll_send flushes ACK");
 
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert!(!tcb.ack_pending, "ack_pending should be false after flush");
     assert_eq!(
         tcb.ack_delay_count, 0,
@@ -245,7 +245,7 @@ fn out_of_order_data_sends_immediate_ack() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -332,7 +332,7 @@ fn fin_sends_immediate_ack() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -378,7 +378,7 @@ fn fin_sends_immediate_ack() {
     );
 
     assert_eq!(tx.num_frames(), 1, "FIN triggers immediate ACK");
-    assert_eq!(handler.connections[0].state, TcpState::CloseWait);
+    assert_eq!(handler.first_connection().state, TcpState::CloseWait);
 }
 
 #[test]
@@ -410,9 +410,9 @@ fn new_connection_has_delayed_ack_fields() {
     let syn_len = syn_data.len();
     let syn_frame = Frame::new(0, leak(syn_data), syn_len, false);
     handler.process_ipv4(syn_frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
-    assert_eq!(handler.connections[0].state, TcpState::SynReceived);
+    assert_eq!(handler.first_connection().state, TcpState::SynReceived);
 
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
 
     // Step 2: ACK completing handshake.
     let ack_data = build_tcp_frame(
@@ -430,10 +430,10 @@ fn new_connection_has_delayed_ack_fields() {
     let ack_frame = Frame::new(1, leak(ack_data), ack_len, false);
     handler.process_ipv4(ack_frame, coarsetime::Instant::now(), &nh, &mut free, &mut rx, &mut tx);
 
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Verify delayed ACK and Nagle defaults.
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert!(!tcb.ack_pending, "ack_pending should be false");
     assert!(
         tcb.delayed_ack_deadline.is_none(),
@@ -484,7 +484,7 @@ fn delayed_ack_timer_flushes_pending_ack() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -570,7 +570,7 @@ fn data_send_clears_delayed_ack() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -618,13 +618,13 @@ fn data_send_clears_delayed_ack() {
     while tx.pop().is_some() {} // consume any immediate ACK frames
 
     assert!(
-        handler.connections[0].ack_pending,
+        handler.first_connection().ack_pending,
         "ack_pending should be true after receiving data"
     );
 
     // 3. Write data to send buffer.
-    handler.connections[0].send_buffer.write(b"reply data");
-    handler.connections[0].snd_wnd = 65535;
+    handler.first_connection_mut().send_buffer.write(b"reply data");
+    handler.first_connection_mut().snd_wnd = 65535;
 
     // 4. poll_send — sends data (piggybacks ACK).
     let now = coarsetime::Instant::now();
@@ -632,7 +632,7 @@ fn data_send_clears_delayed_ack() {
     assert!(tx.num_frames() >= 1, "data segment should be sent");
 
     // 5. Verify delayed ACK state is cleared.
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert!(
         !tcb.ack_pending,
         "ack_pending should be cleared after data send"

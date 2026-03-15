@@ -38,10 +38,10 @@ fn ooo_data_sends_sack_blocks_in_dup_ack() {
         &mut tx,
     );
     assert!(
-        handler.connections[0].sack_enabled,
+        handler.first_connection().sack_enabled,
         "SACK should be negotiated"
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     // Drain SYN-ACK.
     while tx.pop().is_some() {}
 
@@ -67,7 +67,7 @@ fn ooo_data_sends_sack_blocks_in_dup_ack() {
     );
     while tx.pop().is_some() {}
 
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Send out-of-order segment: seq=1011, 5 bytes (gap from 1001..1011).
     let ooo_seg = build_tcp_frame_with_payload(
@@ -130,7 +130,7 @@ fn sack_blocks_update_scoreboard_on_ack() {
         establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
     // Put data in the send buffer and advance snd_nxt to simulate sent data.
-    let tcb = &mut handler.connections[0];
+    let tcb = handler.first_connection_mut();
     tcb.send_buffer.write(&[0u8; 100]);
     tcb.snd_nxt = tcb.snd_una.wrapping_add(100);
 
@@ -169,7 +169,7 @@ fn sack_blocks_update_scoreboard_on_ack() {
         &mut tx,
     );
 
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert_eq!(tcb.snd_una, new_ack, "snd_una should advance");
     assert_eq!(
         tcb.sack_scoreboard.len(),
@@ -196,7 +196,7 @@ fn sack_scoreboard_pruned_on_cumulative_ack_advance() {
     let _server_iss =
         establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
-    let tcb = &mut handler.connections[0];
+    let tcb = handler.first_connection_mut();
     tcb.send_buffer.write(&[0u8; 200]);
     tcb.snd_nxt = tcb.snd_una.wrapping_add(200);
     let snd_una = tcb.snd_una;
@@ -233,7 +233,7 @@ fn sack_scoreboard_pruned_on_cumulative_ack_advance() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].sack_scoreboard.len(), 2);
+    assert_eq!(handler.first_connection().sack_scoreboard.len(), 2);
 
     // Second ACK: advance cumulative ACK past the first SACK block (to 50).
     // Include the second block again.
@@ -261,7 +261,7 @@ fn sack_scoreboard_pruned_on_cumulative_ack_advance() {
         &mut tx,
     );
 
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert_eq!(tcb.snd_una, ack2);
     // The first block (start=snd_una+30) should be pruned since 30 < 50.
     assert!(
@@ -289,7 +289,7 @@ fn sack_blocks_updated_on_dup_ack() {
     let _server_iss =
         establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
-    let tcb = &mut handler.connections[0];
+    let tcb = handler.first_connection_mut();
     tcb.send_buffer.write(&[0u8; 100]);
     tcb.snd_nxt = tcb.snd_una.wrapping_add(100);
     let snd_una = tcb.snd_una;
@@ -321,7 +321,7 @@ fn sack_blocks_updated_on_dup_ack() {
         &mut tx,
     );
 
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert_eq!(tcb.recovery.dup_ack_count, 1);
     assert_eq!(tcb.sack_scoreboard.len(), 1);
     assert_eq!(tcb.sack_scoreboard.get(&sack_left), Some(&20));
@@ -343,7 +343,7 @@ fn sack_scoreboard_cleared_on_rto() {
     let _server_iss =
         establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
-    let tcb = &mut handler.connections[0];
+    let tcb = handler.first_connection_mut();
     tcb.send_buffer.write(&[0u8; 100]);
     tcb.snd_nxt = tcb.snd_una.wrapping_add(100);
     let snd_una = tcb.snd_una;
@@ -374,18 +374,18 @@ fn sack_scoreboard_cleared_on_rto() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].sack_scoreboard.len(), 1);
+    assert_eq!(handler.first_connection().sack_scoreboard.len(), 1);
 
     // Set up RTO: arm the retransmit deadline in the past.
     let now = coarsetime::Instant::now();
-    handler.connections[0].retransmit_deadline = Some(now);
-    handler.connections[0].rto_backoff = 0;
+    handler.first_connection_mut().retransmit_deadline = Some(now);
+    handler.first_connection_mut().rto_backoff = 0;
 
     // Trigger poll_timers, which should fire the RTO and clear the scoreboard.
     handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert!(
-        handler.connections[0].sack_scoreboard.is_empty(),
+        handler.first_connection().sack_scoreboard.is_empty(),
         "scoreboard should be cleared on RTO"
     );
 }
@@ -404,7 +404,7 @@ fn fast_retransmit_uses_sack_gap() {
     let _server_iss =
         establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
-    let tcb = &mut handler.connections[0];
+    let tcb = handler.first_connection_mut();
     // Use a small effective MSS so the retransmit fits in a 256-byte frame.
     tcb.eff_snd_mss = 100;
     let mss = tcb.eff_snd_mss as usize;
@@ -440,7 +440,7 @@ fn fast_retransmit_uses_sack_gap() {
     // Verify a segment was emitted (the 1st MSS gap should be retransmitted).
     assert!(tx.pop().is_some(), "expected a retransmitted segment");
 
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert!(tcb.recovery.in_recovery, "should still be in recovery");
     // cwnd should be reduced by CUBIC on_loss (beta=0.7).
     assert!(
@@ -467,7 +467,7 @@ fn fast_retransmit_fallback_when_scoreboard_empty() {
     let _server_iss =
         establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
-    let tcb = &mut handler.connections[0];
+    let tcb = handler.first_connection_mut();
     // Use a small effective MSS so the retransmit fits in a 256-byte frame.
     tcb.eff_snd_mss = 100;
     let mss = tcb.eff_snd_mss as usize;
@@ -492,7 +492,7 @@ fn fast_retransmit_fallback_when_scoreboard_empty() {
     // With empty scoreboard, next_lost_segment returns None (nothing marked lost
     // by RFC 6675 criteria), so no retransmit is emitted from the recovery loop.
     // This is correct: without SACK blocks, nothing can be determined as lost.
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert!(tcb.recovery.in_recovery, "should still be in recovery");
     assert!(
         tcb.cubic.cwnd < cwnd_before,
@@ -537,7 +537,7 @@ fn sack_recovery_enters_on_3_dup_acks() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -562,18 +562,18 @@ fn sack_recovery_enters_on_3_dup_acks() {
 
     // Use small MSS so segments fit in 256-byte test frames.
     let mss = 100u16;
-    handler.connections[0].eff_snd_mss = mss;
+    handler.first_connection_mut().eff_snd_mss = mss;
 
     // Write 4 MSS of data and simulate 4 segments sent by advancing snd_nxt.
     let data_len = 4 * mss as usize;
-    handler.connections[0]
+    handler.first_connection_mut()
         .send_buffer
         .write(&vec![0xAA; data_len]);
-    handler.connections[0].snd_wnd = 65535;
-    handler.connections[0].snd_nxt = handler.connections[0].snd_una.wrapping_add(data_len as u32);
+    handler.first_connection_mut().snd_wnd = 65535;
+    handler.first_connection_mut().snd_nxt = handler.first_connection_mut().snd_una.wrapping_add(data_len as u32);
 
-    let snd_una = handler.connections[0].snd_una;
-    let cwnd_before = handler.connections[0].cubic.cwnd;
+    let snd_una = handler.first_connection().snd_una;
+    let cwnd_before = handler.first_connection().cubic.cwnd;
 
     // Send 3 dup ACKs.
     for i in 0..3 {
@@ -599,7 +599,7 @@ fn sack_recovery_enters_on_3_dup_acks() {
         );
     }
 
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert!(tcb.recovery.in_recovery, "should be in SACK recovery");
     assert_eq!(tcb.recovery.dup_ack_count, 3);
     // CUBIC beta=0.7: cwnd should be reduced by on_loss.
@@ -642,7 +642,7 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -667,17 +667,17 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
 
     // Use small MSS so segments fit in 256-byte test frames.
     let mss = 100u16;
-    handler.connections[0].eff_snd_mss = mss;
+    handler.first_connection_mut().eff_snd_mss = mss;
 
     // Write 4 MSS of data and simulate 4 segments sent by advancing snd_nxt.
     let data_len = 4 * mss as usize;
-    handler.connections[0]
+    handler.first_connection_mut()
         .send_buffer
         .write(&vec![0xAA; data_len]);
-    handler.connections[0].snd_wnd = 65535;
-    handler.connections[0].snd_nxt = handler.connections[0].snd_una.wrapping_add(data_len as u32);
+    handler.first_connection_mut().snd_wnd = 65535;
+    handler.first_connection_mut().snd_nxt = handler.first_connection_mut().snd_una.wrapping_add(data_len as u32);
 
-    let snd_una = handler.connections[0].snd_una;
+    let snd_una = handler.first_connection().snd_una;
 
     // 3 dup ACKs -> enter recovery.
     for i in 0..3 {
@@ -702,7 +702,7 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
             &mut tx,
         );
     }
-    assert!(handler.connections[0].recovery.in_recovery);
+    assert!(handler.first_connection().recovery.in_recovery);
 
     // Partial ACK — advances snd_una by 1 MSS but doesn't reach recovery_point.
     let partial_ack_seq = snd_una.wrapping_add(mss as u32);
@@ -728,8 +728,8 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
     );
 
     assert!(
-        handler.connections[0].recovery.in_recovery,
+        handler.first_connection().recovery.in_recovery,
         "should still be in recovery after partial ACK"
     );
-    assert_eq!(handler.connections[0].snd_una, partial_ack_seq);
+    assert_eq!(handler.first_connection().snd_una, partial_ack_seq);
 }

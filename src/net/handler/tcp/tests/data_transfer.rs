@@ -34,7 +34,7 @@ fn established_receives_in_order_data() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -55,7 +55,7 @@ fn established_receives_in_order_data() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Clear tx from handshake.
     while tx.pop().is_some() {}
@@ -91,7 +91,7 @@ fn established_receives_in_order_data() {
         "ACK deferred for first in-order segment"
     );
     assert!(
-        handler.connections[0].ack_pending,
+        handler.first_connection().ack_pending,
         "ack_pending should be true"
     );
 
@@ -122,7 +122,7 @@ fn established_receives_in_order_data() {
     // ACK is now deferred to poll_send for piggyback opportunity.
     assert_eq!(tx.num_frames(), 0, "ACK deferred until poll_send");
     assert!(
-        handler.connections[0].ack_pending,
+        handler.first_connection().ack_pending,
         "ack_pending should be true"
     );
 
@@ -138,7 +138,7 @@ fn established_receives_in_order_data() {
     assert_eq!(tx.num_frames(), 1, "ACK flushed by poll_send");
 
     // Verify: data is in the receive ring buffer.
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert_eq!(tcb.recv_buffer.available(), payload.len() + payload2.len());
     assert_eq!(
         tcb.rcv_nxt,
@@ -182,7 +182,7 @@ fn established_out_of_order_reassembly() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -228,10 +228,10 @@ fn established_out_of_order_reassembly() {
         &mut tx,
     );
     assert_eq!(
-        handler.connections[0].rcv_nxt, 1001,
+        handler.first_connection().rcv_nxt, 1001,
         "rcv_nxt not advanced for OOO"
     );
-    assert_eq!(handler.connections[0].ooo_ranges.len(), 1);
+    assert_eq!(handler.first_connection().ooo_ranges.len(), 1);
 
     // Now send segment 1 (fills the gap): seq=1001, 5 bytes "hello".
     let seg1 = build_tcp_frame_with_payload(
@@ -258,19 +258,19 @@ fn established_out_of_order_reassembly() {
 
     // Both segments should now be contiguous.
     assert_eq!(
-        handler.connections[0].rcv_nxt, 1011,
+        handler.first_connection().rcv_nxt, 1011,
         "rcv_nxt advanced past both segments"
     );
     assert_eq!(
-        handler.connections[0].ooo_ranges.len(),
+        handler.first_connection().ooo_ranges.len(),
         0,
         "OOO ranges drained"
     );
-    assert_eq!(handler.connections[0].recv_buffer.available(), 10);
+    assert_eq!(handler.first_connection().recv_buffer.available(), 10);
 
     // Read from recv buffer and verify contents.
     let mut buf = [0u8; 10];
-    handler.connections[0].recv_buffer.read(&mut buf);
+    handler.first_connection_mut().recv_buffer.read(&mut buf);
     assert_eq!(&buf, b"helloworld");
 }
 
@@ -308,7 +308,7 @@ fn poll_send_builds_data_segment() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -333,16 +333,16 @@ fn poll_send_builds_data_segment() {
 
     // Write data into the connection's send buffer.
     let payload = b"Hello from server!";
-    handler.connections[0].send_buffer.write(payload);
+    handler.first_connection_mut().send_buffer.write(payload);
 
     // Set snd_wnd so the window allows sending.
-    handler.connections[0].snd_wnd = 65535;
+    handler.first_connection_mut().snd_wnd = 65535;
 
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(tx.num_frames(), 1, "data segment built");
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert_eq!(
         tcb.snd_nxt,
         server_iss
@@ -388,7 +388,7 @@ fn frame_accounting_through_data_transfer() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -476,7 +476,7 @@ fn poll_send_sets_psh_on_last_segment() {
     let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
     // Write small data (< MSS) into send buffer.
-    handler.connections[0].send_buffer.write(b"Hello");
+    handler.first_connection_mut().send_buffer.write(b"Hello");
 
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
@@ -515,14 +515,14 @@ fn poll_send_no_psh_on_first_segment_when_more_data() {
     let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
     // Write more than 1 MSS of data.
-    let mss = handler.connections[0].eff_snd_mss as usize;
+    let mss = handler.first_connection().eff_snd_mss as usize;
     let big_data = vec![0x41u8; mss + 100];
-    handler.connections[0].send_buffer.write(&big_data);
+    handler.first_connection_mut().send_buffer.write(&big_data);
 
     // Ensure cwnd is large enough to allow sending.
-    handler.connections[0].cubic.cwnd = (mss as u32) * 10;
+    handler.first_connection_mut().cubic.cwnd = (mss as u32) * 10;
     // Disable Nagle so the second (sub-MSS) segment can be sent.
-    handler.connections[0].nagle_enabled = false;
+    handler.first_connection_mut().nagle_enabled = false;
 
     let now = coarsetime::Instant::now();
     // poll_send now sends all segments in one call (fills the window).
@@ -604,7 +604,7 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
 
     // ACK to complete handshake.
     let ack = build_tcp_frame(
@@ -627,15 +627,15 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
     while tx.pop().is_some() {}
 
     // Fill 20 of 32 bytes in the recv buffer directly, leaving 12 free.
     let filler = [0xAA_u8; 20];
-    handler.connections[0].recv_buffer.write(&filler);
+    handler.first_connection_mut().recv_buffer.write(&filler);
     // Advance rcv_nxt to account for the filler (as if received normally).
-    handler.connections[0].rcv_nxt = handler.connections[0].rcv_nxt.wrapping_add(20);
-    let rcv_nxt_before = handler.connections[0].rcv_nxt;
+    handler.first_connection_mut().rcv_nxt = handler.first_connection_mut().rcv_nxt.wrapping_add(20);
+    let rcv_nxt_before = handler.first_connection().rcv_nxt;
 
     // Send a 20-byte payload — only 12 should fit.
     let payload = [0xBB_u8; 20];
@@ -662,7 +662,7 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
     );
 
     // rcv_nxt must advance by only 12 (the bytes actually written), not 20.
-    let rcv_nxt_after = handler.connections[0].rcv_nxt;
+    let rcv_nxt_after = handler.first_connection().rcv_nxt;
     let advanced = rcv_nxt_after.wrapping_sub(rcv_nxt_before);
     assert_eq!(
         advanced, 12,
@@ -670,7 +670,7 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
         advanced
     );
     assert_eq!(
-        handler.connections[0].recv_buffer.available(),
+        handler.first_connection().recv_buffer.available(),
         32,
         "recv buffer should be completely full (20 filler + 12 new)"
     );

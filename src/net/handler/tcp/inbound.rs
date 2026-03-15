@@ -19,8 +19,11 @@ use crate::{
 
 use std::collections::BTreeMap;
 
+use rustc_hash::FxHashMap;
+
 use super::congestion::CubicState;
 use super::handler::{INITIAL_RTO_MS, TcpHandler};
+use super::listener::ListenEntry;
 use super::options::ParsedOptions;
 use super::recovery::{FRtoAction, FRtoState, PrrState, SackRecovery};
 use super::ring_buffer::RingBuffer;
@@ -30,6 +33,15 @@ use super::tcb::{
     ConnectionId, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE, TS_OPTION_LEN, Tcb,
     TcpEvent,
 };
+
+use super::isn::IsnGenerator;
+
+/// Actions that must be performed after releasing the `&mut Tcb` borrow.
+enum PostAction {
+    None,
+    RemoveConnection(ConnectionId),
+    RemoveAndDecrement(ConnectionId),
+}
 
 /// Check segment acceptability per RFC 9293 §3.10.7.4.
 #[inline]
@@ -277,18 +289,21 @@ impl TcpHandler {
             remote_port: src_port,
         };
 
-        if let Some(idx) = self.connections.iter().position(|c| c.id == conn_id) {
-            let tsval = if self.connections[idx].ts_enabled {
-                now.duration_since(self.connections[idx].ts_offset)
-                    .as_millis() as u32
+        // Destructure self for split borrows.
+        let Self { connections, listeners, isn_generator, tx_offload, rx_offload: _, .. } = self;
+        let tx_offload = *tx_offload;
+
+        if let Some(tcb) = connections.get_mut(&conn_id) {
+            let tsval = if tcb.ts_enabled {
+                now.duration_since(tcb.ts_offset).as_millis() as u32
             } else {
                 0
             };
-            let state = self.connections[idx].state;
-            match state {
+            let state = tcb.state;
+            let action = match state {
                 TcpState::SynSent => {
-                    self.process_syn_sent(
-                        idx,
+                    let action = Self::process_syn_sent(
+                        tcb,
                         now,
                         tsval,
                         seg_seq,
@@ -298,15 +313,17 @@ impl TcpHandler {
                         options,
                         src_mac,
                         dst_mac,
+                        tx_offload,
                         free_frames,
                         tx_return,
                     );
                     rx_return.push(frame);
+                    action
                 }
                 TcpState::SynReceived => {
-                    self.process_syn_received(
-                        idx,
-                        now,
+                    let action = Self::process_syn_received(
+                        tcb,
+                        listeners,
                         tsval,
                         seg_seq,
                         seg_ack,
@@ -315,17 +332,19 @@ impl TcpHandler {
                         seg_len,
                         src_mac,
                         dst_mac,
+                        tx_offload,
                         free_frames,
                         tx_return,
                     );
                     rx_return.push(frame);
+                    action
                 }
                 TcpState::Established => {
                     let payload_offset = tcp_offset + tcp_header_len;
                     let payload_len = frame.len().saturating_sub(payload_offset);
                     let opts = ParsedOptions::parse(options);
-                    self.process_established(
-                        idx,
+                    let action = Self::process_established(
+                        tcb,
                         frame,
                         now,
                         tsval,
@@ -339,10 +358,12 @@ impl TcpHandler {
                         ecn_bits,
                         src_mac,
                         dst_mac,
+                        tx_offload,
                         free_frames,
                         rx_return,
                         tx_return,
                     );
+                    action
                 }
                 TcpState::FinWait1
                 | TcpState::FinWait2
@@ -353,8 +374,8 @@ impl TcpHandler {
                     let payload_offset = tcp_offset + tcp_header_len;
                     let payload_len = frame.len().saturating_sub(payload_offset);
                     let opts = ParsedOptions::parse(options);
-                    self.process_teardown(
-                        idx,
+                    let action = Self::process_teardown(
+                        tcb,
                         frame,
                         now,
                         tsval,
@@ -367,21 +388,42 @@ impl TcpHandler {
                         &opts,
                         src_mac,
                         dst_mac,
+                        tx_offload,
                         free_frames,
                         rx_return,
                         tx_return,
                     );
+                    action
                 }
                 _ => {
                     rx_return.push(frame);
+                    PostAction::None
                 }
+            };
+
+            // Handle deferred actions after tcb borrow is released.
+            match action {
+                PostAction::RemoveConnection(id) => {
+                    connections.remove(&id);
+                }
+                PostAction::RemoveAndDecrement(id) => {
+                    Self::decrement_syn_received(listeners, &id);
+                    connections.remove(&id);
+                }
+                PostAction::None => {}
             }
             return;
         }
 
         // No connection found — check listeners (LISTEN state, §16.2).
-        if let Some(listener_idx) = self.find_listener(incoming_dst, dst_port) {
-            self.process_listen(
+        if let Some(listener_idx) = listeners
+            .iter()
+            .position(|l| l.port == dst_port && (l.addr.is_unspecified() || l.addr == incoming_dst))
+        {
+            Self::process_listen(
+                connections,
+                listeners,
+                isn_generator,
                 listener_idx,
                 now,
                 incoming_src,
@@ -396,6 +438,7 @@ impl TcpHandler {
                 options,
                 src_mac,
                 dst_mac,
+                tx_offload,
                 free_frames,
                 tx_return,
             );
@@ -422,7 +465,7 @@ impl TcpHandler {
             seg_len,
             src_mac,
             dst_mac,
-            self.tx_offload,
+            tx_offload,
             free_frames,
             tx_return,
         );
@@ -432,7 +475,9 @@ impl TcpHandler {
     // --- LISTEN state processing (RFC §16.2) ---
 
     fn process_listen<'umem>(
-        &mut self,
+        connections: &mut FxHashMap<ConnectionId, Tcb>,
+        listeners: &mut Vec<ListenEntry>,
+        isn_generator: &mut IsnGenerator,
         listener_idx: usize,
         now: Instant,
         incoming_src: IpAddress,
@@ -447,6 +492,7 @@ impl TcpHandler {
         options: &[u8],
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
+        tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
@@ -468,7 +514,7 @@ impl TcpHandler {
                 seg_len,
                 src_mac,
                 dst_mac,
-                self.tx_offload,
+                tx_offload,
                 free_frames,
                 tx_return,
             );
@@ -478,7 +524,7 @@ impl TcpHandler {
         // Step 3: SYN → create new connection in SYN-RECEIVED.
         if seg_flags & flags::SYN != 0 {
             // Check backlog.
-            let listener = &self.listeners[listener_idx];
+            let listener = &listeners[listener_idx];
             if listener.syn_received_count >= listener.backlog {
                 return; // Drop excess SYNs.
             }
@@ -490,7 +536,7 @@ impl TcpHandler {
                 remote_port: src_port,
             };
 
-            let iss = self.isn_generator.generate(&id);
+            let iss = isn_generator.generate(&id);
             let peer_mss = parse_mss(options).unwrap_or(536);
             let peer_wscale = parse_window_scale(options);
             let peer_ts = parse_timestamp(options);
@@ -621,13 +667,13 @@ impl TcpHandler {
                 ecn_enabled,
                 src_mac,
                 dst_mac,
-                self.tx_offload,
+                tx_offload,
                 free_frames,
                 tx_return,
             );
 
-            self.connections.push(tcb);
-            self.listeners[listener_idx].syn_received_count += 1;
+            connections.insert(tcb.id, tcb);
+            listeners[listener_idx].syn_received_count += 1;
         }
 
         // Step 4: Other → drop (frame returned by caller).
@@ -636,9 +682,8 @@ impl TcpHandler {
     // --- SYN-RECEIVED state processing (RFC §16.4) ---
 
     fn process_syn_received<'umem>(
-        &mut self,
-        idx: usize,
-        _now: Instant,
+        tcb: &mut Tcb,
+        listeners: &mut Vec<ListenEntry>,
         tsval: u32,
         seg_seq: u32,
         seg_ack: u32,
@@ -647,23 +692,18 @@ impl TcpHandler {
         _seg_len: u32,
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
+        tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
-        let tcb = &self.connections[idx];
+    ) -> PostAction {
         let id = tcb.id;
 
         // Step 1: Check sequence number acceptability.
-        // For SYN-RECEIVED with no data, we expect seg_seq == rcv_nxt.
-        // For simultaneous open, the peer's SYN-ACK has seg_seq == IRS (the
-        // SYN occupies that sequence number) while rcv_nxt == IRS+1, so we
-        // also accept seg_seq == rcv_nxt - 1 when the SYN flag is set.
         let seq_ok = seg_seq == tcb.rcv_nxt
             || (seg_flags & flags::SYN != 0 && seg_seq.wrapping_add(1) == tcb.rcv_nxt);
         if !seq_ok {
             // Out of window — if not RST, send challenge ACK.
             if seg_flags & flags::RST == 0 {
-                let tcb = &self.connections[idx];
                 let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
@@ -677,12 +717,12 @@ impl TcpHandler {
                     ts,
                     src_mac,
                     dst_mac,
-                    self.tx_offload,
+                    tx_offload,
                     free_frames,
                     tx_return,
                 );
             }
-            return;
+            return PostAction::None;
         }
 
         // Step 2: Check RST.
@@ -690,30 +730,18 @@ impl TcpHandler {
             let from_passive = tcb.from_passive_open;
             if from_passive {
                 // Return to LISTEN — remove TCB.
-                self.decrement_syn_received(&id);
-                self.connections.remove(idx);
+                return PostAction::RemoveAndDecrement(id);
             } else {
                 // Active open → signal refused.
-                self.connections[idx]
-                    .event_queue
-                    .push(TcpEvent::ConnectionRefused);
-                self.connections.remove(idx);
+                tcb.event_queue.push(TcpEvent::ConnectionRefused);
+                return PostAction::RemoveConnection(id);
             }
-            return;
         }
 
         // Step 4: Check the SYN bit.
-        // Only handle bare SYN (without ACK). A SYN-ACK in SYN-RECEIVED is
-        // the expected completion segment for simultaneous open — let it
-        // fall through to the ACK check in Step 5.
-        // A duplicate bare SYN means the client didn't receive our SYN-ACK.
-        // Retransmit the SYN-ACK immediately (as Linux does) rather than
-        // returning to LISTEN (which drops the TCB) or sending a bare
-        // challenge ACK (which a SYN-SENT client drops per §3.10.7.3).
         if seg_flags & flags::SYN != 0 && seg_flags & flags::ACK == 0 {
             if tcb.from_passive_open {
                 // Retransmit SYN-ACK so the client can complete the handshake.
-                let tcb = &self.connections[idx];
                 let wscale_opt = if tcb.wscale_enabled {
                     Some(tcb.rcv_wscale)
                 } else {
@@ -735,13 +763,12 @@ impl TcpHandler {
                     tcb.ecn_enabled,
                     src_mac,
                     dst_mac,
-                    self.tx_offload,
+                    tx_offload,
                     free_frames,
                     tx_return,
                 );
             } else {
                 // Active open (simultaneous): send challenge ACK per RFC 5961.
-                let tcb = &self.connections[idx];
                 let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
@@ -755,17 +782,16 @@ impl TcpHandler {
                     ts,
                     src_mac,
                     dst_mac,
-                    self.tx_offload,
+                    tx_offload,
                     free_frames,
                     tx_return,
                 );
             }
-            return;
+            return PostAction::None;
         }
 
         // Step 5: Check ACK.
         if seg_flags & flags::ACK != 0 {
-            let tcb = &self.connections[idx];
             let snd_una = tcb.snd_una;
             let snd_nxt = tcb.snd_nxt;
 
@@ -773,7 +799,6 @@ impl TcpHandler {
                 && crate::net::wire::tcp::seq_le(seg_ack, snd_nxt)
             {
                 // ACK is acceptable → transition to ESTABLISHED.
-                let tcb = &mut self.connections[idx];
                 tcb.state = TcpState::Established;
                 tcb.snd_una = seg_ack;
                 // RFC 7323 §2.2: window scaling applies to all non-SYN segments.
@@ -787,11 +812,11 @@ impl TcpHandler {
                 let from_passive = tcb.from_passive_open;
                 if from_passive {
                     // Push ConnectionId to listener's accept_queue.
-                    self.push_to_accept_queue(&id);
-                    self.decrement_syn_received(&id);
+                    Self::push_to_accept_queue_on(listeners, &id);
+                    Self::decrement_syn_received(listeners, &id);
                 } else {
                     // Simultaneous open — notify the active opener.
-                    self.connections[idx].event_queue.push(TcpEvent::Connected);
+                    tcb.event_queue.push(TcpEvent::Connected);
                 }
             } else {
                 // Bad ACK → send RST.
@@ -806,19 +831,19 @@ impl TcpHandler {
                     0,
                     src_mac,
                     dst_mac,
-                    self.tx_offload,
+                    tx_offload,
                     free_frames,
                     tx_return,
                 );
             }
         }
+        PostAction::None
     }
 
     // --- SYN-SENT state processing (RFC §16.3) ---
 
     fn process_syn_sent<'umem>(
-        &mut self,
-        idx: usize,
+        tcb: &mut Tcb,
         now: Instant,
         tsval: u32,
         seg_seq: u32,
@@ -828,10 +853,10 @@ impl TcpHandler {
         options: &[u8],
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
+        tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
-        let tcb = &self.connections[idx];
+    ) -> PostAction {
         let iss = tcb.iss;
 
         // Step 1: Check ACK.
@@ -854,30 +879,27 @@ impl TcpHandler {
                     0,
                     src_mac,
                     dst_mac,
-                    self.tx_offload,
+                    tx_offload,
                     free_frames,
                     tx_return,
                 );
             }
-            return;
+            return PostAction::None;
         }
 
         // Step 2: Check RST.
         if seg_flags & flags::RST != 0 {
             if seg_flags & flags::ACK != 0 {
                 // ACK was acceptable (passed step 1) → connection refused.
-                self.connections[idx]
-                    .event_queue
-                    .push(TcpEvent::ConnectionRefused);
-                self.connections.remove(idx);
+                tcb.event_queue.push(TcpEvent::ConnectionRefused);
+                return PostAction::RemoveConnection(tcb.id);
             }
             // RST without ACK → drop silently.
-            return;
+            return PostAction::None;
         }
 
         // Step 3: Check SYN.
         if seg_flags & flags::SYN != 0 {
-            let tcb = &mut self.connections[idx];
             tcb.irs = seg_seq;
             tcb.rcv_nxt = seg_seq.wrapping_add(1);
 
@@ -925,7 +947,6 @@ impl TcpHandler {
 
             if crate::net::wire::tcp::seq_lt(tcb.iss, tcb.snd_una) {
                 // SND.UNA > ISS → ESTABLISHED.
-                let tcb = &mut self.connections[idx];
                 tcb.state = TcpState::Established;
                 tcb.snd_wnd = seg_wnd;
                 tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
@@ -949,7 +970,7 @@ impl TcpHandler {
                     ts,
                     src_mac,
                     dst_mac,
-                    self.tx_offload,
+                    tx_offload,
                     free_frames,
                     tx_return,
                 );
@@ -957,7 +978,6 @@ impl TcpHandler {
                 tcb.event_queue.push(TcpEvent::Connected);
             } else {
                 // Simultaneous open → SYN-RECEIVED (MUST-10).
-                let tcb = &mut self.connections[idx];
                 tcb.state = TcpState::SynReceived;
                 tcb.from_passive_open = false;
                 tcb.snd_wnd = seg_wnd;
@@ -988,7 +1008,7 @@ impl TcpHandler {
                     tcb.ecn_enabled,
                     src_mac,
                     dst_mac,
-                    self.tx_offload,
+                    tx_offload,
                     free_frames,
                     tx_return,
                 );
@@ -1001,34 +1021,31 @@ impl TcpHandler {
         }
 
         // Step 4: Neither SYN nor RST → drop.
+        PostAction::None
     }
 
     // --- ESTABLISHED state processing: cold-path helpers ---
 
     /// Handle RST in established state (RFC 5961).
-    /// Returns `true` if the connection was removed (exact sequence match).
+    /// Returns PostAction indicating if connection should be removed.
     #[inline(never)]
     fn handle_rst_established<'umem>(
-        &mut self,
-        idx: usize,
+        tcb: &mut Tcb,
         seg_seq: u32,
         tsval: u32,
         ack_flags: u8,
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
+        tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) -> bool {
-        if seg_seq == self.connections[idx].rcv_nxt {
+    ) -> PostAction {
+        if seg_seq == tcb.rcv_nxt {
             // Exact match: reset connection.
-            self.connections[idx].event_queue.push(TcpEvent::Reset);
-            let id = self.connections[idx].id;
-            self.decrement_syn_received(&id);
-            self.connections.remove(idx);
-            return true;
+            tcb.event_queue.push(TcpEvent::Reset);
+            return PostAction::RemoveAndDecrement(tcb.id);
         }
         // In-window but not exact: send challenge ACK, drop segment.
-        let tcb = &self.connections[idx];
         let ts = tcb.ts_option(tsval);
         SegmentBuilder::build_ack(
             tcb.id.local_addr,
@@ -1042,26 +1059,25 @@ impl TcpHandler {
             ts,
             src_mac,
             dst_mac,
-            self.tx_offload,
+            tx_offload,
             free_frames,
             tx_return,
         );
-        false
+        PostAction::None
     }
 
     /// Handle SYN in established state — send challenge ACK (RFC 5961).
     #[inline(never)]
     fn handle_syn_established<'umem>(
-        &mut self,
-        idx: usize,
+        tcb: &mut Tcb,
         tsval: u32,
         ack_flags: u8,
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
+        tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        let tcb = &self.connections[idx];
         let ts = tcb.ts_option(tsval);
         SegmentBuilder::build_ack(
             tcb.id.local_addr,
@@ -1075,7 +1091,7 @@ impl TcpHandler {
             ts,
             src_mac,
             dst_mac,
-            self.tx_offload,
+            tx_offload,
             free_frames,
             tx_return,
         );
@@ -1084,8 +1100,7 @@ impl TcpHandler {
     /// Handle out-of-order data — store in OOO buffer and send duplicate ACK with SACK blocks.
     #[inline(never)]
     fn handle_ooo_data<'umem>(
-        &mut self,
-        idx: usize,
+        tcb: &mut Tcb,
         frame: &Frame<'umem>,
         seg_seq: u32,
         tsval: u32,
@@ -1094,13 +1109,13 @@ impl TcpHandler {
         ack_flags: u8,
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
+        tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        let rcv_nxt = self.connections[idx].rcv_nxt;
+        let rcv_nxt = tcb.rcv_nxt;
         let offset = seg_seq.wrapping_sub(rcv_nxt) as usize;
         let payload = &frame[payload_offset..payload_offset + payload_len];
-        let tcb = &mut self.connections[idx];
         tcb.recv_buffer.write_at(offset, payload);
         tcb.ooo_ranges.insert(seg_seq, payload_len as u32);
 
@@ -1140,7 +1155,7 @@ impl TcpHandler {
             sack_blocks,
             src_mac,
             dst_mac,
-            self.tx_offload,
+            tx_offload,
             free_frames,
             tx_return,
         );
@@ -1149,8 +1164,7 @@ impl TcpHandler {
     // --- ESTABLISHED state processing ---
 
     fn process_established<'umem>(
-        &mut self,
-        idx: usize,
+        tcb: &mut Tcb,
         frame: Frame<'umem>,
         now: Instant,
         tsval: u32,
@@ -1164,25 +1178,26 @@ impl TcpHandler {
         ecn_bits: u8,
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
+        tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
+    ) -> PostAction {
         use crate::net::wire::tcp::{seq_le, seq_lt};
 
         // ECN CE detection: if ECN is enabled and CE codepoint (0b11) is received,
         // record it so we can signal ECE back to the sender.
-        if self.connections[idx].ecn_enabled && ecn_bits == 0x03 {
-            self.connections[idx].ecn_ce_received = true;
+        if tcb.ecn_enabled && ecn_bits == 0x03 {
+            tcb.ecn_ce_received = true;
         }
 
         // ECN CWR processing: peer acknowledges our ECE by sending CWR.
-        if self.connections[idx].ecn_enabled && seg_flags & flags::CWR != 0 {
-            self.connections[idx].ecn_ce_received = false;
+        if tcb.ecn_enabled && seg_flags & flags::CWR != 0 {
+            tcb.ecn_ce_received = false;
         }
 
         // Compute ACK flags: include ECE when we need to signal congestion back.
-        let ack_flags = if self.connections[idx].ecn_ce_received {
+        let ack_flags = if tcb.ecn_ce_received {
             flags::ACK | flags::ECE
         } else {
             flags::ACK
@@ -1190,7 +1205,6 @@ impl TcpHandler {
 
         // Fast-path: common case — in-order data + valid new ACK, no special flags.
         {
-            let tcb = &self.connections[idx];
             let fast_path = (seg_flags & (flags::RST | flags::SYN | flags::FIN)) == 0
                 && seg_flags & flags::ACK != 0
                 && payload_len > 0
@@ -1202,20 +1216,19 @@ impl TcpHandler {
 
             if fast_path {
                 // PAWS check — on failure, fall through to slow path.
-                if self.connections[idx].ts_enabled {
+                if tcb.ts_enabled {
                     if let Some((ts_val, _)) = opts.timestamp {
-                        let ts_diff = ts_val.wrapping_sub(self.connections[idx].ts_recent) as i32;
+                        let ts_diff = ts_val.wrapping_sub(tcb.ts_recent) as i32;
                         if ts_diff < 0 {
                             // Possible PAWS rejection — let slow path handle it.
                         } else {
                             // PAWS OK — proceed with fast path.
 
                             // Segment acceptability (simplified: seg_seq == rcv_nxt, payload > 0).
-                            if self.connections[idx].recv_buffer.free_space() == 0 {
+                            if tcb.recv_buffer.free_space() == 0 {
                                 // No window space — fall through to slow path.
                             } else {
                                 // Update ts_recent.
-                                let tcb = &mut self.connections[idx];
                                 tcb.ts_recent = ts_val;
                                 tcb.ts_recent_age = now;
 
@@ -1339,7 +1352,7 @@ impl TcpHandler {
                                 }
 
                                 rx_return.push(frame);
-                                return;
+                                return PostAction::None;
                             }
                         }
                     }
@@ -1348,9 +1361,7 @@ impl TcpHandler {
                     // Timestamps not enabled — fast path without PAWS.
 
                     // Segment acceptability (simplified: seg_seq == rcv_nxt, payload > 0).
-                    if self.connections[idx].recv_buffer.free_space() > 0 {
-                        let tcb = &mut self.connections[idx];
-
+                    if tcb.recv_buffer.free_space() > 0 {
                         // ACK advancement.
                         let bytes_acked = seg_ack.wrapping_sub(tcb.snd_una) as usize;
                         tcb.snd_una = seg_ack;
@@ -1459,7 +1470,7 @@ impl TcpHandler {
                         }
 
                         rx_return.push(frame);
-                        return;
+                        return PostAction::None;
                     }
                     // No window space — fall through to slow path.
                 }
@@ -1468,10 +1479,9 @@ impl TcpHandler {
         // Fall through to existing slow path.
 
         // PAWS check (RFC 7323 §5).
-        if self.connections[idx].ts_enabled
+        if tcb.ts_enabled
             && let Some((tsval, _)) = opts.timestamp
         {
-            let tcb = &self.connections[idx];
             // Check if TSval is older than ts_recent.
             // Use signed comparison for wraparound.
             let ts_diff = tsval.wrapping_sub(tcb.ts_recent) as i32;
@@ -1482,9 +1492,8 @@ impl TcpHandler {
                     // Reject: send ACK and drop (unless RST, which is silently dropped).
                     if seg_flags & flags::RST != 0 {
                         rx_return.push(frame);
-                        return;
+                        return PostAction::None;
                     }
-                    let tcb = &self.connections[idx];
                     let ts = tcb.ts_option(tsval);
                     SegmentBuilder::build_ack(
                         tcb.id.local_addr,
@@ -1498,26 +1507,25 @@ impl TcpHandler {
                         ts,
                         src_mac,
                         dst_mac,
-                        self.tx_offload,
+                        tx_offload,
                         free_frames,
                         tx_return,
                     );
                     rx_return.push(frame);
-                    return;
+                    return PostAction::None;
                 }
             }
         }
 
         // Segment acceptability check (RFC 9293 §3.10.7.4).
         {
-            let tcb = &self.connections[idx];
             let seg_len = Tcb::seg_len(payload_len, seg_flags);
             let rcv_wnd = tcb.recv_buffer.free_space() as u32;
             if !is_segment_acceptable(seg_seq, seg_len, tcb.rcv_nxt, rcv_wnd) {
                 // Out-of-window: send ACK (unless RST, which is silently dropped).
                 if seg_flags & flags::RST != 0 {
                     rx_return.push(frame);
-                    return;
+                    return PostAction::None;
                 }
                 let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_ack(
@@ -1532,55 +1540,56 @@ impl TcpHandler {
                     ts,
                     src_mac,
                     dst_mac,
-                    self.tx_offload,
+                    tx_offload,
                     free_frames,
                     tx_return,
                 );
                 rx_return.push(frame);
-                return;
+                return PostAction::None;
             }
         }
 
         // Step 2: RST check (RFC 5961).
         if seg_flags & flags::RST != 0 {
-            self.handle_rst_established(
-                idx,
+            let action = Self::handle_rst_established(
+                tcb,
                 seg_seq,
                 tsval,
                 ack_flags,
                 src_mac,
                 dst_mac,
+                tx_offload,
                 free_frames,
                 tx_return,
             );
             rx_return.push(frame);
-            return;
+            return action;
         }
 
         // Step 4: SYN check (RFC 5961 — challenge ACK for SYN in synchronized state).
         if seg_flags & flags::SYN != 0 {
-            self.handle_syn_established(
-                idx,
+            Self::handle_syn_established(
+                tcb,
                 tsval,
                 ack_flags,
                 src_mac,
                 dst_mac,
+                tx_offload,
                 free_frames,
                 tx_return,
             );
             rx_return.push(frame);
-            return;
+            return PostAction::None;
         }
 
         // Step 5 preamble: if ACK bit is off, drop segment and return.
         if seg_flags & flags::ACK == 0 {
             rx_return.push(frame);
-            return;
+            return PostAction::None;
         }
 
         // Update ts_recent from incoming segment.
         {
-            let tcb = &mut self.connections[idx];
             if tcb.ts_enabled
                 && let Some((tsval, _)) = opts.timestamp
             {
@@ -1591,14 +1600,12 @@ impl TcpHandler {
 
         // Step 2: ACK processing.
         if seg_flags & flags::ACK != 0 {
-            let tcb = &self.connections[idx];
             let snd_una = tcb.snd_una;
             let snd_nxt = tcb.snd_nxt;
 
             if seq_lt(snd_una, seg_ack) && seq_le(seg_ack, snd_nxt) {
                 // Valid new ACK — advance snd_una and send buffer.
                 let bytes_acked = seg_ack.wrapping_sub(snd_una) as usize;
-                let tcb = &mut self.connections[idx];
                 tcb.snd_una = seg_ack;
                 tcb.send_buffer.advance(bytes_acked);
 
@@ -1640,9 +1647,6 @@ impl TcpHandler {
                 if tcb.recovery.in_recovery && tcb.recovery.on_ack(seg_ack) {
                     // Exited recovery — full ACK covers recovery_point.
                     tcb.prr.exit();
-
-                    // Note: if still in recovery (partial ACK), we skip cubic.on_ack below
-                    // because it's already gated by !tcb.recovery.in_recovery
                 }
 
                 // Congestion control — only update outside recovery and F-RTO.
@@ -1731,7 +1735,6 @@ impl TcpHandler {
                 }
             } else if seq_lt(snd_nxt, seg_ack) {
                 // ACK for unsent data — send ACK and drop (RFC 9293 §3.10.7.4 Step 5).
-                let tcb = &self.connections[idx];
                 let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
@@ -1745,15 +1748,14 @@ impl TcpHandler {
                     ts,
                     src_mac,
                     dst_mac,
-                    self.tx_offload,
+                    tx_offload,
                     free_frames,
                     tx_return,
                 );
                 rx_return.push(frame);
-                return;
+                return PostAction::None;
             } else if seg_ack == snd_una && payload_len == 0 {
                 // Duplicate ACK.
-                let tcb = &mut self.connections[idx];
                 tcb.recovery.dup_ack_count += 1;
                 // Keep-alive probe responses arrive as duplicate ACKs — reset timer.
                 if tcb.keep_alive_enabled && tcb.keep_alive_probes_sent > 0 {
@@ -1798,13 +1800,11 @@ impl TcpHandler {
 
         // Step 3: Data processing.
         if payload_len > 0 {
-            let tcb = &self.connections[idx];
             let rcv_nxt = tcb.rcv_nxt;
 
             if seg_seq == rcv_nxt {
                 // In-order data.
                 let payload = &frame[payload_offset..payload_offset + payload_len];
-                let tcb = &mut self.connections[idx];
                 let written = tcb.recv_buffer.write(payload);
                 tcb.rcv_nxt = rcv_nxt.wrapping_add(written as u32);
 
@@ -1814,28 +1814,27 @@ impl TcpHandler {
 
                 // Drain contiguous OOO ranges.
                 loop {
-                    let current_nxt = self.connections[idx].rcv_nxt;
-                    if let Some(&ooo_len) = self.connections[idx].ooo_ranges.get(&current_nxt) {
-                        self.connections[idx].ooo_ranges.remove(&current_nxt);
-                        self.connections[idx].recv_buffer.commit(ooo_len as usize);
-                        self.connections[idx].rcv_nxt = current_nxt.wrapping_add(ooo_len);
+                    let current_nxt = tcb.rcv_nxt;
+                    if let Some(&ooo_len) = tcb.ooo_ranges.get(&current_nxt) {
+                        tcb.ooo_ranges.remove(&current_nxt);
+                        tcb.recv_buffer.commit(ooo_len as usize);
+                        tcb.rcv_nxt = current_nxt.wrapping_add(ooo_len);
                     } else {
                         break;
                     }
                 }
 
                 // Defer ACK (delayed ACK) — defer to poll_send for piggyback opportunity.
-                let tcb = &mut self.connections[idx];
                 tcb.ack_delay_count += 1;
                 tcb.ack_pending = true;
                 if tcb.delayed_ack_deadline.is_none() {
                     tcb.delayed_ack_deadline =
                         Some(now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms));
                 }
-            } else if seq_lt(rcv_nxt, seg_seq) {
+            } else if crate::net::wire::tcp::seq_lt(rcv_nxt, seg_seq) {
                 // Out-of-order data.
-                self.handle_ooo_data(
-                    idx,
+                Self::handle_ooo_data(
+                    tcb,
                     &frame,
                     seg_seq,
                     tsval,
@@ -1844,12 +1843,12 @@ impl TcpHandler {
                     ack_flags,
                     src_mac,
                     dst_mac,
+                    tx_offload,
                     free_frames,
                     tx_return,
                 );
             } else {
                 // Duplicate data (seg_seq < rcv_nxt) — just ACK.
-                let tcb = &self.connections[idx];
                 let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_ack(
                     tcb.id.local_addr,
@@ -1863,7 +1862,7 @@ impl TcpHandler {
                     ts,
                     src_mac,
                     dst_mac,
-                    self.tx_offload,
+                    tx_offload,
                     free_frames,
                     tx_return,
                 );
@@ -1871,12 +1870,9 @@ impl TcpHandler {
         }
 
         // Step 4: Process FIN flag.
-        // Only process FIN when all preceding data has been received, i.e. the
-        // segment's data ends exactly at rcv_nxt (RFC 9293 §3.10.7.4 Step 8).
         if seg_flags & flags::FIN != 0
-            && seg_seq.wrapping_add(payload_len as u32) == self.connections[idx].rcv_nxt
+            && seg_seq.wrapping_add(payload_len as u32) == tcb.rcv_nxt
         {
-            let tcb = &mut self.connections[idx];
             tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1); // FIN consumes one sequence number
             tcb.state = TcpState::CloseWait;
             tcb.event_queue.push(TcpEvent::RemoteClose);
@@ -1899,7 +1895,7 @@ impl TcpHandler {
                 ts,
                 src_mac,
                 dst_mac,
-                self.tx_offload,
+                tx_offload,
                 free_frames,
                 tx_return,
             );
@@ -1907,6 +1903,7 @@ impl TcpHandler {
 
         // Always return incoming frame to rx_return.
         rx_return.push(frame);
+        PostAction::None
     }
 
     // --- Connection teardown ---
@@ -1914,8 +1911,7 @@ impl TcpHandler {
     // --- Teardown state processing (FinWait1, FinWait2, CloseWait, Closing, LastAck, TimeWait) ---
 
     fn process_teardown<'umem>(
-        &mut self,
-        idx: usize,
+        tcb: &mut Tcb,
         frame: Frame<'umem>,
         now: Instant,
         tsval: u32,
@@ -1928,17 +1924,17 @@ impl TcpHandler {
         opts: &ParsedOptions,
         src_mac: crate::net::wire::ethernet::MacAddress,
         dst_mac: crate::net::wire::ethernet::MacAddress,
+        tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
-        let state = self.connections[idx].state;
+    ) -> PostAction {
+        let state = tcb.state;
 
         // PAWS check (RFC 7323 §5).
-        if self.connections[idx].ts_enabled
+        if tcb.ts_enabled
             && let Some((tsval, _)) = opts.timestamp
         {
-            let tcb = &self.connections[idx];
             let ts_diff = tsval.wrapping_sub(tcb.ts_recent) as i32;
             if ts_diff < 0 {
                 let staleness = now.duration_since(tcb.ts_recent_age).as_millis();
@@ -1946,9 +1942,8 @@ impl TcpHandler {
                     // Reject: silently drop RST, send ACK for others.
                     if seg_flags & flags::RST != 0 {
                         rx_return.push(frame);
-                        return;
+                        return PostAction::None;
                     }
-                    let tcb = &self.connections[idx];
                     let ts = tcb.ts_option(tsval);
                     SegmentBuilder::build_ack(
                         tcb.id.local_addr,
@@ -1962,26 +1957,25 @@ impl TcpHandler {
                         ts,
                         src_mac,
                         dst_mac,
-                        self.tx_offload,
+                        tx_offload,
                         free_frames,
                         tx_return,
                     );
                     rx_return.push(frame);
-                    return;
+                    return PostAction::None;
                 }
             }
         }
 
         // Segment acceptability check (RFC 9293 §3.10.7.4).
         {
-            let tcb = &self.connections[idx];
             let seg_len = Tcb::seg_len(payload_len, seg_flags);
             let rcv_wnd = tcb.recv_buffer.free_space() as u32;
             if !is_segment_acceptable(seg_seq, seg_len, tcb.rcv_nxt, rcv_wnd) {
                 // Out-of-window: silently drop RST, send ACK for others.
                 if seg_flags & flags::RST != 0 {
                     rx_return.push(frame);
-                    return;
+                    return PostAction::None;
                 }
                 let ts = tcb.ts_option(tsval);
                 SegmentBuilder::build_ack(
@@ -1996,12 +1990,12 @@ impl TcpHandler {
                     ts,
                     src_mac,
                     dst_mac,
-                    self.tx_offload,
+                    tx_offload,
                     free_frames,
                     tx_return,
                 );
                 rx_return.push(frame);
-                return;
+                return PostAction::None;
             }
         }
 
@@ -2010,17 +2004,15 @@ impl TcpHandler {
             if state == TcpState::TimeWait {
                 // Ignore RST in TIME-WAIT (prevents RST attacks).
                 rx_return.push(frame);
-                return;
+                return PostAction::None;
             }
-            if seg_seq == self.connections[idx].rcv_nxt {
+            if seg_seq == tcb.rcv_nxt {
                 // Exact match: reset connection.
-                self.connections[idx].event_queue.push(TcpEvent::Reset);
-                self.connections.remove(idx);
+                tcb.event_queue.push(TcpEvent::Reset);
                 rx_return.push(frame);
-                return;
+                return PostAction::RemoveConnection(tcb.id);
             }
             // In-window but not exact: send challenge ACK, drop segment.
-            let tcb = &self.connections[idx];
             let ts = tcb.ts_option(tsval);
             SegmentBuilder::build_ack(
                 tcb.id.local_addr,
@@ -2034,17 +2026,16 @@ impl TcpHandler {
                 ts,
                 src_mac,
                 dst_mac,
-                self.tx_offload,
+                tx_offload,
                 free_frames,
                 tx_return,
             );
             rx_return.push(frame);
-            return;
+            return PostAction::None;
         }
 
         // Step 4: SYN check (RFC 5961 — challenge ACK for SYN in synchronized state).
         if seg_flags & flags::SYN != 0 {
-            let tcb = &self.connections[idx];
             let ts = tcb.ts_option(tsval);
             SegmentBuilder::build_ack(
                 tcb.id.local_addr,
@@ -2058,23 +2049,22 @@ impl TcpHandler {
                 ts,
                 src_mac,
                 dst_mac,
-                self.tx_offload,
+                tx_offload,
                 free_frames,
                 tx_return,
             );
             rx_return.push(frame);
-            return;
+            return PostAction::None;
         }
 
         // Step 5 preamble: if ACK bit is off, drop segment and return.
         if seg_flags & flags::ACK == 0 {
             rx_return.push(frame);
-            return;
+            return PostAction::None;
         }
 
         match state {
             TcpState::FinWait1 => {
-                let tcb = &mut self.connections[idx];
                 let fin_acked = if seg_flags & flags::ACK != 0 {
                     if let Some(fin_seq) = tcb.fin_seq {
                         crate::net::wire::tcp::seq_lt(fin_seq, seg_ack)
@@ -2117,7 +2107,6 @@ impl TcpHandler {
                 }
 
                 // Determine new state.
-                let tcb = &mut self.connections[idx];
                 if fin_acked && remote_fin {
                     // Both sides FINed and our FIN is ACKed → TimeWait.
                     tcb.state = TcpState::TimeWait;
@@ -2135,11 +2124,11 @@ impl TcpHandler {
 
                 // Send ACK if FIN or data received.
                 if remote_fin || payload_len > 0 {
-                    let tcb = &self.connections[idx];
                     let id = tcb.id;
                     let snd_nxt = tcb.snd_nxt;
                     let rcv_nxt = tcb.rcv_nxt;
                     let ts = tcb.ts_option(tsval);
+                    let window = tcb.advertised_window();
                     SegmentBuilder::build_ack(
                         id.local_addr,
                         id.remote_addr,
@@ -2147,12 +2136,12 @@ impl TcpHandler {
                         id.remote_port,
                         snd_nxt,
                         rcv_nxt,
-                        self.connections[idx].advertised_window(),
+                        window,
                         flags::ACK,
                         ts,
                         src_mac,
                         dst_mac,
-                        self.tx_offload,
+                        tx_offload,
                         free_frames,
                         tx_return,
                     );
@@ -2162,8 +2151,6 @@ impl TcpHandler {
             }
 
             TcpState::FinWait2 => {
-                let tcb = &mut self.connections[idx];
-
                 // Process data if present (remote still sending).
                 if payload_len > 0 && seg_seq == tcb.rcv_nxt {
                     let payload = &frame[payload_offset..payload_offset + payload_len];
@@ -2197,7 +2184,7 @@ impl TcpHandler {
                         ts,
                         src_mac,
                         dst_mac,
-                        self.tx_offload,
+                        tx_offload,
                         free_frames,
                         tx_return,
                     );
@@ -2207,7 +2194,6 @@ impl TcpHandler {
             }
 
             TcpState::Closing => {
-                let tcb = &mut self.connections[idx];
                 // Waiting for ACK of our FIN.
                 if seg_flags & flags::ACK != 0
                     && let Some(fin_seq) = tcb.fin_seq
@@ -2225,20 +2211,17 @@ impl TcpHandler {
             TcpState::LastAck => {
                 // Waiting for ACK of our FIN.
                 if seg_flags & flags::ACK != 0 {
-                    let tcb = &self.connections[idx];
                     if let Some(fin_seq) = tcb.fin_seq
                         && crate::net::wire::tcp::seq_lt(fin_seq, seg_ack)
                     {
-                        self.connections.remove(idx);
                         rx_return.push(frame);
-                        return;
+                        return PostAction::RemoveConnection(tcb.id);
                     }
                 }
                 rx_return.push(frame);
             }
 
             TcpState::TimeWait => {
-                let tcb = &mut self.connections[idx];
                 // FIN retransmit → re-ACK and restart timer.
                 if seg_flags & flags::FIN != 0 {
                     let id = tcb.id;
@@ -2257,7 +2240,7 @@ impl TcpHandler {
                         ts,
                         src_mac,
                         dst_mac,
-                        self.tx_offload,
+                        tx_offload,
                         free_frames,
                         tx_return,
                     );
@@ -2271,7 +2254,6 @@ impl TcpHandler {
             TcpState::CloseWait => {
                 // Process ACKs — local side can still send data.
                 if seg_flags & flags::ACK != 0 {
-                    let tcb = &mut self.connections[idx];
                     let snd_una = tcb.snd_una;
                     let snd_nxt = tcb.snd_nxt;
 
@@ -2302,5 +2284,6 @@ impl TcpHandler {
                 rx_return.push(frame);
             }
         }
+        PostAction::None
     }
 }

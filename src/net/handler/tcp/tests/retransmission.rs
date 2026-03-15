@@ -34,7 +34,7 @@ fn fast_retransmit_on_three_dup_acks() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -58,13 +58,13 @@ fn fast_retransmit_on_three_dup_acks() {
     while tx.pop().is_some() {}
 
     // Put data in send buffer and send it.
-    handler.connections[0].send_buffer.write(b"AAAA");
-    handler.connections[0].snd_wnd = 65535;
+    handler.first_connection_mut().send_buffer.write(b"AAAA");
+    handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {} // consume sent segment
 
-    let cwnd_before = handler.connections[0].cubic.cwnd;
+    let cwnd_before = handler.first_connection().cubic.cwnd;
 
     // Send 3 duplicate ACKs (ACKing the old snd_una, not the new data).
     let dup_ack_seq = server_iss.wrapping_add(1); // original snd_una
@@ -92,7 +92,7 @@ fn fast_retransmit_on_three_dup_acks() {
     }
 
     // Recovery entry now happens at dup ACK processing time (not poll_timers).
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert_eq!(tcb.recovery.dup_ack_count, 3);
     assert!(tcb.recovery.in_recovery, "should be in SACK recovery");
     // CUBIC beta=0.7: cwnd = ssthresh = cwnd_before * 0.7.
@@ -140,7 +140,7 @@ fn rto_retransmit_on_timer_expiry() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -164,23 +164,23 @@ fn rto_retransmit_on_timer_expiry() {
     while tx.pop().is_some() {}
 
     // Put data in send buffer and send it.
-    handler.connections[0].send_buffer.write(b"BBBB");
-    handler.connections[0].snd_wnd = 65535;
+    handler.first_connection_mut().send_buffer.write(b"BBBB");
+    handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
-    let cwnd_before = handler.connections[0].cubic.cwnd;
+    let cwnd_before = handler.first_connection().cubic.cwnd;
 
     // Simulate timer expiry by setting a deadline in the past.
-    handler.connections[0].retransmit_deadline = Some(now - coarsetime::Duration::from_millis(1));
-    handler.connections[0].rto_backoff = 0;
+    handler.first_connection_mut().retransmit_deadline = Some(now - coarsetime::Duration::from_millis(1));
+    handler.first_connection_mut().rto_backoff = 0;
 
     // poll_timers should trigger RTO retransmit.
     handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert!(tx.num_frames() >= 1, "retransmitted segment expected");
 
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     // cwnd should be reset to 1 MSS (slow start).
     assert_eq!(
         tcb.cubic.cwnd, tcb.eff_snd_mss as u32,
@@ -227,7 +227,7 @@ fn rtt_estimation_updates_rto() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -251,15 +251,15 @@ fn rtt_estimation_updates_rto() {
     while tx.pop().is_some() {}
 
     // Send data.
-    handler.connections[0].send_buffer.write(b"test data");
-    handler.connections[0].snd_wnd = 65535;
+    handler.first_connection_mut().send_buffer.write(b"test data");
+    handler.first_connection_mut().snd_wnd = 65535;
     let send_time = coarsetime::Instant::now();
     handler.poll_send(send_time, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
     // Verify last_send_time is set.
     assert!(
-        handler.connections[0].last_send_time.is_some(),
+        handler.first_connection().last_send_time.is_some(),
         "last_send_time should be set after poll_send"
     );
 
@@ -288,7 +288,7 @@ fn rtt_estimation_updates_rto() {
     );
 
     // Verify RTT was measured.
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert!(
         tcb.srtt.is_some(),
         "srtt should be set after first RTT measurement"
@@ -335,7 +335,7 @@ fn limited_transmit_sends_on_first_dup_ack() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -358,21 +358,21 @@ fn limited_transmit_sends_on_first_dup_ack() {
     );
     while tx.pop().is_some() {}
 
-    let mss = handler.connections[0].eff_snd_mss as usize;
+    let mss = handler.first_connection().eff_snd_mss as usize;
     // Fill send buffer with 6 MSS of data, set cwnd to 3*MSS.
-    handler.connections[0]
+    handler.first_connection_mut()
         .send_buffer
         .write(&vec![0xAA; mss * 6]);
-    handler.connections[0].snd_wnd = 65535;
-    handler.connections[0].cubic.cwnd = (mss * 3) as u32;
+    handler.first_connection_mut().snd_wnd = 65535;
+    handler.first_connection_mut().cubic.cwnd = (mss * 3) as u32;
 
     // Send 3 segments (fills cwnd).
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
-    let snd_nxt_before = handler.connections[0].snd_nxt;
-    let snd_una = handler.connections[0].snd_una;
+    let snd_nxt_before = handler.first_connection().snd_nxt;
+    let snd_una = handler.first_connection().snd_una;
 
     // First dup ACK.
     let dup = build_tcp_frame(
@@ -396,12 +396,12 @@ fn limited_transmit_sends_on_first_dup_ack() {
         &mut tx,
     );
 
-    assert_eq!(handler.connections[0].recovery.dup_ack_count, 1);
+    assert_eq!(handler.first_connection().recovery.dup_ack_count, 1);
 
     // poll_send should allow 1 MSS of new data (limited transmit).
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
-    let snd_nxt_after = handler.connections[0].snd_nxt;
+    let snd_nxt_after = handler.first_connection().snd_nxt;
     assert_eq!(
         snd_nxt_after.wrapping_sub(snd_nxt_before) as usize,
         mss,
@@ -424,15 +424,15 @@ fn rto_backoff_resets_on_new_ack() {
     let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
     // Put data in server's send buffer and transmit it.
-    handler.connections[0].send_buffer.write(b"CCCC");
-    handler.connections[0].snd_wnd = 65535;
+    handler.first_connection_mut().send_buffer.write(b"CCCC");
+    handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     while tx.pop().is_some() {}
 
     // Artificially set rto_backoff as if an RTO had fired.
-    handler.connections[0].rto_backoff = 2;
-    handler.connections[0].retransmit_deadline =
+    handler.first_connection_mut().rto_backoff = 2;
+    handler.first_connection_mut().retransmit_deadline =
         Some(coarsetime::Instant::now() + coarsetime::Duration::from_millis(10_000));
 
     // Client ACKs the server's data (new ACK that advances snd_una).
@@ -460,7 +460,7 @@ fn rto_backoff_resets_on_new_ack() {
         &mut tx,
     );
 
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert_eq!(tcb.rto_backoff, 0, "rto_backoff should be reset on new ACK");
     // snd_una == snd_nxt (all data ACKed), so retransmit timer should be off.
     assert!(

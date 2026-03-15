@@ -26,7 +26,7 @@ impl TcpHandler {
         rx_return: &mut impl FrameBuffer<'umem>, // NEW
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        for tcb in &mut self.connections {
+        for (_id, tcb) in &mut self.connections {
             if tcb.state != TcpState::Established && tcb.state != TcpState::CloseWait {
                 continue;
             }
@@ -361,6 +361,6 @@ impl TcpHandler {
         }
 
         // Remove connections aborted by linger deadline.
-        self.connections.retain(|tcb| tcb.state != TcpState::Closed);
+        self.connections.retain(|_id, tcb| tcb.state != TcpState::Closed);
     }
 }

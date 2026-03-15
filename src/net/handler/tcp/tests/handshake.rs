@@ -40,8 +40,8 @@ fn syn_to_listener_generates_syn_ack() {
     assert_eq!(rx.num_frames(), 1, "original frame to rx");
     assert_eq!(tx.num_frames(), 1, "SYN-ACK generated");
     assert_eq!(handler.connections.len(), 1, "connection created");
-    assert_eq!(handler.connections[0].state, TcpState::SynReceived);
-    assert_eq!(handler.connections[0].snd_mss, 1460);
+    assert_eq!(handler.first_connection().state, TcpState::SynReceived);
+    assert_eq!(handler.first_connection().snd_mss, 1460);
     assert!(accept_queue.is_empty(), "not yet in accept queue");
 }
 
@@ -81,10 +81,10 @@ fn handshake_completes_on_ack() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].state, TcpState::SynReceived);
+    assert_eq!(handler.first_connection().state, TcpState::SynReceived);
 
     // Get ISS from the TCB.
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
 
     // Step 2: ACK completing handshake.
     let ack_data = build_tcp_frame(
@@ -109,7 +109,7 @@ fn handshake_completes_on_ack() {
         &mut tx,
     );
 
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
     assert_eq!(accept_queue.len(), 1, "connection in accept queue");
 }
 
@@ -152,7 +152,7 @@ fn rst_in_syn_received_removes_connection() {
     assert_eq!(handler.connections.len(), 1);
 
     // RST.
-    let rcv_nxt = handler.connections[0].rcv_nxt;
+    let rcv_nxt = handler.first_connection().rcv_nxt;
     let rst_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -262,9 +262,9 @@ fn window_scale_negotiation() {
         &mut tx,
     );
 
-    assert!(handler.connections[0].wscale_enabled);
-    assert_eq!(handler.connections[0].snd_wscale, 7);
-    assert_eq!(handler.connections[0].rcv_wscale, DEFAULT_RCV_WSCALE);
+    assert!(handler.first_connection().wscale_enabled);
+    assert_eq!(handler.first_connection().snd_wscale, 7);
+    assert_eq!(handler.first_connection().rcv_wscale, DEFAULT_RCV_WSCALE);
 }
 
 #[test]
@@ -323,11 +323,11 @@ fn simultaneous_open_both_reach_established() {
         .unwrap();
     while tx.pop().is_some() {}
 
-    assert_eq!(handler_a.connections[0].state, TcpState::SynSent);
-    assert_eq!(handler_b.connections[0].state, TcpState::SynSent);
+    assert_eq!(handler_a.first_connection().state, TcpState::SynSent);
+    assert_eq!(handler_b.first_connection().state, TcpState::SynSent);
 
-    let iss_a = handler_a.connections[0].iss;
-    let iss_b = handler_b.connections[0].iss;
+    let iss_a = handler_a.first_connection().iss;
+    let iss_b = handler_b.first_connection().iss;
 
     // Step 1: Feed side B's SYN to handler A.
     // B sent SYN with seq=ISS_B, no ACK. A should transition to SynReceived.
@@ -352,7 +352,7 @@ fn simultaneous_open_both_reach_established() {
         &mut tx,
     );
     assert_eq!(
-        handler_a.connections[0].state,
+        handler_a.first_connection().state,
         TcpState::SynReceived,
         "A should transition to SynReceived on receiving B's SYN"
     );
@@ -383,7 +383,7 @@ fn simultaneous_open_both_reach_established() {
         &mut tx,
     );
     assert_eq!(
-        handler_b.connections[0].state,
+        handler_b.first_connection().state,
         TcpState::SynReceived,
         "B should transition to SynReceived on receiving A's SYN"
     );
@@ -414,7 +414,7 @@ fn simultaneous_open_both_reach_established() {
         &mut tx,
     );
     assert_eq!(
-        handler_a.connections[0].state,
+        handler_a.first_connection().state,
         TcpState::Established,
         "A should transition to Established on receiving B's SYN-ACK"
     );
@@ -443,7 +443,7 @@ fn simultaneous_open_both_reach_established() {
         &mut tx,
     );
     assert_eq!(
-        handler_b.connections[0].state,
+        handler_b.first_connection().state,
         TcpState::Established,
         "B should transition to Established on receiving A's SYN-ACK"
     );

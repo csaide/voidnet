@@ -72,7 +72,7 @@ impl TcpHandler {
         };
 
         // Check for existing connection with same 4-tuple.
-        if self.connections.iter().any(|c| c.id == id) {
+        if self.connections.contains_key(&id) {
             return Err(BindError::AddressInUse);
         }
 
@@ -169,13 +169,13 @@ impl TcpHandler {
             tx_return,
         );
 
-        self.connections.push(tcb);
+        self.connections.insert(tcb.id, tcb);
         Ok(event_queue)
     }
 
     /// Initiate a graceful close for a connection.
     pub fn initiate_close(&mut self, id: &ConnectionId) {
-        if let Some(tcb) = self.connections.iter_mut().find(|c| c.id == *id) {
+        if let Some(tcb) = self.connections.get_mut(id) {
             if tcb.pending_fin
                 || (tcb.state != TcpState::Established && tcb.state != TcpState::CloseWait)
             {

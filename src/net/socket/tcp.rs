@@ -1,5 +1,5 @@
 use std::{
-    cell::{Cell, UnsafeCell},
+    cell::UnsafeCell,
     pin::Pin,
     rc::Rc,
     task::{Context, Poll},
@@ -161,7 +161,6 @@ pub struct TcpStream {
     #[allow(dead_code)] // used in future data transfer phases
     event_queue: LocalQueue<TcpEvent>,
     handler: Rc<UnsafeCell<TcpHandler>>,
-    cached_idx: Cell<usize>,
     closed: bool,
     write_closed: bool,
 }
@@ -285,13 +284,10 @@ impl TcpStream {
         event_queue: LocalQueue<TcpEvent>,
         handler: Rc<UnsafeCell<TcpHandler>>,
     ) -> Self {
-        let h = unsafe { &*handler.get() };
-        let idx = h.find_connection_idx(&conn_id).unwrap_or(0);
         Self {
             conn_id,
             event_queue,
             handler,
-            cached_idx: Cell::new(idx),
             closed: false,
             write_closed: false,
         }
@@ -307,7 +303,6 @@ impl TcpStream {
             conn_id,
             event_queue,
             handler,
-            cached_idx: Cell::new(0),
             closed: false,
             write_closed: false,
         }
@@ -345,7 +340,6 @@ impl TcpStream {
             handler: &self.handler,
             conn_id: self.conn_id,
             event_queue: &self.event_queue,
-            cached_idx: &self.cached_idx,
             data,
             written: 0,
             write_closed: self.write_closed || self.closed,
@@ -360,7 +354,6 @@ impl TcpStream {
             handler: &self.handler,
             conn_id: self.conn_id,
             event_queue: &self.event_queue,
-            cached_idx: &self.cached_idx,
             max_len,
         }
     }
@@ -372,7 +365,6 @@ impl TcpStream {
             handler: &self.handler,
             conn_id: self.conn_id,
             event_queue: &self.event_queue,
-            cached_idx: &self.cached_idx,
             buf,
         }
     }
@@ -484,13 +476,10 @@ impl Future for Connect {
         let this = self.get_mut();
         match this.event_queue.pop() {
             Some(TcpEvent::Connected) => {
-                let handler = unsafe { &*this.handler.get() };
-                let idx = handler.find_connection_idx(&this.conn_id).unwrap_or(0);
                 Poll::Ready(Ok(TcpStream {
                     conn_id: this.conn_id,
                     event_queue: this.event_queue.clone(),
                     handler: this.handler.clone(),
-                    cached_idx: Cell::new(idx),
                     closed: false,
                     write_closed: false,
                 }))
@@ -512,7 +501,6 @@ pub struct TcpWrite<'stream> {
     handler: &'stream Rc<UnsafeCell<TcpHandler>>,
     conn_id: ConnectionId,
     event_queue: &'stream LocalQueue<TcpEvent>,
-    cached_idx: &'stream Cell<usize>,
     data: &'stream [u8],
     written: usize,
     write_closed: bool,
@@ -537,9 +525,7 @@ impl<'stream> Future for TcpWrite<'stream> {
             return Poll::Ready(Err(TcpError::NotConnected));
         }
         let handler = unsafe { &mut *this.handler.get() };
-        let idx = this.cached_idx.get();
-        if let Some((new_idx, tcb)) = handler.get_connection_by_idx_mut(idx, &this.conn_id) {
-            this.cached_idx.set(new_idx);
+        if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
             let remaining = &this.data[this.written..];
             let n = tcb.send_buffer.write(remaining);
             this.written += n;
@@ -561,7 +547,6 @@ pub struct TcpRead<'stream> {
     handler: &'stream Rc<UnsafeCell<TcpHandler>>,
     conn_id: ConnectionId,
     event_queue: &'stream LocalQueue<TcpEvent>,
-    cached_idx: &'stream Cell<usize>,
     buf: &'stream mut [u8],
 }
 
@@ -581,9 +566,7 @@ impl<'stream> Future for TcpRead<'stream> {
         }
 
         let handler = unsafe { &mut *this.handler.get() };
-        let idx = this.cached_idx.get();
-        if let Some((new_idx, tcb)) = handler.get_connection_by_idx_mut(idx, &this.conn_id) {
-            this.cached_idx.set(new_idx);
+        if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
             let n = tcb.recv_buffer.read(this.buf);
             if n > 0 {
                 Poll::Ready(Ok(n))
@@ -605,7 +588,6 @@ pub struct TcpSplice<'stream> {
     handler: &'stream Rc<UnsafeCell<TcpHandler>>,
     conn_id: ConnectionId,
     event_queue: &'stream LocalQueue<TcpEvent>,
-    cached_idx: &'stream Cell<usize>,
     max_len: usize,
 }
 
@@ -625,9 +607,7 @@ impl<'stream> Future for TcpSplice<'stream> {
         }
 
         let handler = unsafe { &mut *this.handler.get() };
-        let idx = this.cached_idx.get();
-        if let Some((new_idx, tcb)) = handler.get_connection_by_idx_mut(idx, &this.conn_id) {
-            this.cached_idx.set(new_idx);
+        if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
             let n = tcb.recv_buffer.transfer(&mut tcb.send_buffer, this.max_len);
             if n > 0 {
                 Poll::Ready(Ok(n))

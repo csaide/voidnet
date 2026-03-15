@@ -14,17 +14,17 @@ fn persist_timer_activates_on_zero_window() {
     let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
     // Write data into send buffer, but set window to 0.
-    handler.connections[0].send_buffer.write(b"Hello");
-    handler.connections[0].snd_wnd = 0;
+    handler.first_connection_mut().send_buffer.write(b"Hello");
+    handler.first_connection_mut().snd_wnd = 0;
 
-    assert!(handler.connections[0].persist_deadline.is_none());
+    assert!(handler.first_connection().persist_deadline.is_none());
 
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     // Persist timer should now be armed.
     assert!(
-        handler.connections[0].persist_deadline.is_some(),
+        handler.first_connection().persist_deadline.is_some(),
         "persist_deadline should be set when window=0 and data available"
     );
     // No data segment should have been sent (deadline not yet reached).
@@ -45,16 +45,16 @@ fn persist_probe_sent_when_deadline_expires() {
     let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
     // Write data, set window to 0.
-    handler.connections[0].send_buffer.write(b"Hello");
-    handler.connections[0].snd_wnd = 0;
+    handler.first_connection_mut().send_buffer.write(b"Hello");
+    handler.first_connection_mut().snd_wnd = 0;
 
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
-    assert!(handler.connections[0].persist_deadline.is_some());
-    assert_eq!(handler.connections[0].persist_backoff, 0);
+    assert!(handler.first_connection().persist_deadline.is_some());
+    assert_eq!(handler.first_connection().persist_backoff, 0);
 
     // Simulate time passing beyond the deadline by setting it to the past.
-    handler.connections[0].persist_deadline = Some(now);
+    handler.first_connection_mut().persist_deadline = Some(now);
 
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
@@ -62,14 +62,14 @@ fn persist_probe_sent_when_deadline_expires() {
     assert_eq!(tx.num_frames(), 1, "probe segment should be sent");
     // snd_nxt should advance by 1.
     assert_eq!(
-        handler.connections[0].snd_nxt,
+        handler.first_connection().snd_nxt,
         server_iss.wrapping_add(1).wrapping_add(1),
         "snd_nxt advanced by 1 for probe"
     );
     // persist_backoff should have incremented.
-    assert_eq!(handler.connections[0].persist_backoff, 1);
+    assert_eq!(handler.first_connection().persist_backoff, 1);
     // persist_deadline should be rescheduled (not None).
-    assert!(handler.connections[0].persist_deadline.is_some());
+    assert!(handler.first_connection().persist_deadline.is_some());
 }
 
 #[test]
@@ -86,13 +86,13 @@ fn persist_timer_clears_when_window_reopens() {
     let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
     // Write data, set window to 0, arm persist timer.
-    handler.connections[0].send_buffer.write(b"Hello");
-    handler.connections[0].snd_wnd = 0;
+    handler.first_connection_mut().send_buffer.write(b"Hello");
+    handler.first_connection_mut().snd_wnd = 0;
 
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
-    assert!(handler.connections[0].persist_deadline.is_some());
-    handler.connections[0].persist_backoff = 3; // simulate some backoff
+    assert!(handler.first_connection().persist_deadline.is_some());
+    handler.first_connection_mut().persist_backoff = 3; // simulate some backoff
 
     // Peer sends ACK with non-zero window, reopening it.
     let ack_data = build_tcp_frame(
@@ -118,11 +118,11 @@ fn persist_timer_clears_when_window_reopens() {
 
     // Persist timer should be cleared.
     assert!(
-        handler.connections[0].persist_deadline.is_none(),
+        handler.first_connection().persist_deadline.is_none(),
         "persist_deadline should be cleared when window reopens"
     );
     assert_eq!(
-        handler.connections[0].persist_backoff, 0,
+        handler.first_connection().persist_backoff, 0,
         "persist_backoff should be reset"
     );
 }

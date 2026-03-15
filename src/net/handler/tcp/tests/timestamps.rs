@@ -35,7 +35,7 @@ fn paws_rejects_old_timestamp() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ts_opt2 = build_ts_option(600, 0);
     let ack_data = build_tcp_frame(
         REMOTE_IP,
@@ -57,12 +57,12 @@ fn paws_rejects_old_timestamp() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
-    assert!(handler.connections[0].ts_enabled);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
+    assert!(handler.first_connection().ts_enabled);
 
     // Set ts_recent to 1000 to make the test deterministic.
-    handler.connections[0].ts_recent = 1000;
-    handler.connections[0].ts_recent_age = coarsetime::Instant::now();
+    handler.first_connection_mut().ts_recent = 1000;
+    handler.first_connection_mut().ts_recent_age = coarsetime::Instant::now();
 
     // Clear tx from handshake.
     while tx.pop().is_some() {}
@@ -137,7 +137,7 @@ fn paws_drops_rst_with_old_timestamp() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ts_opt2 = build_ts_option(600, 0);
     let ack_data = build_tcp_frame(
         REMOTE_IP,
@@ -159,12 +159,12 @@ fn paws_drops_rst_with_old_timestamp() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
-    assert!(handler.connections[0].ts_enabled);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
+    assert!(handler.first_connection().ts_enabled);
 
     // Set ts_recent to 1000.
-    handler.connections[0].ts_recent = 1000;
-    handler.connections[0].ts_recent_age = coarsetime::Instant::now();
+    handler.first_connection_mut().ts_recent = 1000;
+    handler.first_connection_mut().ts_recent_age = coarsetime::Instant::now();
 
     while tx.pop().is_some() {}
 
@@ -198,7 +198,7 @@ fn paws_drops_rst_with_old_timestamp() {
         1,
         "RST with old timestamp should be dropped by PAWS"
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 }
 
 #[test]
@@ -236,7 +236,7 @@ fn paws_accepts_stale_ts_recent() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ts_opt2 = build_ts_option(600, 0);
     let ack_data = build_tcp_frame(
         REMOTE_IP,
@@ -258,13 +258,13 @@ fn paws_accepts_stale_ts_recent() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
-    assert!(handler.connections[0].ts_enabled);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
+    assert!(handler.first_connection().ts_enabled);
 
     // Set ts_recent to 1000 and ts_recent_age to > 24 days ago.
-    handler.connections[0].ts_recent = 1000;
+    handler.first_connection_mut().ts_recent = 1000;
     // Set ts_recent_age far in the past using a fixed tick value.
-    handler.connections[0].ts_recent_age = coarsetime::Instant::from_ticks(0);
+    handler.first_connection_mut().ts_recent_age = coarsetime::Instant::from_ticks(0);
 
     while tx.pop().is_some() {}
 
@@ -305,7 +305,7 @@ fn paws_accepts_stale_ts_recent() {
         1,
         "connection should still exist"
     );
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert_eq!(
         tcb.recv_buffer.available(),
         5,

@@ -34,7 +34,7 @@ fn keep_alive_activity_resets_probe_timer() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -55,11 +55,11 @@ fn keep_alive_activity_resets_probe_timer() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Simulate stale keep-alive state: set probes sent to 5.
-    let old_activity = handler.connections[0].last_activity;
-    handler.connections[0].keep_alive_probes_sent = 5;
+    let old_activity = handler.first_connection().last_activity;
+    handler.first_connection_mut().keep_alive_probes_sent = 5;
 
     // Clear tx from handshake.
     while tx.pop().is_some() {}
@@ -89,7 +89,7 @@ fn keep_alive_activity_resets_probe_timer() {
     );
 
     // Verify keep-alive probes were reset.
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert_eq!(
         tcb.keep_alive_probes_sent, 0,
         "keep_alive_probes_sent should be reset to 0 on data receipt"
@@ -134,7 +134,7 @@ fn keep_alive_probe_sent_after_idle_timeout() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -156,11 +156,11 @@ fn keep_alive_probe_sent_after_idle_timeout() {
         &mut tx,
     );
     while tx.pop().is_some() {}
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Configure keep-alive with short timeouts.
     {
-        let tcb = &mut handler.connections[0];
+        let tcb = handler.first_connection_mut();
         tcb.keep_alive_enabled = true;
         tcb.keep_alive_idle_ms = 100;
         tcb.keep_alive_interval_ms = 50;
@@ -175,7 +175,7 @@ fn keep_alive_probe_sent_after_idle_timeout() {
     handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(
-        handler.connections[0].keep_alive_probes_sent, 1,
+        handler.first_connection().keep_alive_probes_sent, 1,
         "one keep-alive probe should have been sent"
     );
     assert!(
@@ -218,7 +218,7 @@ fn keep_alive_no_probe_when_disabled() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -240,10 +240,10 @@ fn keep_alive_no_probe_when_disabled() {
         &mut tx,
     );
     while tx.pop().is_some() {}
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Keep-alive is disabled by default; set ack_pending false to avoid delayed ACK output.
-    handler.connections[0].ack_pending = false;
+    handler.first_connection_mut().ack_pending = false;
 
     // Sleep long enough that it would have triggered if enabled.
     std::thread::sleep(std::time::Duration::from_millis(150));
@@ -252,7 +252,7 @@ fn keep_alive_no_probe_when_disabled() {
     handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
 
     assert_eq!(
-        handler.connections[0].keep_alive_probes_sent, 0,
+        handler.first_connection().keep_alive_probes_sent, 0,
         "no probes should be sent when keep-alive is disabled"
     );
     assert_eq!(tx.num_frames(), 0, "no segments should be emitted");
@@ -292,7 +292,7 @@ fn keep_alive_connection_aborted_after_max_probes() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -314,14 +314,14 @@ fn keep_alive_connection_aborted_after_max_probes() {
         &mut tx,
     );
     while tx.pop().is_some() {}
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Capture event queue before connection is removed.
-    let event_queue = handler.connections[0].event_queue.clone();
+    let event_queue = handler.first_connection().event_queue.clone();
 
     // Configure keep-alive: already sent max probes.
     {
-        let tcb = &mut handler.connections[0];
+        let tcb = handler.first_connection_mut();
         tcb.keep_alive_enabled = true;
         tcb.keep_alive_idle_ms = 50;
         tcb.keep_alive_interval_ms = 25;
@@ -385,7 +385,7 @@ fn linger_zero_sends_rst_on_poll_send() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -406,12 +406,12 @@ fn linger_zero_sends_rst_on_poll_send() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Set linger to 0 and capture event queue.
-    handler.connections[0].linger = Some(0);
-    let event_queue = handler.connections[0].event_queue.clone();
-    let conn_id = handler.connections[0].id;
+    handler.first_connection_mut().linger = Some(0);
+    let event_queue = handler.first_connection().event_queue.clone();
+    let conn_id = handler.first_connection().id;
 
     // Clear tx from handshake.
     while tx.pop().is_some() {}
@@ -419,11 +419,11 @@ fn linger_zero_sends_rst_on_poll_send() {
     // Call initiate_close — should set pending_fin and linger_deadline to Instant::recent().
     handler.initiate_close(&conn_id);
     assert!(
-        handler.connections[0].pending_fin,
+        handler.first_connection().pending_fin,
         "pending_fin should be set"
     );
     assert!(
-        handler.connections[0].linger_deadline.is_some(),
+        handler.first_connection().linger_deadline.is_some(),
         "linger_deadline should be set"
     );
 
@@ -483,7 +483,7 @@ fn linger_timeout_sets_deadline() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -504,11 +504,11 @@ fn linger_timeout_sets_deadline() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Set linger to 5000ms.
-    handler.connections[0].linger = Some(5000);
-    let conn_id = handler.connections[0].id;
+    handler.first_connection_mut().linger = Some(5000);
+    let conn_id = handler.first_connection().id;
 
     // Clear tx from handshake.
     while tx.pop().is_some() {}
@@ -516,11 +516,11 @@ fn linger_timeout_sets_deadline() {
     // Call initiate_close.
     handler.initiate_close(&conn_id);
     assert!(
-        handler.connections[0].pending_fin,
+        handler.first_connection().pending_fin,
         "pending_fin should be set"
     );
     assert!(
-        handler.connections[0].linger_deadline.is_some(),
+        handler.first_connection().linger_deadline.is_some(),
         "linger_deadline should be set"
     );
 
@@ -569,7 +569,7 @@ fn linger_none_normal_close() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -590,25 +590,25 @@ fn linger_none_normal_close() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Ensure linger is None (default).
     assert!(
-        handler.connections[0].linger.is_none(),
+        handler.first_connection().linger.is_none(),
         "linger should be None by default"
     );
-    let conn_id = handler.connections[0].id;
+    let conn_id = handler.first_connection().id;
 
     // Call initiate_close.
     handler.initiate_close(&conn_id);
 
     // Verify pending_fin is true and linger_deadline is None.
     assert!(
-        handler.connections[0].pending_fin,
+        handler.first_connection().pending_fin,
         "pending_fin should be set"
     );
     assert!(
-        handler.connections[0].linger_deadline.is_none(),
+        handler.first_connection().linger_deadline.is_none(),
         "linger_deadline should be None for default close"
     );
 }
@@ -647,7 +647,7 @@ fn keep_alive_probe_and_recovery() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -669,11 +669,11 @@ fn keep_alive_probe_and_recovery() {
         &mut tx,
     );
     while tx.pop().is_some() {}
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Configure keep-alive.
     {
-        let tcb = &mut handler.connections[0];
+        let tcb = handler.first_connection_mut();
         tcb.keep_alive_enabled = true;
         tcb.keep_alive_idle_ms = 100;
         tcb.keep_alive_interval_ms = 50;
@@ -696,16 +696,16 @@ fn keep_alive_probe_and_recovery() {
         "keep-alive probe should be sent"
     );
     assert_eq!(
-        handler.connections[0].keep_alive_probes_sent, 1,
+        handler.first_connection().keep_alive_probes_sent, 1,
         "probes_sent should be 1"
     );
 
     // Record last_activity before recovery.
-    let activity_before = handler.connections[0].last_activity;
+    let activity_before = handler.first_connection().last_activity;
 
     // Simulate receiving an ACK from the remote (recovery).
-    let rcv_nxt = handler.connections[0].rcv_nxt;
-    let snd_una = handler.connections[0].snd_una;
+    let rcv_nxt = handler.first_connection().rcv_nxt;
+    let snd_una = handler.first_connection().snd_una;
     let ack_frame = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -734,7 +734,7 @@ fn keep_alive_probe_and_recovery() {
     // The ACK is a duplicate ACK (seg_ack == snd_una, no data).
     // Keep-alive probe responses are duplicate ACKs — the fix in process_established
     // resets keep_alive_probes_sent when a dup ACK arrives and probes are outstanding.
-    let tcb = &handler.connections[0];
+    let tcb = handler.first_connection();
     assert_eq!(
         tcb.keep_alive_probes_sent, 0,
         "probes_sent should be reset by dup ACK probe response"
@@ -779,7 +779,7 @@ fn keep_alive_exhaustion_removes_connection() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -801,14 +801,14 @@ fn keep_alive_exhaustion_removes_connection() {
         &mut tx,
     );
     while tx.pop().is_some() {}
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Capture event queue before connection is removed.
-    let event_queue = handler.connections[0].event_queue.clone();
+    let event_queue = handler.first_connection().event_queue.clone();
 
     // Configure keep-alive with count=1.
     {
-        let tcb = &mut handler.connections[0];
+        let tcb = handler.first_connection_mut();
         tcb.keep_alive_enabled = true;
         tcb.keep_alive_count = 1;
         tcb.keep_alive_idle_ms = 50;
@@ -825,7 +825,7 @@ fn keep_alive_exhaustion_removes_connection() {
 
     // First probe should have been sent.
     assert_eq!(
-        handler.connections[0].keep_alive_probes_sent, 1,
+        handler.first_connection().keep_alive_probes_sent, 1,
         "first probe sent"
     );
     assert_eq!(
@@ -889,7 +889,7 @@ fn linger_zero_immediate_rst() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -911,24 +911,24 @@ fn linger_zero_immediate_rst() {
         &mut tx,
     );
     while tx.pop().is_some() {}
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Write some data to send buffer.
-    handler.connections[0].send_buffer.write(b"unsent data");
+    handler.first_connection_mut().send_buffer.write(b"unsent data");
 
     // Set linger to 0 and capture event queue.
-    handler.connections[0].linger = Some(0);
-    let event_queue = handler.connections[0].event_queue.clone();
-    let conn_id = handler.connections[0].id;
+    handler.first_connection_mut().linger = Some(0);
+    let event_queue = handler.first_connection().event_queue.clone();
+    let conn_id = handler.first_connection().id;
 
     // Initiate close — linger(0) sets immediate deadline.
     handler.initiate_close(&conn_id);
     assert!(
-        handler.connections[0].pending_fin,
+        handler.first_connection().pending_fin,
         "pending_fin should be set"
     );
     assert!(
-        handler.connections[0].linger_deadline.is_some(),
+        handler.first_connection().linger_deadline.is_some(),
         "linger_deadline should be set for linger(0)"
     );
 

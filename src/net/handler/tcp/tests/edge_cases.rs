@@ -222,7 +222,7 @@ fn rst_outside_window_is_dropped() {
         1,
         "out-of-window RST must not reset the connection"
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn rst_in_window_but_not_exact_sends_challenge_ack() {
         1,
         "in-window non-exact RST must not reset the connection"
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // A challenge ACK should have been sent.
     assert!(
@@ -316,7 +316,7 @@ fn syn_in_established_sends_challenge_ack() {
         1,
         "SYN in Established must not destroy the connection"
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // (2) A challenge ACK should have been sent.
     assert!(
@@ -326,7 +326,7 @@ fn syn_in_established_sends_challenge_ack() {
 
     // (3) No data should have been processed (rcv_nxt unchanged).
     assert_eq!(
-        handler.connections[0].rcv_nxt, 1001,
+        handler.first_connection().rcv_nxt, 1001,
         "rcv_nxt must not advance when SYN is received in Established"
     );
 }
@@ -344,7 +344,7 @@ fn segment_without_ack_is_dropped() {
 
     let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
-    let rcv_nxt_before = handler.connections[0].rcv_nxt;
+    let rcv_nxt_before = handler.first_connection().rcv_nxt;
 
     // Send a data segment with no flags set (ACK bit off).
     let no_ack_data = build_tcp_frame_with_payload(
@@ -371,7 +371,7 @@ fn segment_without_ack_is_dropped() {
 
     // (1) No data should be written to recv_buffer (rcv_nxt unchanged).
     assert_eq!(
-        handler.connections[0].rcv_nxt, rcv_nxt_before,
+        handler.first_connection().rcv_nxt, rcv_nxt_before,
         "rcv_nxt must not advance for segment without ACK"
     );
 
@@ -396,9 +396,9 @@ fn ack_beyond_snd_nxt_sends_ack_and_drops() {
 
     let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
 
-    let snd_una_before = handler.connections[0].snd_una;
-    let snd_nxt_before = handler.connections[0].snd_nxt;
-    let rcv_nxt_before = handler.connections[0].rcv_nxt;
+    let snd_una_before = handler.first_connection().snd_una;
+    let snd_nxt_before = handler.first_connection().snd_nxt;
+    let rcv_nxt_before = handler.first_connection().rcv_nxt;
 
     // Send a segment with seg_ack far beyond snd_nxt.
     let bad_ack = build_tcp_frame(
@@ -428,7 +428,7 @@ fn ack_beyond_snd_nxt_sends_ack_and_drops() {
         1,
         "connection must not be destroyed by future ACK"
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // (2) An ACK must be sent in response.
     assert!(
@@ -448,15 +448,15 @@ fn ack_beyond_snd_nxt_sends_ack_and_drops() {
 
     // (3) No state changes: snd_una must be unchanged.
     assert_eq!(
-        handler.connections[0].snd_una, snd_una_before,
+        handler.first_connection().snd_una, snd_una_before,
         "snd_una must not change on future ACK"
     );
     assert_eq!(
-        handler.connections[0].snd_nxt, snd_nxt_before,
+        handler.first_connection().snd_nxt, snd_nxt_before,
         "snd_nxt must not change on future ACK"
     );
     assert_eq!(
-        handler.connections[0].rcv_nxt, rcv_nxt_before,
+        handler.first_connection().rcv_nxt, rcv_nxt_before,
         "rcv_nxt must not change on future ACK"
     );
 }
@@ -500,11 +500,11 @@ fn stale_segment_does_not_regress_window() {
     while tx.pop().is_some() {}
 
     assert_eq!(
-        handler.connections[0].snd_wnd, 8000,
+        handler.first_connection().snd_wnd, 8000,
         "window set to 8000 from seg B"
     );
     assert_eq!(
-        handler.connections[0].snd_wl1, 1002,
+        handler.first_connection().snd_wl1, 1002,
         "snd_wl1 set from seg B"
     );
 
@@ -534,11 +534,11 @@ fn stale_segment_does_not_regress_window() {
     while tx.pop().is_some() {}
 
     assert_eq!(
-        handler.connections[0].snd_wnd, 8000,
+        handler.first_connection().snd_wnd, 8000,
         "stale segment must not regress snd_wnd"
     );
     assert_eq!(
-        handler.connections[0].snd_wl1, 1002,
+        handler.first_connection().snd_wl1, 1002,
         "stale segment must not regress snd_wl1"
     );
 }
@@ -577,7 +577,7 @@ fn sender_sws_avoidance_holds_small_sends() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -600,15 +600,15 @@ fn sender_sws_avoidance_holds_small_sends() {
     );
     while tx.pop().is_some() {}
 
-    let mss = handler.connections[0].eff_snd_mss;
+    let mss = handler.first_connection().eff_snd_mss;
 
     // Set max_snd_wnd high (simulates the peer previously advertised a large window).
-    handler.connections[0].max_snd_wnd = 65535;
+    handler.first_connection_mut().max_snd_wnd = 65535;
     // Set current snd_wnd to 10 bytes — much less than MSS and max_snd_wnd/2.
-    handler.connections[0].snd_wnd = 10;
+    handler.first_connection_mut().snd_wnd = 10;
 
     // Write more data than can_send (10 bytes) so data_available > can_send.
-    handler.connections[0].send_buffer.write(&[0x41u8; 100]);
+    handler.first_connection_mut().send_buffer.write(&[0x41u8; 100]);
 
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
@@ -623,7 +623,7 @@ fn sender_sws_avoidance_holds_small_sends() {
     );
 
     // Now set snd_wnd to eff_snd_mss — should send.
-    handler.connections[0].snd_wnd = mss as u32;
+    handler.first_connection_mut().snd_wnd = mss as u32;
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(
         tx.num_frames(),
@@ -675,7 +675,7 @@ fn handshake_with_wrapping_isn() {
 
     // Handler must have created a connection in SynReceived and sent a SYN-ACK.
     assert_eq!(handler.connections.len(), 1, "connection created");
-    assert_eq!(handler.connections[0].state, TcpState::SynReceived);
+    assert_eq!(handler.first_connection().state, TcpState::SynReceived);
     assert_eq!(tx.num_frames(), 1, "SYN-ACK generated");
 
     // Inspect the SYN-ACK: ack_num must wrap (ISN + 1 mod 2^32 = 0).
@@ -697,7 +697,7 @@ fn handshake_with_wrapping_isn() {
     );
 
     // Step 2: Complete the handshake with the final ACK.
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -720,12 +720,12 @@ fn handshake_with_wrapping_isn() {
     );
 
     assert_eq!(
-        handler.connections[0].state,
+        handler.first_connection().state,
         TcpState::Established,
         "handshake must complete to Established"
     );
     assert_eq!(
-        handler.connections[0].rcv_nxt,
+        handler.first_connection().rcv_nxt,
         client_isn.wrapping_add(1),
         "rcv_nxt must be ISN+1 (wrapped)"
     );
@@ -777,8 +777,8 @@ fn data_transfer_across_sequence_wrap() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].state, TcpState::SynReceived);
-    let server_iss = handler.connections[0].iss;
+    assert_eq!(handler.first_connection().state, TcpState::SynReceived);
+    let server_iss = handler.first_connection().iss;
     while tx.pop().is_some() {}
 
     // ACK completing handshake.
@@ -802,7 +802,7 @@ fn data_transfer_across_sequence_wrap() {
         &mut rx,
         &mut tx,
     );
-    assert_eq!(handler.connections[0].state, TcpState::Established);
+    assert_eq!(handler.first_connection().state, TcpState::Established);
     while tx.pop().is_some() {}
 
     // Send 20 bytes of data starting at seq = client_isn + 1.
@@ -834,7 +834,7 @@ fn data_transfer_across_sequence_wrap() {
     // rcv_nxt must have advanced by 20 bytes (wrapping).
     let expected_rcv_nxt = data_seq.wrapping_add(20);
     assert_eq!(
-        handler.connections[0].rcv_nxt, expected_rcv_nxt,
+        handler.first_connection().rcv_nxt, expected_rcv_nxt,
         "rcv_nxt must advance past wrap boundary"
     );
 
@@ -892,7 +892,7 @@ fn data_transfer_across_sequence_wrap() {
         expected_final_rcv_nxt
     );
     assert_eq!(
-        handler.connections[0].rcv_nxt, expected_final_rcv_nxt,
+        handler.first_connection().rcv_nxt, expected_final_rcv_nxt,
         "rcv_nxt must reflect all received data after wrap"
     );
 }
@@ -915,7 +915,7 @@ fn remove_connection_sends_rst_with_correct_seq() {
     let expected_seq = server_iss.wrapping_add(1);
 
     // Capture the connection id before calling remove_connection.
-    let id = handler.connections[0].id;
+    let id = handler.first_connection().id;
 
     // MAC addresses matching what the test infrastructure uses.
     let src_mac = crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
@@ -982,7 +982,7 @@ fn sender_sws_allows_send_when_all_data_fits() {
         &mut rx,
         &mut tx,
     );
-    let server_iss = handler.connections[0].iss;
+    let server_iss = handler.first_connection().iss;
     let ack_data = build_tcp_frame(
         REMOTE_IP,
         LOCAL_IP,
@@ -1006,11 +1006,11 @@ fn sender_sws_allows_send_when_all_data_fits() {
     while tx.pop().is_some() {}
 
     // Set max_snd_wnd high, snd_wnd to 5 bytes (small window).
-    handler.connections[0].max_snd_wnd = 65535;
-    handler.connections[0].snd_wnd = 5;
+    handler.first_connection_mut().max_snd_wnd = 65535;
+    handler.first_connection_mut().snd_wnd = 5;
 
     // Write only 3 bytes — all data fits in the window.
-    handler.connections[0].send_buffer.write(b"abc");
+    handler.first_connection_mut().send_buffer.write(b"abc");
 
     let now = coarsetime::Instant::now();
     handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
