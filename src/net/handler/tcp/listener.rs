@@ -1,3 +1,5 @@
+use smallvec::SmallVec;
+
 use crate::net::handler::udp::BindError;
 use crate::net::socket::LocalQueue;
 use crate::net::wire::ip::IpAddress;
@@ -11,7 +13,7 @@ pub(crate) struct ListenEntry {
     pub addr: IpAddress,
     pub port: u16,
     pub backlog: usize,
-    pub accept_queue: LocalQueue<ConnectionId>,
+    pub accept_queue: LocalQueue<usize>,
     pub syn_received_count: usize,
     pub send_buffer_size: usize,
     pub recv_buffer_size: usize,
@@ -35,7 +37,7 @@ impl TcpHandler {
         addr: IpAddress,
         port: u16,
         backlog: usize,
-    ) -> Result<LocalQueue<ConnectionId>, BindError> {
+    ) -> Result<LocalQueue<usize>, BindError> {
         let config = TcpConfig {
             backlog,
             ..TcpConfig::default()
@@ -49,7 +51,7 @@ impl TcpHandler {
         addr: IpAddress,
         port: u16,
         config: TcpConfig,
-    ) -> Result<LocalQueue<ConnectionId>, BindError> {
+    ) -> Result<LocalQueue<usize>, BindError> {
         // Check for duplicate listeners.
         if self.listeners.iter().any(|l| {
             l.port == port && (l.addr == addr || l.addr.is_unspecified() || addr.is_unspecified())
@@ -85,32 +87,39 @@ impl TcpHandler {
         self.listeners
             .retain(|l| !(l.port == port && l.addr == addr));
         // Remove any SYN-RECEIVED connections associated with this listener.
-        let Self {
-            connections,
-            send_tracker,
-            ..
-        } = self;
-        connections.retain(|id, c| {
-            if c.state == TcpState::SynReceived
-                && c.from_passive_open
-                && c.id.local_port == port
-                && (addr.is_unspecified() || c.id.local_addr == addr)
-            {
-                send_tracker.unmark(id);
-                false
-            } else {
-                true
-            }
-        });
+        let keys_to_remove: SmallVec<[usize; 8]> = self
+            .connection_map
+            .iter()
+            .filter_map(|(_id, &key)| {
+                let tcb = &self.connections[key];
+                if tcb.state == TcpState::SynReceived
+                    && tcb.from_passive_open
+                    && tcb.id.local_port == port
+                    && (addr.is_unspecified() || tcb.id.local_addr == addr)
+                {
+                    Some(key)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for key in keys_to_remove {
+            self.send_tracker.unmark(key);
+            self.remove_connection_by_key(key);
+        }
     }
 
-    /// Push a ConnectionId to the matching listener's accept queue (associated function for split-borrow).
-    pub(super) fn push_to_accept_queue_on(listeners: &[ListenEntry], id: &ConnectionId) {
+    /// Push a slab key to the matching listener's accept queue (associated function for split-borrow).
+    pub(super) fn push_to_accept_queue_on(
+        listeners: &[ListenEntry],
+        id: &ConnectionId,
+        key: usize,
+    ) {
         for listener in listeners {
             if listener.port == id.local_port
                 && (listener.addr.is_unspecified() || listener.addr == id.local_addr)
             {
-                listener.accept_queue.push(*id);
+                listener.accept_queue.push(key);
                 return;
             }
         }

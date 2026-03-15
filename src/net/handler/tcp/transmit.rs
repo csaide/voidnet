@@ -11,7 +11,7 @@ use super::{
     segment::SegmentBuilder,
     send_tracker::SendReady,
     state::TcpState,
-    tcb::{ConnectionId, MAX_DELAYED_ACK_COUNT, TcpEvent},
+    tcb::{MAX_DELAYED_ACK_COUNT, TcpEvent},
 };
 
 impl TcpHandler {
@@ -30,10 +30,10 @@ impl TcpHandler {
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         self.send_tracker.swap();
-        let ids: SmallVec<[ConnectionId; 32]> = self.send_tracker.drain_active().collect();
-        let mut closed: SmallVec<[ConnectionId; 4]> = SmallVec::new();
-        for id in ids {
-            let Some(tcb) = self.connections.get_mut(&id) else {
+        let keys: SmallVec<[usize; 128]> = self.send_tracker.drain_active().collect();
+        let mut closed: SmallVec<[usize; 4]> = SmallVec::new();
+        for key in keys {
+            let Some(tcb) = self.connections.get_mut(key) else {
                 continue; // connection was removed
             };
             if tcb.state != TcpState::Established && tcb.state != TcpState::CloseWait {
@@ -186,7 +186,7 @@ impl TcpHandler {
                     tx_return,
                 ) else {
                     // Neighbor resolution pending — re-mark for next tick.
-                    self.send_tracker.mark(SendReady(id));
+                    self.send_tracker.mark(SendReady(key));
                     continue; // skip to next connection
                 };
 
@@ -246,7 +246,7 @@ impl TcpHandler {
                     tx_return,
                 ) else {
                     // Neighbor resolution pending — re-mark for next tick.
-                    self.send_tracker.mark(SendReady(id));
+                    self.send_tracker.mark(SendReady(key));
                     continue; // skip to next connection
                 };
 
@@ -292,7 +292,7 @@ impl TcpHandler {
                     tx_return,
                 ) else {
                     // Neighbor resolution pending — re-mark for next tick.
-                    self.send_tracker.mark(SendReady(id));
+                    self.send_tracker.mark(SendReady(key));
                     continue; // skip to next connection
                 };
 
@@ -317,7 +317,7 @@ impl TcpHandler {
                 tcb.event_queue.push(TcpEvent::Reset);
                 tcb.state = TcpState::Closed;
                 tcb.pending_fin = false;
-                closed.push(id);
+                closed.push(key);
                 continue; // connection is Closed, will be removed after loop
             }
 
@@ -338,7 +338,7 @@ impl TcpHandler {
                         tx_return,
                     ) else {
                         // Neighbor resolution pending — re-mark for next tick.
-                        self.send_tracker.mark(SendReady(id));
+                        self.send_tracker.mark(SendReady(key));
                         continue; // skip to next connection
                     };
                     let ts = tcb.ts_option(tsval);
@@ -378,7 +378,7 @@ impl TcpHandler {
             }
 
             // Re-add to tracker if this connection still has pending work.
-            if let Some(tcb) = self.connections.get(&id) {
+            if let Some(tcb) = self.connections.get(key) {
                 let bytes_in_flight = tcb.snd_nxt.wrapping_sub(tcb.snd_una) as usize;
                 let has_data = tcb.send_buffer.available().saturating_sub(bytes_in_flight) > 0;
                 let has_work = has_data
@@ -387,15 +387,15 @@ impl TcpHandler {
                     || tcb.persist_deadline.is_some()
                     || tcb.retransmit_deadline.is_some();
                 if has_work {
-                    self.send_tracker.mark(SendReady(id));
+                    self.send_tracker.mark(SendReady(key));
                 }
             }
         }
 
         // Remove connections aborted by linger deadline.
-        for id in &closed {
-            self.send_tracker.unmark(id);
-            self.connections.remove(id);
+        for key in &closed {
+            self.send_tracker.unmark(*key);
+            self.remove_connection_by_key(*key);
         }
     }
 }

@@ -29,7 +29,7 @@ const DEFAULT_BACKLOG: usize = 128;
 pub struct TcpListener {
     local_addr: IpAddress,
     local_port: u16,
-    accept_queue: LocalQueue<ConnectionId>,
+    accept_queue: LocalQueue<usize>,
     handler: Rc<UnsafeCell<TcpHandler>>,
 }
 
@@ -115,7 +115,7 @@ impl Drop for TcpListener {
 ///
 /// Resolves to a [`TcpStream`] when a new connection completes the 3-way handshake.
 pub struct Accept<'listener> {
-    accept_queue: &'listener LocalQueue<ConnectionId>,
+    accept_queue: &'listener LocalQueue<usize>,
     handler: &'listener Rc<UnsafeCell<TcpHandler>>,
 }
 
@@ -125,14 +125,15 @@ impl<'listener> Future for Accept<'listener> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         match this.accept_queue.pop() {
-            Some(conn_id) => {
+            Some(conn_key) => {
                 let handler = unsafe { &*this.handler.get() };
-                let event_queue = handler
-                    .get_connection(&conn_id)
-                    .map(|tcb| tcb.event_queue.clone());
+                let info = handler
+                    .get_by_key(conn_key)
+                    .map(|tcb| (tcb.id, tcb.event_queue.clone()));
 
-                if let Some(event_queue) = event_queue {
+                if let Some((conn_id, event_queue)) = info {
                     Poll::Ready(TcpStream::from_accepted(
+                        conn_key,
                         conn_id,
                         event_queue,
                         this.handler.clone(),
@@ -157,6 +158,7 @@ impl<'listener> Future for Accept<'listener> {
 /// Created either by [`TcpListener::accept()`] (passive open) or
 /// [`TcpStream::connect()`] (active open).
 pub struct TcpStream {
+    conn_key: usize,
     conn_id: ConnectionId,
     #[allow(dead_code)] // used in future data transfer phases
     event_queue: LocalQueue<TcpEvent>,
@@ -192,7 +194,7 @@ impl TcpStream {
             let mut free_frames = ctx.free_frames.clone();
             let mut tx_return = ctx.tx_return.clone();
 
-            let event_queue = handler
+            let (conn_key, event_queue) = handler
                 .connect(
                     local_addr,
                     local_port,
@@ -214,6 +216,7 @@ impl TcpStream {
             };
 
             Ok(Connect {
+                conn_key,
                 conn_id,
                 event_queue,
                 handler: ctx.tcp_handler.clone(),
@@ -248,7 +251,7 @@ impl TcpStream {
             let mut free_frames = ctx.free_frames.clone();
             let mut tx_return = ctx.tx_return.clone();
 
-            let event_queue = handler
+            let (conn_key, event_queue) = handler
                 .connect_with_config(
                     local_addr,
                     local_port,
@@ -271,6 +274,7 @@ impl TcpStream {
             };
 
             Ok(Connect {
+                conn_key,
                 conn_id,
                 event_queue,
                 handler: ctx.tcp_handler.clone(),
@@ -280,11 +284,13 @@ impl TcpStream {
 
     /// Internal constructor for connections created via accept.
     fn from_accepted(
+        conn_key: usize,
         conn_id: ConnectionId,
         event_queue: LocalQueue<TcpEvent>,
         handler: Rc<UnsafeCell<TcpHandler>>,
     ) -> Self {
         Self {
+            conn_key,
             conn_id,
             event_queue,
             handler,
@@ -295,11 +301,13 @@ impl TcpStream {
 
     #[cfg(test)]
     pub(crate) fn from_accepted_for_test(
+        conn_key: usize,
         conn_id: ConnectionId,
         event_queue: LocalQueue<TcpEvent>,
         handler: Rc<UnsafeCell<TcpHandler>>,
     ) -> Self {
         Self {
+            conn_key,
             conn_id,
             event_queue,
             handler,
@@ -338,7 +346,7 @@ impl TcpStream {
     pub fn write<'a>(&'a self, data: &'a [u8]) -> TcpWrite<'a> {
         TcpWrite {
             handler: &self.handler,
-            conn_id: self.conn_id,
+            conn_key: self.conn_key,
             event_queue: &self.event_queue,
             data,
             written: 0,
@@ -352,7 +360,7 @@ impl TcpStream {
     pub fn splice(&self, max_len: usize) -> TcpSplice<'_> {
         TcpSplice {
             handler: &self.handler,
-            conn_id: self.conn_id,
+            conn_key: self.conn_key,
             event_queue: &self.event_queue,
             max_len,
         }
@@ -363,7 +371,7 @@ impl TcpStream {
     pub fn read<'a>(&'a self, buf: &'a mut [u8]) -> TcpRead<'a> {
         TcpRead {
             handler: &self.handler,
-            conn_id: self.conn_id,
+            conn_key: self.conn_key,
             event_queue: &self.event_queue,
             buf,
         }
@@ -379,7 +387,7 @@ impl TcpStream {
         }
         self.closed = true;
         let handler = unsafe { &mut *self.handler.get() };
-        handler.initiate_close(&self.conn_id);
+        handler.initiate_close(self.conn_key);
     }
 
     /// Shut down the write side of this connection (half-close).
@@ -392,7 +400,7 @@ impl TcpStream {
         }
         self.write_closed = true;
         let handler = unsafe { &mut *self.handler.get() };
-        handler.initiate_close(&self.conn_id);
+        handler.initiate_close(self.conn_key);
     }
 
     /// Enable or disable the Nagle algorithm (TCP_NODELAY).
@@ -401,7 +409,7 @@ impl TcpStream {
     /// without waiting for outstanding ACKs. Default is `false` (Nagle enabled).
     pub fn set_nodelay(&self, nodelay: bool) {
         let handler = unsafe { &mut *self.handler.get() };
-        if let Some(tcb) = handler.get_connection_mut(&self.conn_id) {
+        if let Some(tcb) = handler.get_by_key_mut(self.conn_key) {
             tcb.nagle_enabled = !nodelay;
         }
     }
@@ -410,7 +418,7 @@ impl TcpStream {
     pub fn nodelay(&self) -> bool {
         let handler = unsafe { &*self.handler.get() };
         handler
-            .get_connection(&self.conn_id)
+            .get_by_key(self.conn_key)
             .map(|tcb| !tcb.nagle_enabled)
             .unwrap_or(false)
     }
@@ -418,7 +426,7 @@ impl TcpStream {
     /// Enable or disable TCP keep-alive probes.
     pub fn set_keepalive(&self, enabled: bool) {
         let handler = unsafe { &mut *self.handler.get() };
-        if let Some(tcb) = handler.get_connection_mut(&self.conn_id) {
+        if let Some(tcb) = handler.get_by_key_mut(self.conn_key) {
             tcb.keep_alive_enabled = enabled;
         }
     }
@@ -427,7 +435,7 @@ impl TcpStream {
     pub fn keepalive(&self) -> bool {
         let handler = unsafe { &*self.handler.get() };
         handler
-            .get_connection(&self.conn_id)
+            .get_by_key(self.conn_key)
             .map(|tcb| tcb.keep_alive_enabled)
             .unwrap_or(false)
     }
@@ -439,7 +447,7 @@ impl TcpStream {
     /// - `Some(ms)`: graceful close with timeout in milliseconds
     pub fn set_linger(&self, linger: Option<u64>) {
         let handler = unsafe { &mut *self.handler.get() };
-        if let Some(tcb) = handler.get_connection_mut(&self.conn_id) {
+        if let Some(tcb) = handler.get_by_key_mut(self.conn_key) {
             tcb.linger = linger;
         }
     }
@@ -447,9 +455,7 @@ impl TcpStream {
     /// Returns the current SO_LINGER setting.
     pub fn linger(&self) -> Option<u64> {
         let handler = unsafe { &*self.handler.get() };
-        handler
-            .get_connection(&self.conn_id)
-            .and_then(|tcb| tcb.linger)
+        handler.get_by_key(self.conn_key).and_then(|tcb| tcb.linger)
     }
 }
 
@@ -464,6 +470,7 @@ impl Drop for TcpStream {
 /// Resolves to a [`TcpStream`] when the handshake completes, or returns
 /// an error if the connection is refused or times out.
 pub struct Connect {
+    conn_key: usize,
     conn_id: ConnectionId,
     event_queue: LocalQueue<TcpEvent>,
     handler: Rc<UnsafeCell<TcpHandler>>,
@@ -476,6 +483,7 @@ impl Future for Connect {
         let this = self.get_mut();
         match this.event_queue.pop() {
             Some(TcpEvent::Connected) => Poll::Ready(Ok(TcpStream {
+                conn_key: this.conn_key,
                 conn_id: this.conn_id,
                 event_queue: this.event_queue.clone(),
                 handler: this.handler.clone(),
@@ -497,7 +505,7 @@ impl Future for Connect {
 /// Future returned by [`TcpStream::write()`].
 pub struct TcpWrite<'stream> {
     handler: &'stream Rc<UnsafeCell<TcpHandler>>,
-    conn_id: ConnectionId,
+    conn_key: usize,
     event_queue: &'stream LocalQueue<TcpEvent>,
     data: &'stream [u8],
     written: usize,
@@ -524,13 +532,13 @@ impl<'stream> Future for TcpWrite<'stream> {
         }
         let handler = unsafe { &mut *this.handler.get() };
         let remaining = &this.data[this.written..];
-        if let Some(n) = handler.write_to_send_buffer(&this.conn_id, remaining) {
+        if let Some(n) = handler.write_to_send_buffer(this.conn_key, remaining) {
             this.written += n;
             if this.written == this.data.len() {
                 Poll::Ready(Ok(this.written))
             } else {
                 // Need to register waker for when send buffer has space.
-                if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
+                if let Some(tcb) = handler.get_by_key_mut(this.conn_key) {
                     tcb.send_buffer.register_write_waker(cx.waker());
                 }
                 this.event_queue.register_waker(cx.waker());
@@ -545,7 +553,7 @@ impl<'stream> Future for TcpWrite<'stream> {
 /// Future returned by [`TcpStream::read()`].
 pub struct TcpRead<'stream> {
     handler: &'stream Rc<UnsafeCell<TcpHandler>>,
-    conn_id: ConnectionId,
+    conn_key: usize,
     event_queue: &'stream LocalQueue<TcpEvent>,
     buf: &'stream mut [u8],
 }
@@ -566,7 +574,7 @@ impl<'stream> Future for TcpRead<'stream> {
         }
 
         let handler = unsafe { &mut *this.handler.get() };
-        if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
+        if let Some(tcb) = handler.get_by_key_mut(this.conn_key) {
             let n = tcb.recv_buffer.read(this.buf);
             if n > 0 {
                 Poll::Ready(Ok(n))
@@ -586,7 +594,7 @@ impl<'stream> Future for TcpRead<'stream> {
 /// Future returned by [`TcpStream::splice()`].
 pub struct TcpSplice<'stream> {
     handler: &'stream Rc<UnsafeCell<TcpHandler>>,
-    conn_id: ConnectionId,
+    conn_key: usize,
     event_queue: &'stream LocalQueue<TcpEvent>,
     max_len: usize,
 }
@@ -607,13 +615,13 @@ impl<'stream> Future for TcpSplice<'stream> {
         }
 
         let handler = unsafe { &mut *this.handler.get() };
-        if let Some((n, is_remote_closed)) = handler.splice_buffers(&this.conn_id, this.max_len) {
+        if let Some((n, is_remote_closed)) = handler.splice_buffers(this.conn_key, this.max_len) {
             if n > 0 {
                 Poll::Ready(Ok(n))
             } else if is_remote_closed {
                 Poll::Ready(Ok(0)) // EOF
             } else {
-                if let Some(tcb) = handler.get_connection_mut(&this.conn_id) {
+                if let Some(tcb) = handler.get_by_key_mut(this.conn_key) {
                     tcb.recv_buffer.register_read_waker(cx.waker());
                 }
                 this.event_queue.register_waker(cx.waker());

@@ -36,7 +36,7 @@ impl TcpHandler {
         now: Instant,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) -> Result<LocalQueue<TcpEvent>, BindError> {
+    ) -> Result<(usize, LocalQueue<TcpEvent>), BindError> {
         self.connect_with_config(
             local_addr,
             local_port,
@@ -64,7 +64,7 @@ impl TcpHandler {
         config: TcpConfig,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) -> Result<LocalQueue<TcpEvent>, BindError> {
+    ) -> Result<(usize, LocalQueue<TcpEvent>), BindError> {
         let id = ConnectionId {
             local_addr,
             local_port,
@@ -73,7 +73,7 @@ impl TcpHandler {
         };
 
         // Check for existing connection with same 4-tuple.
-        if self.connections.contains_key(&id) {
+        if self.connection_map.contains_key(&id) {
             return Err(BindError::AddressInUse);
         }
 
@@ -170,24 +170,23 @@ impl TcpHandler {
             tx_return,
         );
 
-        let id = tcb.id;
-        self.connections.insert(id, tcb);
+        let key = self.insert_connection(tcb);
         // New connection has a retransmit timer — mark for send tracking.
-        self.send_tracker.mark(SendReady(id));
-        Ok(event_queue)
+        self.send_tracker.mark(SendReady(key));
+        Ok((key, event_queue))
     }
 
     /// Initiate a graceful close for a connection.
-    pub fn initiate_close(&mut self, id: &ConnectionId) {
-        if let Some(tcb) = self.connections.get_mut(id) {
+    pub fn initiate_close(&mut self, key: usize) {
+        if let Some(tcb) = self.connections.get_mut(key) {
             if tcb.pending_fin
                 || (tcb.state != TcpState::Established && tcb.state != TcpState::CloseWait)
             {
                 return;
             }
 
-            let ready = tcb.set_pending_fin();
-            self.send_tracker.mark(ready);
+            tcb.set_pending_fin();
+            self.send_tracker.mark(SendReady(key));
             match tcb.linger {
                 Some(0) => {
                     // Linger(0): set deadline to now — poll_send will send RST immediately.

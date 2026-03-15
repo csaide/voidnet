@@ -12,7 +12,7 @@ use super::{
     segment::SegmentBuilder,
     send_tracker::SendReady,
     state::TcpState,
-    tcb::{ConnectionId, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE, TcpEvent},
+    tcb::{DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE, TcpEvent},
 };
 
 impl TcpHandler {
@@ -29,10 +29,10 @@ impl TcpHandler {
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         // Collect IDs that need send-tracking after timer processing.
-        let mut to_mark: SmallVec<[ConnectionId; 4]> = SmallVec::new();
+        let mut to_mark: SmallVec<[usize; 4]> = SmallVec::new();
 
         // Delayed ACK pass — flush pending ACKs whose deadline has expired.
-        for tcb in self.connections.values_mut() {
+        for (key, tcb) in self.connections.iter_mut() {
             if !tcb.ack_pending {
                 continue;
             }
@@ -54,7 +54,7 @@ impl TcpHandler {
                     tx_return,
                 ) else {
                     // Neighbor resolution pending — mark for poll_send to retry.
-                    to_mark.push(tcb.id);
+                    to_mark.push(key);
                     continue; // skip to next connection
                 };
                 let ts = tcb.ts_option(tsval);
@@ -87,8 +87,8 @@ impl TcpHandler {
         }
 
         // Keep-alive probe pass — send probes for idle established connections.
-        let mut keep_alive_removals: SmallVec<[ConnectionId; 4]> = SmallVec::new();
-        for (_id, tcb) in self.connections.iter_mut() {
+        let mut keep_alive_removals: SmallVec<[usize; 4]> = SmallVec::new();
+        for (key, tcb) in self.connections.iter_mut() {
             if tcb.state != TcpState::Established || !tcb.keep_alive_enabled {
                 continue;
             }
@@ -112,7 +112,7 @@ impl TcpHandler {
                 if tcb.keep_alive_probes_sent >= tcb.keep_alive_count {
                     // Max probes exceeded — abort connection.
                     tcb.event_queue.push(TcpEvent::Timeout);
-                    keep_alive_removals.push(tcb.id);
+                    keep_alive_removals.push(key);
                     continue;
                 }
 
@@ -156,14 +156,16 @@ impl TcpHandler {
         }
 
         // Remove connections that exceeded keep-alive probes.
-        for id in &keep_alive_removals {
-            Self::decrement_syn_received(&mut self.listeners, id);
-            self.send_tracker.unmark(id);
-            self.connections.remove(id);
+        for key in &keep_alive_removals {
+            if let Some(tcb) = self.connections.get(*key) {
+                Self::decrement_syn_received(&mut self.listeners, &tcb.id);
+            }
+            self.send_tracker.unmark(*key);
+            self.remove_connection_by_key(*key);
         }
 
         // SACK recovery pass — RFC 6675 recovery loop.
-        for tcb in self.connections.values_mut() {
+        for (key, tcb) in self.connections.iter_mut() {
             if tcb.state != TcpState::Established || !tcb.recovery.in_recovery {
                 continue;
             }
@@ -246,14 +248,14 @@ impl TcpHandler {
             }
             if sent_any {
                 // SACK recovery sent segments — mark for poll_send to send new data.
-                to_mark.push(tcb.id);
+                to_mark.push(key);
             }
         }
 
         // RTO retransmit pass — timer-based.
-        let mut to_remove: SmallVec<[ConnectionId; 4]> = SmallVec::new();
+        let mut to_remove: SmallVec<[usize; 4]> = SmallVec::new();
 
-        for (_id, tcb) in self.connections.iter_mut() {
+        for (key, tcb) in self.connections.iter_mut() {
             let Some(deadline) = tcb.retransmit_deadline else {
                 continue;
             };
@@ -281,7 +283,7 @@ impl TcpHandler {
             if total_elapsed_ms >= SYN_R2_THRESHOLD_MS {
                 // Timeout — signal and mark for removal.
                 tcb.event_queue.push(TcpEvent::Timeout);
-                to_remove.push(tcb.id);
+                to_remove.push(key);
                 continue;
             }
 
@@ -386,7 +388,7 @@ impl TcpHandler {
                     tcb.retransmit_deadline =
                         Some(now + coarsetime::Duration::from_millis(tcb.rto << tcb.rto_backoff));
                     // Mark for poll_send — may have more data to send after RTO.
-                    to_mark.push(id);
+                    to_mark.push(key);
                 }
                 TcpState::FinWait1 | TcpState::Closing | TcpState::LastAck => {
                     // Retransmit FIN-ACK.
@@ -428,34 +430,39 @@ impl TcpHandler {
         }
 
         // Remove timed-out connections.
-        for id in &to_remove {
-            Self::decrement_syn_received(&mut self.listeners, id);
-            self.send_tracker.unmark(id);
-            self.connections.remove(id);
+        for key in &to_remove {
+            if let Some(tcb) = self.connections.get(*key) {
+                Self::decrement_syn_received(&mut self.listeners, &tcb.id);
+            }
+            self.send_tracker.unmark(*key);
+            self.remove_connection_by_key(*key);
         }
 
         // Mark connections that need poll_send attention after timer processing.
-        for id in to_mark {
-            self.send_tracker.mark(SendReady(id));
+        for key in to_mark {
+            self.send_tracker.mark(SendReady(key));
         }
     }
 
     /// Evict stale connections whose TIME-WAIT deadline has passed.
     pub fn evict_stale<'umem>(&mut self, now: Instant, _rx_return: &mut impl FrameBuffer<'umem>) {
-        let Self {
-            connections,
-            send_tracker,
-            ..
-        } = self;
-        connections.retain(|id, tcb| {
-            if tcb.state == TcpState::TimeWait
-                && let Some(deadline) = tcb.time_wait_deadline
-                && now >= deadline
-            {
-                send_tracker.unmark(id);
-                return false; // remove
-            }
-            true // keep
-        });
+        let keys_to_remove: SmallVec<[usize; 4]> = self
+            .connections
+            .iter()
+            .filter_map(|(key, tcb)| {
+                if tcb.state == TcpState::TimeWait
+                    && let Some(deadline) = tcb.time_wait_deadline
+                    && now >= deadline
+                {
+                    Some(key)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for key in keys_to_remove {
+            self.send_tracker.unmark(key);
+            self.remove_connection_by_key(key);
+        }
     }
 }

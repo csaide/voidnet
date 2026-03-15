@@ -20,6 +20,7 @@ use crate::{
 use std::collections::BTreeMap;
 
 use rustc_hash::FxHashMap;
+use slab::Slab;
 
 use super::congestion::CubicState;
 use super::handler::{INITIAL_RTO_MS, TcpHandler};
@@ -40,8 +41,8 @@ use super::send_tracker::SendReady;
 /// Actions that must be performed after releasing the `&mut Tcb` borrow.
 enum PostAction {
     None,
-    RemoveConnection(ConnectionId),
-    RemoveAndDecrement(ConnectionId),
+    RemoveConnection(usize),
+    RemoveAndDecrement(usize),
 }
 
 /// Check segment acceptability per RFC 9293 §3.10.7.4.
@@ -293,6 +294,7 @@ impl TcpHandler {
         // Destructure self for split borrows.
         let Self {
             connections,
+            connection_map,
             listeners,
             isn_generator,
             send_tracker,
@@ -302,139 +304,151 @@ impl TcpHandler {
         } = self;
         let tx_offload = *tx_offload;
 
-        if let Some(tcb) = connections.get_mut(&conn_id) {
-            let tsval = if tcb.ts_enabled {
-                now.duration_since(tcb.ts_offset).as_millis() as u32
-            } else {
-                0
-            };
-            let state = tcb.state;
-            let action = match state {
-                TcpState::SynSent => {
-                    let action = Self::process_syn_sent(
-                        tcb,
-                        now,
-                        tsval,
-                        seg_seq,
-                        seg_ack,
-                        seg_flags,
-                        seg_wnd,
-                        options,
-                        src_mac,
-                        dst_mac,
-                        tx_offload,
-                        free_frames,
-                        tx_return,
-                    );
-                    rx_return.push(frame);
-                    action
-                }
-                TcpState::SynReceived => {
-                    let action = Self::process_syn_received(
-                        tcb,
-                        listeners,
-                        tsval,
-                        seg_seq,
-                        seg_ack,
-                        seg_flags,
-                        seg_wnd,
-                        seg_len,
-                        src_mac,
-                        dst_mac,
-                        tx_offload,
-                        free_frames,
-                        tx_return,
-                    );
-                    rx_return.push(frame);
-                    action
-                }
-                TcpState::Established => {
-                    let payload_offset = tcp_offset + tcp_header_len;
-                    let payload_len = frame.len().saturating_sub(payload_offset);
-                    let opts = ParsedOptions::parse(options);
-                    Self::process_established(
-                        tcb,
-                        frame,
-                        now,
-                        tsval,
-                        seg_seq,
-                        seg_ack,
-                        seg_flags,
-                        seg_wnd,
-                        payload_offset,
-                        payload_len,
-                        &opts,
-                        ecn_bits,
-                        src_mac,
-                        dst_mac,
-                        tx_offload,
-                        free_frames,
-                        rx_return,
-                        tx_return,
-                    )
-                }
-                TcpState::FinWait1
-                | TcpState::FinWait2
-                | TcpState::CloseWait
-                | TcpState::Closing
-                | TcpState::LastAck
-                | TcpState::TimeWait => {
-                    let payload_offset = tcp_offset + tcp_header_len;
-                    let payload_len = frame.len().saturating_sub(payload_offset);
-                    let opts = ParsedOptions::parse(options);
-                    Self::process_teardown(
-                        tcb,
-                        frame,
-                        now,
-                        tsval,
-                        seg_seq,
-                        seg_ack,
-                        seg_flags,
-                        seg_wnd,
-                        payload_offset,
-                        payload_len,
-                        &opts,
-                        src_mac,
-                        dst_mac,
-                        tx_offload,
-                        free_frames,
-                        rx_return,
-                        tx_return,
-                    )
-                }
-                _ => {
-                    rx_return.push(frame);
-                    PostAction::None
-                }
-            };
+        if let Some(&key) = connection_map.get(&conn_id) {
+            if let Some(tcb) = connections.get_mut(key) {
+                let tsval = if tcb.ts_enabled {
+                    now.duration_since(tcb.ts_offset).as_millis() as u32
+                } else {
+                    0
+                };
+                let state = tcb.state;
+                let action = match state {
+                    TcpState::SynSent => {
+                        let action = Self::process_syn_sent(
+                            tcb,
+                            key,
+                            now,
+                            tsval,
+                            seg_seq,
+                            seg_ack,
+                            seg_flags,
+                            seg_wnd,
+                            options,
+                            src_mac,
+                            dst_mac,
+                            tx_offload,
+                            free_frames,
+                            tx_return,
+                        );
+                        rx_return.push(frame);
+                        action
+                    }
+                    TcpState::SynReceived => {
+                        let action = Self::process_syn_received(
+                            tcb,
+                            key,
+                            listeners,
+                            tsval,
+                            seg_seq,
+                            seg_ack,
+                            seg_flags,
+                            seg_wnd,
+                            seg_len,
+                            src_mac,
+                            dst_mac,
+                            tx_offload,
+                            free_frames,
+                            tx_return,
+                        );
+                        rx_return.push(frame);
+                        action
+                    }
+                    TcpState::Established => {
+                        let payload_offset = tcp_offset + tcp_header_len;
+                        let payload_len = frame.len().saturating_sub(payload_offset);
+                        let opts = ParsedOptions::parse(options);
+                        Self::process_established(
+                            tcb,
+                            key,
+                            frame,
+                            now,
+                            tsval,
+                            seg_seq,
+                            seg_ack,
+                            seg_flags,
+                            seg_wnd,
+                            payload_offset,
+                            payload_len,
+                            &opts,
+                            ecn_bits,
+                            src_mac,
+                            dst_mac,
+                            tx_offload,
+                            free_frames,
+                            rx_return,
+                            tx_return,
+                        )
+                    }
+                    TcpState::FinWait1
+                    | TcpState::FinWait2
+                    | TcpState::CloseWait
+                    | TcpState::Closing
+                    | TcpState::LastAck
+                    | TcpState::TimeWait => {
+                        let payload_offset = tcp_offset + tcp_header_len;
+                        let payload_len = frame.len().saturating_sub(payload_offset);
+                        let opts = ParsedOptions::parse(options);
+                        Self::process_teardown(
+                            tcb,
+                            key,
+                            frame,
+                            now,
+                            tsval,
+                            seg_seq,
+                            seg_ack,
+                            seg_flags,
+                            seg_wnd,
+                            payload_offset,
+                            payload_len,
+                            &opts,
+                            src_mac,
+                            dst_mac,
+                            tx_offload,
+                            free_frames,
+                            rx_return,
+                            tx_return,
+                        )
+                    }
+                    _ => {
+                        rx_return.push(frame);
+                        PostAction::None
+                    }
+                };
 
-            // Handle deferred actions after tcb borrow is released.
-            match action {
-                PostAction::RemoveConnection(id) => {
-                    send_tracker.unmark(&id);
-                    connections.remove(&id);
-                }
-                PostAction::RemoveAndDecrement(id) => {
-                    Self::decrement_syn_received(listeners, &id);
-                    send_tracker.unmark(&id);
-                    connections.remove(&id);
-                }
-                PostAction::None => {
-                    // Mark connection for send processing if it has pending work.
-                    if let Some(tcb) = connections.get(&conn_id)
-                        && (tcb.ack_pending
-                            || tcb.pending_fin
-                            || tcb.send_buffer.available() > 0
-                            || tcb.ecn_cwr_sent
-                            || tcb.persist_deadline.is_some()
-                            || tcb.retransmit_deadline.is_some())
-                    {
-                        send_tracker.mark(SendReady(conn_id));
+                // Handle deferred actions after tcb borrow is released.
+                match action {
+                    PostAction::RemoveConnection(rm_key) => {
+                        if let Some(tcb) = connections.get(rm_key) {
+                            connection_map.remove(&tcb.id);
+                        }
+                        send_tracker.unmark(rm_key);
+                        connections.remove(rm_key);
+                    }
+                    PostAction::RemoveAndDecrement(rm_key) => {
+                        if let Some(tcb) = connections.get(rm_key) {
+                            Self::decrement_syn_received(listeners, &tcb.id);
+                            connection_map.remove(&tcb.id);
+                        }
+                        send_tracker.unmark(rm_key);
+                        connections.remove(rm_key);
+                    }
+                    PostAction::None => {
+                        // Mark connection for send processing if it has pending work.
+                        if let Some(tcb) = connections.get(key)
+                            && (tcb.ack_pending
+                                || tcb.pending_fin
+                                || tcb.send_buffer.available() > 0
+                                || tcb.ecn_cwr_sent
+                                || tcb.persist_deadline.is_some()
+                                || tcb.retransmit_deadline.is_some())
+                        {
+                            send_tracker.mark(SendReady(key));
+                        }
                     }
                 }
-            }
-            return;
-        }
+                return;
+            } // if let Some(tcb)
+        } // if let Some(&key)
 
         // No connection found — check listeners (LISTEN state, §16.2).
         if let Some(listener_idx) = listeners
@@ -443,6 +457,7 @@ impl TcpHandler {
         {
             Self::process_listen(
                 connections,
+                connection_map,
                 listeners,
                 isn_generator,
                 listener_idx,
@@ -470,8 +485,8 @@ impl TcpHandler {
                 remote_addr: incoming_src,
                 remote_port: src_port,
             };
-            if connections.contains_key(&new_conn_id) {
-                send_tracker.mark(SendReady(new_conn_id));
+            if let Some(&key) = connection_map.get(&new_conn_id) {
+                send_tracker.mark(SendReady(key));
             }
             rx_return.push(frame);
             return;
@@ -506,7 +521,8 @@ impl TcpHandler {
     // --- LISTEN state processing (RFC §16.2) ---
 
     fn process_listen<'umem>(
-        connections: &mut FxHashMap<ConnectionId, Tcb>,
+        connections: &mut Slab<Tcb>,
+        connection_map: &mut FxHashMap<ConnectionId, usize>,
         listeners: &mut [ListenEntry],
         isn_generator: &mut IsnGenerator,
         listener_idx: usize,
@@ -703,7 +719,9 @@ impl TcpHandler {
                 tx_return,
             );
 
-            connections.insert(tcb.id, tcb);
+            let tcb_id = tcb.id;
+            let key = connections.insert(tcb);
+            connection_map.insert(tcb_id, key);
             listeners[listener_idx].syn_received_count += 1;
         }
 
@@ -714,6 +732,7 @@ impl TcpHandler {
 
     fn process_syn_received<'umem>(
         tcb: &mut Tcb,
+        key: usize,
         listeners: &mut [ListenEntry],
         tsval: u32,
         seg_seq: u32,
@@ -761,11 +780,11 @@ impl TcpHandler {
             let from_passive = tcb.from_passive_open;
             if from_passive {
                 // Return to LISTEN — remove TCB.
-                return PostAction::RemoveAndDecrement(id);
+                return PostAction::RemoveAndDecrement(key);
             } else {
                 // Active open → signal refused.
                 tcb.event_queue.push(TcpEvent::ConnectionRefused);
-                return PostAction::RemoveConnection(id);
+                return PostAction::RemoveConnection(key);
             }
         }
 
@@ -842,8 +861,8 @@ impl TcpHandler {
 
                 let from_passive = tcb.from_passive_open;
                 if from_passive {
-                    // Push ConnectionId to listener's accept_queue.
-                    Self::push_to_accept_queue_on(listeners, &id);
+                    // Push slab key to listener's accept_queue.
+                    Self::push_to_accept_queue_on(listeners, &id, key);
                     Self::decrement_syn_received(listeners, &id);
                 } else {
                     // Simultaneous open — notify the active opener.
@@ -875,6 +894,7 @@ impl TcpHandler {
 
     fn process_syn_sent<'umem>(
         tcb: &mut Tcb,
+        key: usize,
         now: Instant,
         tsval: u32,
         seg_seq: u32,
@@ -923,7 +943,7 @@ impl TcpHandler {
             if seg_flags & flags::ACK != 0 {
                 // ACK was acceptable (passed step 1) → connection refused.
                 tcb.event_queue.push(TcpEvent::ConnectionRefused);
-                return PostAction::RemoveConnection(tcb.id);
+                return PostAction::RemoveConnection(key);
             }
             // RST without ACK → drop silently.
             return PostAction::None;
@@ -1062,6 +1082,7 @@ impl TcpHandler {
     #[inline(never)]
     fn handle_rst_established<'umem>(
         tcb: &mut Tcb,
+        key: usize,
         seg_seq: u32,
         tsval: u32,
         ack_flags: u8,
@@ -1074,7 +1095,7 @@ impl TcpHandler {
         if seg_seq == tcb.rcv_nxt {
             // Exact match: reset connection.
             tcb.event_queue.push(TcpEvent::Reset);
-            return PostAction::RemoveAndDecrement(tcb.id);
+            return PostAction::RemoveAndDecrement(key);
         }
         // In-window but not exact: send challenge ACK, drop segment.
         let ts = tcb.ts_option(tsval);
@@ -1196,6 +1217,7 @@ impl TcpHandler {
 
     fn process_established<'umem>(
         tcb: &mut Tcb,
+        key: usize,
         frame: Frame<'umem>,
         now: Instant,
         tsval: u32,
@@ -1584,6 +1606,7 @@ impl TcpHandler {
         if seg_flags & flags::RST != 0 {
             let action = Self::handle_rst_established(
                 tcb,
+                key,
                 seg_seq,
                 tsval,
                 ack_flags,
@@ -1941,6 +1964,7 @@ impl TcpHandler {
 
     fn process_teardown<'umem>(
         tcb: &mut Tcb,
+        key: usize,
         frame: Frame<'umem>,
         now: Instant,
         tsval: u32,
@@ -2039,7 +2063,7 @@ impl TcpHandler {
                 // Exact match: reset connection.
                 tcb.event_queue.push(TcpEvent::Reset);
                 rx_return.push(frame);
-                return PostAction::RemoveConnection(tcb.id);
+                return PostAction::RemoveConnection(key);
             }
             // In-window but not exact: send challenge ACK, drop segment.
             let ts = tcb.ts_option(tsval);
@@ -2244,7 +2268,7 @@ impl TcpHandler {
                     && crate::net::wire::tcp::seq_lt(fin_seq, seg_ack)
                 {
                     rx_return.push(frame);
-                    return PostAction::RemoveConnection(tcb.id);
+                    return PostAction::RemoveConnection(key);
                 }
                 rx_return.push(frame);
             }
