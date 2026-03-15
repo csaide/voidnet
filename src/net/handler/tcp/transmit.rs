@@ -1,4 +1,5 @@
 use coarsetime::Instant;
+use smallvec::SmallVec;
 
 use crate::{
     net::{NeighborHandler, wire::tcp::flags},
@@ -28,7 +29,9 @@ impl TcpHandler {
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        let ids: Vec<ConnectionId> = self.send_tracker.drain().collect();
+        self.send_tracker.swap();
+        let ids: SmallVec<[ConnectionId; 32]> = self.send_tracker.drain_active().collect();
+        let mut closed: SmallVec<[ConnectionId; 4]> = SmallVec::new();
         for id in ids {
             let Some(tcb) = self.connections.get_mut(&id) else {
                 continue; // connection was removed
@@ -314,7 +317,8 @@ impl TcpHandler {
                 tcb.event_queue.push(TcpEvent::Reset);
                 tcb.state = TcpState::Closed;
                 tcb.pending_fin = false;
-                continue; // connection is Closed, will be cleaned up by retain
+                closed.push(id);
+                continue; // connection is Closed, will be removed after loop
             }
 
             // After data sending: check if we should send FIN.
@@ -389,18 +393,9 @@ impl TcpHandler {
         }
 
         // Remove connections aborted by linger deadline.
-        let Self {
-            connections,
-            send_tracker,
-            ..
-        } = self;
-        connections.retain(|id, tcb| {
-            if tcb.state == TcpState::Closed {
-                send_tracker.unmark(id);
-                false
-            } else {
-                true
-            }
-        });
+        for id in &closed {
+            self.send_tracker.unmark(id);
+            self.connections.remove(id);
+        }
     }
 }
