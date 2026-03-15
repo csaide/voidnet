@@ -1,4 +1,5 @@
 use coarsetime::Instant;
+use smallvec::SmallVec;
 
 use crate::{
     net::{NeighborHandler, wire::tcp::flags},
@@ -28,7 +29,7 @@ impl TcpHandler {
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         // Collect IDs that need send-tracking after timer processing.
-        let mut to_mark: Vec<ConnectionId> = Vec::new();
+        let mut to_mark: SmallVec<[ConnectionId; 4]> = SmallVec::new();
 
         // Delayed ACK pass — flush pending ACKs whose deadline has expired.
         for tcb in self.connections.values_mut() {
@@ -86,7 +87,7 @@ impl TcpHandler {
         }
 
         // Keep-alive probe pass — send probes for idle established connections.
-        let mut keep_alive_removals: Vec<ConnectionId> = Vec::new();
+        let mut keep_alive_removals: SmallVec<[ConnectionId; 4]> = SmallVec::new();
         for (_id, tcb) in self.connections.iter_mut() {
             if tcb.state != TcpState::Established || !tcb.keep_alive_enabled {
                 continue;
@@ -250,7 +251,7 @@ impl TcpHandler {
         }
 
         // RTO retransmit pass — timer-based.
-        let mut to_remove: Vec<ConnectionId> = Vec::new();
+        let mut to_remove: SmallVec<[ConnectionId; 4]> = SmallVec::new();
 
         for (_id, tcb) in self.connections.iter_mut() {
             let Some(deadline) = tcb.retransmit_deadline else {
