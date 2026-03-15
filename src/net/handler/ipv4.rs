@@ -93,16 +93,6 @@ impl Ipv4Handler {
             }
         }
 
-        // Learn source IP → MAC mapping from every valid incoming packet.
-        // Ensures the neighbor cache stays populated even if ARP completed
-        // before the XDP runtime attached.
-        let eth = EthernetFrame::from_bytes(&frame);
-        neighbor_handler.learn_from_traffic(
-            now,
-            crate::net::wire::ip::IpAddress::V4(ip.src_addr),
-            eth.src_mac,
-        );
-
         let protocol = ip.protocol;
         match protocol {
             IpProtocols::Icmp => icmpv4::handle_icmpv4(

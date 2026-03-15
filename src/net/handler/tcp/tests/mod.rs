@@ -29,7 +29,7 @@ pub(super) fn new_handler() -> TcpHandler {
 pub(super) fn new_neighbor_handler() -> NeighborHandler {
     let nh = NeighborHandler::new("test0", coarsetime::Duration::from_secs(60)).unwrap();
     // Seed cache so lookup_or_resolve returns a MAC for REMOTE_IP.
-    nh.learn_from_traffic(
+    nh.seed_cache(
         coarsetime::Instant::now(),
         IpAddress::V4(REMOTE_IP),
         MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),
@@ -217,7 +217,7 @@ pub(super) fn establish_connection(
     tx: &mut BasicFrameBuffer<'static>,
 ) -> u32 {
     let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-    nh.learn_from_traffic(
+    nh.seed_cache(
         coarsetime::Instant::now(),
         IpAddress::V4(REMOTE_IP),
         MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),
@@ -277,7 +277,7 @@ pub(super) fn establish_connection_with_sack(
 ) -> u32 {
     use crate::net::wire::tcp::options as tcp_options;
     let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-    nh.learn_from_traffic(
+    nh.seed_cache(
         coarsetime::Instant::now(),
         IpAddress::V4(REMOTE_IP),
         MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),
@@ -345,7 +345,7 @@ pub(super) fn active_open_handshake(
         crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
     let dst_mac =
         crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
-    nh.learn_from_traffic(
+    nh.seed_cache(
         coarsetime::Instant::now(),
         IpAddress::V4(REMOTE_IP),
         MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),
@@ -411,7 +411,7 @@ pub(super) fn active_open_handshake_with_config(
         crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
     let dst_mac =
         crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
-    nh.learn_from_traffic(
+    nh.seed_cache(
         coarsetime::Instant::now(),
         IpAddress::V4(REMOTE_IP),
         MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),

@@ -139,22 +139,10 @@ impl NeighborHandler {
         self.lookup(now, &IpAddress::V6(*ip))
     }
 
-    /// Learn an IP-to-MAC mapping from an incoming data packet.
-    ///
-    /// Userspace XDP stacks may miss ARP/NDP exchanges that occurred before
-    /// the runtime attached. This method observes source addresses on every
-    /// incoming IP packet to keep the neighbor cache populated, mirroring a
-    /// common pattern in DPDK and other kernel-bypass stacks.
-    ///
-    /// Only non-broadcast, non-unspecified source addresses are learned.
-    #[inline]
-    pub fn learn_from_traffic(&self, now: Instant, ip: IpAddress, mac: MacAddress) {
-        if mac == MacAddress::broadcast() || mac == MacAddress::zero() {
-            return;
-        }
-        if ip.is_unspecified() {
-            return;
-        }
+    /// Directly seed the neighbor cache with an IP-to-MAC mapping.
+    /// Used in tests to populate the cache without requiring ARP/NDP exchange.
+    #[cfg(test)]
+    pub fn seed_cache(&self, now: Instant, ip: IpAddress, mac: MacAddress) {
         self.table
             .insert(ip, NeighborState::reachable(mac, now + self.ttl));
     }
@@ -694,7 +682,7 @@ mod tests {
         let now = Instant::now();
         let handler = new_handler();
         let addr = IpAddress::V4(TEST_REMOTE_IP);
-        handler.learn_from_traffic(now, addr, TEST_REMOTE_MAC);
+        handler.seed_cache(now, addr, TEST_REMOTE_MAC);
 
         let mut free = BasicFrameBuffer::new(4);
         let mut rx = BasicFrameBuffer::new(4);
@@ -717,7 +705,7 @@ mod tests {
         let now = Instant::now();
         let handler = new_handler();
         let addr = IpAddress::V4(TEST_REMOTE_IP);
-        handler.learn_from_traffic(now, addr, TEST_REMOTE_MAC);
+        handler.seed_cache(now, addr, TEST_REMOTE_MAC);
 
         let expired = now + TEST_TTL + Duration::from_secs(1);
         let mut free = BasicFrameBuffer::new(4);
@@ -747,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn lookup_or_resolve_learn_from_traffic_refreshes_entry() {
+    fn lookup_or_resolve_after_cache_seed_returns_mac() {
         let now = Instant::now();
         let handler = new_handler();
         let addr = IpAddress::V4(TEST_REMOTE_IP);
@@ -769,8 +757,8 @@ mod tests {
                 .is_none()
         );
 
-        // Reply arrives — learn_from_traffic transitions to Reachable.
-        handler.learn_from_traffic(now, addr, TEST_REMOTE_MAC);
+        // Cache seeded — transitions to Reachable.
+        handler.seed_cache(now, addr, TEST_REMOTE_MAC);
 
         // Now lookup_or_resolve should return the MAC.
         let mut free2 = BasicFrameBuffer::new(4);
@@ -785,7 +773,7 @@ mod tests {
         let now = Instant::now();
         let handler = new_handler();
         let addr = IpAddress::V4(TEST_REMOTE_IP);
-        handler.learn_from_traffic(now, addr, TEST_REMOTE_MAC);
+        handler.seed_cache(now, addr, TEST_REMOTE_MAC);
 
         let after_ttl = now + TEST_TTL + Duration::from_secs(1);
 
