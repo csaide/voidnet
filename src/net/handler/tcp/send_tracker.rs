@@ -7,42 +7,54 @@ use super::tcb::ConnectionId;
 #[must_use = "connection must be marked for sending via SendTracker::mark()"]
 pub struct SendReady(pub ConnectionId);
 
-/// Tracks which connections have pending send work.
-/// poll_send iterates only this set instead of all connections.
+/// Tracks which connections have pending send work using a dual-set
+/// swap pattern. `poll_send` calls `swap()` then `drain_active()` to
+/// iterate without heap allocation. New marks go into `pending`, which
+/// becomes `active` on the next `swap()`.
 pub struct SendTracker {
-    set: FxHashSet<ConnectionId>,
+    active: FxHashSet<ConnectionId>,
+    pending: FxHashSet<ConnectionId>,
 }
 
 impl SendTracker {
     pub fn new() -> Self {
         Self {
-            set: FxHashSet::default(),
+            active: FxHashSet::default(),
+            pending: FxHashSet::default(),
         }
     }
 
+    /// Swap active/pending sets. Call once at the start of poll_send.
+    /// O(1) pointer swap — no allocation, no iteration.
+    #[inline(always)]
+    pub fn swap(&mut self) {
+        std::mem::swap(&mut self.active, &mut self.pending);
+    }
+
+    /// Drain the active set for iteration. Call after `swap()`.
+    #[inline(always)]
+    pub fn drain_active(&mut self) -> impl Iterator<Item = ConnectionId> + '_ {
+        self.active.drain()
+    }
+
     /// Register a connection as needing send processing.
+    /// Always inserts into `pending` — safe to call during drain_active iteration.
     #[inline(always)]
     pub fn mark(&mut self, ready: SendReady) {
-        self.set.insert(ready.0);
+        self.pending.insert(ready.0);
     }
 
-    /// Remove a connection from the active set.
+    /// Remove a connection from both sets (connection closed/removed).
     #[inline(always)]
     pub fn unmark(&mut self, id: &ConnectionId) {
-        self.set.remove(id);
+        self.active.remove(id);
+        self.pending.remove(id);
     }
 
-    /// Drain all tracked connection IDs for processing.
-    /// Returns an iterator of ConnectionIds that need poll_send attention.
-    #[inline(always)]
-    pub fn drain(&mut self) -> impl Iterator<Item = ConnectionId> + '_ {
-        self.set.drain()
-    }
-
-    /// Check if any connections need sending.
+    /// Check if any connections need sending (across both sets).
     #[inline(always)]
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
-        self.set.is_empty()
+        self.active.is_empty() && self.pending.is_empty()
     }
 }
