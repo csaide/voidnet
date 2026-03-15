@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::net::http::{
     HttpError,
     body::BodyReader,
@@ -29,7 +31,7 @@ pub struct ResponseWriter<'conn> {
     version: Version,
     state: ResponseState,
     status_code: u16,
-    status_reason: String,
+    status_reason: Cow<'static, str>,
     response_headers: Vec<(String, String)>,
     is_head: bool,
     chunked: bool,
@@ -59,7 +61,7 @@ impl<'conn> ResponseWriter<'conn> {
             version,
             state: ResponseState::Headers,
             status_code: 200,
-            status_reason: String::from("OK"),
+            status_reason: Cow::Borrowed("OK"),
             response_headers: Vec::new(),
             is_head,
             chunked: false,
@@ -77,7 +79,22 @@ impl<'conn> ResponseWriter<'conn> {
             return;
         }
         self.status_code = code;
-        self.status_reason = reason.to_string();
+        self.status_reason = match reason {
+            "OK" => Cow::Borrowed("OK"),
+            "Created" => Cow::Borrowed("Created"),
+            "No Content" => Cow::Borrowed("No Content"),
+            "Moved Permanently" => Cow::Borrowed("Moved Permanently"),
+            "Found" => Cow::Borrowed("Found"),
+            "Not Modified" => Cow::Borrowed("Not Modified"),
+            "Bad Request" => Cow::Borrowed("Bad Request"),
+            "Unauthorized" => Cow::Borrowed("Unauthorized"),
+            "Forbidden" => Cow::Borrowed("Forbidden"),
+            "Not Found" => Cow::Borrowed("Not Found"),
+            "Method Not Allowed" => Cow::Borrowed("Method Not Allowed"),
+            "Internal Server Error" => Cow::Borrowed("Internal Server Error"),
+            "Service Unavailable" => Cow::Borrowed("Service Unavailable"),
+            other => Cow::Owned(other.to_string()),
+        };
     }
 
     /// Add a response header. Can be called multiple times.
@@ -165,30 +182,51 @@ impl<'conn> ResponseWriter<'conn> {
     async fn flush_headers(&mut self) -> Result<(), HttpError> {
         debug_assert_eq!(self.state, ResponseState::Headers);
 
-        let status_line = format_status_line(self.status_code, &self.status_reason, self.version);
-        self.write_all(status_line.as_bytes()).await?;
+        // Status line — direct writes, no String allocation.
+        let version_bytes: &[u8] = match self.version {
+            Version::Http10 => b"HTTP/1.0 ",
+            Version::Http11 => b"HTTP/1.1 ",
+            Version::Http09 => unreachable!(),
+        };
+        self.write_all(version_bytes).await?;
+        let code = self.status_code;
+        self.write_all(&[
+            b'0' + (code / 100) as u8,
+            b'0' + ((code / 10) % 10) as u8,
+            b'0' + (code % 10) as u8,
+        ])
+        .await?;
+        self.write_all(b" ").await?;
+        // Temporarily take status_reason to avoid borrow conflict across await.
+        let reason = std::mem::replace(&mut self.status_reason, Cow::Borrowed(""));
+        self.write_all(reason.as_bytes()).await?;
+        self.status_reason = reason;
+        self.write_all(b"\r\n").await?;
 
-        // Check if handler set Content-Length
+        // Check if handler set Content-Length.
         let has_content_length = self
             .response_headers
             .iter()
             .any(|(n, _)| n.eq_ignore_ascii_case("content-length"));
 
-        // If no Content-Length and HTTP/1.1, use chunked
-        if !has_content_length && self.version == Version::Http11 {
-            self.chunked = true;
-            self.response_headers
-                .push(("Transfer-Encoding".to_string(), "chunked".to_string()));
-        }
-
+        // Headers — direct writes per header, no format_header() allocation.
         let headers = std::mem::take(&mut self.response_headers);
         for (name, value) in &headers {
-            let header = format_header(name, value);
-            self.write_all(header.as_bytes()).await?;
+            self.write_all(name.as_bytes()).await?;
+            self.write_all(b": ").await?;
+            self.write_all(value.as_bytes()).await?;
+            self.write_all(b"\r\n").await?;
         }
         self.response_headers = headers;
 
-        // End of headers
+        // Auto-inject Transfer-Encoding for HTTP/1.1 without Content-Length.
+        // Written after user headers (RFC 9112 does not mandate header ordering).
+        if !has_content_length && self.version == Version::Http11 {
+            self.chunked = true;
+            self.write_all(b"Transfer-Encoding: chunked\r\n").await?;
+        }
+
+        // End of headers.
         self.write_all(b"\r\n").await?;
         self.state = ResponseState::Body;
         Ok(())
@@ -225,14 +263,6 @@ impl Drop for ResponseWriter<'_> {
             self.session.finish_response();
         }
     }
-}
-
-fn format_status_line(code: u16, reason: &str, version: Version) -> String {
-    format!("{} {} {}\r\n", version, code, reason)
-}
-
-fn format_header(name: &str, value: &str) -> String {
-    format!("{}: {}\r\n", name, value)
 }
 
 #[cfg(test)]
