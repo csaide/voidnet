@@ -16,5 +16,9 @@ mod transmit;
 
 pub use handler::TcpHandler;
 
+// Exposed for benchmarks.
+#[doc(hidden)]
+pub use segment::SegmentBuilder;
+
 #[cfg(test)]
 mod tests;

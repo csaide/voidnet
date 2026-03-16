@@ -14,7 +14,8 @@ unsafe impl<'umem> Send for Frame<'umem> {}
 
 impl<'umem> Frame<'umem> {
     /// Create a new frame with the given address, data pointer, length, and capacity.
-    pub(crate) fn new(addr: u64, data: &'umem mut [u8], len: usize, is_fragment: bool) -> Self {
+    #[doc(hidden)]
+    pub fn new(addr: u64, data: &'umem mut [u8], len: usize, is_fragment: bool) -> Self {
         assert!(
             !data.is_empty() && len <= data.len(),
             "len must be less than or equal to capacity, which must be greater than 0"
