@@ -592,6 +592,246 @@ impl<'stream> Future for TcpRead<'stream> {
 }
 
 /// Future returned by [`TcpStream::splice()`].
+#[cfg(test)]
+mod tests {
+    use std::cell::UnsafeCell;
+    use std::collections::BTreeMap;
+    use std::rc::Rc;
+
+    use coarsetime::Instant;
+
+    use crate::net::handler::tcp::TcpHandler;
+    use crate::net::handler::tcp::congestion::CubicState;
+    use crate::net::handler::tcp::recovery::{FRtoState, PrrState, SackRecovery};
+    use crate::net::handler::tcp::ring_buffer::RingBuffer;
+    use crate::net::handler::tcp::state::TcpState;
+    use crate::net::handler::tcp::tcb::{
+        ConnectionId, DEFAULT_DELAYED_ACK_MS, DEFAULT_RCV_MSS, Tcb,
+    };
+    use crate::net::socket::LocalQueue;
+    use crate::net::wire::ip::{IpAddress, Ipv4Address};
+
+    use super::TcpStream;
+
+    /// Build a TcpStream backed by a real handler + TCB for accessor testing.
+    fn make_test_stream() -> TcpStream {
+        let local_addr = IpAddress::V4(Ipv4Address {
+            octets: [10, 0, 0, 1],
+        });
+        let remote_addr = IpAddress::V4(Ipv4Address {
+            octets: [10, 0, 0, 2],
+        });
+        let conn_id = ConnectionId {
+            local_addr,
+            local_port: 4000,
+            remote_addr,
+            remote_port: 80,
+        };
+        let event_queue = LocalQueue::new(16);
+
+        let tcb = Tcb {
+            id: conn_id,
+            state: TcpState::Established,
+            from_passive_open: true,
+            iss: 1000,
+            snd_una: 1000,
+            snd_nxt: 1000,
+            snd_wnd: 65535,
+            snd_wl1: 0,
+            snd_wl2: 0,
+            irs: 2000,
+            rcv_nxt: 2001,
+            rcv_wnd: 65535,
+            snd_mss: DEFAULT_RCV_MSS,
+            rcv_mss: DEFAULT_RCV_MSS,
+            eff_snd_mss: DEFAULT_RCV_MSS,
+            snd_wscale: 0,
+            rcv_wscale: 0,
+            wscale_enabled: false,
+            retransmit_deadline: None,
+            rto_backoff: 0,
+            event_queue: event_queue.clone(),
+            send_buffer: RingBuffer::new(1024),
+            recv_buffer: RingBuffer::new(1024),
+            ooo_ranges: BTreeMap::new(),
+            cubic: CubicState::new(DEFAULT_RCV_MSS),
+            recovery: SackRecovery::new(),
+            prr: PrrState::new(),
+            frto: FRtoState::new(),
+            srtt: None,
+            rttvar: 0,
+            rto: 1000,
+            last_send_time: None,
+            pending_fin: false,
+            fin_seq: None,
+            time_wait_deadline: None,
+            time_wait_duration: 60_000,
+            ack_pending: false,
+            delayed_ack_deadline: None,
+            ack_delay_count: 0,
+            delayed_ack_ms: DEFAULT_DELAYED_ACK_MS,
+            nagle_enabled: true,
+            keep_alive_enabled: false,
+            keep_alive_idle_ms: 7_200_000,
+            keep_alive_interval_ms: 75_000,
+            keep_alive_count: 9,
+            last_activity: Instant::now(),
+            keep_alive_probes_sent: 0,
+            linger: None,
+            linger_deadline: None,
+            ts_enabled: false,
+            ts_recent: 0,
+            ts_recent_age: Instant::now(),
+            ts_offset: Instant::now(),
+            sack_enabled: false,
+            sack_scoreboard: BTreeMap::new(),
+            ecn_enabled: false,
+            ecn_ce_received: false,
+            ecn_cwr_sent: false,
+            persist_deadline: None,
+            persist_backoff: 0,
+            max_snd_wnd: 0,
+            last_advertised_right_edge: 0,
+        };
+
+        let mut handler = TcpHandler::new(false, false);
+        let key = handler.insert_connection(tcb);
+        let handler_rc = Rc::new(UnsafeCell::new(handler));
+
+        TcpStream::from_accepted_for_test(key, conn_id, event_queue, handler_rc)
+    }
+
+    #[test]
+    fn local_addr_returns_configured_address() {
+        let stream = make_test_stream();
+        assert_eq!(
+            stream.local_addr(),
+            IpAddress::V4(Ipv4Address {
+                octets: [10, 0, 0, 1]
+            })
+        );
+    }
+
+    #[test]
+    fn local_port_returns_configured_port() {
+        let stream = make_test_stream();
+        assert_eq!(stream.local_port(), 4000);
+    }
+
+    #[test]
+    fn remote_addr_returns_configured_address() {
+        let stream = make_test_stream();
+        assert_eq!(
+            stream.remote_addr(),
+            IpAddress::V4(Ipv4Address {
+                octets: [10, 0, 0, 2]
+            })
+        );
+    }
+
+    #[test]
+    fn remote_port_returns_configured_port() {
+        let stream = make_test_stream();
+        assert_eq!(stream.remote_port(), 80);
+    }
+
+    #[test]
+    fn conn_id_returns_full_4_tuple() {
+        let stream = make_test_stream();
+        let id = stream.conn_id();
+        assert_eq!(
+            id.local_addr,
+            IpAddress::V4(Ipv4Address {
+                octets: [10, 0, 0, 1]
+            })
+        );
+        assert_eq!(id.local_port, 4000);
+        assert_eq!(
+            id.remote_addr,
+            IpAddress::V4(Ipv4Address {
+                octets: [10, 0, 0, 2]
+            })
+        );
+        assert_eq!(id.remote_port, 80);
+    }
+
+    #[test]
+    fn nodelay_default_is_false() {
+        let stream = make_test_stream();
+        assert!(
+            !stream.nodelay(),
+            "default should be Nagle enabled (nodelay=false)"
+        );
+    }
+
+    #[test]
+    fn set_nodelay_true_round_trip() {
+        let stream = make_test_stream();
+        stream.set_nodelay(true);
+        assert!(stream.nodelay());
+    }
+
+    #[test]
+    fn set_nodelay_false_after_true() {
+        let stream = make_test_stream();
+        stream.set_nodelay(true);
+        assert!(stream.nodelay());
+        stream.set_nodelay(false);
+        assert!(!stream.nodelay());
+    }
+
+    #[test]
+    fn keepalive_default_is_false() {
+        let stream = make_test_stream();
+        assert!(!stream.keepalive());
+    }
+
+    #[test]
+    fn set_keepalive_true_round_trip() {
+        let stream = make_test_stream();
+        stream.set_keepalive(true);
+        assert!(stream.keepalive());
+    }
+
+    #[test]
+    fn set_keepalive_false_after_true() {
+        let stream = make_test_stream();
+        stream.set_keepalive(true);
+        assert!(stream.keepalive());
+        stream.set_keepalive(false);
+        assert!(!stream.keepalive());
+    }
+
+    #[test]
+    fn linger_default_is_none() {
+        let stream = make_test_stream();
+        assert_eq!(stream.linger(), None);
+    }
+
+    #[test]
+    fn set_linger_some_round_trip() {
+        let stream = make_test_stream();
+        stream.set_linger(Some(5000));
+        assert_eq!(stream.linger(), Some(5000));
+    }
+
+    #[test]
+    fn set_linger_zero_for_rst_on_close() {
+        let stream = make_test_stream();
+        stream.set_linger(Some(0));
+        assert_eq!(stream.linger(), Some(0));
+    }
+
+    #[test]
+    fn set_linger_none_clears_previous() {
+        let stream = make_test_stream();
+        stream.set_linger(Some(3000));
+        assert_eq!(stream.linger(), Some(3000));
+        stream.set_linger(None);
+        assert_eq!(stream.linger(), None);
+    }
+}
+
 pub struct TcpSplice<'stream> {
     handler: &'stream Rc<UnsafeCell<TcpHandler>>,
     conn_key: usize,
