@@ -134,8 +134,8 @@ impl Codec for Http11Codec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::http::codec::parse::ConnectionDirective;
     use crate::net::http::request::{BodyFraming, Method, Version};
+    use parse::ConnectionDirective;
 
     #[test]
     fn decode_simple_get() {
