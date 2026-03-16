@@ -139,4 +139,44 @@ mod tests {
         assert_eq!(size_of::<ArpPacket>(), 28);
         assert_eq!(ARP_FRAME_LEN, 42);
     }
+
+    #[test]
+    fn arp_frame_as_bytes_length() {
+        let mut buf = [0u8; ARP_FRAME_LEN];
+        let frame = ArpFrame::from_bytes_mut(&mut buf);
+        assert_eq!(frame.as_bytes().len(), ARP_FRAME_LEN);
+    }
+
+    #[test]
+    fn arp_packet_from_bytes_roundtrip() {
+        let mut buf = [0u8; ARP_FRAME_LEN];
+        let frame = ArpFrame::from_bytes_mut(&mut buf);
+        frame.arp.oper = ArpOperations::Reply;
+        frame.arp.htype = ArpHardwareTypes::Ethernet;
+
+        let pkt = ArpPacket::from_bytes(&buf);
+        let oper = pkt.oper;
+        let htype = pkt.htype;
+        assert_eq!(oper, ArpOperations::Reply);
+        assert_eq!(htype, ArpHardwareTypes::Ethernet);
+    }
+
+    #[test]
+    fn arp_packet_from_bytes_mut_allows_mutation() {
+        let mut buf = [0u8; ARP_FRAME_LEN];
+        let pkt = ArpPacket::from_bytes_mut(&mut buf);
+        pkt.oper = ArpOperations::Request;
+        pkt.spa = Ipv4Address::new([10, 0, 0, 1]);
+        let oper = pkt.oper;
+        let spa = pkt.spa;
+        assert_eq!(oper, ArpOperations::Request);
+        assert_eq!(spa.octets, [10, 0, 0, 1]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn arp_frame_from_bytes_mut_rejects_short_buffer() {
+        let mut buf = [0u8; ARP_FRAME_LEN - 1];
+        let _ = ArpFrame::from_bytes_mut(&mut buf);
+    }
 }
