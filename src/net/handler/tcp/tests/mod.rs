@@ -499,6 +499,7 @@ mod data_transfer;
 mod delayed_ack;
 mod ecn;
 mod edge_cases;
+mod handler;
 mod handshake;
 mod keepalive;
 mod listener;
