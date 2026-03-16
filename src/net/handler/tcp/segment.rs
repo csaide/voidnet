@@ -914,7 +914,10 @@ mod tests {
     use super::*;
     use crate::net::checksum::verify_tcp_checksum_ip;
     use crate::net::wire::ip::Ipv4;
-    use crate::net::wire::ip::{IPV4_MIN_HEADER_LEN, IpAddress, Ipv4Address, Ipv4Header};
+    use crate::net::wire::ip::{
+        IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, Ipv4Address, Ipv4Header, Ipv6,
+        Ipv6Address, Ipv6Header,
+    };
     use crate::xdp::frame::{BasicFrameBuffer, Frame};
 
     const ETH_HEADER_LEN: usize = 14;
@@ -1815,5 +1818,250 @@ mod tests {
             &ip.dst_addr,
             &frame[tcp_offset..]
         ));
+    }
+
+    // ---------------------------------------------------------------
+    // IPv6 segment tests
+    // ---------------------------------------------------------------
+
+    const LOCAL_V6: Ipv6Address =
+        Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    const REMOTE_V6: Ipv6Address =
+        Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+
+    #[test]
+    fn build_syn_ipv6() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(200));
+
+        SegmentBuilder::build_syn(
+            IpAddress::V6(LOCAL_V6),
+            IpAddress::V6(REMOTE_V6),
+            8080,
+            80,
+            1000,
+            65535,
+            1440,
+            7,
+            None,
+            false,
+            false,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "SYN IPv6 segment built");
+        assert_eq!(free.num_frames(), 0, "free frame consumed");
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::SYN);
+        assert_eq!(tcp.seq_num(), 1000);
+        assert_eq!(tcp.src_port(), 8080);
+        assert_eq!(tcp.dst_port(), 80);
+
+        let ip = Ipv6Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv6>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_ack_ipv6() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(201));
+
+        SegmentBuilder::build_ack(
+            IpAddress::V6(LOCAL_V6),
+            IpAddress::V6(REMOTE_V6),
+            8080,
+            80,
+            2000,
+            3000,
+            65535,
+            flags::ACK,
+            None,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "ACK IPv6 segment built");
+
+        let frame = tx.pop().unwrap();
+        // ETH(14) + IPv6(40) + TCP(20) = 74
+        assert_eq!(frame.len(), 74);
+
+        let tcp_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::ACK);
+        assert_eq!(tcp.seq_num(), 2000);
+        assert_eq!(tcp.ack_num(), 3000);
+
+        let ip = Ipv6Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv6>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_rst_ipv6() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(202));
+
+        SegmentBuilder::build_rst(
+            IpAddress::V6(REMOTE_V6),
+            IpAddress::V6(LOCAL_V6),
+            80,
+            8080,
+            1000,
+            0,
+            flags::SYN, // ACK bit off
+            100,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "RST IPv6 segment built");
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::RST | flags::ACK);
+
+        let ip = Ipv6Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv6>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_fin_ack_ipv6() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(203));
+
+        SegmentBuilder::build_fin_ack(
+            IpAddress::V6(LOCAL_V6),
+            IpAddress::V6(REMOTE_V6),
+            80,
+            8080,
+            5000,
+            3000,
+            65535,
+            None,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "FIN-ACK IPv6 segment built");
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::ACK | flags::FIN);
+        assert_eq!(tcp.seq_num(), 5000);
+        assert_eq!(tcp.ack_num(), 3000);
+
+        let ip = Ipv6Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv6>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_data_ipv6() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(204));
+
+        let payload = b"Hello, IPv6 TCP!";
+
+        SegmentBuilder::build_data(
+            IpAddress::V6(LOCAL_V6),
+            IpAddress::V6(REMOTE_V6),
+            8080,
+            80,
+            1000,
+            500,
+            65535,
+            payload,
+            None,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "data IPv6 segment built");
+
+        let frame = tx.pop().unwrap();
+        // ETH(14) + IPv6(40) + TCP(20) + payload(16) = 90
+        assert_eq!(frame.len(), 90);
+
+        let payload_start = ETH_HEADER_LEN + IPV6_HEADER_LEN + TCP_HEADER_LEN;
+        assert_eq!(&frame[payload_start..frame.len()], payload);
+
+        let tcp_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+        let ip = Ipv6Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv6>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_mismatched_v4_v6_returns_none() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(205));
+
+        // V4 local, V6 remote — mismatched address families
+        SegmentBuilder::build_syn(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V6(REMOTE_V6),
+            8080,
+            80,
+            1000,
+            65535,
+            1460,
+            7,
+            None,
+            false,
+            false,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 0, "mismatched AF produces no segment");
+        assert_eq!(free.num_frames(), 1, "free frame not consumed");
     }
 }
