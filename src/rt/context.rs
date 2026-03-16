@@ -80,6 +80,17 @@ pub(crate) fn with_runtime_context<'umem, R>(f: impl FnOnce(&RuntimeContext<'ume
     })
 }
 
+/// Register a waker to be called when frame capacity is freed.
+///
+/// Called by capacity-driven futures (SendTo, Echo, TcpWrite) when
+/// they return Pending due to insufficient buffer space.
+pub(crate) fn register_capacity_waker(waker: &Waker) {
+    with_runtime_context(|ctx| {
+        let wakers = unsafe { &mut *ctx.capacity_wakers.get() };
+        wakers.push(waker.clone());
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use std::{cell::UnsafeCell, rc::Rc};
@@ -149,15 +160,4 @@ mod tests {
         });
         assert!(result.is_err(), "expected panic after guard is dropped");
     }
-}
-
-/// Register a waker to be called when frame capacity is freed.
-///
-/// Called by capacity-driven futures (SendTo, Echo, TcpWrite) when
-/// they return Pending due to insufficient buffer space.
-pub(crate) fn register_capacity_waker(waker: &Waker) {
-    with_runtime_context(|ctx| {
-        let wakers = unsafe { &mut *ctx.capacity_wakers.get() };
-        wakers.push(waker.clone());
-    });
 }

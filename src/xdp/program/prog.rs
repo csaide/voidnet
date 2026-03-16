@@ -153,6 +153,20 @@ impl XdpProgram {
     }
 }
 
+impl Drop for XdpProgram {
+    fn drop(&mut self) {
+        let err =
+            unsafe { xdp_program__detach(self.program, self.if_index, self.attach_mode as u32, 0) };
+        if err < 0 {
+            eprintln!("Failed to detach program: {}", errno());
+        }
+
+        unsafe {
+            xdp_program__close(self.program);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,19 +199,5 @@ mod tests {
             matches!(result, Err(Error::InterfaceNotFound)),
             "expected InterfaceNotFound error"
         );
-    }
-}
-
-impl Drop for XdpProgram {
-    fn drop(&mut self) {
-        let err =
-            unsafe { xdp_program__detach(self.program, self.if_index, self.attach_mode as u32, 0) };
-        if err < 0 {
-            eprintln!("Failed to detach program: {}", errno());
-        }
-
-        unsafe {
-            xdp_program__close(self.program);
-        }
     }
 }
