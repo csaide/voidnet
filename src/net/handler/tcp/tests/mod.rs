@@ -352,7 +352,7 @@ pub(super) fn active_open_handshake(
     );
 
     // connect sends SYN.
-    let _event_queue = handler
+    let (_key, _event_queue) = handler
         .connect(
             IpAddress::V4(LOCAL_IP),
             5000,
@@ -417,7 +417,7 @@ pub(super) fn active_open_handshake_with_config(
         MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),
     );
 
-    let _event_queue = handler
+    let (_key, _event_queue) = handler
         .connect_with_config(
             IpAddress::V4(LOCAL_IP),
             5000,

@@ -1308,8 +1308,7 @@ fn shutdown_sets_pending_fin() {
     );
 
     // Call initiate_close (the handler method that shutdown() delegates to).
-    let conn_id = handler.first_connection().id;
-    handler.initiate_close(&conn_id);
+    handler.initiate_close(handler.first_connection_key());
 
     // Verify pending_fin is now true.
     assert!(
@@ -1384,8 +1383,7 @@ fn half_close_writes_blocked_reads_continue() {
     assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Initiate half-close (shutdown write side).
-    let conn_id = handler.first_connection().id;
-    handler.initiate_close(&conn_id);
+    handler.initiate_close(handler.first_connection_key());
 
     // Verify pending_fin is set but state is still Established (FIN not sent yet).
     assert!(

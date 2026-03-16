@@ -419,7 +419,7 @@ fn linger_zero_sends_rst_on_poll_send() {
     while tx.pop().is_some() {}
 
     // Call initiate_close — should set pending_fin and linger_deadline to Instant::recent().
-    handler.initiate_close(&conn_id);
+    handler.initiate_close(handler.first_connection_key());
     assert!(
         handler.first_connection().pending_fin,
         "pending_fin should be set"
@@ -516,7 +516,7 @@ fn linger_timeout_sets_deadline() {
     while tx.pop().is_some() {}
 
     // Call initiate_close.
-    handler.initiate_close(&conn_id);
+    handler.initiate_close(handler.first_connection_key());
     assert!(
         handler.first_connection().pending_fin,
         "pending_fin should be set"
@@ -599,10 +599,8 @@ fn linger_none_normal_close() {
         handler.first_connection().linger.is_none(),
         "linger should be None by default"
     );
-    let conn_id = handler.first_connection().id;
-
     // Call initiate_close.
-    handler.initiate_close(&conn_id);
+    handler.initiate_close(handler.first_connection_key());
 
     // Verify pending_fin is true and linger_deadline is None.
     assert!(
@@ -929,7 +927,7 @@ fn linger_zero_immediate_rst() {
     let conn_id = handler.first_connection().id;
 
     // Initiate close — linger(0) sets immediate deadline.
-    handler.initiate_close(&conn_id);
+    handler.initiate_close(handler.first_connection_key());
     assert!(
         handler.first_connection().pending_fin,
         "pending_fin should be set"

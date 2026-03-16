@@ -292,7 +292,7 @@ fn simultaneous_open_both_reach_established() {
     }
 
     // Both sides initiate active open (connect).
-    let events_a = handler_a
+    let (_key_a, events_a) = handler_a
         .connect(
             IpAddress::V4(ip_a),
             port_a,
@@ -308,7 +308,7 @@ fn simultaneous_open_both_reach_established() {
     // Discard the SYN frame emitted by connect — we'll build frames manually.
     while tx.pop().is_some() {}
 
-    let events_b = handler_b
+    let (_key_b, events_b) = handler_b
         .connect(
             IpAddress::V4(ip_b),
             port_b,

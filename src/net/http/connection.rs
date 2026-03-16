@@ -128,7 +128,7 @@ mod tests {
             remote_port: 0,
         };
         let event_queue = LocalQueue::new(16);
-        let stream = TcpStream::from_accepted_for_test(conn_id, event_queue, handler);
+        let stream = TcpStream::from_accepted_for_test(0, conn_id, event_queue, handler);
         HttpConnection::new(stream, Session::http09())
     }
 
