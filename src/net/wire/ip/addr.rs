@@ -498,4 +498,164 @@ mod tests {
         let ip: IpAddress = v6.into();
         assert_eq!(ip, IpAddress::V6(Ipv6Address::loopback()));
     }
+
+    #[test]
+    fn ipv4_display() {
+        assert_eq!(format!("{}", Ipv4Address::loopback()), "127.0.0.1");
+        assert_eq!(format!("{}", Ipv4Address::unspecified()), "0.0.0.0");
+        assert_eq!(format!("{}", Ipv4Address::broadcast()), "255.255.255.255");
+        assert_eq!(
+            format!("{}", Ipv4Address::new([192, 168, 1, 1])),
+            "192.168.1.1"
+        );
+    }
+
+    #[test]
+    fn ipv4_from_str() {
+        let addr: Ipv4Address = "10.0.0.1".parse().unwrap();
+        assert_eq!(addr.octets, [10, 0, 0, 1]);
+
+        let addr: Ipv4Address = "255.255.255.255".parse().unwrap();
+        assert_eq!(addr, Ipv4Address::broadcast());
+
+        assert!("not.an.ip".parse::<Ipv4Address>().is_err());
+        assert!("".parse::<Ipv4Address>().is_err());
+    }
+
+    #[test]
+    fn ipv4_std_conversions() {
+        let std_addr = std::net::Ipv4Addr::new(192, 168, 0, 1);
+        let our_addr: Ipv4Address = std_addr.into();
+        assert_eq!(our_addr.octets, [192, 168, 0, 1]);
+
+        let back: std::net::Ipv4Addr = our_addr.into();
+        assert_eq!(back, std_addr);
+    }
+
+    #[test]
+    fn ipv6_display() {
+        assert_eq!(format!("{}", Ipv6Address::loopback()), "::1");
+        assert_eq!(format!("{}", Ipv6Address::unspecified()), "::");
+    }
+
+    #[test]
+    fn ipv6_from_str() {
+        let addr: Ipv6Address = "::1".parse().unwrap();
+        assert_eq!(addr, Ipv6Address::loopback());
+
+        let addr: Ipv6Address = "fe80::1".parse().unwrap();
+        assert!(addr.is_link_local());
+
+        assert!("not-an-ipv6".parse::<Ipv6Address>().is_err());
+    }
+
+    #[test]
+    fn ipv6_std_conversions() {
+        let std_addr = std::net::Ipv6Addr::LOCALHOST;
+        let our_addr: Ipv6Address = std_addr.into();
+        assert_eq!(our_addr, Ipv6Address::loopback());
+
+        let back: std::net::Ipv6Addr = our_addr.into();
+        assert_eq!(back, std_addr);
+    }
+
+    #[test]
+    fn ip_address_display() {
+        assert_eq!(
+            format!("{}", IpAddress::V4(Ipv4Address::loopback())),
+            "127.0.0.1"
+        );
+        assert_eq!(format!("{}", IpAddress::V6(Ipv6Address::loopback())), "::1");
+    }
+
+    #[test]
+    fn ip_address_from_str() {
+        let addr: IpAddress = "10.0.0.1".parse().unwrap();
+        assert_eq!(addr, IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])));
+
+        let addr: IpAddress = "::1".parse().unwrap();
+        assert_eq!(addr, IpAddress::V6(Ipv6Address::loopback()));
+
+        assert!("garbage".parse::<IpAddress>().is_err());
+    }
+
+    #[test]
+    fn ip_address_std_conversions() {
+        let std_v4 = std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let our: IpAddress = std_v4.into();
+        assert_eq!(our, IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])));
+        let back: std::net::IpAddr = our.into();
+        assert_eq!(back, std_v4);
+
+        let std_v6 = std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+        let our: IpAddress = std_v6.into();
+        assert_eq!(our, IpAddress::V6(Ipv6Address::loopback()));
+        let back: std::net::IpAddr = our.into();
+        assert_eq!(back, std_v6);
+    }
+
+    #[test]
+    fn ip_address_from_std_ipv4() {
+        let std_addr = std::net::Ipv4Addr::new(1, 2, 3, 4);
+        let our: IpAddress = std_addr.into();
+        assert_eq!(our, IpAddress::V4(Ipv4Address::new([1, 2, 3, 4])));
+    }
+
+    #[test]
+    fn ip_address_from_std_ipv6() {
+        let std_addr = std::net::Ipv6Addr::LOCALHOST;
+        let our: IpAddress = std_addr.into();
+        assert_eq!(our, IpAddress::V6(Ipv6Address::loopback()));
+    }
+
+    #[test]
+    fn ip_address_is_unspecified() {
+        assert!(IpAddress::V4(Ipv4Address::unspecified()).is_unspecified());
+        assert!(IpAddress::V6(Ipv6Address::unspecified()).is_unspecified());
+        assert!(!IpAddress::V4(Ipv4Address::loopback()).is_unspecified());
+        assert!(!IpAddress::V6(Ipv6Address::loopback()).is_unspecified());
+    }
+
+    #[test]
+    fn socket_addr_new() {
+        let sa = SocketAddr::new(IpAddress::V4(Ipv4Address::loopback()), 8080);
+        assert_eq!(sa.ip, IpAddress::V4(Ipv4Address::loopback()));
+        assert_eq!(sa.port, 8080);
+    }
+
+    #[test]
+    fn socket_addr_display() {
+        let sa = SocketAddr::new(IpAddress::V4(Ipv4Address::loopback()), 443);
+        assert_eq!(format!("{}", sa), "127.0.0.1:443");
+
+        let sa = SocketAddr::new(IpAddress::V6(Ipv6Address::loopback()), 80);
+        assert_eq!(format!("{}", sa), "::1:80");
+    }
+
+    #[test]
+    fn socket_addr_from_str() {
+        let sa: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        assert_eq!(sa.ip, IpAddress::V4(Ipv4Address::loopback()));
+        assert_eq!(sa.port, 8080);
+
+        let sa: SocketAddr = "[::1]:443".parse().unwrap();
+        assert_eq!(sa.ip, IpAddress::V6(Ipv6Address::loopback()));
+        assert_eq!(sa.port, 443);
+
+        assert!("not-a-socket-addr".parse::<SocketAddr>().is_err());
+    }
+
+    #[test]
+    fn socket_addr_std_conversions() {
+        let std_sa = std::net::SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+            3000,
+        );
+        let our: SocketAddr = std_sa.into();
+        assert_eq!(our.ip, IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])));
+        assert_eq!(our.port, 3000);
+
+        let back: std::net::SocketAddr = our.into();
+        assert_eq!(back, std_sa);
+    }
 }
