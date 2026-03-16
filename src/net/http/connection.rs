@@ -109,6 +109,7 @@ impl HttpConnection {
 mod tests {
     use super::*;
     use crate::net::http::codec::parse::ConnectionDirective;
+    use crate::net::http::codec::{HttpCodec, v1_1::Http11Codec};
     use crate::net::http::request::BodyFraming;
     use crate::net::http::{Method, Version};
 
@@ -132,6 +133,19 @@ mod tests {
         HttpConnection::new(stream, Session::http09())
     }
 
+    fn new_test_connection_http11() -> HttpConnection {
+        let handler = Rc::new(UnsafeCell::new(TcpHandler::new(false, false)));
+        let conn_id = ConnectionId {
+            local_addr: IpAddress::V4(Ipv4Address::unspecified()),
+            local_port: 0,
+            remote_addr: IpAddress::V4(Ipv4Address::unspecified()),
+            remote_port: 0,
+        };
+        let event_queue = LocalQueue::new(16);
+        let stream = TcpStream::from_accepted_for_test(0, conn_id, event_queue, handler);
+        HttpConnection::new(stream, Session::new(HttpCodec::Http11(Http11Codec::new())))
+    }
+
     #[test]
     fn request_path_resolution() {
         let mut conn = new_test_connection();
@@ -148,5 +162,130 @@ mod tests {
             ConnectionDirective::None,
         );
         assert_eq!(conn.request_path(&req), b"/hello");
+    }
+
+    #[test]
+    fn request_path_root() {
+        let mut conn = new_test_connection();
+        conn.read_buf.append(b"GET /\r\n");
+        // path_start=4, path_end=5 => b"/"
+        let req = Request::new(
+            Method::Get,
+            4,
+            5,
+            Version::Http09,
+            Vec::new(),
+            BodyFraming::None,
+            false,
+            ConnectionDirective::None,
+        );
+        assert_eq!(conn.request_path(&req), b"/");
+    }
+
+    #[test]
+    fn request_path_with_offset_after_consume() {
+        let mut conn = new_test_connection();
+        // Append a first request worth of bytes then consume it, leaving buffer
+        // start > 0. The path offsets must be absolute (not relative to start).
+        conn.read_buf.append(b"GET /first\r\n");
+        conn.read_buf.consume(12); // consume "GET /first\r\n"
+        conn.read_buf.append(b"GET /second\r\n");
+        // "GET /second\r\n" starts at absolute offset 12 in the buffer.
+        // path_start = 12+4 = 16, path_end = 16+7 = 23
+        let req = Request::new(
+            Method::Get,
+            16,
+            23,
+            Version::Http09,
+            Vec::new(),
+            BodyFraming::None,
+            false,
+            ConnectionDirective::None,
+        );
+        assert_eq!(conn.request_path(&req), b"/second");
+    }
+
+    // --- Session state inspection via pub(crate) field ---
+
+    #[test]
+    fn initial_session_not_done() {
+        let conn = new_test_connection();
+        assert!(!conn.session.is_done());
+    }
+
+    #[test]
+    fn initial_session_version_http09() {
+        let conn = new_test_connection();
+        assert_eq!(conn.session.version(), Version::Http09);
+    }
+
+    #[test]
+    fn initial_session_version_http11() {
+        let conn = new_test_connection_http11();
+        assert_eq!(conn.session.version(), Version::Http11);
+    }
+
+    // --- ReadBuffer state after construction ---
+
+    #[test]
+    fn read_buf_initially_empty() {
+        let conn = new_test_connection();
+        assert_eq!(conn.read_buf.unconsumed().len(), 0);
+    }
+
+    #[test]
+    fn read_buf_initial_remaining_capacity() {
+        let conn = new_test_connection();
+        // DEFAULT_BUF_CAPACITY is 8192
+        assert_eq!(conn.read_buf.remaining_capacity(), 8192);
+    }
+
+    #[test]
+    fn read_buf_start_initially_zero() {
+        let conn = new_test_connection();
+        assert_eq!(conn.read_buf.start(), 0);
+    }
+
+    #[test]
+    fn read_buf_append_updates_state() {
+        let mut conn = new_test_connection();
+        let data = b"GET /test\r\n";
+        let written = conn.read_buf.append(data);
+        assert_eq!(written, data.len());
+        assert_eq!(conn.read_buf.unconsumed(), data);
+        assert_eq!(conn.read_buf.remaining_capacity(), 8192 - data.len());
+    }
+
+    // --- prepare_next() compacts buffer and resets session ---
+
+    #[test]
+    fn prepare_next_compacts_buffer() {
+        let mut conn = new_test_connection_http11();
+        // Fill the buffer with a complete HTTP/1.1 request and decode it so the
+        // session advances through the full lifecycle to AwaitingNext.
+        let req_bytes = b"GET /keep HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        conn.read_buf.append(req_bytes);
+
+        // Drive the session manually through the states using pub(crate) access.
+        let buf = conn.read_buf.unconsumed();
+        let offset = conn.read_buf.start();
+        let result = conn.session.try_decode_request(buf, offset).unwrap();
+        let (_req, consumed) = result.unwrap();
+        conn.read_buf.consume(consumed);
+
+        conn.session.begin_response();
+        let keep_alive = conn.session.finish_response();
+        assert!(keep_alive, "HTTP/1.1 should keep alive by default");
+
+        // Buffer start is now > 0 after consuming the request bytes.
+        assert!(conn.read_buf.start() > 0);
+
+        // prepare_next() compacts the buffer and resets session to AwaitingRequest.
+        conn.prepare_next();
+
+        // After compact, start resets to 0.
+        assert_eq!(conn.read_buf.start(), 0);
+        // Session must be ready for the next request.
+        assert!(!conn.session.is_done());
     }
 }
