@@ -304,151 +304,151 @@ impl TcpHandler {
         } = self;
         let tx_offload = *tx_offload;
 
-        if let Some(&key) = connection_map.get(&conn_id) {
-            if let Some(tcb) = connections.get_mut(key) {
-                let tsval = if tcb.ts_enabled {
-                    now.duration_since(tcb.ts_offset).as_millis() as u32
-                } else {
-                    0
-                };
-                let state = tcb.state;
-                let action = match state {
-                    TcpState::SynSent => {
-                        let action = Self::process_syn_sent(
-                            tcb,
-                            key,
-                            now,
-                            tsval,
-                            seg_seq,
-                            seg_ack,
-                            seg_flags,
-                            seg_wnd,
-                            options,
-                            src_mac,
-                            dst_mac,
-                            tx_offload,
-                            free_frames,
-                            tx_return,
-                        );
-                        rx_return.push(frame);
-                        action
-                    }
-                    TcpState::SynReceived => {
-                        let action = Self::process_syn_received(
-                            tcb,
-                            key,
-                            listeners,
-                            tsval,
-                            seg_seq,
-                            seg_ack,
-                            seg_flags,
-                            seg_wnd,
-                            seg_len,
-                            src_mac,
-                            dst_mac,
-                            tx_offload,
-                            free_frames,
-                            tx_return,
-                        );
-                        rx_return.push(frame);
-                        action
-                    }
-                    TcpState::Established => {
-                        let payload_offset = tcp_offset + tcp_header_len;
-                        let payload_len = frame.len().saturating_sub(payload_offset);
-                        let opts = ParsedOptions::parse(options);
-                        Self::process_established(
-                            tcb,
-                            key,
-                            frame,
-                            now,
-                            tsval,
-                            seg_seq,
-                            seg_ack,
-                            seg_flags,
-                            seg_wnd,
-                            payload_offset,
-                            payload_len,
-                            &opts,
-                            ecn_bits,
-                            src_mac,
-                            dst_mac,
-                            tx_offload,
-                            free_frames,
-                            rx_return,
-                            tx_return,
-                        )
-                    }
-                    TcpState::FinWait1
-                    | TcpState::FinWait2
-                    | TcpState::CloseWait
-                    | TcpState::Closing
-                    | TcpState::LastAck
-                    | TcpState::TimeWait => {
-                        let payload_offset = tcp_offset + tcp_header_len;
-                        let payload_len = frame.len().saturating_sub(payload_offset);
-                        let opts = ParsedOptions::parse(options);
-                        Self::process_teardown(
-                            tcb,
-                            key,
-                            frame,
-                            now,
-                            tsval,
-                            seg_seq,
-                            seg_ack,
-                            seg_flags,
-                            seg_wnd,
-                            payload_offset,
-                            payload_len,
-                            &opts,
-                            src_mac,
-                            dst_mac,
-                            tx_offload,
-                            free_frames,
-                            rx_return,
-                            tx_return,
-                        )
-                    }
-                    _ => {
-                        rx_return.push(frame);
-                        PostAction::None
-                    }
-                };
+        if let Some(&key) = connection_map.get(&conn_id)
+            && let Some(tcb) = connections.get_mut(key)
+        {
+            let tsval = if tcb.ts_enabled {
+                now.duration_since(tcb.ts_offset).as_millis() as u32
+            } else {
+                0
+            };
+            let state = tcb.state;
+            let action = match state {
+                TcpState::SynSent => {
+                    let action = Self::process_syn_sent(
+                        tcb,
+                        key,
+                        now,
+                        tsval,
+                        seg_seq,
+                        seg_ack,
+                        seg_flags,
+                        seg_wnd,
+                        options,
+                        src_mac,
+                        dst_mac,
+                        tx_offload,
+                        free_frames,
+                        tx_return,
+                    );
+                    rx_return.push(frame);
+                    action
+                }
+                TcpState::SynReceived => {
+                    let action = Self::process_syn_received(
+                        tcb,
+                        key,
+                        listeners,
+                        tsval,
+                        seg_seq,
+                        seg_ack,
+                        seg_flags,
+                        seg_wnd,
+                        seg_len,
+                        src_mac,
+                        dst_mac,
+                        tx_offload,
+                        free_frames,
+                        tx_return,
+                    );
+                    rx_return.push(frame);
+                    action
+                }
+                TcpState::Established => {
+                    let payload_offset = tcp_offset + tcp_header_len;
+                    let payload_len = frame.len().saturating_sub(payload_offset);
+                    let opts = ParsedOptions::parse(options);
+                    Self::process_established(
+                        tcb,
+                        key,
+                        frame,
+                        now,
+                        tsval,
+                        seg_seq,
+                        seg_ack,
+                        seg_flags,
+                        seg_wnd,
+                        payload_offset,
+                        payload_len,
+                        &opts,
+                        ecn_bits,
+                        src_mac,
+                        dst_mac,
+                        tx_offload,
+                        free_frames,
+                        rx_return,
+                        tx_return,
+                    )
+                }
+                TcpState::FinWait1
+                | TcpState::FinWait2
+                | TcpState::CloseWait
+                | TcpState::Closing
+                | TcpState::LastAck
+                | TcpState::TimeWait => {
+                    let payload_offset = tcp_offset + tcp_header_len;
+                    let payload_len = frame.len().saturating_sub(payload_offset);
+                    let opts = ParsedOptions::parse(options);
+                    Self::process_teardown(
+                        tcb,
+                        key,
+                        frame,
+                        now,
+                        tsval,
+                        seg_seq,
+                        seg_ack,
+                        seg_flags,
+                        seg_wnd,
+                        payload_offset,
+                        payload_len,
+                        &opts,
+                        src_mac,
+                        dst_mac,
+                        tx_offload,
+                        free_frames,
+                        rx_return,
+                        tx_return,
+                    )
+                }
+                _ => {
+                    rx_return.push(frame);
+                    PostAction::None
+                }
+            };
 
-                // Handle deferred actions after tcb borrow is released.
-                match action {
-                    PostAction::RemoveConnection(rm_key) => {
-                        if let Some(tcb) = connections.get(rm_key) {
-                            connection_map.remove(&tcb.id);
-                        }
-                        send_tracker.unmark(rm_key);
-                        connections.remove(rm_key);
+            // Handle deferred actions after tcb borrow is released.
+            match action {
+                PostAction::RemoveConnection(rm_key) => {
+                    if let Some(tcb) = connections.get(rm_key) {
+                        connection_map.remove(&tcb.id);
                     }
-                    PostAction::RemoveAndDecrement(rm_key) => {
-                        if let Some(tcb) = connections.get(rm_key) {
-                            Self::decrement_syn_received(listeners, &tcb.id);
-                            connection_map.remove(&tcb.id);
-                        }
-                        send_tracker.unmark(rm_key);
-                        connections.remove(rm_key);
+                    send_tracker.unmark(rm_key);
+                    connections.remove(rm_key);
+                }
+                PostAction::RemoveAndDecrement(rm_key) => {
+                    if let Some(tcb) = connections.get(rm_key) {
+                        Self::decrement_syn_received(listeners, &tcb.id);
+                        connection_map.remove(&tcb.id);
                     }
-                    PostAction::None => {
-                        // Mark connection for send processing if it has pending work.
-                        if let Some(tcb) = connections.get(key)
-                            && (tcb.ack_pending
-                                || tcb.pending_fin
-                                || tcb.send_buffer.available() > 0
-                                || tcb.ecn_cwr_sent
-                                || tcb.persist_deadline.is_some()
-                                || tcb.retransmit_deadline.is_some())
-                        {
-                            send_tracker.mark(SendReady(key));
-                        }
+                    send_tracker.unmark(rm_key);
+                    connections.remove(rm_key);
+                }
+                PostAction::None => {
+                    // Mark connection for send processing if it has pending work.
+                    if let Some(tcb) = connections.get(key)
+                        && (tcb.ack_pending
+                            || tcb.pending_fin
+                            || tcb.send_buffer.available() > 0
+                            || tcb.ecn_cwr_sent
+                            || tcb.persist_deadline.is_some()
+                            || tcb.retransmit_deadline.is_some())
+                    {
+                        send_tracker.mark(SendReady(key));
                     }
                 }
-                return;
-            } // if let Some(tcb)
-        } // if let Some(&key)
+            }
+            return;
+        }
 
         // No connection found — check listeners (LISTEN state, §16.2).
         if let Some(listener_idx) = listeners
