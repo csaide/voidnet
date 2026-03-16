@@ -149,4 +149,83 @@ mod tests {
             size_of::<EthernetFrame>() + IPV6_HEADER_LEN + 32
         );
     }
+
+    #[test]
+    fn ndp_ns_frame_from_bytes_mut_roundtrip() {
+        let mut buf = [0u8; NDP_NS_FRAME_LEN];
+        let frame = NdpNsFrame::from_bytes_mut(&mut buf);
+        frame.ns.icmp_type = 135;
+        frame.ns.code = 0;
+        let bytes = frame.as_bytes();
+        assert_eq!(bytes.len(), NDP_NS_FRAME_LEN);
+        let ns_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
+        assert_eq!(bytes[ns_offset], 135);
+    }
+
+    #[test]
+    fn ndp_na_frame_from_bytes_mut_roundtrip() {
+        let mut buf = [0u8; NDP_NA_FRAME_LEN];
+        let frame = NdpNaFrame::from_bytes_mut(&mut buf);
+        frame.na.icmp_type = 136;
+        frame.na.flags = [0x60, 0x00, 0x00, 0x00];
+        let bytes = frame.as_bytes();
+        assert_eq!(bytes.len(), NDP_NA_FRAME_LEN);
+        let na_offset = size_of::<EthernetFrame>() + IPV6_HEADER_LEN;
+        assert_eq!(bytes[na_offset], 136);
+    }
+
+    #[test]
+    fn ndp_ns_message_as_bytes_length() {
+        let msg = NdpNsMessage {
+            icmp_type: 135,
+            code: 0,
+            checksum: [0; 2],
+            reserved: [0; 4],
+            target: Ipv6Address::new([0; 16]),
+            opt_type: 1,
+            opt_len: 1,
+            opt_mac: MacAddress { octets: [0; 6] },
+        };
+        assert_eq!(msg.as_bytes().len(), 32);
+    }
+
+    #[test]
+    fn ndp_na_message_as_bytes_length() {
+        let msg = NdpNaMessage {
+            icmp_type: 136,
+            code: 0,
+            checksum: [0; 2],
+            flags: [0; 4],
+            target: Ipv6Address::new([0; 16]),
+            opt_type: 2,
+            opt_len: 1,
+            opt_mac: MacAddress { octets: [0; 6] },
+        };
+        assert_eq!(msg.as_bytes().len(), 32);
+    }
+
+    #[test]
+    fn ndp_constants() {
+        assert_eq!(NDP_MIN_NS_NA_LEN, 24);
+        assert_eq!(NDP_MIN_RA_LEN, 16);
+        let octets = ALL_NODES_MULTICAST.octets;
+        assert_eq!(
+            octets,
+            [0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn ndp_ns_frame_from_bytes_mut_rejects_short() {
+        let mut buf = [0u8; NDP_NS_FRAME_LEN - 1];
+        let _ = NdpNsFrame::from_bytes_mut(&mut buf);
+    }
+
+    #[test]
+    #[should_panic]
+    fn ndp_na_frame_from_bytes_mut_rejects_short() {
+        let mut buf = [0u8; NDP_NA_FRAME_LEN - 1];
+        let _ = NdpNaFrame::from_bytes_mut(&mut buf);
+    }
 }
