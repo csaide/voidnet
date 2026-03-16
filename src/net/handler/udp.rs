@@ -1131,4 +1131,405 @@ mod tests {
         // Should not panic.
         handler.unbind(IpAddress::V4(LOCAL_IPV4), 5000);
     }
+
+    // -- Multi-fragment checksum tests --
+
+    // Helper constants for fragment building.
+    const FRAG_EXT_LEN: usize = 8; // IPv6 fragment extension header length
+
+    /// Build an IPv4 fragment frame suitable for UdpHandler::process_ipv4.
+    ///
+    /// `frag_offset_8` is the fragment offset in 8-byte units.
+    /// `more` sets the MF (More Fragments) flag.
+    /// `data` is the IP payload (UDP header + payload for first frag, just payload for subsequent).
+    fn build_ipv4_fragment(
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        id: u16,
+        frag_offset_8: u16,
+        more: bool,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let ip_total_len = (IPV4_MIN_HEADER_LEN + data.len()) as u16;
+        let mut buf = vec![0u8; ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + data.len()];
+
+        // Ethernet header: EtherType = IPv4
+        buf[12] = 0x08;
+        buf[13] = 0x00;
+
+        // IPv4 header
+        let ip = &mut buf[14..];
+        ip[0] = 0x45; // version=4, IHL=5
+        ip[2..4].copy_from_slice(&ip_total_len.to_be_bytes());
+        ip[4..6].copy_from_slice(&id.to_be_bytes()); // identification
+        let flags = if more {
+            0x2000 | frag_offset_8
+        } else {
+            frag_offset_8
+        };
+        ip[6..8].copy_from_slice(&flags.to_be_bytes());
+        ip[8] = 64; // TTL
+        ip[9] = IpProtocols::Udp;
+        let src_bytes: [u8; 4] = src_ip.into();
+        ip[12..16].copy_from_slice(&src_bytes);
+        let dst_bytes: [u8; 4] = dst_ip.into();
+        ip[16..20].copy_from_slice(&dst_bytes);
+        let cksum = compute_ipv4_checksum(&ip[..20]);
+        ip[10] = cksum[0];
+        ip[11] = cksum[1];
+
+        // IP payload (UDP header+data for first frag, raw data for subsequent)
+        let payload_off = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        buf[payload_off..payload_off + data.len()].copy_from_slice(data);
+
+        buf
+    }
+
+    /// Build an IPv6 fragment frame suitable for UdpHandler::process_ipv6.
+    ///
+    /// Produces Ethernet + IPv6 header + Fragment Extension Header + data.
+    /// `frag_offset_8` is the fragment offset in 8-byte units.
+    fn build_ipv6_fragment(
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        id: u32,
+        frag_offset_8: u16,
+        more: bool,
+        data: &[u8],
+    ) -> Vec<u8> {
+        use crate::net::wire::ip::EXT_FRAGMENT;
+        let payload_len = (FRAG_EXT_LEN + data.len()) as u16;
+        let mut buf = vec![0u8; ETH_HEADER_LEN + IPV6_HEADER_LEN + FRAG_EXT_LEN + data.len()];
+
+        // Ethernet header: EtherType = IPv6
+        buf[12] = 0x86;
+        buf[13] = 0xDD;
+
+        // IPv6 header
+        let ip = &mut buf[14..];
+        ip[0] = 0x60; // version=6
+        ip[4..6].copy_from_slice(&payload_len.to_be_bytes());
+        ip[6] = EXT_FRAGMENT; // next_header = Fragment (44)
+        ip[7] = 64; // hop limit
+        let src_bytes: [u8; 16] = src_ip.into();
+        ip[8..24].copy_from_slice(&src_bytes);
+        let dst_bytes: [u8; 16] = dst_ip.into();
+        ip[24..40].copy_from_slice(&dst_bytes);
+
+        // Fragment Extension Header (8 bytes)
+        let frag_off = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+        buf[frag_off] = IpProtocols::Udp; // next_header = UDP
+        buf[frag_off + 1] = 0; // reserved
+        let frag_offset_mf = (frag_offset_8 << 3) | if more { 1 } else { 0 };
+        buf[frag_off + 2..frag_off + 4].copy_from_slice(&frag_offset_mf.to_be_bytes());
+        buf[frag_off + 4..frag_off + 8].copy_from_slice(&id.to_be_bytes());
+
+        // Data after fragment extension header
+        let data_off = frag_off + FRAG_EXT_LEN;
+        buf[data_off..data_off + data.len()].copy_from_slice(data);
+
+        buf
+    }
+
+    /// Compute a UDP checksum over fragmented data for IPv4.
+    /// `udp_data` is the full UDP segment (header + payload) with checksum field zeroed.
+    fn compute_multi_frag_udp_checksum_v4(
+        src_ip: &Ipv4Address,
+        dst_ip: &Ipv4Address,
+        udp_data: &[u8],
+    ) -> [u8; 2] {
+        compute_udp_checksum(src_ip, dst_ip, udp_data)
+    }
+
+    /// Compute a UDP checksum over fragmented data for IPv6.
+    fn compute_multi_frag_udp_checksum_v6(
+        src_ip: &Ipv6Address,
+        dst_ip: &Ipv6Address,
+        udp_data: &[u8],
+    ) -> [u8; 2] {
+        compute_udp_checksum_v6(src_ip, dst_ip, udp_data)
+    }
+
+    #[test]
+    fn process_ipv4_multi_fragment_valid_checksum() {
+        // Build a 2-fragment IPv4 UDP packet with valid checksum.
+        // Fragment 1: offset=0, MF=1, contains UDP header (8 bytes) + 8 bytes payload
+        // Fragment 2: offset=2 (16 bytes), MF=0, contains 8 bytes payload
+        let payload_part1 = [0xAA; 8];
+        let payload_part2 = [0xBB; 8];
+
+        // Build the full UDP segment to compute checksum.
+        let udp_len = (UDP_HEADER_LEN + payload_part1.len() + payload_part2.len()) as u16;
+        let mut full_udp = vec![0u8; udp_len as usize];
+        full_udp[0..2].copy_from_slice(&12345u16.to_be_bytes()); // src port
+        full_udp[2..4].copy_from_slice(&53u16.to_be_bytes()); // dst port
+        full_udp[4..6].copy_from_slice(&udp_len.to_be_bytes()); // length
+        // checksum bytes [6..8] zeroed for computation
+        full_udp[8..16].copy_from_slice(&payload_part1);
+        full_udp[16..24].copy_from_slice(&payload_part2);
+
+        let cksum = compute_multi_frag_udp_checksum_v4(&REMOTE_IPV4, &LOCAL_IPV4, &full_udp);
+        full_udp[6] = cksum[0];
+        full_udp[7] = cksum[1];
+
+        // Fragment 1: UDP header + first 8 bytes payload (16 bytes total IP payload)
+        let frag1_data = &full_udp[..16]; // UDP hdr (8) + 8 bytes
+        let mut buf1 = build_ipv4_fragment(REMOTE_IPV4, LOCAL_IPV4, 42, 0, true, frag1_data);
+
+        // Fragment 2: last 8 bytes payload, offset = 16/8 = 2
+        let frag2_data = &full_udp[16..];
+        let mut buf2 = build_ipv4_fragment(REMOTE_IPV4, LOCAL_IPV4, 42, 2, false, frag2_data);
+
+        let mut handler = UdpHandler::new(256, false);
+        let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
+        let mut rx = BasicFrameBuffer::new(8);
+
+        let len1 = buf1.len();
+        let f1 = Frame::new(0, &mut buf1, len1, false);
+        handler.process_ipv4(f1, &mut rx);
+
+        let len2 = buf2.len();
+        let f2 = Frame::new(1, &mut buf2, len2, false);
+        handler.process_ipv4(f2, &mut rx);
+
+        assert_eq!(
+            rx_queue.len(),
+            1,
+            "valid multi-fragment checksum should be delivered"
+        );
+        assert_eq!(rx.num_frames(), 0, "no frames should be returned");
+    }
+
+    #[test]
+    fn process_ipv4_multi_fragment_invalid_checksum_dropped() {
+        // Same setup as valid test but corrupt the checksum.
+        let payload_part1 = [0xAA; 8];
+        let payload_part2 = [0xBB; 8];
+
+        let udp_len = (UDP_HEADER_LEN + payload_part1.len() + payload_part2.len()) as u16;
+        let mut full_udp = vec![0u8; udp_len as usize];
+        full_udp[0..2].copy_from_slice(&12345u16.to_be_bytes());
+        full_udp[2..4].copy_from_slice(&53u16.to_be_bytes());
+        full_udp[4..6].copy_from_slice(&udp_len.to_be_bytes());
+        full_udp[8..16].copy_from_slice(&payload_part1);
+        full_udp[16..24].copy_from_slice(&payload_part2);
+
+        let cksum = compute_multi_frag_udp_checksum_v4(&REMOTE_IPV4, &LOCAL_IPV4, &full_udp);
+        // Set checksum, then corrupt it.
+        full_udp[6] = cksum[0] ^ 0xFF;
+        full_udp[7] = cksum[1];
+
+        let frag1_data = &full_udp[..16];
+        let mut buf1 = build_ipv4_fragment(REMOTE_IPV4, LOCAL_IPV4, 43, 0, true, frag1_data);
+
+        let frag2_data = &full_udp[16..];
+        let mut buf2 = build_ipv4_fragment(REMOTE_IPV4, LOCAL_IPV4, 43, 2, false, frag2_data);
+
+        let mut handler = UdpHandler::new(256, false);
+        let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
+        let mut rx = BasicFrameBuffer::new(8);
+
+        let len1 = buf1.len();
+        let f1 = Frame::new(0, &mut buf1, len1, false);
+        handler.process_ipv4(f1, &mut rx);
+
+        let len2 = buf2.len();
+        let f2 = Frame::new(1, &mut buf2, len2, false);
+        handler.process_ipv4(f2, &mut rx);
+
+        assert_eq!(
+            rx_queue.len(),
+            0,
+            "invalid multi-fragment checksum should be dropped"
+        );
+        assert_eq!(
+            rx.num_frames(),
+            2,
+            "both fragment frames should be returned"
+        );
+    }
+
+    #[test]
+    fn process_ipv4_multi_fragment_zero_checksum_accepted() {
+        // IPv4 allows zero checksum (means "no checksum").
+        let payload_part1 = [0xCC; 8];
+        let payload_part2 = [0xDD; 8];
+
+        let udp_len = (UDP_HEADER_LEN + payload_part1.len() + payload_part2.len()) as u16;
+        let mut full_udp = vec![0u8; udp_len as usize];
+        full_udp[0..2].copy_from_slice(&12345u16.to_be_bytes());
+        full_udp[2..4].copy_from_slice(&53u16.to_be_bytes());
+        full_udp[4..6].copy_from_slice(&udp_len.to_be_bytes());
+        // Leave checksum as zero.
+        full_udp[8..16].copy_from_slice(&payload_part1);
+        full_udp[16..24].copy_from_slice(&payload_part2);
+
+        let frag1_data = &full_udp[..16];
+        let mut buf1 = build_ipv4_fragment(REMOTE_IPV4, LOCAL_IPV4, 44, 0, true, frag1_data);
+
+        let frag2_data = &full_udp[16..];
+        let mut buf2 = build_ipv4_fragment(REMOTE_IPV4, LOCAL_IPV4, 44, 2, false, frag2_data);
+
+        let mut handler = UdpHandler::new(256, false);
+        let rx_queue = handler.bind(IpAddress::V4(LOCAL_IPV4), 53, 128).unwrap();
+        let mut rx = BasicFrameBuffer::new(8);
+
+        let len1 = buf1.len();
+        let f1 = Frame::new(0, &mut buf1, len1, false);
+        handler.process_ipv4(f1, &mut rx);
+
+        let len2 = buf2.len();
+        let f2 = Frame::new(1, &mut buf2, len2, false);
+        handler.process_ipv4(f2, &mut rx);
+
+        assert_eq!(
+            rx_queue.len(),
+            1,
+            "zero checksum should be accepted for IPv4 multi-fragment"
+        );
+        assert_eq!(rx.num_frames(), 0);
+    }
+
+    #[test]
+    fn process_ipv6_multi_fragment_valid_checksum() {
+        // Build a 2-fragment IPv6 UDP packet with valid checksum.
+        let payload_part1 = [0xAA; 8];
+        let payload_part2 = [0xBB; 8];
+
+        let udp_len = (UDP_HEADER_LEN + payload_part1.len() + payload_part2.len()) as u16;
+        let mut full_udp = vec![0u8; udp_len as usize];
+        full_udp[0..2].copy_from_slice(&12345u16.to_be_bytes());
+        full_udp[2..4].copy_from_slice(&53u16.to_be_bytes());
+        full_udp[4..6].copy_from_slice(&udp_len.to_be_bytes());
+        full_udp[8..16].copy_from_slice(&payload_part1);
+        full_udp[16..24].copy_from_slice(&payload_part2);
+
+        let cksum = compute_multi_frag_udp_checksum_v6(&REMOTE_IPV6, &LOCAL_IPV6, &full_udp);
+        full_udp[6] = cksum[0];
+        full_udp[7] = cksum[1];
+
+        let frag1_data = &full_udp[..16]; // UDP hdr (8) + 8 bytes
+        let mut buf1 = build_ipv6_fragment(REMOTE_IPV6, LOCAL_IPV6, 100, 0, true, frag1_data);
+
+        let frag2_data = &full_udp[16..];
+        let mut buf2 = build_ipv6_fragment(REMOTE_IPV6, LOCAL_IPV6, 100, 2, false, frag2_data);
+
+        let mut handler = UdpHandler::new(256, false);
+        let rx_queue = handler.bind(IpAddress::V6(LOCAL_IPV6), 53, 128).unwrap();
+        let mut rx = BasicFrameBuffer::new(8);
+
+        let frag_ext_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+
+        let len1 = buf1.len();
+        let f1 = Frame::new(0, &mut buf1, len1, false);
+        handler.process_ipv6(f1, Some(frag_ext_offset), frag_ext_offset, &mut rx);
+
+        let len2 = buf2.len();
+        let f2 = Frame::new(1, &mut buf2, len2, false);
+        handler.process_ipv6(f2, Some(frag_ext_offset), frag_ext_offset, &mut rx);
+
+        assert_eq!(
+            rx_queue.len(),
+            1,
+            "valid multi-fragment IPv6 checksum should be delivered"
+        );
+        assert_eq!(rx.num_frames(), 0);
+    }
+
+    #[test]
+    fn process_ipv6_multi_fragment_invalid_checksum_dropped() {
+        let payload_part1 = [0xAA; 8];
+        let payload_part2 = [0xBB; 8];
+
+        let udp_len = (UDP_HEADER_LEN + payload_part1.len() + payload_part2.len()) as u16;
+        let mut full_udp = vec![0u8; udp_len as usize];
+        full_udp[0..2].copy_from_slice(&12345u16.to_be_bytes());
+        full_udp[2..4].copy_from_slice(&53u16.to_be_bytes());
+        full_udp[4..6].copy_from_slice(&udp_len.to_be_bytes());
+        full_udp[8..16].copy_from_slice(&payload_part1);
+        full_udp[16..24].copy_from_slice(&payload_part2);
+
+        let cksum = compute_multi_frag_udp_checksum_v6(&REMOTE_IPV6, &LOCAL_IPV6, &full_udp);
+        // Corrupt checksum.
+        full_udp[6] = cksum[0] ^ 0xFF;
+        full_udp[7] = cksum[1];
+
+        let frag1_data = &full_udp[..16];
+        let mut buf1 = build_ipv6_fragment(REMOTE_IPV6, LOCAL_IPV6, 101, 0, true, frag1_data);
+
+        let frag2_data = &full_udp[16..];
+        let mut buf2 = build_ipv6_fragment(REMOTE_IPV6, LOCAL_IPV6, 101, 2, false, frag2_data);
+
+        let mut handler = UdpHandler::new(256, false);
+        let rx_queue = handler.bind(IpAddress::V6(LOCAL_IPV6), 53, 128).unwrap();
+        let mut rx = BasicFrameBuffer::new(8);
+
+        let frag_ext_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+
+        let len1 = buf1.len();
+        let f1 = Frame::new(0, &mut buf1, len1, false);
+        handler.process_ipv6(f1, Some(frag_ext_offset), frag_ext_offset, &mut rx);
+
+        let len2 = buf2.len();
+        let f2 = Frame::new(1, &mut buf2, len2, false);
+        handler.process_ipv6(f2, Some(frag_ext_offset), frag_ext_offset, &mut rx);
+
+        assert_eq!(
+            rx_queue.len(),
+            0,
+            "invalid multi-fragment IPv6 checksum should be dropped"
+        );
+        assert_eq!(
+            rx.num_frames(),
+            2,
+            "both fragment frames should be returned"
+        );
+    }
+
+    #[test]
+    fn process_ipv6_multi_fragment_zero_checksum_rejected() {
+        // IPv6 does NOT allow zero checksum (RFC 2460).
+        let payload_part1 = [0xCC; 8];
+        let payload_part2 = [0xDD; 8];
+
+        let udp_len = (UDP_HEADER_LEN + payload_part1.len() + payload_part2.len()) as u16;
+        let mut full_udp = vec![0u8; udp_len as usize];
+        full_udp[0..2].copy_from_slice(&12345u16.to_be_bytes());
+        full_udp[2..4].copy_from_slice(&53u16.to_be_bytes());
+        full_udp[4..6].copy_from_slice(&udp_len.to_be_bytes());
+        // Leave checksum as zero — should be rejected.
+        full_udp[8..16].copy_from_slice(&payload_part1);
+        full_udp[16..24].copy_from_slice(&payload_part2);
+
+        let frag1_data = &full_udp[..16];
+        let mut buf1 = build_ipv6_fragment(REMOTE_IPV6, LOCAL_IPV6, 102, 0, true, frag1_data);
+
+        let frag2_data = &full_udp[16..];
+        let mut buf2 = build_ipv6_fragment(REMOTE_IPV6, LOCAL_IPV6, 102, 2, false, frag2_data);
+
+        let mut handler = UdpHandler::new(256, false);
+        let rx_queue = handler.bind(IpAddress::V6(LOCAL_IPV6), 53, 128).unwrap();
+        let mut rx = BasicFrameBuffer::new(8);
+
+        let frag_ext_offset = ETH_HEADER_LEN + IPV6_HEADER_LEN;
+
+        let len1 = buf1.len();
+        let f1 = Frame::new(0, &mut buf1, len1, false);
+        handler.process_ipv6(f1, Some(frag_ext_offset), frag_ext_offset, &mut rx);
+
+        let len2 = buf2.len();
+        let f2 = Frame::new(1, &mut buf2, len2, false);
+        handler.process_ipv6(f2, Some(frag_ext_offset), frag_ext_offset, &mut rx);
+
+        assert_eq!(
+            rx_queue.len(),
+            0,
+            "zero checksum should be rejected for IPv6 multi-fragment"
+        );
+        assert_eq!(
+            rx.num_frames(),
+            2,
+            "both fragment frames should be returned"
+        );
+    }
 }
