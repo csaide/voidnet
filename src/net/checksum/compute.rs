@@ -1,4 +1,4 @@
-use crate::net::wire::ip::{IpProtocols, IpVersion, Ipv4, Ipv4Address, Ipv6, Ipv6Address};
+use crate::net::wire::ip::{IpProtocols, IpVersion, Ipv6Address};
 
 use super::{checksum_to_bytes, fold_checksum, pseudo_header_sum_v6, sum_words};
 
@@ -31,32 +31,6 @@ pub fn compute_udp_checksum_ip<V: IpVersion>(
     checksum_to_bytes(fold_checksum(sum))
 }
 
-/// Compute IPv4 UDP checksum without allocating (from port/payload parts).
-#[inline]
-pub fn compute_udp_checksum_from_parts(
-    src_addr: &Ipv4Address,
-    dst_addr: &Ipv4Address,
-    src_port: u16,
-    dst_port: u16,
-    udp_len: u16,
-    payload: &[u8],
-) -> [u8; 2] {
-    compute_udp_checksum_ip::<Ipv4>(src_addr, dst_addr, src_port, dst_port, udp_len, payload)
-}
-
-/// Compute IPv6 UDP checksum without allocating (from port/payload parts).
-#[inline]
-pub fn compute_udp_checksum_v6_from_parts(
-    src_addr: &Ipv6Address,
-    dst_addr: &Ipv6Address,
-    src_port: u16,
-    dst_port: u16,
-    udp_len: u16,
-    payload: &[u8],
-) -> [u8; 2] {
-    compute_udp_checksum_ip::<Ipv6>(src_addr, dst_addr, src_port, dst_port, udp_len, payload)
-}
-
 /// Compute TCP checksum generically over any IP version (from header/payload parts).
 #[inline]
 pub fn compute_tcp_checksum_ip<V: IpVersion>(
@@ -70,28 +44,6 @@ pub fn compute_tcp_checksum_ip<V: IpVersion>(
         + sum_words(tcp_header_bytes)
         + sum_words(payload);
     checksum_to_bytes(fold_checksum(sum))
-}
-
-/// Compute IPv4 TCP checksum without allocating (from header/payload parts).
-#[inline]
-pub fn compute_tcp_checksum_from_parts(
-    src_addr: &Ipv4Address,
-    dst_addr: &Ipv4Address,
-    tcp_header_bytes: &[u8],
-    payload: &[u8],
-) -> [u8; 2] {
-    compute_tcp_checksum_ip::<Ipv4>(src_addr, dst_addr, tcp_header_bytes, payload)
-}
-
-/// Compute IPv6 TCP checksum without allocating (from header/payload parts).
-#[inline]
-pub fn compute_tcp_checksum_v6_from_parts(
-    src_addr: &Ipv6Address,
-    dst_addr: &Ipv6Address,
-    tcp_header_bytes: &[u8],
-    payload: &[u8],
-) -> [u8; 2] {
-    compute_tcp_checksum_ip::<Ipv6>(src_addr, dst_addr, tcp_header_bytes, payload)
 }
 
 /// Computes the ICMPv6 checksum per RFC 4443 s2.3.
@@ -121,7 +73,13 @@ pub fn compute_icmpv6_checksum(
 
 #[cfg(test)]
 mod tests {
-    use crate::net::{checksum::test_utils::*, wire::udp::UDP_HEADER_LEN};
+    use crate::net::{
+        checksum::test_utils::*,
+        wire::{
+            ip::{Ipv4, Ipv4Address, Ipv6, Ipv6Address},
+            udp::UDP_HEADER_LEN,
+        },
+    };
 
     use super::*;
 
@@ -187,7 +145,7 @@ mod tests {
         ];
         let expected = compute_udp_checksum(&src, &dst, &segment);
         let actual =
-            compute_udp_checksum_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
+            compute_udp_checksum_ip::<Ipv4>(&src, &dst, src_port, dst_port, udp_len, &payload);
         assert_eq!(actual, expected);
     }
 
@@ -205,7 +163,7 @@ mod tests {
         ];
         let expected = compute_udp_checksum_v6(&src, &dst, &segment);
         let actual =
-            compute_udp_checksum_v6_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
+            compute_udp_checksum_ip::<Ipv6>(&src, &dst, src_port, dst_port, udp_len, &payload);
         assert_eq!(actual, expected);
     }
 
@@ -227,7 +185,7 @@ mod tests {
 
         let expected = compute_udp_checksum(&src, &dst, &segment);
         let actual =
-            compute_udp_checksum_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
+            compute_udp_checksum_ip::<Ipv4>(&src, &dst, src_port, dst_port, udp_len, &payload);
         assert_eq!(actual, expected);
     }
 
@@ -249,7 +207,7 @@ mod tests {
 
         let expected = compute_udp_checksum_v6(&src, &dst, &segment);
         let actual =
-            compute_udp_checksum_v6_from_parts(&src, &dst, src_port, dst_port, udp_len, &payload);
+            compute_udp_checksum_ip::<Ipv6>(&src, &dst, src_port, dst_port, udp_len, &payload);
         assert_eq!(actual, expected);
     }
 

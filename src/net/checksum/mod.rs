@@ -18,16 +18,9 @@ pub(crate) use verify::verify_ipv4_checksum;
 #[doc(hidden)]
 pub use common::{sum_words, sum_words_carry};
 #[doc(hidden)]
-pub use compute::{
-    compute_ipv4_checksum, compute_tcp_checksum_from_parts, compute_tcp_checksum_ip,
-    compute_tcp_checksum_v6_from_parts, compute_udp_checksum_from_parts, compute_udp_checksum_ip,
-    compute_udp_checksum_v6_from_parts,
-};
+pub use compute::{compute_ipv4_checksum, compute_tcp_checksum_ip, compute_udp_checksum_ip};
 #[doc(hidden)]
-pub use verify::{
-    verify_tcp_checksum, verify_tcp_checksum_ip, verify_tcp_checksum_v6, verify_udp_checksum,
-    verify_udp_checksum_ip, verify_udp_checksum_v6,
-};
+pub use verify::{verify_tcp_checksum_ip, verify_udp_checksum, verify_udp_checksum_ip};
 
 #[cfg(test)]
 pub(crate) use test_utils::{compute_tcp_checksum, compute_udp_checksum, compute_udp_checksum_v6};

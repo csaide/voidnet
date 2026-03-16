@@ -1,5 +1,5 @@
 use crate::net::wire::{
-    ip::{IpProtocols, IpVersion, Ipv4Address, Ipv6Address},
+    ip::{IpProtocols, IpVersion, Ipv4Address},
     tcp::TCP_HEADER_LEN,
     udp::UDP_HEADER_LEN,
 };
@@ -89,52 +89,12 @@ pub fn verify_udp_checksum(
     verify_udp_checksum_ip::<crate::net::wire::ip::Ipv4>(src_addr, dst_addr, udp_segment)
 }
 
-/// Verifies the UDP checksum for an IPv6 packet.
-///
-/// Returns `true` if the one's complement sum of the pseudo-header and
-/// full UDP segment yields the expected result. Unlike IPv4, a zero
-/// checksum field is **invalid** for IPv6 and will cause this to return
-/// `false`.
-#[inline]
-pub fn verify_udp_checksum_v6(
-    src_addr: &Ipv6Address,
-    dst_addr: &Ipv6Address,
-    udp_segment: &[u8],
-) -> bool {
-    verify_udp_checksum_ip::<crate::net::wire::ip::Ipv6>(src_addr, dst_addr, udp_segment)
-}
-
-/// Verifies the TCP checksum for an IPv4 packet.
-///
-/// Returns `true` if the one's complement sum of the pseudo-header and
-/// full TCP segment yields the expected result. A zero checksum field
-/// is **invalid** for TCP and will cause this to return `false`.
-#[inline]
-pub fn verify_tcp_checksum(
-    src_addr: &Ipv4Address,
-    dst_addr: &Ipv4Address,
-    tcp_segment: &[u8],
-) -> bool {
-    verify_tcp_checksum_ip::<crate::net::wire::ip::Ipv4>(src_addr, dst_addr, tcp_segment)
-}
-
-/// Verifies the TCP checksum for an IPv6 packet.
-///
-/// Returns `true` if the one's complement sum of the pseudo-header and
-/// full TCP segment yields the expected result. A zero checksum field
-/// is **invalid** and will cause this to return `false`.
-#[inline]
-pub fn verify_tcp_checksum_v6(
-    src_addr: &Ipv6Address,
-    dst_addr: &Ipv6Address,
-    tcp_segment: &[u8],
-) -> bool {
-    verify_tcp_checksum_ip::<crate::net::wire::ip::Ipv6>(src_addr, dst_addr, tcp_segment)
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::net::checksum::test_utils::*;
+    use crate::net::{
+        checksum::test_utils::*,
+        wire::ip::{Ipv4, Ipv4Address, Ipv6, Ipv6Address},
+    };
 
     use super::*;
 
@@ -207,7 +167,7 @@ mod tests {
         let checksum = compute_udp_checksum_v6(&src, &dst, &segment);
         segment[6] = checksum[0];
         segment[7] = checksum[1];
-        assert!(verify_udp_checksum_v6(&src, &dst, &segment));
+        assert!(verify_udp_checksum_ip::<Ipv6>(&src, &dst, &segment));
     }
 
     #[test]
@@ -215,14 +175,14 @@ mod tests {
         let src = Ipv6Address::new([0; 16]);
         let dst = Ipv6Address::new([0; 16]);
         let segment = [0u8; 8];
-        assert!(!verify_udp_checksum_v6(&src, &dst, &segment));
+        assert!(!verify_udp_checksum_ip::<Ipv6>(&src, &dst, &segment));
     }
 
     #[test]
     fn udp_v6_too_short() {
         let src = Ipv6Address::new([0; 16]);
         let dst = Ipv6Address::new([0; 16]);
-        assert!(!verify_udp_checksum_v6(&src, &dst, &[0; 7]));
+        assert!(!verify_udp_checksum_ip::<Ipv6>(&src, &dst, &[0; 7]));
     }
 
     #[test]
@@ -235,7 +195,7 @@ mod tests {
         let checksum = compute_udp_checksum_v6(&src, &dst, &segment);
         segment[6] = checksum[0];
         segment[7] = checksum[1];
-        assert!(verify_udp_checksum_v6(&src, &dst, &segment));
+        assert!(verify_udp_checksum_ip::<Ipv6>(&src, &dst, &segment));
     }
 
     #[test]
@@ -249,7 +209,7 @@ mod tests {
         let checksum = compute_tcp_checksum(&src, &dst, &segment);
         segment[16] = checksum[0];
         segment[17] = checksum[1];
-        assert!(verify_tcp_checksum(&src, &dst, &segment));
+        assert!(verify_tcp_checksum_ip::<Ipv4>(&src, &dst, &segment));
     }
 
     #[test]
@@ -257,7 +217,7 @@ mod tests {
         let src = Ipv4Address::new([0; 4]);
         let dst = Ipv4Address::new([0; 4]);
         let segment = [0u8; 20];
-        assert!(!verify_tcp_checksum(&src, &dst, &segment));
+        assert!(!verify_tcp_checksum_ip::<Ipv4>(&src, &dst, &segment));
     }
 
     #[test]
@@ -268,14 +228,14 @@ mod tests {
             0x12, 0x34, 0x00, 0x50, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x50, 0x02,
             0x72, 0x10, 0xFF, 0xFF, 0x00, 0x00,
         ];
-        assert!(!verify_tcp_checksum(&src, &dst, &segment));
+        assert!(!verify_tcp_checksum_ip::<Ipv4>(&src, &dst, &segment));
     }
 
     #[test]
     fn tcp_v4_too_short() {
         let src = Ipv4Address::new([0; 4]);
         let dst = Ipv4Address::new([0; 4]);
-        assert!(!verify_tcp_checksum(&src, &dst, &[0; 19]));
+        assert!(!verify_tcp_checksum_ip::<Ipv4>(&src, &dst, &[0; 19]));
     }
 
     #[test]
@@ -289,7 +249,7 @@ mod tests {
         let checksum = compute_tcp_checksum_v6(&src, &dst, &segment);
         segment[16] = checksum[0];
         segment[17] = checksum[1];
-        assert!(verify_tcp_checksum_v6(&src, &dst, &segment));
+        assert!(verify_tcp_checksum_ip::<Ipv6>(&src, &dst, &segment));
     }
 
     #[test]
@@ -297,14 +257,14 @@ mod tests {
         let src = Ipv6Address::new([0; 16]);
         let dst = Ipv6Address::new([0; 16]);
         let segment = [0u8; 20];
-        assert!(!verify_tcp_checksum_v6(&src, &dst, &segment));
+        assert!(!verify_tcp_checksum_ip::<Ipv6>(&src, &dst, &segment));
     }
 
     #[test]
     fn tcp_v6_too_short() {
         let src = Ipv6Address::new([0; 16]);
         let dst = Ipv6Address::new([0; 16]);
-        assert!(!verify_tcp_checksum_v6(&src, &dst, &[0; 19]));
+        assert!(!verify_tcp_checksum_ip::<Ipv6>(&src, &dst, &[0; 19]));
     }
 
     #[test]
@@ -318,6 +278,6 @@ mod tests {
         let checksum = compute_tcp_checksum_v6(&src, &dst, &segment);
         segment[16] = checksum[0];
         segment[17] = checksum[1];
-        assert!(verify_tcp_checksum_v6(&src, &dst, &segment));
+        assert!(verify_tcp_checksum_ip::<Ipv6>(&src, &dst, &segment));
     }
 }
