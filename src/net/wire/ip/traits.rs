@@ -147,3 +147,199 @@ impl IpVersion for Ipv6 {
         pseudo_header_sum_v6(src, dst, protocol, transport_len)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::checksum::verify_ipv4_checksum;
+
+    const ETH: usize = size_of::<EthernetFrame>();
+
+    // --- IPv4 write_ip_header ---
+
+    #[test]
+    fn ipv4_write_ip_header_fields() {
+        let src = Ipv4Address::new([192, 168, 1, 10]);
+        let dst = Ipv4Address::new([10, 0, 0, 1]);
+        let payload_len = 20; // e.g. TCP header only
+        let mut frame = vec![0u8; ETH + IPV4_MIN_HEADER_LEN + payload_len];
+
+        Ipv4::write_ip_header(&mut frame, &src, &dst, payload_len);
+
+        let ip = &frame[ETH..ETH + IPV4_MIN_HEADER_LEN];
+        // version=4, IHL=5
+        assert_eq!(ip[0], 0x45);
+        // total length = 20 (header) + 20 (payload) = 40
+        assert_eq!(u16::from_be_bytes([ip[2], ip[3]]), 40);
+        // Don't Fragment flag
+        assert_eq!(ip[6] & 0x40, 0x40);
+        // TTL = 64
+        assert_eq!(ip[8], 64);
+        // Protocol = TCP (6)
+        assert_eq!(ip[9], IpProtocols::Tcp);
+        // Source address
+        assert_eq!(&ip[12..16], &[192, 168, 1, 10]);
+        // Destination address
+        assert_eq!(&ip[16..20], &[10, 0, 0, 1]);
+    }
+
+    #[test]
+    fn ipv4_write_ip_header_valid_checksum() {
+        let src = Ipv4Address::new([172, 16, 0, 1]);
+        let dst = Ipv4Address::new([172, 16, 0, 2]);
+        let mut frame = vec![0u8; ETH + IPV4_MIN_HEADER_LEN + 32];
+
+        Ipv4::write_ip_header(&mut frame, &src, &dst, 32);
+
+        let ip = &frame[ETH..ETH + IPV4_MIN_HEADER_LEN];
+        assert!(verify_ipv4_checksum(ip));
+    }
+
+    // --- IPv6 write_ip_header ---
+
+    #[test]
+    fn ipv6_write_ip_header_fields() {
+        let src = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let dst = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let payload_len = 20;
+        let mut frame = vec![0u8; ETH + IPV6_HEADER_LEN + payload_len];
+
+        Ipv6::write_ip_header(&mut frame, &src, &dst, payload_len);
+
+        let ip = &frame[ETH..ETH + IPV6_HEADER_LEN];
+        // Version = 6 (high nibble of byte 0)
+        assert_eq!(ip[0] >> 4, 6);
+        // Payload length
+        assert_eq!(u16::from_be_bytes([ip[4], ip[5]]), 20);
+        // Next Header = TCP (6)
+        assert_eq!(ip[6], IpProtocols::Tcp);
+        // Hop Limit = 64
+        assert_eq!(ip[7], 64);
+        // Source address
+        assert_eq!(
+            &ip[8..24],
+            &[0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+        );
+        // Destination address
+        assert_eq!(
+            &ip[24..40],
+            &[0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]
+        );
+    }
+
+    // --- IPv4 ECN ---
+
+    #[test]
+    fn ipv4_get_ecn_bits_zero() {
+        let src = Ipv4Address::new([10, 0, 0, 1]);
+        let dst = Ipv4Address::new([10, 0, 0, 2]);
+        let mut frame = vec![0u8; ETH + IPV4_MIN_HEADER_LEN + 20];
+        Ipv4::write_ip_header(&mut frame, &src, &dst, 20);
+
+        // After write_ip_header, ToS/DSCP_ECN byte (ip[1]) is 0 => ECN bits = 0
+        assert_eq!(Ipv4::get_ecn_bits(&frame, ETH), 0);
+    }
+
+    #[test]
+    fn ipv4_set_ecn_ect_sets_ect0() {
+        let src = Ipv4Address::new([10, 0, 0, 1]);
+        let dst = Ipv4Address::new([10, 0, 0, 2]);
+        let mut frame = vec![0u8; ETH + IPV4_MIN_HEADER_LEN + 20];
+        Ipv4::write_ip_header(&mut frame, &src, &dst, 20);
+
+        Ipv4::set_ecn_ect(&mut frame, ETH);
+
+        // ECN bits should now be 0x02 (ECT(0))
+        assert_eq!(Ipv4::get_ecn_bits(&frame, ETH), 0x02);
+        // ToS byte should be exactly 0x02
+        assert_eq!(frame[ETH + 1], 0x02);
+        // Checksum should still be valid after recomputation
+        let ip = &frame[ETH..ETH + IPV4_MIN_HEADER_LEN];
+        assert!(verify_ipv4_checksum(ip));
+    }
+
+    // --- IPv6 ECN ---
+
+    #[test]
+    fn ipv6_get_ecn_bits_zero() {
+        let src = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let dst = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let mut frame = vec![0u8; ETH + IPV6_HEADER_LEN + 20];
+        Ipv6::write_ip_header(&mut frame, &src, &dst, 20);
+
+        // Traffic class is 0 after write => ECN bits = 0
+        assert_eq!(Ipv6::get_ecn_bits(&frame, ETH), 0);
+    }
+
+    #[test]
+    fn ipv6_set_ecn_ect_sets_ect0() {
+        let src = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let dst = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let mut frame = vec![0u8; ETH + IPV6_HEADER_LEN + 20];
+        Ipv6::write_ip_header(&mut frame, &src, &dst, 20);
+
+        Ipv6::set_ecn_ect(&mut frame, ETH);
+
+        // ECN ECT(0) = bit 5 of byte 1 set => get_ecn_bits extracts (byte1 >> 4) & 0x03
+        // byte1 was 0x00, now 0x20 => (0x20 >> 4) & 0x03 = 0x02
+        assert_eq!(Ipv6::get_ecn_bits(&frame, ETH), 0x02);
+    }
+
+    // --- Pseudo-header sums ---
+
+    #[test]
+    fn ipv4_pseudo_header_sum_nonzero() {
+        let src = Ipv4Address::new([192, 168, 1, 1]);
+        let dst = Ipv4Address::new([10, 0, 0, 1]);
+        let sum = Ipv4::pseudo_header_sum(&src, &dst, IpProtocols::Tcp, 20);
+        assert!(sum > 0);
+    }
+
+    #[test]
+    fn ipv4_pseudo_header_sum_matches_direct() {
+        let src = Ipv4Address::new([192, 168, 1, 1]);
+        let dst = Ipv4Address::new([10, 0, 0, 1]);
+        let sum_trait = Ipv4::pseudo_header_sum(&src, &dst, IpProtocols::Tcp, 100);
+        let sum_direct = pseudo_header_sum_v4(&src, &dst, IpProtocols::Tcp, 100);
+        assert_eq!(sum_trait, sum_direct);
+    }
+
+    #[test]
+    fn ipv6_pseudo_header_sum_nonzero() {
+        let src = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let dst = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let sum = Ipv6::pseudo_header_sum(&src, &dst, IpProtocols::Tcp, 20);
+        assert!(sum > 0);
+    }
+
+    #[test]
+    fn ipv6_pseudo_header_sum_matches_direct() {
+        let src = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let dst = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let sum_trait = Ipv6::pseudo_header_sum(&src, &dst, IpProtocols::Tcp, 100);
+        let sum_direct = pseudo_header_sum_v6(&src, &dst, IpProtocols::Tcp, 100);
+        assert_eq!(sum_trait, sum_direct);
+    }
+
+    // --- Constants ---
+
+    #[test]
+    fn ipv4_constants() {
+        assert_eq!(Ipv4::VERSION, 4);
+        assert_eq!(Ipv4::ETHER_TYPE, EtherTypes::IPv4);
+        assert_eq!(Ipv4::IP_HEADER_LEN, 20);
+        assert_eq!(Ipv4::VERSION_BYTE, 0x45);
+        assert_eq!(Ipv4::NEXT_HEADER_OFFSET, 9);
+        assert_eq!(Ipv4::TTL_OFFSET, 8);
+    }
+
+    #[test]
+    fn ipv6_constants() {
+        assert_eq!(Ipv6::VERSION, 6);
+        assert_eq!(Ipv6::ETHER_TYPE, EtherTypes::IPv6);
+        assert_eq!(Ipv6::IP_HEADER_LEN, 40);
+        assert_eq!(Ipv6::VERSION_BYTE, 0x60);
+        assert_eq!(Ipv6::NEXT_HEADER_OFFSET, 6);
+        assert_eq!(Ipv6::TTL_OFFSET, 7);
+    }
+}
