@@ -1,11 +1,11 @@
 use crate::net::wire::{
-    ip::{IpProtocols, Ipv4Address, Ipv6Address},
+    ip::{IpProtocols, IpVersion, Ipv4Address, Ipv6Address},
     tcp::TCP_HEADER_LEN,
     udp::UDP_HEADER_LEN,
 };
 
 use super::{
-    common::{fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6, sum_words},
+    common::{fold_and_verify, sum_words},
     compute::compute_ipv4_checksum,
 };
 
@@ -16,6 +16,59 @@ use super::{
 #[inline]
 pub fn verify_ipv4_checksum(header_bytes: &[u8]) -> bool {
     compute_ipv4_checksum(header_bytes) == [0x00, 0x00]
+}
+
+/// Verifies the TCP checksum for any IP version using the `IpVersion` trait.
+///
+/// Returns `true` if the one's complement sum of the pseudo-header and
+/// full TCP segment yields the expected result. A zero checksum field
+/// is **invalid** for TCP and will cause this to return `false`.
+#[inline]
+pub fn verify_tcp_checksum_ip<V: IpVersion>(
+    src_addr: &V::Address,
+    dst_addr: &V::Address,
+    tcp_segment: &[u8],
+) -> bool {
+    if tcp_segment.len() < TCP_HEADER_LEN {
+        return false;
+    }
+    if tcp_segment[16] == 0 && tcp_segment[17] == 0 {
+        return false;
+    }
+    let sum = V::pseudo_header_sum(
+        src_addr,
+        dst_addr,
+        IpProtocols::Tcp,
+        tcp_segment.len() as u32,
+    ) + sum_words(tcp_segment);
+    fold_and_verify(sum, 0x0000)
+}
+
+/// Verifies the UDP checksum for any IP version using the `IpVersion` trait.
+///
+/// Returns `false` if the checksum field is zero (callers that need the
+/// IPv4 zero-means-no-checksum behavior should check before calling).
+/// Returns `true` if the one's complement sum of the pseudo-header and
+/// full UDP segment yields the expected result.
+#[inline]
+pub fn verify_udp_checksum_ip<V: IpVersion>(
+    src_addr: &V::Address,
+    dst_addr: &V::Address,
+    udp_segment: &[u8],
+) -> bool {
+    if udp_segment.len() < UDP_HEADER_LEN {
+        return false;
+    }
+    if udp_segment[6] == 0 && udp_segment[7] == 0 {
+        return false;
+    }
+    let sum = V::pseudo_header_sum(
+        src_addr,
+        dst_addr,
+        IpProtocols::Udp,
+        udp_segment.len() as u32,
+    ) + sum_words(udp_segment);
+    fold_and_verify(sum, 0x0000)
 }
 
 /// Verifies the UDP checksum for an IPv4 packet.
@@ -29,19 +82,11 @@ pub fn verify_udp_checksum(
     dst_addr: &Ipv4Address,
     udp_segment: &[u8],
 ) -> bool {
-    if udp_segment.len() < UDP_HEADER_LEN {
-        return false;
-    }
-    if udp_segment[6] == 0 && udp_segment[7] == 0 {
+    // IPv4 UDP: zero checksum means "no checksum" (RFC 768)
+    if udp_segment.len() >= UDP_HEADER_LEN && udp_segment[6] == 0 && udp_segment[7] == 0 {
         return true;
     }
-    let sum = pseudo_header_sum_v4(
-        src_addr,
-        dst_addr,
-        IpProtocols::Udp,
-        udp_segment.len() as u16,
-    ) + sum_words(udp_segment);
-    fold_and_verify(sum, 0x0000)
+    verify_udp_checksum_ip::<crate::net::wire::ip::Ipv4>(src_addr, dst_addr, udp_segment)
 }
 
 /// Verifies the UDP checksum for an IPv6 packet.
@@ -56,19 +101,7 @@ pub fn verify_udp_checksum_v6(
     dst_addr: &Ipv6Address,
     udp_segment: &[u8],
 ) -> bool {
-    if udp_segment.len() < UDP_HEADER_LEN {
-        return false;
-    }
-    if udp_segment[6] == 0 && udp_segment[7] == 0 {
-        return false;
-    }
-    let sum = pseudo_header_sum_v6(
-        src_addr,
-        dst_addr,
-        IpProtocols::Udp,
-        udp_segment.len() as u32,
-    ) + sum_words(udp_segment);
-    fold_and_verify(sum, 0x0000)
+    verify_udp_checksum_ip::<crate::net::wire::ip::Ipv6>(src_addr, dst_addr, udp_segment)
 }
 
 /// Verifies the TCP checksum for an IPv4 packet.
@@ -82,19 +115,7 @@ pub fn verify_tcp_checksum(
     dst_addr: &Ipv4Address,
     tcp_segment: &[u8],
 ) -> bool {
-    if tcp_segment.len() < TCP_HEADER_LEN {
-        return false;
-    }
-    if tcp_segment[16] == 0 && tcp_segment[17] == 0 {
-        return false;
-    }
-    let sum = pseudo_header_sum_v4(
-        src_addr,
-        dst_addr,
-        IpProtocols::Tcp,
-        tcp_segment.len() as u16,
-    ) + sum_words(tcp_segment);
-    fold_and_verify(sum, 0x0000)
+    verify_tcp_checksum_ip::<crate::net::wire::ip::Ipv4>(src_addr, dst_addr, tcp_segment)
 }
 
 /// Verifies the TCP checksum for an IPv6 packet.
@@ -108,19 +129,7 @@ pub fn verify_tcp_checksum_v6(
     dst_addr: &Ipv6Address,
     tcp_segment: &[u8],
 ) -> bool {
-    if tcp_segment.len() < TCP_HEADER_LEN {
-        return false;
-    }
-    if tcp_segment[16] == 0 && tcp_segment[17] == 0 {
-        return false;
-    }
-    let sum = pseudo_header_sum_v6(
-        src_addr,
-        dst_addr,
-        IpProtocols::Tcp,
-        tcp_segment.len() as u32,
-    ) + sum_words(tcp_segment);
-    fold_and_verify(sum, 0x0000)
+    verify_tcp_checksum_ip::<crate::net::wire::ip::Ipv6>(src_addr, dst_addr, tcp_segment)
 }
 
 #[cfg(test)]
