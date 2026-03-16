@@ -80,6 +80,77 @@ pub(crate) fn with_runtime_context<'umem, R>(f: impl FnOnce(&RuntimeContext<'ume
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use std::{cell::UnsafeCell, rc::Rc};
+
+    use coarsetime::Duration;
+
+    use crate::{
+        net::{
+            NeighborHandler, PmtuCache,
+            handler::{tcp::TcpHandler, udp::UdpHandler},
+        },
+        rt::task::TaskQueue,
+        xdp::frame::BasicFrameBuffer,
+    };
+
+    use super::*;
+
+    /// Build a minimal `RuntimeContext` suitable for testing.
+    fn make_test_context<'umem>() -> RuntimeContext<'umem> {
+        let free_frames = BasicFrameBuffer::new(128).into();
+        let tx_return = BasicFrameBuffer::new(128).into();
+        let rx_return = BasicFrameBuffer::new(128).into();
+        RuntimeContext {
+            free_frames,
+            tx_return,
+            rx_return,
+            pmtu: Rc::new(UnsafeCell::new(PmtuCache::new())),
+            neighbor_handler: Rc::new(
+                NeighborHandler::new("test0", Duration::from_secs(60)).unwrap(),
+            ),
+            udp_handler: Rc::new(UnsafeCell::new(UdpHandler::new(256, false))),
+            tcp_handler: Rc::new(UnsafeCell::new(TcpHandler::new(false, false))),
+            tx_offload: false,
+            task_queue: UnsafeCell::new(TaskQueue::new()),
+            capacity_wakers: UnsafeCell::new(Vec::new()),
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn with_runtime_context_panics_outside_runtime() {
+        with_runtime_context(|_ctx| {});
+    }
+
+    #[test]
+    fn context_drop_guard_installs_and_clears_context() {
+        // Before the guard: accessing context must panic.
+        let result = std::panic::catch_unwind(|| {
+            with_runtime_context(|_ctx| {});
+        });
+        assert!(result.is_err(), "expected panic before guard is installed");
+
+        // Inside the guard: with_runtime_context succeeds.
+        {
+            let ctx = make_test_context();
+            let _guard = ContextDropGuard::new(ctx);
+            // Should not panic.
+            with_runtime_context(|ctx| {
+                // Sanity check: tx_offload is the value we set.
+                assert!(!ctx.tx_offload);
+            });
+        }
+
+        // After the guard is dropped: context pointer is cleared again.
+        let result = std::panic::catch_unwind(|| {
+            with_runtime_context(|_ctx| {});
+        });
+        assert!(result.is_err(), "expected panic after guard is dropped");
+    }
+}
+
 /// Register a waker to be called when frame capacity is freed.
 ///
 /// Called by capacity-driven futures (SendTo, Echo, TcpWrite) when

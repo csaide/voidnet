@@ -70,6 +70,44 @@ impl<T> Future for JoinHandle<T> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_queue_new_does_not_panic() {
+        let _tq = TaskQueue::new();
+    }
+
+    #[test]
+    fn task_queue_push_stages_task() {
+        let mut tq = TaskQueue::new();
+        // Staging is empty initially.
+        assert!(tq.staging.is_empty());
+
+        // Push a no-op future into the staging buffer.
+        let task: Task = Box::pin(async {});
+        tq.push(task);
+
+        // One item staged.
+        assert_eq!(tq.staging.len(), 1);
+    }
+
+    #[test]
+    fn task_queue_push_multiple_stages_all() {
+        let mut tq = TaskQueue::new();
+        for _ in 0..5 {
+            tq.push(Box::pin(async {}));
+        }
+        assert_eq!(tq.staging.len(), 5);
+    }
+
+    // poll() is not tested here because it requires a std::task::Context (waker),
+    // which in turn requires either a real async executor or a manually constructed
+    // RawWaker.  Building one safely is non-trivial and duplicates executor
+    // infrastructure that doesn't exist in this crate's test helpers.
+}
+
 /// Spawn a future as a task on the local runtime.
 ///
 /// Returns a [`JoinHandle`] that can be awaited to get the task's return value.

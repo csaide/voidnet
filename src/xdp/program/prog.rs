@@ -153,6 +153,41 @@ impl XdpProgram {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `XdpProgram::new()` is the only constructor for real programs.  The two
+    // error paths that can be triggered without real BPF/XDP infrastructure are:
+    //
+    // 1. An interface name containing a NUL byte — `CString::new` fails and
+    //    `Error::InterfaceNameToIndex` is returned before any kernel call.
+    // 2. A syntactically valid but nonexistent interface name — `if_nametoindex`
+    //    returns 0 and `Error::InterfaceNotFound` is returned before any BPF
+    //    object is opened.
+    //
+    // All paths beyond those two require a real BPF object and a real network
+    // interface, so they are skipped here.
+
+    #[test]
+    fn new_rejects_null_byte_in_interface_name() {
+        let result = XdpProgram::new(b"", "eth\x000", AttachMode::Skb, false);
+        assert!(
+            matches!(result, Err(Error::InterfaceNameToIndex(_))),
+            "expected InterfaceNameToIndex error"
+        );
+    }
+
+    #[test]
+    fn new_rejects_nonexistent_interface() {
+        let result = XdpProgram::new(b"", "voidnet_no_such_iface_xyz", AttachMode::Skb, false);
+        assert!(
+            matches!(result, Err(Error::InterfaceNotFound)),
+            "expected InterfaceNotFound error"
+        );
+    }
+}
+
 impl Drop for XdpProgram {
     fn drop(&mut self) {
         let err =
