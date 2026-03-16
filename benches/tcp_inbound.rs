@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use libvoid::net::NeighborHandler;
 use libvoid::net::checksum::{compute_ipv4_checksum, compute_tcp_checksum_ip};
@@ -250,7 +252,7 @@ fn bench_process_data(c: &mut Criterion) {
                 while let Some(f) = tx.pop() {
                     free.push(f);
                 }
-                while let Some(_) = rx.pop() {}
+                while rx.pop().is_some() {}
             }
             start.elapsed()
         });
@@ -303,7 +305,7 @@ fn bench_process_ack(c: &mut Criterion) {
                 while let Some(f) = tx.pop() {
                     free.push(f);
                 }
-                while let Some(_) = rx.pop() {}
+                while rx.pop().is_some() {}
             }
             start.elapsed()
         });
