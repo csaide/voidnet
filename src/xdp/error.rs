@@ -104,3 +104,64 @@ pub fn get_xdp_error_message(err: i32) -> String {
     let buf = buf[..nul_pos].iter().map(|c| *c as u8).collect::<Vec<u8>>();
     String::from_utf8_lossy(&buf).to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_error_variants() {
+        let e = Error::InterfaceNotFound;
+        assert_eq!(e.to_string(), "failed to find specified interface");
+
+        let e = Error::FragmentationNotSupported;
+        assert_eq!(
+            e.to_string(),
+            "fragmentation not supported by the network interface"
+        );
+
+        let e = Error::ZeroCopyNotSupported;
+        assert_eq!(
+            e.to_string(),
+            "zero copy not supported by the network interface"
+        );
+
+        let e = Error::ExitRuntime;
+        assert_eq!(e.to_string(), "Exiting runtime");
+
+        let e = Error::InvalidFrameSize(3000);
+        assert!(e.to_string().contains("3000"));
+
+        let e = Error::InvalidFillRingSize(7);
+        assert!(e.to_string().contains("7"));
+
+        let e = Error::InvalidCompletionRingSize(5);
+        assert!(e.to_string().contains("5"));
+
+        let e = Error::InvalidAttachMode("bad".to_string());
+        assert!(e.to_string().contains("bad"));
+
+        let e = Error::InvalidCopyMode("bad".to_string());
+        assert!(e.to_string().contains("bad"));
+
+        let e = Error::Other("custom error".to_string());
+        assert_eq!(e.to_string(), "custom error");
+
+        let e = Error::GetMtu("eth0 failed".to_string());
+        assert!(e.to_string().contains("eth0 failed"));
+
+        let e = Error::GetChecksumOffload("not supported".to_string());
+        assert!(e.to_string().contains("not supported"));
+    }
+
+    #[test]
+    fn display_would_block() {
+        let e = WouldBlock;
+        assert_eq!(e.to_string(), "network I/O error: would block");
+    }
+
+    #[test]
+    fn would_block_equality() {
+        assert_eq!(WouldBlock, WouldBlock);
+    }
+}
