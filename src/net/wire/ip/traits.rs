@@ -31,6 +31,10 @@ pub trait IpVersion {
         payload_len: usize,
     );
     fn get_ecn_bits(frame: &[u8], eth_len: usize) -> u8;
+    /// Set ECN ECT(0) bit in the IP header.
+    /// IPv4: sets ToS byte to 0x02, then recomputes IPv4 header checksum.
+    /// IPv6: sets Traffic Class ECT(0) via `ip[1] |= 0x20`.
+    fn set_ecn_ect(frame: &mut [u8], eth_len: usize);
     fn pseudo_header_sum(
         src: &Self::Address,
         dst: &Self::Address,
@@ -80,6 +84,14 @@ impl IpVersion for Ipv4 {
     }
 
     #[inline]
+    fn set_ecn_ect(frame: &mut [u8], eth_len: usize) {
+        frame[eth_len + 1] = 0x02;
+        // Recompute IPv4 header checksum since we modified the ToS field.
+        let ip = Ipv4Header::from_bytes_mut(frame);
+        ip.fill_checksum();
+    }
+
+    #[inline]
     fn pseudo_header_sum(
         src: &Ipv4Address,
         dst: &Ipv4Address,
@@ -118,6 +130,11 @@ impl IpVersion for Ipv6 {
     #[inline]
     fn get_ecn_bits(frame: &[u8], eth_len: usize) -> u8 {
         (frame[eth_len + 1] >> 4) & 0x03
+    }
+
+    #[inline]
+    fn set_ecn_ect(frame: &mut [u8], eth_len: usize) {
+        frame[eth_len + 1] |= 0x20;
     }
 
     #[inline]

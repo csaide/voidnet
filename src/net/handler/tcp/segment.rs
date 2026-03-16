@@ -1,11 +1,8 @@
 use crate::net::{
     checksum::compute_tcp_checksum_ip,
     wire::{
-        ethernet::{EtherTypes, EthernetFrame, MacAddress, write_ethernet_header},
-        ip::{
-            IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, IpProtocols, Ipv4, Ipv4Address, Ipv6,
-            Ipv6Address,
-        },
+        ethernet::{EthernetFrame, MacAddress, write_ethernet_header},
+        ip::{IpAddress, IpVersion, Ipv4, Ipv6},
         tcp::{
             TCP_HEADER_LEN, TcpHeader, flags, options, write_mss_option, write_sack_option,
             write_sack_permitted_option, write_timestamp_option, write_window_scale_option,
@@ -59,28 +56,10 @@ impl SegmentBuilder {
         };
 
         match (incoming_dst_addr, incoming_src_addr) {
-            (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
-                Self::build_ipv4_segment(
-                    local_ip,
-                    remote_ip,
-                    incoming_dst_port,
-                    incoming_src_port,
-                    seq,
-                    ack,
-                    rst_flags,
-                    0,
-                    &[], // no options
-                    src_mac,
-                    dst_mac,
-                    tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
-                Self::build_ipv6_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V4(l), IpAddress::V4(r)) => {
+                Self::build_segment::<Ipv4>(
+                    l,
+                    r,
                     incoming_dst_port,
                     incoming_src_port,
                     seq,
@@ -95,7 +74,25 @@ impl SegmentBuilder {
                     tx_return,
                 );
             }
-            _ => {} // mixed v4/v6 — should not happen
+            (IpAddress::V6(l), IpAddress::V6(r)) => {
+                Self::build_segment::<Ipv6>(
+                    l,
+                    r,
+                    incoming_dst_port,
+                    incoming_src_port,
+                    seq,
+                    ack,
+                    rst_flags,
+                    0,
+                    &[],
+                    src_mac,
+                    dst_mac,
+                    tx_offload,
+                    free_frames,
+                    tx_return,
+                );
+            }
+            _ => {}
         }
     }
 
@@ -143,10 +140,10 @@ impl SegmentBuilder {
         };
 
         match (local_addr, remote_addr) {
-            (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
-                Self::build_ipv4_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V4(l), IpAddress::V4(r)) => {
+                Self::build_segment::<Ipv4>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     iss,
@@ -161,10 +158,10 @@ impl SegmentBuilder {
                     tx_return,
                 );
             }
-            (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
-                Self::build_ipv6_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V6(l), IpAddress::V6(r)) => {
+                Self::build_segment::<Ipv6>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     iss,
@@ -229,10 +226,10 @@ impl SegmentBuilder {
         };
 
         match (local_addr, remote_addr) {
-            (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
-                Self::build_ipv4_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V4(l), IpAddress::V4(r)) => {
+                Self::build_segment::<Ipv4>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     iss,
@@ -247,10 +244,10 @@ impl SegmentBuilder {
                     tx_return,
                 );
             }
-            (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
-                Self::build_ipv6_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V6(l), IpAddress::V6(r)) => {
+                Self::build_segment::<Ipv6>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     iss,
@@ -302,10 +299,10 @@ impl SegmentBuilder {
         };
 
         match (local_addr, remote_addr) {
-            (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
-                Self::build_ipv4_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V4(l), IpAddress::V4(r)) => {
+                Self::build_segment::<Ipv4>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     seq,
@@ -320,10 +317,10 @@ impl SegmentBuilder {
                     tx_return,
                 );
             }
-            (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
-                Self::build_ipv6_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V6(l), IpAddress::V6(r)) => {
+                Self::build_segment::<Ipv6>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     seq,
@@ -384,10 +381,10 @@ impl SegmentBuilder {
         let tcp_options = &opt_buf[..opt_len];
 
         match (local_addr, remote_addr) {
-            (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
-                Self::build_ipv4_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V4(l), IpAddress::V4(r)) => {
+                Self::build_segment::<Ipv4>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     seq,
@@ -402,10 +399,10 @@ impl SegmentBuilder {
                     tx_return,
                 );
             }
-            (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
-                Self::build_ipv6_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V6(l), IpAddress::V6(r)) => {
+                Self::build_segment::<Ipv6>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     seq,
@@ -452,10 +449,10 @@ impl SegmentBuilder {
         };
 
         match (local_addr, remote_addr) {
-            (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
-                Self::build_ipv4_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V4(l), IpAddress::V4(r)) => {
+                Self::build_segment::<Ipv4>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     seq,
@@ -470,10 +467,10 @@ impl SegmentBuilder {
                     tx_return,
                 );
             }
-            (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
-                Self::build_ipv6_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V6(l), IpAddress::V6(r)) => {
+                Self::build_segment::<Ipv6>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     seq,
@@ -521,10 +518,10 @@ impl SegmentBuilder {
         };
 
         match (local_addr, remote_addr) {
-            (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
-                Self::build_ipv4_data_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V4(l), IpAddress::V4(r)) => {
+                Self::build_data_segment::<Ipv4>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     seq,
@@ -540,10 +537,10 @@ impl SegmentBuilder {
                     tx_return,
                 );
             }
-            (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
-                Self::build_ipv6_data_segment(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V6(l), IpAddress::V6(r)) => {
+                Self::build_data_segment::<Ipv6>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     seq,
@@ -595,10 +592,10 @@ impl SegmentBuilder {
         };
 
         match (local_addr, remote_addr) {
-            (IpAddress::V4(local_ip), IpAddress::V4(remote_ip)) => {
-                Self::build_ipv4_data_segment_slices(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V4(l), IpAddress::V4(r)) => {
+                Self::build_data_segment_slices::<Ipv4>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     seq,
@@ -615,10 +612,10 @@ impl SegmentBuilder {
                     tx_return,
                 );
             }
-            (IpAddress::V6(local_ip), IpAddress::V6(remote_ip)) => {
-                Self::build_ipv6_data_segment_slices(
-                    local_ip,
-                    remote_ip,
+            (IpAddress::V6(l), IpAddress::V6(r)) => {
+                Self::build_data_segment_slices::<Ipv6>(
+                    l,
+                    r,
                     local_port,
                     remote_port,
                     seq,
@@ -642,94 +639,9 @@ impl SegmentBuilder {
     // --- Internal helpers ---
 
     #[inline]
-    fn build_ipv4_segment<'umem>(
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        src_port: u16,
-        dst_port: u16,
-        seq: u32,
-        ack: u32,
-        tcp_flags: u8,
-        window: u16,
-        tcp_options: &[u8],
-        src_mac: MacAddress,
-        dst_mac: MacAddress,
-        tx_offload: bool,
-        free_frames: &mut impl FrameBuffer<'umem>,
-        tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
-        let Some(mut frame) = free_frames.pop() else {
-            return;
-        };
-
-        // Pad options to 4-byte boundary.
-        let opt_padded_len = (tcp_options.len() + 3) & !3;
-        let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
-        let data_offset = (tcp_header_len / 4) as u8;
-        let total_ip_len = (IPV4_MIN_HEADER_LEN + tcp_header_len) as u16;
-        let frame_len = ETH_LEN + IPV4_MIN_HEADER_LEN + tcp_header_len;
-
-        if frame.capacity() < frame_len {
-            free_frames.push(frame);
-            return;
-        }
-
-        unsafe { frame.set_len(frame_len) };
-
-        // Ethernet header.
-        write_ethernet_header(&mut frame, dst_mac, src_mac, EtherTypes::IPv4);
-
-        // IPv4 header.
-        {
-            let ip = &mut frame[ETH_LEN..ETH_LEN + IPV4_MIN_HEADER_LEN];
-            ip.fill(0);
-            ip[0] = 0x45; // version=4, ihl=5
-            ip[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
-            ip[6] = 0x40; // Don't Fragment
-            ip[8] = 64; // TTL
-            ip[9] = IpProtocols::Tcp;
-            let src_bytes: [u8; 4] = src_ip.into();
-            ip[12..16].copy_from_slice(&src_bytes);
-            let dst_bytes: [u8; 4] = dst_ip.into();
-            ip[16..20].copy_from_slice(&dst_bytes);
-        }
-        // Compute IPv4 header checksum.
-        {
-            let ip = crate::net::wire::ip::Ipv4Header::from_bytes_mut(&mut frame);
-            ip.fill_checksum();
-        }
-
-        // TCP header.
-        let tcp_offset = ETH_LEN + IPV4_MIN_HEADER_LEN;
-        Self::write_tcp_header(
-            &mut frame,
-            tcp_offset,
-            src_port,
-            dst_port,
-            seq,
-            ack,
-            data_offset,
-            tcp_flags,
-            window,
-            tcp_options,
-            opt_padded_len,
-        );
-
-        // TCP checksum.
-        if !tx_offload {
-            let tcp_bytes = &frame[tcp_offset..frame_len];
-            let checksum = compute_tcp_checksum_ip::<Ipv4>(&src_ip, &dst_ip, tcp_bytes, &[]);
-            frame[tcp_offset + 16] = checksum[0];
-            frame[tcp_offset + 17] = checksum[1];
-        }
-
-        tx_return.push(frame);
-    }
-
-    #[inline]
-    fn build_ipv6_segment<'umem>(
-        src_ip: Ipv6Address,
-        dst_ip: Ipv6Address,
+    fn build_segment<'umem, V: IpVersion>(
+        src_ip: V::Address,
+        dst_ip: V::Address,
         src_port: u16,
         dst_port: u16,
         seq: u32,
@@ -750,8 +662,7 @@ impl SegmentBuilder {
         let opt_padded_len = (tcp_options.len() + 3) & !3;
         let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
         let data_offset = (tcp_header_len / 4) as u8;
-        let payload_len = tcp_header_len as u16;
-        let frame_len = ETH_LEN + IPV6_HEADER_LEN + tcp_header_len;
+        let frame_len = ETH_LEN + V::IP_HEADER_LEN + tcp_header_len;
 
         if frame.capacity() < frame_len {
             free_frames.push(frame);
@@ -761,24 +672,13 @@ impl SegmentBuilder {
         unsafe { frame.set_len(frame_len) };
 
         // Ethernet header.
-        write_ethernet_header(&mut frame, dst_mac, src_mac, EtherTypes::IPv6);
+        write_ethernet_header(&mut frame, dst_mac, src_mac, V::ETHER_TYPE);
 
-        // IPv6 header.
-        {
-            let ip = &mut frame[ETH_LEN..ETH_LEN + IPV6_HEADER_LEN];
-            ip.fill(0);
-            ip[0] = 0x60; // version=6
-            ip[4..6].copy_from_slice(&payload_len.to_be_bytes());
-            ip[6] = IpProtocols::Tcp; // Next Header
-            ip[7] = 64; // Hop Limit
-            let src_bytes: [u8; 16] = src_ip.into();
-            ip[8..24].copy_from_slice(&src_bytes);
-            let dst_bytes: [u8; 16] = dst_ip.into();
-            ip[24..40].copy_from_slice(&dst_bytes);
-        }
+        // IP header (version-specific via trait).
+        V::write_ip_header(&mut frame, &src_ip, &dst_ip, tcp_header_len);
 
         // TCP header.
-        let tcp_offset = ETH_LEN + IPV6_HEADER_LEN;
+        let tcp_offset = ETH_LEN + V::IP_HEADER_LEN;
         Self::write_tcp_header(
             &mut frame,
             tcp_offset,
@@ -796,7 +696,7 @@ impl SegmentBuilder {
         // TCP checksum.
         if !tx_offload {
             let tcp_bytes = &frame[tcp_offset..frame_len];
-            let checksum = compute_tcp_checksum_ip::<Ipv6>(&src_ip, &dst_ip, tcp_bytes, &[]);
+            let checksum = compute_tcp_checksum_ip::<V>(&src_ip, &dst_ip, tcp_bytes, &[]);
             frame[tcp_offset + 16] = checksum[0];
             frame[tcp_offset + 17] = checksum[1];
         }
@@ -805,9 +705,9 @@ impl SegmentBuilder {
     }
 
     #[inline]
-    fn build_ipv4_data_segment<'umem>(
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
+    fn build_data_segment<'umem, V: IpVersion>(
+        src_ip: V::Address,
+        dst_ip: V::Address,
         src_port: u16,
         dst_port: u16,
         seq: u32,
@@ -829,8 +729,7 @@ impl SegmentBuilder {
         let opt_padded_len = (tcp_options.len() + 3) & !3;
         let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
         let data_offset = (tcp_header_len / 4) as u8;
-        let total_ip_len = (IPV4_MIN_HEADER_LEN + tcp_header_len + payload.len()) as u16;
-        let frame_len = ETH_LEN + IPV4_MIN_HEADER_LEN + tcp_header_len + payload.len();
+        let frame_len = ETH_LEN + V::IP_HEADER_LEN + tcp_header_len + payload.len();
 
         if frame.capacity() < frame_len {
             free_frames.push(frame);
@@ -840,30 +739,13 @@ impl SegmentBuilder {
         unsafe { frame.set_len(frame_len) };
 
         // Ethernet header.
-        write_ethernet_header(&mut frame, dst_mac, src_mac, EtherTypes::IPv4);
+        write_ethernet_header(&mut frame, dst_mac, src_mac, V::ETHER_TYPE);
 
-        // IPv4 header.
-        {
-            let ip = &mut frame[ETH_LEN..ETH_LEN + IPV4_MIN_HEADER_LEN];
-            ip.fill(0);
-            ip[0] = 0x45; // version=4, ihl=5
-            ip[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
-            ip[6] = 0x40; // Don't Fragment
-            ip[8] = 64; // TTL
-            ip[9] = IpProtocols::Tcp;
-            let src_bytes: [u8; 4] = src_ip.into();
-            ip[12..16].copy_from_slice(&src_bytes);
-            let dst_bytes: [u8; 4] = dst_ip.into();
-            ip[16..20].copy_from_slice(&dst_bytes);
-        }
-        // Compute IPv4 header checksum.
-        {
-            let ip = crate::net::wire::ip::Ipv4Header::from_bytes_mut(&mut frame);
-            ip.fill_checksum();
-        }
+        // IP header (version-specific via trait).
+        V::write_ip_header(&mut frame, &src_ip, &dst_ip, tcp_header_len + payload.len());
 
         // TCP header.
-        let tcp_offset = ETH_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp_offset = ETH_LEN + V::IP_HEADER_LEN;
         Self::write_tcp_header(
             &mut frame,
             tcp_offset,
@@ -884,7 +766,7 @@ impl SegmentBuilder {
 
         // TCP checksum — must cover header (including options) + payload.
         if !tx_offload {
-            let checksum = compute_tcp_checksum_ip::<Ipv4>(
+            let checksum = compute_tcp_checksum_ip::<V>(
                 &src_ip,
                 &dst_ip,
                 &frame[tcp_offset..tcp_offset + tcp_header_len],
@@ -898,96 +780,9 @@ impl SegmentBuilder {
     }
 
     #[inline]
-    fn build_ipv6_data_segment<'umem>(
-        src_ip: Ipv6Address,
-        dst_ip: Ipv6Address,
-        src_port: u16,
-        dst_port: u16,
-        seq: u32,
-        ack: u32,
-        tcp_flags: u8,
-        window: u16,
-        payload: &[u8],
-        tcp_options: &[u8],
-        src_mac: MacAddress,
-        dst_mac: MacAddress,
-        tx_offload: bool,
-        free_frames: &mut impl FrameBuffer<'umem>,
-        tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
-        let Some(mut frame) = free_frames.pop() else {
-            return;
-        };
-
-        let opt_padded_len = (tcp_options.len() + 3) & !3;
-        let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
-        let data_offset = (tcp_header_len / 4) as u8;
-        let ipv6_payload_len = (tcp_header_len + payload.len()) as u16;
-        let frame_len = ETH_LEN + IPV6_HEADER_LEN + tcp_header_len + payload.len();
-
-        if frame.capacity() < frame_len {
-            free_frames.push(frame);
-            return;
-        }
-
-        unsafe { frame.set_len(frame_len) };
-
-        // Ethernet header.
-        write_ethernet_header(&mut frame, dst_mac, src_mac, EtherTypes::IPv6);
-
-        // IPv6 header.
-        {
-            let ip = &mut frame[ETH_LEN..ETH_LEN + IPV6_HEADER_LEN];
-            ip.fill(0);
-            ip[0] = 0x60; // version=6
-            ip[4..6].copy_from_slice(&ipv6_payload_len.to_be_bytes());
-            ip[6] = IpProtocols::Tcp; // Next Header
-            ip[7] = 64; // Hop Limit
-            let src_bytes: [u8; 16] = src_ip.into();
-            ip[8..24].copy_from_slice(&src_bytes);
-            let dst_bytes: [u8; 16] = dst_ip.into();
-            ip[24..40].copy_from_slice(&dst_bytes);
-        }
-
-        // TCP header.
-        let tcp_offset = ETH_LEN + IPV6_HEADER_LEN;
-        Self::write_tcp_header(
-            &mut frame,
-            tcp_offset,
-            src_port,
-            dst_port,
-            seq,
-            ack,
-            data_offset,
-            tcp_flags,
-            window,
-            tcp_options,
-            opt_padded_len,
-        );
-
-        // Copy payload.
-        let payload_offset = tcp_offset + tcp_header_len;
-        frame[payload_offset..payload_offset + payload.len()].copy_from_slice(payload);
-
-        // TCP checksum.
-        if !tx_offload {
-            let checksum = compute_tcp_checksum_ip::<Ipv6>(
-                &src_ip,
-                &dst_ip,
-                &frame[tcp_offset..tcp_offset + tcp_header_len],
-                payload,
-            );
-            frame[tcp_offset + 16] = checksum[0];
-            frame[tcp_offset + 17] = checksum[1];
-        }
-
-        tx_return.push(frame);
-    }
-
-    #[inline]
-    fn build_ipv4_data_segment_slices<'umem>(
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
+    fn build_data_segment_slices<'umem, V: IpVersion>(
+        src_ip: V::Address,
+        dst_ip: V::Address,
         src_port: u16,
         dst_port: u16,
         seq: u32,
@@ -1011,8 +806,7 @@ impl SegmentBuilder {
         let opt_padded_len = (tcp_options.len() + 3) & !3;
         let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
         let data_offset = (tcp_header_len / 4) as u8;
-        let total_ip_len = (IPV4_MIN_HEADER_LEN + tcp_header_len + payload_len) as u16;
-        let frame_len = ETH_LEN + IPV4_MIN_HEADER_LEN + tcp_header_len + payload_len;
+        let frame_len = ETH_LEN + V::IP_HEADER_LEN + tcp_header_len + payload_len;
 
         if frame.capacity() < frame_len {
             free_frames.push(frame);
@@ -1022,33 +816,19 @@ impl SegmentBuilder {
         unsafe { frame.set_len(frame_len) };
 
         // Ethernet header.
-        write_ethernet_header(&mut frame, dst_mac, src_mac, EtherTypes::IPv4);
+        write_ethernet_header(&mut frame, dst_mac, src_mac, V::ETHER_TYPE);
 
-        // IPv4 header.
-        {
-            let ip = &mut frame[ETH_LEN..ETH_LEN + IPV4_MIN_HEADER_LEN];
-            ip.fill(0);
-            ip[0] = 0x45; // version=4, ihl=5
-            if ecn_ect {
-                ip[1] = 0x02; // ECT(0) in ToS byte
-            }
-            ip[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
-            ip[6] = 0x40; // Don't Fragment
-            ip[8] = 64; // TTL
-            ip[9] = IpProtocols::Tcp;
-            let src_bytes: [u8; 4] = src_ip.into();
-            ip[12..16].copy_from_slice(&src_bytes);
-            let dst_bytes: [u8; 4] = dst_ip.into();
-            ip[16..20].copy_from_slice(&dst_bytes);
-        }
-        // Compute IPv4 header checksum.
-        {
-            let ip = crate::net::wire::ip::Ipv4Header::from_bytes_mut(&mut frame);
-            ip.fill_checksum();
+        // IP header (version-specific via trait).
+        V::write_ip_header(&mut frame, &src_ip, &dst_ip, tcp_header_len + payload_len);
+
+        // Set ECN ECT(0) if requested (must be after write_ip_header;
+        // IPv4 impl recomputes the header checksum).
+        if ecn_ect {
+            V::set_ecn_ect(&mut frame, ETH_LEN);
         }
 
         // TCP header.
-        let tcp_offset = ETH_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp_offset = ETH_LEN + V::IP_HEADER_LEN;
         Self::write_tcp_header(
             &mut frame,
             tcp_offset,
@@ -1073,103 +853,7 @@ impl SegmentBuilder {
 
         // TCP checksum — computed from the frame after both slices are written.
         if !tx_offload {
-            let checksum = compute_tcp_checksum_ip::<Ipv4>(
-                &src_ip,
-                &dst_ip,
-                &frame[tcp_offset..tcp_offset + tcp_header_len],
-                &frame[payload_start..frame_len],
-            );
-            frame[tcp_offset + 16] = checksum[0];
-            frame[tcp_offset + 17] = checksum[1];
-        }
-
-        tx_return.push(frame);
-    }
-
-    #[inline]
-    fn build_ipv6_data_segment_slices<'umem>(
-        src_ip: Ipv6Address,
-        dst_ip: Ipv6Address,
-        src_port: u16,
-        dst_port: u16,
-        seq: u32,
-        ack: u32,
-        tcp_flags: u8,
-        window: u16,
-        payload: (&[u8], &[u8]),
-        tcp_options: &[u8],
-        ecn_ect: bool,
-        src_mac: MacAddress,
-        dst_mac: MacAddress,
-        tx_offload: bool,
-        free_frames: &mut impl FrameBuffer<'umem>,
-        tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
-        let Some(mut frame) = free_frames.pop() else {
-            return;
-        };
-
-        let payload_len = payload.0.len() + payload.1.len();
-        let opt_padded_len = (tcp_options.len() + 3) & !3;
-        let tcp_header_len = TCP_HEADER_LEN + opt_padded_len;
-        let data_offset = (tcp_header_len / 4) as u8;
-        let ipv6_payload_len = (tcp_header_len + payload_len) as u16;
-        let frame_len = ETH_LEN + IPV6_HEADER_LEN + tcp_header_len + payload_len;
-
-        if frame.capacity() < frame_len {
-            free_frames.push(frame);
-            return;
-        }
-
-        unsafe { frame.set_len(frame_len) };
-
-        // Ethernet header.
-        write_ethernet_header(&mut frame, dst_mac, src_mac, EtherTypes::IPv6);
-
-        // IPv6 header.
-        {
-            let ip = &mut frame[ETH_LEN..ETH_LEN + IPV6_HEADER_LEN];
-            ip.fill(0);
-            ip[0] = 0x60; // version=6
-            if ecn_ect {
-                ip[1] |= 0x20; // ECT(0) in Traffic Class low bits
-            }
-            ip[4..6].copy_from_slice(&ipv6_payload_len.to_be_bytes());
-            ip[6] = IpProtocols::Tcp; // Next Header
-            ip[7] = 64; // Hop Limit
-            let src_bytes: [u8; 16] = src_ip.into();
-            ip[8..24].copy_from_slice(&src_bytes);
-            let dst_bytes: [u8; 16] = dst_ip.into();
-            ip[24..40].copy_from_slice(&dst_bytes);
-        }
-
-        // TCP header.
-        let tcp_offset = ETH_LEN + IPV6_HEADER_LEN;
-        Self::write_tcp_header(
-            &mut frame,
-            tcp_offset,
-            src_port,
-            dst_port,
-            seq,
-            ack,
-            data_offset,
-            tcp_flags,
-            window,
-            tcp_options,
-            opt_padded_len,
-        );
-
-        // Copy payload (two slices).
-        let payload_start = tcp_offset + tcp_header_len;
-        frame[payload_start..payload_start + payload.0.len()].copy_from_slice(payload.0);
-        if !payload.1.is_empty() {
-            let p2_start = payload_start + payload.0.len();
-            frame[p2_start..p2_start + payload.1.len()].copy_from_slice(payload.1);
-        }
-
-        // TCP checksum.
-        if !tx_offload {
-            let checksum = compute_tcp_checksum_ip::<Ipv6>(
+            let checksum = compute_tcp_checksum_ip::<V>(
                 &src_ip,
                 &dst_ip,
                 &frame[tcp_offset..tcp_offset + tcp_header_len],
