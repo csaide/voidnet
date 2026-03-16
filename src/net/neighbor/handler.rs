@@ -804,4 +804,45 @@ mod tests {
         assert_eq!(tx.num_frames(), 1);
         assert_eq!(rx.num_frames(), 0);
     }
+
+    #[test]
+    fn set_offload_changes_flag() {
+        let mut handler = new_handler();
+        handler.set_offload(true, true);
+        handler.set_offload(false, false);
+    }
+
+    #[test]
+    fn set_local_mac_updates_mac() {
+        let mut handler = new_handler();
+        let new_mac = MacAddress {
+            octets: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        };
+        handler.set_local_mac(new_mac);
+        assert_eq!(handler.local_mac(), new_mac);
+    }
+
+    #[test]
+    fn add_local_ipv6_dedup() {
+        let mut handler = new_handler();
+        let addr = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        handler.add_local_ipv6(addr);
+        handler.add_local_ipv6(addr);
+    }
+
+    #[test]
+    fn lookup_v4_unknown_returns_none() {
+        let now = Instant::now();
+        let handler = new_handler();
+        let addr = Ipv4Address::new([192, 168, 99, 99]);
+        assert!(handler.lookup_v4(now, &addr).is_none());
+    }
+
+    #[test]
+    fn lookup_v6_unknown_returns_none() {
+        let now = Instant::now();
+        let handler = new_handler();
+        let addr = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 99]);
+        assert!(handler.lookup_v6(now, &addr).is_none());
+    }
 }
