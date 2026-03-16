@@ -1,9 +1,12 @@
 mod addr;
 mod proto;
+pub mod traits;
 mod v4;
 mod v6;
 
 use super::ethernet;
+
+pub use traits::{IpVersion, Ipv4, Ipv6};
 
 pub use addr::{IpAddress, Ipv4Address, Ipv6Address, SocketAddr};
 pub use proto::{IpProtocol, IpProtocols};
