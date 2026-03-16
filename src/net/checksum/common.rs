@@ -264,4 +264,63 @@ mod tests {
     fn checksum_to_bytes_nonzero() {
         assert_eq!(checksum_to_bytes(0x1234), [0x12, 0x34]);
     }
+
+    #[test]
+    fn sum_words_large_data_exercises_wide_loop() {
+        let data: Vec<u8> = (0u8..64).collect();
+        let sum = sum_words(&data);
+        let mut expected = 0u64;
+        for chunk in data.chunks(2) {
+            expected += ((chunk[0] as u64) << 8) | (chunk[1] as u64);
+        }
+        assert_eq!(sum, expected);
+    }
+
+    #[test]
+    fn sum_words_carry_pending_consumed_by_next_byte() {
+        let (sum, pending) = sum_words_carry(&[0xCD], 0, Some(0xAB));
+        assert_eq!(sum, 0xABCD);
+        assert_eq!(pending, None);
+    }
+
+    #[test]
+    fn sum_words_carry_single_byte_becomes_pending() {
+        let (sum, pending) = sum_words_carry(&[0x42], 100, None);
+        assert_eq!(sum, 100);
+        assert_eq!(pending, Some(0x42));
+    }
+
+    #[test]
+    fn fold_checksum_near_u16_max() {
+        let result = fold_checksum(0xFFFF);
+        assert_eq!(result, 0x0000);
+    }
+
+    #[test]
+    fn fold_checksum_with_carry() {
+        let result = fold_checksum(0x1FFFE);
+        assert_eq!(result, 0x0000);
+    }
+
+    #[test]
+    fn fold_and_verify_correct_checksum() {
+        let data = [0x45, 0x00, 0x00, 0x3C, 0x1C, 0x46, 0x40, 0x00, 0x40, 0x06];
+        let sum = sum_words(&data);
+        let cksum = fold_checksum(sum);
+        let full_sum = sum + cksum as u64;
+        assert!(fold_and_verify(full_sum, 0x0000));
+    }
+
+    #[test]
+    fn sum_words_carry_three_slices() {
+        let full = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+        let expected = sum_words(&full);
+        let (s1, p1) = sum_words_carry(&full[0..3], 0, None);
+        let (s2, p2) = sum_words_carry(&full[3..5], s1, p1);
+        let (mut s3, p3) = sum_words_carry(&full[5..7], s2, p2);
+        if let Some(hi) = p3 {
+            s3 += (hi as u64) << 8;
+        }
+        assert_eq!(s3, expected);
+    }
 }
