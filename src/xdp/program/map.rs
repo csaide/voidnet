@@ -85,3 +85,49 @@ impl Map {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_map() -> Map {
+        let mut info: bpf_map_info = unsafe { std::mem::zeroed() };
+        let bytes = b"test_map";
+        for (i, &b) in bytes.iter().enumerate() {
+            #[cfg(target_arch = "aarch64")]
+            {
+                info.name[i] = b;
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                info.name[i] = b as i8;
+            }
+        }
+        Map::new(std::ptr::null_mut(), info)
+    }
+
+    #[test]
+    fn name_returns_map_name() {
+        let map = make_test_map();
+        assert!(map.name().starts_with("test_map"));
+    }
+
+    #[test]
+    fn as_ptr_returns_inner() {
+        let map = make_test_map();
+        assert!(map.as_ptr().is_null());
+    }
+
+    #[test]
+    fn as_mut_ptr_returns_inner() {
+        let mut map = make_test_map();
+        assert!(map.as_mut_ptr().is_null());
+    }
+
+    #[test]
+    fn info_returns_info() {
+        let map = make_test_map();
+        let info = map.info();
+        assert_eq!(info.type_, 0);
+    }
+}
