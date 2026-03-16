@@ -741,3 +741,89 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
     );
     assert_eq!(handler.first_connection().snd_una, partial_ack_seq);
 }
+
+#[test]
+fn ooo_multiple_ranges_generates_multiple_sack_blocks() {
+    use crate::net::wire::tcp::parse_sack_blocks;
+
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(32);
+    let mut rx = BasicFrameBuffer::new(32);
+    let mut tx = BasicFrameBuffer::new(32);
+
+    for i in 0..16 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    // Complete handshake with SACK enabled.
+    let server_iss = establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+    // Send first OOO segment: seq=1021, 5 bytes (gap from 1001..1021).
+    let ooo1 = build_tcp_frame_with_payload(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        1021,
+        server_iss.wrapping_add(1),
+        flags::ACK,
+        65535,
+        &[],
+        b"BBBBB",
+    );
+    let ooo1_len = ooo1.len();
+    handler.process_ipv4(
+        Frame::new(2, leak(ooo1), ooo1_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+    while tx.pop().is_some() {} // drain first dup ACK
+
+    // Send second OOO segment: seq=1031, 5 bytes (another gap).
+    let ooo2 = build_tcp_frame_with_payload(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        1031,
+        server_iss.wrapping_add(1),
+        flags::ACK,
+        65535,
+        &[],
+        b"CCCCC",
+    );
+    let ooo2_len = ooo2.len();
+    handler.process_ipv4(
+        Frame::new(3, leak(ooo2), ooo2_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    // Should have emitted a dup ACK with multiple SACK blocks.
+    assert_eq!(tx.num_frames(), 1, "OOO data triggers dup ACK");
+    let ack_frame = tx.pop().unwrap();
+
+    let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+    let tcp = unsafe { TcpHeader::from_bytes_at(&ack_frame, tcp_offset) };
+    assert_eq!(tcp.ack_num(), 1001, "dup ACK has original rcv_nxt");
+
+    // Parse SACK blocks.
+    let data_off_bytes = (tcp.data_offset() as usize) * 4;
+    let opt_len = data_off_bytes - TCP_HEADER_LEN;
+    assert!(opt_len > 0, "options should be present");
+    let opt_start = tcp_offset + TCP_HEADER_LEN;
+    let tcp_opts = &ack_frame[opt_start..opt_start + opt_len];
+    let (blocks, count) = parse_sack_blocks(tcp_opts);
+
+    // Should have 2 SACK blocks: the most recent [1031, 1036) first, then [1021, 1026).
+    assert_eq!(count, 2, "two SACK blocks expected");
+    assert_eq!(blocks[0], Some((1031, 1036)), "most recent range first");
+    assert_eq!(blocks[1], Some((1021, 1026)), "older range second");
+}

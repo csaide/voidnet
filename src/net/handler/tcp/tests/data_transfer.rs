@@ -678,3 +678,136 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
         "recv buffer should be completely full (20 filler + 12 new)"
     );
 }
+
+#[test]
+fn fin_with_data_transitions_to_close_wait() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(32);
+    let mut rx = BasicFrameBuffer::new(32);
+    let mut tx = BasicFrameBuffer::new(32);
+    for i in 0..16 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+    // Send data+FIN in a single segment.
+    let payload = b"final data";
+    let data_fin = build_tcp_frame_with_payload(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        1001,
+        server_iss.wrapping_add(1),
+        flags::ACK | flags::FIN,
+        65535,
+        &[],
+        payload,
+    );
+    let data_fin_len = data_fin.len();
+    handler.process_ipv4(
+        Frame::new(2, leak(data_fin), data_fin_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    let tcb = handler.first_connection();
+    // Data should be received.
+    assert_eq!(
+        tcb.recv_buffer.available(),
+        payload.len(),
+        "data from FIN segment should be in recv buffer"
+    );
+    // FIN consumes one sequence number.
+    assert_eq!(
+        tcb.rcv_nxt,
+        1001 + payload.len() as u32 + 1,
+        "rcv_nxt should advance past data + FIN"
+    );
+    // State should transition to CloseWait.
+    assert_eq!(
+        tcb.state,
+        TcpState::CloseWait,
+        "should transition to CloseWait"
+    );
+}
+
+#[test]
+fn fast_path_with_timestamps() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(32);
+    let mut rx = BasicFrameBuffer::new(32);
+    let mut tx = BasicFrameBuffer::new(32);
+    for i in 0..16 {
+        let buf = leak(vec![0u8; 2048]);
+        free.push(Frame::new(100 + i, buf, 2048, false));
+    }
+
+    // Use active open with timestamps enabled (default config has timestamps=true).
+    let config = TcpConfig {
+        timestamps: true,
+        sack: false,
+        ecn: false,
+        ..TcpConfig::default()
+    };
+    let _client_iss =
+        active_open_handshake_with_config(&mut handler, &nh, config, &mut free, &mut rx, &mut tx);
+
+    // Simulate sending data so snd_nxt > snd_una.
+    let tcb = handler.first_connection_mut();
+    tcb.send_buffer.write(&[0u8; 50]);
+    tcb.snd_nxt = tcb.snd_una.wrapping_add(50);
+    let snd_una = tcb.snd_una;
+    let rcv_nxt = tcb.rcv_nxt;
+
+    // Ensure timestamps are enabled on the TCB.
+    tcb.ts_enabled = true;
+    tcb.ts_recent = 1000;
+
+    // Build a data segment with valid timestamp (tsval > ts_recent), ACKing part of our data.
+    let ts_opts = build_ts_option(1100, 500); // tsval=1100 > ts_recent=1000 (PAWS ok)
+    let new_ack = snd_una.wrapping_add(25); // ack 25 bytes
+    let data_seg = build_tcp_frame_with_payload(
+        REMOTE_IP,
+        LOCAL_IP,
+        80,
+        5000,
+        rcv_nxt,
+        new_ack,
+        flags::ACK,
+        65535,
+        &ts_opts,
+        b"fast path ts data",
+    );
+    let data_seg_len = data_seg.len();
+    handler.process_ipv4(
+        Frame::new(60, leak(data_seg), data_seg_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    let tcb = handler.first_connection();
+    // If fast path was taken, data should be received and snd_una advanced.
+    assert_eq!(
+        tcb.snd_una, new_ack,
+        "snd_una should advance via fast path with timestamps"
+    );
+    assert_eq!(
+        tcb.rcv_nxt,
+        rcv_nxt.wrapping_add(b"fast path ts data".len() as u32),
+        "rcv_nxt should advance for received data"
+    );
+    assert_eq!(
+        tcb.ts_recent, 1100,
+        "ts_recent should be updated on fast path"
+    );
+}
