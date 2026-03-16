@@ -134,4 +134,61 @@ mod tests {
         cloned.wake();
         assert!(mw.take_woken());
     }
+
+    #[test]
+    fn wake_consumes_waker() {
+        let mw = MainWaker::new();
+        mw.take_woken();
+        let waker = mw.waker();
+        waker.wake();
+        assert!(mw.take_woken());
+    }
+
+    #[test]
+    fn wake_by_ref_does_not_consume() {
+        let mw = MainWaker::new();
+        mw.take_woken();
+        let waker = mw.waker();
+        waker.wake_by_ref();
+        assert!(mw.take_woken());
+        drop(waker);
+    }
+
+    #[test]
+    fn drop_waker_does_not_panic() {
+        let mw = MainWaker::new();
+        let waker = mw.waker();
+        drop(waker);
+        mw.set_woken();
+        assert!(mw.take_woken());
+    }
+
+    #[test]
+    fn multiple_wakers_from_same_main() {
+        let mw = MainWaker::new();
+        mw.take_woken();
+        let w1 = mw.waker();
+        let w2 = mw.waker();
+        w1.wake_by_ref();
+        assert!(mw.take_woken());
+        w2.wake();
+        assert!(mw.take_woken());
+    }
+
+    #[test]
+    fn noop_waker_does_not_panic() {
+        let waker = task_queue_waker();
+        waker.wake_by_ref();
+        let cloned = waker.clone();
+        cloned.wake();
+    }
+
+    #[test]
+    fn task_queue_waker_clone_roundtrip() {
+        let waker = task_queue_waker();
+        let cloned = waker.clone();
+        drop(waker);
+        cloned.wake_by_ref();
+        drop(cloned);
+    }
 }
