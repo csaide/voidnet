@@ -175,7 +175,6 @@ impl<'umem> ExactSizeIterator for PacketIntoIter<'umem> {}
 mod tests {
     use crate::xdp::frame::BasicFrameBuffer;
     use crate::xdp::frame::Frame;
-    use crate::xdp::frame::FrameBuffer;
 
     use super::*;
 
