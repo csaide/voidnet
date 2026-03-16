@@ -908,6 +908,522 @@ fn bad_ack_in_syn_received_sends_rst() {
 }
 
 #[test]
+fn syn_ack_without_timestamp_disables_timestamps() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(16);
+    let mut rx = BasicFrameBuffer::new(16);
+    let mut tx = BasicFrameBuffer::new(16);
+
+    for i in 0..8 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let src_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    let dst_mac = MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+    // Active open with timestamps enabled (default).
+    let (_key, _events) = handler
+        .connect(
+            IpAddress::V4(LOCAL_IP),
+            5000,
+            IpAddress::V4(REMOTE_IP),
+            80,
+            src_mac,
+            dst_mac,
+            coarsetime::Instant::now(),
+            &mut free,
+            &mut tx,
+        )
+        .unwrap();
+    while tx.pop().is_some() {}
+
+    assert!(
+        handler.first_connection().ts_enabled,
+        "timestamps enabled after connect"
+    );
+    let client_iss = handler.first_connection().iss;
+
+    // SYN-ACK without timestamp option → timestamps should be disabled.
+    let syn_ack = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        80,
+        5000,
+        2000,
+        client_iss.wrapping_add(1),
+        flags::SYN | flags::ACK,
+        65535,
+        &[0x02, 0x04, 0x05, 0xB4], // MSS only, no timestamp
+    );
+    let syn_ack_len = syn_ack.len();
+    handler.process_ipv4(
+        Frame::new(50, leak(syn_ack), syn_ack_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    assert_eq!(handler.first_connection().state, TcpState::Established);
+    assert!(
+        !handler.first_connection().ts_enabled,
+        "timestamps disabled when peer omits TS option"
+    );
+    // eff_snd_mss should NOT subtract TS_OPTION_LEN when timestamps are disabled.
+    // base_mss = min(peer_mss=1460, rcv_mss); no TS overhead.
+    assert_eq!(
+        handler.first_connection().eff_snd_mss,
+        handler
+            .first_connection()
+            .snd_mss
+            .min(handler.first_connection().rcv_mss)
+    );
+}
+
+#[test]
+fn syn_ack_without_sack_permitted_disables_sack() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(16);
+    let mut rx = BasicFrameBuffer::new(16);
+    let mut tx = BasicFrameBuffer::new(16);
+
+    for i in 0..8 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let src_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    let dst_mac = MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+    // Active open with SACK enabled (default).
+    let (_key, _events) = handler
+        .connect(
+            IpAddress::V4(LOCAL_IP),
+            5000,
+            IpAddress::V4(REMOTE_IP),
+            80,
+            src_mac,
+            dst_mac,
+            coarsetime::Instant::now(),
+            &mut free,
+            &mut tx,
+        )
+        .unwrap();
+    while tx.pop().is_some() {}
+
+    assert!(
+        handler.first_connection().sack_enabled,
+        "SACK enabled after connect"
+    );
+    let client_iss = handler.first_connection().iss;
+
+    // SYN-ACK without SACK-permitted option → SACK should be disabled.
+    let syn_ack = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        80,
+        5000,
+        2000,
+        client_iss.wrapping_add(1),
+        flags::SYN | flags::ACK,
+        65535,
+        &[0x02, 0x04, 0x05, 0xB4], // MSS only, no SACK-permitted
+    );
+    let syn_ack_len = syn_ack.len();
+    handler.process_ipv4(
+        Frame::new(50, leak(syn_ack), syn_ack_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    assert_eq!(handler.first_connection().state, TcpState::Established);
+    assert!(
+        !handler.first_connection().sack_enabled,
+        "SACK disabled when peer omits SACK-permitted"
+    );
+}
+
+#[test]
+fn syn_ack_without_ece_disables_ecn() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(16);
+    let mut rx = BasicFrameBuffer::new(16);
+    let mut tx = BasicFrameBuffer::new(16);
+
+    for i in 0..8 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let src_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    let dst_mac = MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+    // Active open with ECN enabled (default).
+    let (_key, _events) = handler
+        .connect(
+            IpAddress::V4(LOCAL_IP),
+            5000,
+            IpAddress::V4(REMOTE_IP),
+            80,
+            src_mac,
+            dst_mac,
+            coarsetime::Instant::now(),
+            &mut free,
+            &mut tx,
+        )
+        .unwrap();
+    while tx.pop().is_some() {}
+
+    assert!(
+        handler.first_connection().ecn_enabled,
+        "ECN enabled after connect"
+    );
+    let client_iss = handler.first_connection().iss;
+
+    // SYN-ACK without ECE flag → ECN should be disabled.
+    let syn_ack = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        80,
+        5000,
+        2000,
+        client_iss.wrapping_add(1),
+        flags::SYN | flags::ACK, // no ECE bit
+        65535,
+        &[0x02, 0x04, 0x05, 0xB4],
+    );
+    let syn_ack_len = syn_ack.len();
+    handler.process_ipv4(
+        Frame::new(50, leak(syn_ack), syn_ack_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    assert_eq!(handler.first_connection().state, TcpState::Established);
+    assert!(
+        !handler.first_connection().ecn_enabled,
+        "ECN disabled when SYN-ACK lacks ECE"
+    );
+}
+
+#[test]
+fn unacceptable_ack_in_syn_sent_sends_rst() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(16);
+    let mut rx = BasicFrameBuffer::new(16);
+    let mut tx = BasicFrameBuffer::new(16);
+
+    for i in 0..8 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let src_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    let dst_mac = MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+    let (_key, _events) = handler
+        .connect(
+            IpAddress::V4(LOCAL_IP),
+            5000,
+            IpAddress::V4(REMOTE_IP),
+            80,
+            src_mac,
+            dst_mac,
+            coarsetime::Instant::now(),
+            &mut free,
+            &mut tx,
+        )
+        .unwrap();
+    while tx.pop().is_some() {}
+
+    let client_iss = handler.first_connection().iss;
+
+    // Send SYN-ACK with ack_seq = ISS (not ISS+1), which is unacceptable
+    // because seg_ack <= ISS triggers the check.
+    let bad_ack = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        80,
+        5000,
+        2000,
+        client_iss, // ack = ISS, unacceptable (must be > ISS)
+        flags::SYN | flags::ACK,
+        65535,
+        &[0x02, 0x04, 0x05, 0xB4],
+    );
+    let bad_ack_len = bad_ack.len();
+    handler.process_ipv4(
+        Frame::new(50, leak(bad_ack), bad_ack_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    // Should still be in SynSent (unacceptable ACK is dropped after sending RST).
+    assert_eq!(handler.first_connection().state, TcpState::SynSent);
+    assert_eq!(tx.num_frames(), 1, "RST sent for unacceptable ACK");
+}
+
+#[test]
+fn unacceptable_ack_too_high_in_syn_sent_sends_rst() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(16);
+    let mut rx = BasicFrameBuffer::new(16);
+    let mut tx = BasicFrameBuffer::new(16);
+
+    for i in 0..8 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let src_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    let dst_mac = MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+    let (_key, _events) = handler
+        .connect(
+            IpAddress::V4(LOCAL_IP),
+            5000,
+            IpAddress::V4(REMOTE_IP),
+            80,
+            src_mac,
+            dst_mac,
+            coarsetime::Instant::now(),
+            &mut free,
+            &mut tx,
+        )
+        .unwrap();
+    while tx.pop().is_some() {}
+
+    let snd_nxt = handler.first_connection().snd_nxt;
+
+    // Send SYN-ACK with ack_seq far beyond snd_nxt (unacceptable).
+    let bad_ack = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        80,
+        5000,
+        2000,
+        snd_nxt.wrapping_add(100), // ack too high
+        flags::SYN | flags::ACK,
+        65535,
+        &[0x02, 0x04, 0x05, 0xB4],
+    );
+    let bad_ack_len = bad_ack.len();
+    handler.process_ipv4(
+        Frame::new(50, leak(bad_ack), bad_ack_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    assert_eq!(handler.first_connection().state, TcpState::SynSent);
+    assert_eq!(tx.num_frames(), 1, "RST sent for ack beyond snd_nxt");
+}
+
+#[test]
+fn simultaneous_open_syn_without_ack_transitions_to_syn_received() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(16);
+    let mut rx = BasicFrameBuffer::new(16);
+    let mut tx = BasicFrameBuffer::new(16);
+
+    for i in 0..8 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let src_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    let dst_mac = MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+    let (_key, _events) = handler
+        .connect(
+            IpAddress::V4(LOCAL_IP),
+            5000,
+            IpAddress::V4(REMOTE_IP),
+            80,
+            src_mac,
+            dst_mac,
+            coarsetime::Instant::now(),
+            &mut free,
+            &mut tx,
+        )
+        .unwrap();
+    while tx.pop().is_some() {}
+
+    assert_eq!(handler.first_connection().state, TcpState::SynSent);
+
+    // Receive a bare SYN (no ACK) — simultaneous open.
+    let peer_syn = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        80,
+        5000,
+        3000,
+        0,
+        flags::SYN, // SYN only, no ACK
+        65535,
+        &[0x02, 0x04, 0x05, 0xB4], // MSS=1460
+    );
+    let peer_syn_len = peer_syn.len();
+    handler.process_ipv4(
+        Frame::new(50, leak(peer_syn), peer_syn_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    // Should transition to SynReceived (simultaneous open path).
+    assert_eq!(handler.first_connection().state, TcpState::SynReceived);
+    assert!(
+        !handler.first_connection().from_passive_open,
+        "simultaneous open sets from_passive_open=false"
+    );
+    assert_eq!(handler.first_connection().irs, 3000);
+    assert_eq!(handler.first_connection().rcv_nxt, 3001);
+    assert_eq!(handler.first_connection().snd_mss, 1460);
+    // A SYN-ACK should be emitted.
+    assert!(
+        tx.num_frames() >= 1,
+        "SYN-ACK emitted for simultaneous open"
+    );
+}
+
+#[test]
+fn rst_with_ack_in_syn_sent_signals_connection_refused() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(16);
+    let mut rx = BasicFrameBuffer::new(16);
+    let mut tx = BasicFrameBuffer::new(16);
+
+    for i in 0..8 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let src_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    let dst_mac = MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+    let (_key, events) = handler
+        .connect(
+            IpAddress::V4(LOCAL_IP),
+            5000,
+            IpAddress::V4(REMOTE_IP),
+            80,
+            src_mac,
+            dst_mac,
+            coarsetime::Instant::now(),
+            &mut free,
+            &mut tx,
+        )
+        .unwrap();
+    while tx.pop().is_some() {}
+
+    let client_iss = handler.first_connection().iss;
+
+    // RST+ACK with acceptable ACK → connection refused.
+    let rst_ack = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        80,
+        5000,
+        0,
+        client_iss.wrapping_add(1), // acceptable ACK
+        flags::RST | flags::ACK,
+        0,
+        &[],
+    );
+    let rst_ack_len = rst_ack.len();
+    handler.process_ipv4(
+        Frame::new(50, leak(rst_ack), rst_ack_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    assert_eq!(handler.connections.len(), 0, "connection removed");
+    let event = events.pop();
+    assert!(event.is_some(), "event emitted");
+    assert!(
+        matches!(event.unwrap(), TcpEvent::ConnectionRefused),
+        "ConnectionRefused event"
+    );
+}
+
+#[test]
+fn rst_without_ack_in_syn_sent_is_dropped() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(16);
+    let mut rx = BasicFrameBuffer::new(16);
+    let mut tx = BasicFrameBuffer::new(16);
+
+    for i in 0..8 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let src_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    let dst_mac = MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+    let (_key, _events) = handler
+        .connect(
+            IpAddress::V4(LOCAL_IP),
+            5000,
+            IpAddress::V4(REMOTE_IP),
+            80,
+            src_mac,
+            dst_mac,
+            coarsetime::Instant::now(),
+            &mut free,
+            &mut tx,
+        )
+        .unwrap();
+    while tx.pop().is_some() {}
+
+    // RST without ACK → silently dropped.
+    let rst_only = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        80,
+        5000,
+        0,
+        0,
+        flags::RST, // RST only, no ACK
+        0,
+        &[],
+    );
+    let rst_only_len = rst_only.len();
+    handler.process_ipv4(
+        Frame::new(50, leak(rst_only), rst_only_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    // Connection should still exist and remain in SynSent.
+    assert_eq!(handler.connections.len(), 1, "connection not removed");
+    assert_eq!(handler.first_connection().state, TcpState::SynSent);
+    assert_eq!(tx.num_frames(), 0, "no RST emitted");
+}
+
+#[test]
 fn window_scale_applied_on_handshake_completion() {
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
