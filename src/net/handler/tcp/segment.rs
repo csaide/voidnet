@@ -1271,4 +1271,549 @@ mod tests {
         let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
         assert_eq!(tcp.data_offset(), 5); // No options.
     }
+
+    // ---------------------------------------------------------------
+    // build_rst tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn build_rst_ack_off_sends_rst_ack() {
+        // RFC 9293 §3.10.7.1: ACK off → <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        let incoming_seq = 1000u32;
+        let incoming_seg_len = 50u32;
+
+        SegmentBuilder::build_rst(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])), // incoming src
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])), // incoming dst
+            80,                                             // incoming src port
+            8080,                                           // incoming dst port
+            incoming_seq,
+            0,          // incoming ack (irrelevant when ACK off)
+            flags::SYN, // ACK bit is off
+            incoming_seg_len,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "RST segment built");
+        assert_eq!(free.num_frames(), 0, "free frame consumed");
+
+        let frame = tx.pop().unwrap();
+        // ETH(14) + IPv4(20) + TCP(20) = 54
+        assert_eq!(frame.len(), 54);
+
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::RST | flags::ACK);
+        assert_eq!(tcp.seq_num(), 0);
+        assert_eq!(tcp.ack_num(), incoming_seq.wrapping_add(incoming_seg_len));
+        // Ports are swapped: RST goes back to the sender.
+        assert_eq!(tcp.src_port(), 8080);
+        assert_eq!(tcp.dst_port(), 80);
+
+        // Verify TCP checksum.
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_rst_ack_on_sends_rst_only() {
+        // RFC 9293 §3.10.7.1: ACK on → <SEQ=SEG.ACK><CTL=RST>
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        let incoming_ack = 5000u32;
+
+        SegmentBuilder::build_rst(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            80,
+            8080,
+            1000,
+            incoming_ack,
+            flags::ACK, // ACK bit is on
+            0,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1);
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::RST);
+        assert_eq!(tcp.seq_num(), incoming_ack);
+        assert_eq!(tcp.ack_num(), 0);
+
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    // ---------------------------------------------------------------
+    // build_syn tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn build_syn_all_options_ipv4() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        let iss = 12345u32;
+        let mss = 1460u16;
+        let wscale = 7u8;
+        let tsval = 1000u32;
+        let tsecr = 0u32;
+
+        SegmentBuilder::build_syn(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            8080,
+            80,
+            iss,
+            65535,
+            mss,
+            wscale,
+            Some((tsval, tsecr)),
+            true, // sack_permitted
+            false,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "SYN segment built");
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::SYN);
+        assert_eq!(tcp.seq_num(), iss);
+        assert_eq!(tcp.ack_num(), 0);
+        assert_eq!(tcp.src_port(), 8080);
+        assert_eq!(tcp.dst_port(), 80);
+        assert_eq!(tcp.window(), 65535);
+
+        // Options: MSS(4) + NOP(1) + WSCALE(3) + NOP(1) + NOP(1) + TS(10) + SACK_PERM(2) = 22, padded to 24
+        // data_offset = (20 + 24) / 4 = 11
+        assert_eq!(tcp.data_offset(), 11);
+
+        let opt_start = tcp_offset + TCP_HEADER_LEN;
+        // MSS option: kind=2, len=4, value=1460
+        assert_eq!(frame[opt_start], options::MSS);
+        assert_eq!(frame[opt_start + 1], 4);
+        assert_eq!(
+            u16::from_be_bytes([frame[opt_start + 2], frame[opt_start + 3]]),
+            mss
+        );
+        // NOP
+        assert_eq!(frame[opt_start + 4], options::NOP);
+        // Window Scale: kind=3, len=3, shift=7
+        assert_eq!(frame[opt_start + 5], options::WINDOW_SCALE);
+        assert_eq!(frame[opt_start + 6], 3);
+        assert_eq!(frame[opt_start + 7], wscale);
+        // NOP, NOP
+        assert_eq!(frame[opt_start + 8], options::NOP);
+        assert_eq!(frame[opt_start + 9], options::NOP);
+        // Timestamp: kind=8, len=10
+        assert_eq!(frame[opt_start + 10], 8); // TS kind
+        assert_eq!(frame[opt_start + 11], 10); // TS len
+        assert_eq!(
+            u32::from_be_bytes([
+                frame[opt_start + 12],
+                frame[opt_start + 13],
+                frame[opt_start + 14],
+                frame[opt_start + 15]
+            ]),
+            tsval
+        );
+        assert_eq!(
+            u32::from_be_bytes([
+                frame[opt_start + 16],
+                frame[opt_start + 17],
+                frame[opt_start + 18],
+                frame[opt_start + 19]
+            ]),
+            tsecr
+        );
+        // SACK Permitted: kind=4, len=2
+        assert_eq!(frame[opt_start + 20], options::SACK_PERMITTED);
+        assert_eq!(frame[opt_start + 21], 2);
+
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_syn_with_ecn_ipv4() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        SegmentBuilder::build_syn(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            8080,
+            80,
+            1000,
+            65535,
+            1460,
+            7,
+            None,
+            false,
+            true, // ecn
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1);
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::SYN | flags::ECE | flags::CWR);
+
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    // ---------------------------------------------------------------
+    // build_syn_ack tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn build_syn_ack_with_wscale_ipv4() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        let iss = 9999u32;
+        let ack = 10000u32;
+
+        SegmentBuilder::build_syn_ack(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            80,
+            8080,
+            iss,
+            ack,
+            65535,
+            1460,
+            Some(7),         // wscale
+            Some((100, 50)), // timestamp
+            true,            // sack_permitted
+            false,           // ecn
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "SYN-ACK segment built");
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::SYN | flags::ACK);
+        assert_eq!(tcp.seq_num(), iss);
+        assert_eq!(tcp.ack_num(), ack);
+        assert_eq!(tcp.src_port(), 80);
+        assert_eq!(tcp.dst_port(), 8080);
+
+        // Options: MSS(4) + NOP(1) + WSCALE(3) + NOP(1) + NOP(1) + TS(10) + SACK_PERM(2) = 22, padded to 24
+        assert_eq!(tcp.data_offset(), 11);
+
+        let opt_start = tcp_offset + TCP_HEADER_LEN;
+        // MSS
+        assert_eq!(frame[opt_start], options::MSS);
+        assert_eq!(frame[opt_start + 1], 4);
+        assert_eq!(
+            u16::from_be_bytes([frame[opt_start + 2], frame[opt_start + 3]]),
+            1460
+        );
+
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_syn_ack_without_wscale_ipv4() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        SegmentBuilder::build_syn_ack(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            80,
+            8080,
+            5000,
+            6000,
+            32768,
+            1460,
+            None,  // no wscale
+            None,  // no timestamp
+            false, // no sack_permitted
+            false, // no ecn
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1);
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::SYN | flags::ACK);
+
+        // Options: MSS(4) only, padded to 4 bytes
+        // data_offset = (20 + 4) / 4 = 6
+        assert_eq!(tcp.data_offset(), 6);
+
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_syn_ack_with_ecn_ipv4() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        SegmentBuilder::build_syn_ack(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            80,
+            8080,
+            5000,
+            6000,
+            65535,
+            1460,
+            None,
+            None,
+            false,
+            true, // ecn
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1);
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        // SYN-ACK with ECN sets SYN|ACK|ECE (not CWR)
+        assert_eq!(tcp.flags(), flags::SYN | flags::ACK | flags::ECE);
+
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    // ---------------------------------------------------------------
+    // build_ack tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn build_ack_with_timestamp_ipv4() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        let tsval = 555u32;
+        let tsecr = 444u32;
+
+        SegmentBuilder::build_ack(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            8080,
+            80,
+            2000,
+            3000,
+            65535,
+            flags::ACK,
+            Some((tsval, tsecr)),
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1, "ACK with timestamp built");
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::ACK);
+        assert_eq!(tcp.seq_num(), 2000);
+        assert_eq!(tcp.ack_num(), 3000);
+
+        // Options: NOP(1) + NOP(1) + TS(10) = 12 bytes, padded to 12 (already aligned)
+        // data_offset = (20 + 12) / 4 = 8
+        assert_eq!(tcp.data_offset(), 8);
+
+        // Verify timestamp option bytes
+        let opt_start = tcp_offset + TCP_HEADER_LEN;
+        assert_eq!(frame[opt_start], options::NOP);
+        assert_eq!(frame[opt_start + 1], options::NOP);
+        assert_eq!(frame[opt_start + 2], 8); // TS kind
+        assert_eq!(frame[opt_start + 3], 10); // TS len
+        assert_eq!(
+            u32::from_be_bytes([
+                frame[opt_start + 4],
+                frame[opt_start + 5],
+                frame[opt_start + 6],
+                frame[opt_start + 7]
+            ]),
+            tsval
+        );
+        assert_eq!(
+            u32::from_be_bytes([
+                frame[opt_start + 8],
+                frame[opt_start + 9],
+                frame[opt_start + 10],
+                frame[opt_start + 11]
+            ]),
+            tsecr
+        );
+
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_ack_without_timestamp_ipv4() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        SegmentBuilder::build_ack(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            8080,
+            80,
+            2000,
+            3000,
+            65535,
+            flags::ACK,
+            None,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1);
+
+        let frame = tx.pop().unwrap();
+        // ETH(14) + IPv4(20) + TCP(20) = 54, no options
+        assert_eq!(frame.len(), 54);
+
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::ACK);
+        assert_eq!(tcp.data_offset(), 5); // no options
+
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
+
+    #[test]
+    fn build_ack_with_ece_flag_ipv4() {
+        let mut free = BasicFrameBuffer::new(4);
+        let mut tx = BasicFrameBuffer::new(4);
+        free.push(alloc_free_frame(100));
+
+        SegmentBuilder::build_ack(
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 1])),
+            IpAddress::V4(Ipv4Address::new([10, 0, 0, 2])),
+            8080,
+            80,
+            2000,
+            3000,
+            65535,
+            flags::ACK | flags::ECE,
+            None,
+            MacAddress::new([0xAA; 6]),
+            MacAddress::new([0xBB; 6]),
+            false,
+            &mut free,
+            &mut tx,
+        );
+
+        assert_eq!(tx.num_frames(), 1);
+
+        let frame = tx.pop().unwrap();
+        let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
+        let tcp = unsafe { TcpHeader::from_bytes_at(&frame, tcp_offset) };
+        assert_eq!(tcp.flags(), flags::ACK | flags::ECE);
+
+        let ip = Ipv4Header::from_bytes(&frame);
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
+            &ip.src_addr,
+            &ip.dst_addr,
+            &frame[tcp_offset..]
+        ));
+    }
 }
