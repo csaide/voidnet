@@ -360,4 +360,35 @@ mod tests {
         assert!(matches!(cow, Cow::Owned(_)));
         assert_eq!(&*cow, "Custom Reason");
     }
+
+    #[test]
+    fn write_hex_max_usize() {
+        let mut buf = [0u8; HEX_BUF_LEN];
+        let n = write_hex_usize(usize::MAX, &mut buf);
+        let hex_str = std::str::from_utf8(&buf[..n - 2]).unwrap();
+        assert!(hex_str.chars().all(|c| c == 'f'));
+        assert_eq!(buf[n - 2], b'\r');
+        assert_eq!(buf[n - 1], b'\n');
+    }
+
+    #[test]
+    fn write_hex_powers_of_16() {
+        let cases: &[(usize, &[u8])] = &[
+            (0x10, b"10\r\n"),
+            (0x100, b"100\r\n"),
+            (0x1000, b"1000\r\n"),
+        ];
+        for &(val, expected) in cases {
+            let mut buf = [0u8; HEX_BUF_LEN];
+            let n = write_hex_usize(val, &mut buf);
+            assert_eq!(&buf[..n], expected, "failed for value {:#x}", val);
+        }
+    }
+
+    #[test]
+    fn write_hex_mixed_digits() {
+        let mut buf = [0u8; HEX_BUF_LEN];
+        let n = write_hex_usize(0xDEAD, &mut buf);
+        assert_eq!(&buf[..n], b"dead\r\n");
+    }
 }
