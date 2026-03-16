@@ -108,4 +108,31 @@ mod tests {
         hdr.write_to(&mut buf);
         assert_eq!(buf, [0xDE, 0xAD, 0xBE, 0xEF]);
     }
+
+    #[test]
+    fn tcp_header_as_transport_protocol() {
+        let hdr: TcpHeader = unsafe { std::mem::zeroed() };
+        assert_eq!(hdr.protocol(), IpProtocols::Tcp);
+    }
+
+    #[test]
+    fn tcp_header_as_transport_len() {
+        let hdr: TcpHeader = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            <TcpHeader as TransportHeader>::header_len(&hdr),
+            TCP_HEADER_LEN
+        );
+    }
+
+    #[test]
+    fn tcp_header_as_transport_write() {
+        let mut hdr: TcpHeader = unsafe { std::mem::zeroed() };
+        hdr.src_port = [0x00, 0x50];
+        hdr.dst_port = [0x1F, 0x90];
+        let mut buf = [0u8; TCP_HEADER_LEN];
+        hdr.write_to(&mut buf);
+        assert_eq!(buf[0..2], [0x00, 0x50]);
+        assert_eq!(buf[2..4], [0x1F, 0x90]);
+        assert_eq!(buf.len(), TCP_HEADER_LEN);
+    }
 }

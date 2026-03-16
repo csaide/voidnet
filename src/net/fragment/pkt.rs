@@ -173,7 +173,9 @@ impl<'umem> ExactSizeIterator for PacketIntoIter<'umem> {}
 
 #[cfg(test)]
 mod tests {
+    use crate::xdp::frame::BasicFrameBuffer;
     use crate::xdp::frame::Frame;
+    use crate::xdp::frame::FrameBuffer;
 
     use super::*;
 
@@ -317,5 +319,91 @@ mod tests {
         let pkt = Packet::Multi(frames);
         let iter = pkt.into_frames();
         assert_eq!(iter.len(), 4);
+    }
+
+    #[test]
+    fn empty_num_frames() {
+        let pkt = Packet::Empty;
+        assert_eq!(pkt.num_frames(), 0);
+    }
+
+    #[test]
+    fn empty_len() {
+        let pkt = Packet::Empty;
+        assert_eq!(pkt.len(), 0);
+    }
+
+    #[test]
+    fn empty_is_empty() {
+        let pkt = Packet::Empty;
+        assert!(pkt.is_empty());
+    }
+
+    #[test]
+    fn empty_frames_iter() {
+        let pkt = Packet::Empty;
+        assert_eq!(pkt.frames().count(), 0);
+        assert_eq!(pkt.frames().size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn empty_frames_mut_iter() {
+        let mut pkt = Packet::Empty;
+        assert_eq!(pkt.frames_mut().count(), 0);
+        assert_eq!(pkt.frames_mut().size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn empty_into_frames() {
+        let pkt = Packet::Empty;
+        let iter = pkt.into_frames();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+        assert_eq!(iter.count(), 0);
+    }
+
+    #[test]
+    fn from_empty_iterator() {
+        let frames: Vec<Frame<'_>> = vec![];
+        let pkt = Packet::from(frames.into_iter());
+        assert_eq!(pkt.num_frames(), 0);
+        assert!(pkt.is_empty());
+    }
+
+    #[test]
+    fn from_single_iterator() {
+        let mut buf = [0u8; 64];
+        buf[0] = 0xCC;
+        let frames = vec![make_frame(&mut buf, 10)];
+        let pkt = Packet::from(frames.into_iter());
+        assert_eq!(pkt.num_frames(), 1);
+        assert!(!pkt.is_empty());
+    }
+
+    #[test]
+    fn drain_to_single() {
+        let mut buf = [0u8; 64];
+        buf[0] = 0xDD;
+        let pkt = Packet::Single(make_frame(&mut buf, 10));
+        let mut target = BasicFrameBuffer::new(4);
+        pkt.drain_to(&mut target);
+        assert_eq!(target.num_frames(), 1);
+    }
+
+    #[test]
+    fn drain_to_multi() {
+        let mut bufs = [[0u8; 64]; 3];
+        let frames: Vec<_> = bufs.iter_mut().map(|b| make_frame(b, 10)).collect();
+        let pkt = Packet::Multi(frames);
+        let mut target = BasicFrameBuffer::new(4);
+        pkt.drain_to(&mut target);
+        assert_eq!(target.num_frames(), 3);
+    }
+
+    #[test]
+    fn drain_to_empty() {
+        let pkt: Packet<'_> = Packet::Empty;
+        let mut target = BasicFrameBuffer::new(4);
+        pkt.drain_to(&mut target);
+        assert_eq!(target.num_frames(), 0);
     }
 }

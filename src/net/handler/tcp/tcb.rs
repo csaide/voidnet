@@ -541,4 +541,31 @@ mod tests {
         // free_space = 128 (empty buffer).
         assert_eq!(tcb.last_advertised_right_edge, 5000u32.wrapping_add(128));
     }
+
+    #[test]
+    fn update_send_window_zero_to_nonzero_returns_true() {
+        let mut tcb = make_tcb(false, 0, 0, 1024);
+        assert_eq!(tcb.snd_wnd, 0);
+        assert!(tcb.update_send_window(1000));
+    }
+
+    #[test]
+    fn update_send_window_nonzero_to_nonzero_returns_false() {
+        let mut tcb = make_tcb(false, 0, 0, 1024);
+        tcb.snd_wnd = 500;
+        assert!(!tcb.update_send_window(1000));
+    }
+
+    #[test]
+    fn update_send_window_nonzero_to_zero_returns_false() {
+        let mut tcb = make_tcb(false, 0, 0, 1024);
+        tcb.snd_wnd = 500;
+        assert!(!tcb.update_send_window(0));
+    }
+
+    #[test]
+    fn update_send_window_zero_to_zero_returns_false() {
+        let mut tcb = make_tcb(false, 0, 0, 1024);
+        assert!(!tcb.update_send_window(0));
+    }
 }

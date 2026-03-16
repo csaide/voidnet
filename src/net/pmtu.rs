@@ -197,4 +197,40 @@ mod tests {
         assert_eq!(cache.table.len(), 1);
         assert_eq!(cache.get(now, &addr), 1200);
     }
+
+    #[test]
+    fn with_mtu_sets_custom_default() {
+        let now = Instant::now();
+        let cache = PmtuCache::with_mtu(9000);
+        let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
+        assert_eq!(cache.get(now, &addr), 9000);
+    }
+
+    #[test]
+    fn default_trait_uses_standard_mtu() {
+        let now = Instant::now();
+        let cache = PmtuCache::default();
+        let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
+        assert_eq!(cache.get(now, &addr), 1500);
+    }
+
+    #[test]
+    fn evict_stale_mixed_v4_v6() {
+        let now = Instant::now();
+        let mut cache = PmtuCache::with_mtu_and_ttl(1500, Duration::from_secs(60));
+        let v4 = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
+        let v6 = IpAddress::V6(Ipv6Address::new([
+            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]));
+
+        cache.update(now, v4, 1400);
+        let later = now.add(Duration::from_secs(30));
+        cache.update(later, v6, 1280);
+
+        let evict_time = now.add(Duration::from_secs(61));
+        cache.evict_stale(evict_time);
+        assert_eq!(cache.table.len(), 1);
+        assert_eq!(cache.get(evict_time, &v6), 1280);
+        assert_eq!(cache.get(evict_time, &v4), 1500);
+    }
 }
