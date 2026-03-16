@@ -24,3 +24,30 @@ pub mod IpProtocols {
     pub const Udp: u8 = 17;
     pub const Tcp: u8 = 6;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_known_protocols() {
+        assert_eq!(format!("{}", IpProtocol(IpProtocols::Icmp)), "ICMP");
+        assert_eq!(format!("{}", IpProtocol(IpProtocols::IcmpV6)), "ICMPv6");
+        assert_eq!(format!("{}", IpProtocol(IpProtocols::Udp)), "UDP");
+        assert_eq!(format!("{}", IpProtocol(IpProtocols::Tcp)), "TCP");
+    }
+
+    #[test]
+    fn display_unknown_protocol() {
+        assert_eq!(format!("{}", IpProtocol(255)), "Unknown");
+        assert_eq!(format!("{}", IpProtocol(0)), "Unknown");
+    }
+
+    #[test]
+    fn protocol_constants() {
+        assert_eq!(IpProtocols::Icmp, 1);
+        assert_eq!(IpProtocols::IcmpV6, 58);
+        assert_eq!(IpProtocols::Udp, 17);
+        assert_eq!(IpProtocols::Tcp, 6);
+    }
+}
