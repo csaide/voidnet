@@ -44,3 +44,74 @@ impl TcpState {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_synchronized() {
+        let synchronized = [
+            TcpState::Established,
+            TcpState::FinWait1,
+            TcpState::FinWait2,
+            TcpState::CloseWait,
+            TcpState::Closing,
+            TcpState::LastAck,
+            TcpState::TimeWait,
+        ];
+        let not_synchronized = [
+            TcpState::Closed,
+            TcpState::Listen,
+            TcpState::SynSent,
+            TcpState::SynReceived,
+        ];
+        for state in synchronized {
+            assert!(
+                state.is_synchronized(),
+                "{:?} should be synchronized",
+                state
+            );
+        }
+        for state in not_synchronized {
+            assert!(
+                !state.is_synchronized(),
+                "{:?} should not be synchronized",
+                state
+            );
+        }
+    }
+
+    #[test]
+    fn is_remote_closed() {
+        let remote_closed = [
+            TcpState::CloseWait,
+            TcpState::LastAck,
+            TcpState::TimeWait,
+            TcpState::Closing,
+            TcpState::Closed,
+        ];
+        let not_remote_closed = [
+            TcpState::Listen,
+            TcpState::SynSent,
+            TcpState::SynReceived,
+            TcpState::Established,
+            TcpState::FinWait1,
+            TcpState::FinWait2,
+        ];
+        for state in remote_closed {
+            assert!(
+                state.is_remote_closed(),
+                "{:?} should be remote_closed",
+                state
+            );
+        }
+        for state in not_remote_closed {
+            assert!(
+                !state.is_remote_closed(),
+                "{:?} should not be remote_closed",
+                state
+            );
+        }
+    }
+}
