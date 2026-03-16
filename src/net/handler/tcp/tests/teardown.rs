@@ -2628,3 +2628,69 @@ fn last_ack_partial_ack_does_not_remove_connection() {
     assert_eq!(handler.connections.len(), 1);
     assert_eq!(handler.first_connection().state, TcpState::LastAck);
 }
+
+// ---------------------------------------------------------------------------
+// Closing: partial ACK (does not cover our FIN) stays in Closing
+// ---------------------------------------------------------------------------
+#[test]
+fn closing_partial_ack_stays_in_closing() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let (mut free, mut rx, mut tx) = alloc_buffers();
+
+    let (server_iss, fin_seq) = setup_fin_wait1(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+    // Remote sends FIN without ACKing ours → Closing.
+    let fin = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        1001,
+        server_iss.wrapping_add(1), // ACK for our SYN-ACK, but not our FIN
+        flags::ACK | flags::FIN,
+        65535,
+        &[],
+    );
+    let len = fin.len();
+    handler.process_ipv4(
+        Frame::new(20, leak(fin), len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+    assert_eq!(handler.first_connection().state, TcpState::Closing);
+    while tx.pop().is_some() {}
+
+    // Send ACK that does NOT cover our FIN (ack = fin_seq, not fin_seq+1).
+    let partial_ack = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        1002,
+        fin_seq, // does not cover fin_seq (needs fin_seq+1)
+        flags::ACK,
+        65535,
+        &[],
+    );
+    let ack_len = partial_ack.len();
+    handler.process_ipv4(
+        Frame::new(21, leak(partial_ack), ack_len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    // Connection should stay in Closing — partial ACK doesn't cover our FIN.
+    assert_eq!(handler.connections.len(), 1);
+    assert_eq!(
+        handler.first_connection().state,
+        TcpState::Closing,
+        "partial ACK that does not cover fin_seq must not advance to TimeWait"
+    );
+}

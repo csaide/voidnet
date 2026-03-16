@@ -1496,3 +1496,82 @@ fn window_scale_applied_on_handshake_completion() {
     // Window should be scaled: 512 << 7 = 65536.
     assert_eq!(handler.first_connection().snd_wnd, 512 << 7);
 }
+
+#[test]
+fn bare_ack_in_syn_sent_is_dropped() {
+    // In SYN-SENT, a segment with neither SYN nor RST (just ACK or bare)
+    // should be silently dropped (RFC 9293 §3.10.7.2, step 4).
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(32);
+    let mut rx = BasicFrameBuffer::new(32);
+    let mut tx = BasicFrameBuffer::new(32);
+    for i in 0..16 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let src_mac =
+        crate::net::wire::ethernet::MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    let dst_mac =
+        crate::net::wire::ethernet::MacAddress::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    nh.seed_cache(
+        coarsetime::Instant::now(),
+        IpAddress::V4(REMOTE_IP),
+        MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),
+    );
+
+    // connect() sends SYN → SynSent.
+    let (_key, _eq) = handler
+        .connect(
+            IpAddress::V4(LOCAL_IP),
+            5000,
+            IpAddress::V4(REMOTE_IP),
+            80,
+            src_mac,
+            dst_mac,
+            coarsetime::Instant::now(),
+            &mut free,
+            &mut tx,
+        )
+        .unwrap();
+    while tx.pop().is_some() {}
+    assert_eq!(handler.first_connection().state, TcpState::SynSent);
+
+    let client_iss = handler.first_connection().iss;
+
+    // Send a bare ACK (no SYN, no RST) with acceptable ACK value.
+    // This should be silently dropped — only SYN or RST are processed in SynSent.
+    let bare_ack = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        80,
+        5000,
+        2000,
+        client_iss.wrapping_add(1),
+        flags::ACK, // just ACK, no SYN
+        65535,
+        &[],
+    );
+    let len = bare_ack.len();
+    handler.process_ipv4(
+        Frame::new(50, leak(bare_ack), len, false),
+        coarsetime::Instant::now(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    // Connection should remain in SynSent — bare ACK is dropped.
+    assert_eq!(handler.connections.len(), 1);
+    assert_eq!(
+        handler.first_connection().state,
+        TcpState::SynSent,
+        "bare ACK without SYN should be dropped in SynSent"
+    );
+    assert_eq!(
+        tx.num_frames(),
+        0,
+        "no response expected for bare ACK in SynSent"
+    );
+}

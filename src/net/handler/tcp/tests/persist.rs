@@ -127,3 +127,54 @@ fn persist_timer_clears_when_window_reopens() {
         "persist_backoff should be reset"
     );
 }
+
+#[test]
+fn persist_backoff_caps_at_six() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(32);
+    let mut rx = BasicFrameBuffer::new(32);
+    let mut tx = BasicFrameBuffer::new(32);
+    for i in 0..16 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+    // Write enough data to sustain many probes (each probe sends 1 byte).
+    handler
+        .first_connection_mut()
+        .send_buffer
+        .write(&[0x41u8; 20]);
+    handler.first_connection_mut().snd_wnd = 0;
+
+    let now = coarsetime::Instant::now();
+
+    // Arm the persist timer.
+    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    assert!(handler.first_connection().persist_deadline.is_some());
+    assert_eq!(handler.first_connection().persist_backoff, 0);
+
+    // Fire the persist probe multiple times (more than 6) by setting deadline to past.
+    for i in 0..10 {
+        handler.first_connection_mut().persist_deadline = Some(now);
+        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+        while tx.pop().is_some() {}
+
+        let expected = (i + 1).min(6);
+        assert_eq!(
+            handler.first_connection().persist_backoff,
+            expected,
+            "persist_backoff should be {} after {} probes",
+            expected,
+            i + 1
+        );
+    }
+
+    // Final check: backoff must be capped at exactly 6.
+    assert_eq!(
+        handler.first_connection().persist_backoff,
+        6,
+        "persist_backoff must be capped at 6"
+    );
+}

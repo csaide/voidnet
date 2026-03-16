@@ -683,3 +683,55 @@ fn no_retransmit_when_deadline_is_none() {
         "nothing should be sent with no deadline and no pending ACK"
     );
 }
+
+// ---------------------------------------------------------------------------
+// RTO fires with empty send buffer — no retransmit frame sent
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rto_fires_with_empty_send_buffer_no_retransmit() {
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(64);
+    let mut rx = BasicFrameBuffer::new(64);
+    let mut tx = BasicFrameBuffer::new(64);
+    for i in 0..32 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+
+    // Set retransmit_deadline in the past with an EMPTY send buffer.
+    // This simulates the edge case where the RTO fires but there's nothing to retransmit
+    // (e.g., all data was ACKed but the deadline wasn't cleared).
+    let now = coarsetime::Instant::now();
+    handler.first_connection_mut().retransmit_deadline =
+        Some(now - coarsetime::Duration::from_millis(1));
+    handler.first_connection_mut().rto_backoff = 0;
+    handler.first_connection_mut().ack_pending = false;
+
+    // send_buffer is empty (no data written).
+    assert_eq!(handler.first_connection().send_buffer.available(), 0);
+
+    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+
+    // No data frame should be sent since send_buffer is empty.
+    assert_eq!(
+        tx.num_frames(),
+        0,
+        "no retransmit frame should be sent with empty send buffer"
+    );
+
+    // rto_backoff should still be incremented (timer processing still runs).
+    assert_eq!(
+        handler.first_connection().rto_backoff,
+        1,
+        "rto_backoff should be incremented even with empty buffer"
+    );
+
+    // Retransmit deadline should be rescheduled.
+    assert!(
+        handler.first_connection().retransmit_deadline.is_some(),
+        "retransmit deadline should be rescheduled"
+    );
+}
