@@ -194,4 +194,72 @@ mod tests {
         let frame = EthernetFrame::from_bytes(&exact);
         let _ = frame.ether_type;
     }
+
+    #[test]
+    fn mac_address_display() {
+        let mac = MacAddress::new([0x01, 0x23, 0x45, 0x67, 0x89, 0xAB]);
+        assert_eq!(format!("{}", mac), "01:23:45:67:89:ab");
+
+        assert_eq!(format!("{}", MacAddress::zero()), "00:00:00:00:00:00");
+        assert_eq!(format!("{}", MacAddress::broadcast()), "ff:ff:ff:ff:ff:ff");
+    }
+
+    #[test]
+    fn ether_type_display() {
+        assert_eq!(format!("{}", EtherTypes::IPv4), "IPv4");
+        assert_eq!(format!("{}", EtherTypes::IPv6), "IPv6");
+        assert_eq!(format!("{}", EtherTypes::Arp), "ARP");
+        assert_eq!(
+            format!(
+                "{}",
+                EtherType {
+                    octets: [0x00, 0x00]
+                }
+            ),
+            "Unknown"
+        );
+    }
+
+    #[test]
+    fn ethernet_frame_display() {
+        let mut data = [0u8; 14];
+        let src = MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        let dst = MacAddress::new([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        write_ethernet_header(&mut data, dst, src, EtherTypes::IPv4);
+        let frame = EthernetFrame::from_bytes(&data);
+        let display = format!("{}", frame);
+        assert!(display.contains("aa:bb:cc:dd:ee:ff"));
+        assert!(display.contains("11:22:33:44:55:66"));
+        assert!(display.contains("IPv4"));
+    }
+
+    #[test]
+    fn write_ethernet_header_sets_fields() {
+        let mut data = [0u8; 14];
+        let src = MacAddress::new([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        let dst = MacAddress::broadcast();
+        write_ethernet_header(&mut data, dst, src, EtherTypes::Arp);
+        let frame = EthernetFrame::from_bytes(&data);
+        assert_eq!(frame.dst_mac, MacAddress::broadcast());
+        assert_eq!(frame.src_mac, src);
+        assert_eq!(frame.ether_type, EtherTypes::Arp);
+    }
+
+    #[test]
+    fn from_bytes_mut_allows_mutation() {
+        let mut data = [0u8; 14];
+        let frame = EthernetFrame::from_bytes_mut(&mut data);
+        frame.dst_mac = MacAddress::broadcast();
+        frame.ether_type = EtherTypes::IPv6;
+        let frame = EthernetFrame::from_bytes(&data);
+        assert_eq!(frame.dst_mac, MacAddress::broadcast());
+        assert_eq!(frame.ether_type, EtherTypes::IPv6);
+    }
+
+    #[test]
+    #[should_panic(expected = "assertion")]
+    fn from_bytes_mut_rejects_truncated_frame() {
+        let mut short = [0u8; 13];
+        let _ = EthernetFrame::from_bytes_mut(&mut short);
+    }
 }
