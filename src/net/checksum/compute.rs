@@ -1,8 +1,6 @@
-use crate::net::wire::ip::{IpProtocols, Ipv4Address, Ipv6Address};
+use crate::net::wire::ip::{IpProtocols, IpVersion, Ipv4, Ipv4Address, Ipv6, Ipv6Address};
 
-use super::{
-    checksum_to_bytes, fold_checksum, pseudo_header_sum_v4, pseudo_header_sum_v6, sum_words,
-};
+use super::{checksum_to_bytes, fold_checksum, pseudo_header_sum_v6, sum_words};
 
 /// Computes the IPv4 header checksum per RFC 1071.
 ///
@@ -12,6 +10,25 @@ use super::{
 pub fn compute_ipv4_checksum(header_bytes: &[u8]) -> [u8; 2] {
     let checksum = fold_checksum(sum_words(header_bytes));
     checksum.to_be_bytes()
+}
+
+/// Compute UDP checksum generically over any IP version (from port/payload parts).
+#[inline]
+pub fn compute_udp_checksum_ip<V: IpVersion>(
+    src_addr: &V::Address,
+    dst_addr: &V::Address,
+    src_port: u16,
+    dst_port: u16,
+    udp_len: u16,
+    payload: &[u8],
+) -> [u8; 2] {
+    let sum = V::pseudo_header_sum(src_addr, dst_addr, IpProtocols::Udp, udp_len as u32)
+        + src_port as u64
+        + dst_port as u64
+        + udp_len as u64
+        // checksum field is zero, contributes nothing
+        + sum_words(payload);
+    checksum_to_bytes(fold_checksum(sum))
 }
 
 /// Compute IPv4 UDP checksum without allocating (from port/payload parts).
@@ -24,13 +41,7 @@ pub fn compute_udp_checksum_from_parts(
     udp_len: u16,
     payload: &[u8],
 ) -> [u8; 2] {
-    let sum = pseudo_header_sum_v4(src_addr, dst_addr, IpProtocols::Udp, udp_len)
-        + src_port as u64
-        + dst_port as u64
-        + udp_len as u64
-        // checksum field is zero, contributes nothing
-        + sum_words(payload);
-    checksum_to_bytes(fold_checksum(sum))
+    compute_udp_checksum_ip::<Ipv4>(src_addr, dst_addr, src_port, dst_port, udp_len, payload)
 }
 
 /// Compute IPv6 UDP checksum without allocating (from port/payload parts).
@@ -43,11 +54,20 @@ pub fn compute_udp_checksum_v6_from_parts(
     udp_len: u16,
     payload: &[u8],
 ) -> [u8; 2] {
-    let sum = pseudo_header_sum_v6(src_addr, dst_addr, IpProtocols::Udp, udp_len as u32)
-        + src_port as u64
-        + dst_port as u64
-        + udp_len as u64
-        // checksum field is zero, contributes nothing
+    compute_udp_checksum_ip::<Ipv6>(src_addr, dst_addr, src_port, dst_port, udp_len, payload)
+}
+
+/// Compute TCP checksum generically over any IP version (from header/payload parts).
+#[inline]
+pub fn compute_tcp_checksum_ip<V: IpVersion>(
+    src_addr: &V::Address,
+    dst_addr: &V::Address,
+    tcp_header_bytes: &[u8],
+    payload: &[u8],
+) -> [u8; 2] {
+    let total_len = (tcp_header_bytes.len() + payload.len()) as u32;
+    let sum = V::pseudo_header_sum(src_addr, dst_addr, IpProtocols::Tcp, total_len)
+        + sum_words(tcp_header_bytes)
         + sum_words(payload);
     checksum_to_bytes(fold_checksum(sum))
 }
@@ -60,11 +80,7 @@ pub fn compute_tcp_checksum_from_parts(
     tcp_header_bytes: &[u8],
     payload: &[u8],
 ) -> [u8; 2] {
-    let tcp_len = (tcp_header_bytes.len() + payload.len()) as u16;
-    let sum = pseudo_header_sum_v4(src_addr, dst_addr, IpProtocols::Tcp, tcp_len)
-        + sum_words(tcp_header_bytes)
-        + sum_words(payload);
-    checksum_to_bytes(fold_checksum(sum))
+    compute_tcp_checksum_ip::<Ipv4>(src_addr, dst_addr, tcp_header_bytes, payload)
 }
 
 /// Compute IPv6 TCP checksum without allocating (from header/payload parts).
@@ -75,11 +91,7 @@ pub fn compute_tcp_checksum_v6_from_parts(
     tcp_header_bytes: &[u8],
     payload: &[u8],
 ) -> [u8; 2] {
-    let tcp_len = (tcp_header_bytes.len() + payload.len()) as u32;
-    let sum = pseudo_header_sum_v6(src_addr, dst_addr, IpProtocols::Tcp, tcp_len)
-        + sum_words(tcp_header_bytes)
-        + sum_words(payload);
-    checksum_to_bytes(fold_checksum(sum))
+    compute_tcp_checksum_ip::<Ipv6>(src_addr, dst_addr, tcp_header_bytes, payload)
 }
 
 /// Computes the ICMPv6 checksum per RFC 4443 s2.3.
