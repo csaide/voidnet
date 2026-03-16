@@ -464,6 +464,96 @@ mod tests {
     }
 
     #[test]
+    fn read_all_content_length_body() {
+        let payload = b"Hello, World!";
+        let (stream, mut buf) = make_reader_parts(payload);
+        let mut reader = BodyReader::new(
+            &stream,
+            &mut buf,
+            BodyFraming::ContentLength(payload.len()),
+            false,
+        );
+
+        let body = futures::executor::block_on(reader.read_all(1024)).expect("read_all failed");
+        assert_eq!(body, payload);
+        assert!(reader.is_finished());
+    }
+
+    #[test]
+    fn read_all_exceeds_size_limit() {
+        let payload = b"This is a longer payload than allowed";
+        let (stream, mut buf) = make_reader_parts(payload);
+        let mut reader = BodyReader::new(
+            &stream,
+            &mut buf,
+            BodyFraming::ContentLength(payload.len()),
+            false,
+        );
+
+        // Set limit smaller than payload
+        let result = futures::executor::block_on(reader.read_all(10));
+        assert!(result.is_err(), "expected error when body exceeds limit");
+        match result.unwrap_err() {
+            HttpError::Parse(ParseError::RequestTooLarge) => {}
+            e => panic!("expected RequestTooLarge, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn chunked_read_invalid_chunk_size_non_hex() {
+        // "ZZZ" is not valid hex — should return InvalidChunkEncoding.
+        let payload = b"ZZZ\r\ndata\r\n0\r\n\r\n";
+        let (stream, mut buf) = make_reader_parts(payload);
+        let mut reader = BodyReader::new(&stream, &mut buf, BodyFraming::Chunked, false);
+
+        let mut dest = [0u8; 64];
+        let result = futures::executor::block_on(reader.read(&mut dest));
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HttpError::Parse(ParseError::InvalidChunkEncoding) => {}
+            e => panic!("expected InvalidChunkEncoding, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn chunked_read_with_bare_newline_in_size_line() {
+        // Use bare \n instead of \r\n in the chunk size line.
+        // The parser should tolerate this (it searches for \n, strips optional \r).
+        let payload = b"5\nhello\r\n0\n\r\n";
+        let (stream, mut buf) = make_reader_parts(payload);
+        let mut reader = BodyReader::new(&stream, &mut buf, BodyFraming::Chunked, false);
+
+        let mut dest = [0u8; 64];
+        let n = futures::executor::block_on(reader.read(&mut dest)).expect("read failed");
+        assert_eq!(n, 5);
+        assert_eq!(&dest[..n], b"hello");
+    }
+
+    #[test]
+    fn chunked_read_with_chunk_extension() {
+        // Chunk extension (e.g., "5;ext=val\r\n") should be trimmed at `;`.
+        let payload = b"5;ext=val\r\nhello\r\n0\r\n\r\n";
+        let (stream, mut buf) = make_reader_parts(payload);
+        let mut reader = BodyReader::new(&stream, &mut buf, BodyFraming::Chunked, false);
+
+        let mut dest = [0u8; 64];
+        let n = futures::executor::block_on(reader.read(&mut dest)).expect("read failed");
+        assert_eq!(n, 5);
+        assert_eq!(&dest[..n], b"hello");
+    }
+
+    #[test]
+    fn read_all_chunked_body() {
+        let payload = b"3\r\nabc\r\n4\r\ndefg\r\n0\r\n\r\n";
+        let (stream, mut buf) = make_reader_parts(payload);
+        let mut reader = BodyReader::new(&stream, &mut buf, BodyFraming::Chunked, false);
+
+        let body = futures::executor::block_on(reader.read_all(1024)).expect("read_all failed");
+        assert_eq!(body, b"abcdefg");
+        assert!(reader.is_finished());
+    }
+
+    #[test]
     fn chunked_read_large_chunk_size() {
         // Chunk size in hex: "10" = 16 bytes
         let payload = b"10\r\n0123456789abcdef\r\n0\r\n\r\n";

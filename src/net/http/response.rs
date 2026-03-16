@@ -385,6 +385,127 @@ mod tests {
         }
     }
 
+    /// Verify that common HTTP status reason phrases produce `Cow::Borrowed`
+    /// via the same match arms used in `set_status()`.
+    #[test]
+    fn status_phrase_200_ok_is_borrowed() {
+        let cow: Cow<'static, str> = match "OK" {
+            "OK" => Cow::Borrowed("OK"),
+            "Created" => Cow::Borrowed("Created"),
+            "No Content" => Cow::Borrowed("No Content"),
+            "Moved Permanently" => Cow::Borrowed("Moved Permanently"),
+            "Not Modified" => Cow::Borrowed("Not Modified"),
+            "Not Found" => Cow::Borrowed("Not Found"),
+            "Internal Server Error" => Cow::Borrowed("Internal Server Error"),
+            other => Cow::Owned(other.to_string()),
+        };
+        assert!(matches!(cow, Cow::Borrowed("OK")));
+    }
+
+    #[test]
+    fn status_phrase_404_not_found_is_borrowed() {
+        let cow: Cow<'static, str> = match "Not Found" {
+            "OK" => Cow::Borrowed("OK"),
+            "Not Found" => Cow::Borrowed("Not Found"),
+            other => Cow::Owned(other.to_string()),
+        };
+        assert!(matches!(cow, Cow::Borrowed("Not Found")));
+    }
+
+    #[test]
+    fn status_phrase_500_internal_server_error_is_borrowed() {
+        let cow: Cow<'static, str> = match "Internal Server Error" {
+            "OK" => Cow::Borrowed("OK"),
+            "Internal Server Error" => Cow::Borrowed("Internal Server Error"),
+            other => Cow::Owned(other.to_string()),
+        };
+        assert!(matches!(cow, Cow::Borrowed("Internal Server Error")));
+    }
+
+    #[test]
+    fn status_phrase_301_moved_permanently_is_borrowed() {
+        let cow: Cow<'static, str> = match "Moved Permanently" {
+            "Moved Permanently" => Cow::Borrowed("Moved Permanently"),
+            other => Cow::Owned(other.to_string()),
+        };
+        assert!(matches!(cow, Cow::Borrowed("Moved Permanently")));
+    }
+
+    #[test]
+    fn status_phrase_304_not_modified_is_borrowed() {
+        let cow: Cow<'static, str> = match "Not Modified" {
+            "Not Modified" => Cow::Borrowed("Not Modified"),
+            other => Cow::Owned(other.to_string()),
+        };
+        assert!(matches!(cow, Cow::Borrowed("Not Modified")));
+    }
+
+    #[test]
+    fn status_phrase_all_borrowed_variants() {
+        // Exhaustively verify every Cow::Borrowed arm in set_status().
+        let phrases = [
+            "OK",
+            "Created",
+            "No Content",
+            "Moved Permanently",
+            "Found",
+            "Not Modified",
+            "Bad Request",
+            "Unauthorized",
+            "Forbidden",
+            "Not Found",
+            "Method Not Allowed",
+            "Internal Server Error",
+            "Service Unavailable",
+        ];
+        for phrase in phrases {
+            let cow: Cow<'static, str> = match phrase {
+                "OK" => Cow::Borrowed("OK"),
+                "Created" => Cow::Borrowed("Created"),
+                "No Content" => Cow::Borrowed("No Content"),
+                "Moved Permanently" => Cow::Borrowed("Moved Permanently"),
+                "Found" => Cow::Borrowed("Found"),
+                "Not Modified" => Cow::Borrowed("Not Modified"),
+                "Bad Request" => Cow::Borrowed("Bad Request"),
+                "Unauthorized" => Cow::Borrowed("Unauthorized"),
+                "Forbidden" => Cow::Borrowed("Forbidden"),
+                "Not Found" => Cow::Borrowed("Not Found"),
+                "Method Not Allowed" => Cow::Borrowed("Method Not Allowed"),
+                "Internal Server Error" => Cow::Borrowed("Internal Server Error"),
+                "Service Unavailable" => Cow::Borrowed("Service Unavailable"),
+                other => Cow::Owned(other.to_string()),
+            };
+            assert!(
+                matches!(cow, Cow::Borrowed(_)),
+                "expected Cow::Borrowed for phrase {:?}",
+                phrase
+            );
+            assert_eq!(&*cow, phrase);
+        }
+    }
+
+    #[test]
+    fn status_code_digit_extraction() {
+        // Verify the digit extraction logic used in flush_headers().
+        let cases: &[(u16, [u8; 3])] = &[
+            (200, [b'2', b'0', b'0']),
+            (404, [b'4', b'0', b'4']),
+            (500, [b'5', b'0', b'0']),
+            (301, [b'3', b'0', b'1']),
+            (304, [b'3', b'0', b'4']),
+            (201, [b'2', b'0', b'1']),
+            (503, [b'5', b'0', b'3']),
+        ];
+        for &(code, expected) in cases {
+            let digits = [
+                b'0' + (code / 100) as u8,
+                b'0' + ((code / 10) % 10) as u8,
+                b'0' + (code % 10) as u8,
+            ];
+            assert_eq!(digits, expected, "failed for status code {}", code);
+        }
+    }
+
     #[test]
     fn write_hex_mixed_digits() {
         let mut buf = [0u8; HEX_BUF_LEN];

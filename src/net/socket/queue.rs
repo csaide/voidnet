@@ -360,6 +360,44 @@ mod tests {
     }
 
     #[test]
+    fn local_queue_drain_range() {
+        let queue = LocalQueue::new(8);
+        for i in 0..5u32 {
+            queue.push(i);
+        }
+        let drained: Vec<_> = queue.drain(1..3).collect();
+        assert_eq!(drained, vec![1, 2]);
+        assert_eq!(queue.len(), 3);
+        // Remaining items: 0, 3, 4
+        assert_eq!(queue.pop(), Some(0));
+        assert_eq!(queue.pop(), Some(3));
+        assert_eq!(queue.pop(), Some(4));
+        assert_eq!(queue.pop(), None);
+    }
+
+    #[test]
+    fn local_queue_drain_full_range() {
+        let queue = LocalQueue::new(4);
+        for i in 0..4u32 {
+            queue.push(i);
+        }
+        let drained: Vec<_> = queue.drain(..).collect();
+        assert_eq!(drained, vec![0, 1, 2, 3]);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn local_queue_drain_empty_range() {
+        let queue = LocalQueue::new(8);
+        for i in 0..5u32 {
+            queue.push(i);
+        }
+        let drained: Vec<_> = queue.drain(2..2).collect();
+        assert!(drained.is_empty());
+        assert_eq!(queue.len(), 5);
+    }
+
+    #[test]
     fn local_wraparound_correctness() {
         let q = LocalQueue::new(3);
 

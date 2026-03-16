@@ -675,12 +675,6 @@ mod tests {
 
             let (_recv_half, _send_half) = sock.split();
 
-            // After splitting, the socket's accessors still work.
-            // (the split borrows mutably so we can't call accessors while split
-            //  is alive, but the socket is still valid after the halves are dropped.)
-            drop(_recv_half);
-            drop(_send_half);
-
             assert_eq!(sock.local_addr(), addr);
             assert_eq!(sock.local_port(), 8000);
         });
@@ -723,6 +717,45 @@ mod tests {
             let _sock = UdpSocket::new(addr, 5555).unwrap();
             let err = UdpSocket::new(addr, 5555).unwrap_err();
             assert_eq!(err, BindError::AddressInUse);
+        });
+    }
+
+    #[test]
+    fn split_recv_half_is_separate_from_send_half() {
+        with_test_context(|| {
+            let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
+            let mut sock = UdpSocket::new(addr, 8001).unwrap();
+
+            // split() should succeed and both halves should be usable.
+            let (recv_half, _send_half) = sock.split();
+
+            // RecvHalf should be able to create a RecvFrom future (won't resolve
+            // since there's no data, but the construction must succeed).
+            let _recv_future = recv_half.recv_from();
+
+            // RecvHalf should be able to create a RecvStream.
+            let _recv_stream = recv_half.recv_stream();
+        });
+    }
+
+    #[test]
+    fn multiple_splits_sequential() {
+        with_test_context(|| {
+            let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
+            let mut sock = UdpSocket::new(addr, 8002).unwrap();
+
+            // First split.
+            {
+                let (_recv, _send) = sock.split();
+            }
+
+            // Second split after first halves are dropped.
+            {
+                let (_recv, _send) = sock.split();
+            }
+
+            // Socket should still be valid.
+            assert_eq!(sock.local_port(), 8002);
         });
     }
 

@@ -591,6 +591,47 @@ impl<'stream> Future for TcpRead<'stream> {
     }
 }
 
+pub struct TcpSplice<'stream> {
+    handler: &'stream Rc<UnsafeCell<TcpHandler>>,
+    conn_key: usize,
+    event_queue: &'stream LocalQueue<TcpEvent>,
+    max_len: usize,
+}
+
+impl<'stream> Future for TcpSplice<'stream> {
+    type Output = Result<usize, TcpError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+
+        // Check event queue for errors.
+        while let Some(event) = this.event_queue.pop() {
+            match event {
+                TcpEvent::Reset => return Poll::Ready(Err(TcpError::Reset)),
+                TcpEvent::Timeout => return Poll::Ready(Err(TcpError::Timeout)),
+                _ => {}
+            }
+        }
+
+        let handler = unsafe { &mut *this.handler.get() };
+        if let Some((n, is_remote_closed)) = handler.splice_buffers(this.conn_key, this.max_len) {
+            if n > 0 {
+                Poll::Ready(Ok(n))
+            } else if is_remote_closed {
+                Poll::Ready(Ok(0)) // EOF
+            } else {
+                if let Some(tcb) = handler.get_by_key_mut(this.conn_key) {
+                    tcb.recv_buffer.register_read_waker(cx.waker());
+                }
+                this.event_queue.register_waker(cx.waker());
+                Poll::Pending
+            }
+        } else {
+            Poll::Ready(Err(TcpError::NotConnected))
+        }
+    }
+}
+
 /// Future returned by [`TcpStream::splice()`].
 #[cfg(test)]
 mod tests {
@@ -823,52 +864,68 @@ mod tests {
     }
 
     #[test]
+    fn close_sets_closed_flag() {
+        let mut stream = make_test_stream();
+        assert!(!stream.closed);
+        stream.close();
+        assert!(stream.closed);
+    }
+
+    #[test]
+    fn close_is_idempotent() {
+        let mut stream = make_test_stream();
+        stream.close();
+        assert!(stream.closed);
+        // Second close should not panic.
+        stream.close();
+        assert!(stream.closed);
+    }
+
+    #[test]
+    fn shutdown_sets_write_closed_flag() {
+        let mut stream = make_test_stream();
+        assert!(!stream.write_closed);
+        stream.shutdown();
+        assert!(stream.write_closed);
+    }
+
+    #[test]
+    fn shutdown_is_idempotent() {
+        let mut stream = make_test_stream();
+        stream.shutdown();
+        assert!(stream.write_closed);
+        // Second shutdown should not panic.
+        stream.shutdown();
+        assert!(stream.write_closed);
+    }
+
+    #[test]
+    fn shutdown_then_close() {
+        let mut stream = make_test_stream();
+        stream.shutdown();
+        assert!(stream.write_closed);
+        assert!(!stream.closed);
+        stream.close();
+        assert!(stream.closed);
+    }
+
+    #[test]
+    fn close_prevents_shutdown() {
+        let mut stream = make_test_stream();
+        stream.close();
+        // shutdown after close is a no-op (early return because closed=true)
+        stream.shutdown();
+        assert!(stream.closed);
+        // write_closed should still be false since shutdown was a no-op
+        assert!(!stream.write_closed);
+    }
+
+    #[test]
     fn set_linger_none_clears_previous() {
         let stream = make_test_stream();
         stream.set_linger(Some(3000));
         assert_eq!(stream.linger(), Some(3000));
         stream.set_linger(None);
         assert_eq!(stream.linger(), None);
-    }
-}
-
-pub struct TcpSplice<'stream> {
-    handler: &'stream Rc<UnsafeCell<TcpHandler>>,
-    conn_key: usize,
-    event_queue: &'stream LocalQueue<TcpEvent>,
-    max_len: usize,
-}
-
-impl<'stream> Future for TcpSplice<'stream> {
-    type Output = Result<usize, TcpError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-
-        // Check event queue for errors.
-        while let Some(event) = this.event_queue.pop() {
-            match event {
-                TcpEvent::Reset => return Poll::Ready(Err(TcpError::Reset)),
-                TcpEvent::Timeout => return Poll::Ready(Err(TcpError::Timeout)),
-                _ => {}
-            }
-        }
-
-        let handler = unsafe { &mut *this.handler.get() };
-        if let Some((n, is_remote_closed)) = handler.splice_buffers(this.conn_key, this.max_len) {
-            if n > 0 {
-                Poll::Ready(Ok(n))
-            } else if is_remote_closed {
-                Poll::Ready(Ok(0)) // EOF
-            } else {
-                if let Some(tcb) = handler.get_by_key_mut(this.conn_key) {
-                    tcb.recv_buffer.register_read_waker(cx.waker());
-                }
-                this.event_queue.register_waker(cx.waker());
-                Poll::Pending
-            }
-        } else {
-            Poll::Ready(Err(TcpError::NotConnected))
-        }
     }
 }

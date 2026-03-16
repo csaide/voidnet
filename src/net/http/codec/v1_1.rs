@@ -296,6 +296,57 @@ mod tests {
     }
 
     #[test]
+    fn decode_non_chunked_transfer_encoding_falls_through_to_content_length() {
+        let mut codec = Http11Codec::new();
+        // Transfer-Encoding: gzip (not "chunked") should fall through to
+        // Content-Length handling.
+        let buf = b"POST /data HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: gzip\r\nContent-Length: 20\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(
+                    req.body_framing,
+                    BodyFraming::ContentLength(20),
+                    "non-chunked TE should fall through to Content-Length"
+                );
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_non_chunked_transfer_encoding_no_content_length() {
+        let mut codec = Http11Codec::new();
+        // Transfer-Encoding: gzip with no Content-Length should result in BodyFraming::None.
+        let buf = b"POST /data HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: gzip\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(
+                    req.body_framing,
+                    BodyFraming::None,
+                    "non-chunked TE without Content-Length should be None"
+                );
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_head_request() {
+        let mut codec = Http11Codec::new();
+        let buf = b"HEAD / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(req.method, Method::Head);
+                assert_eq!(req.body_framing, BodyFraming::None);
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn decode_empty_header_value() {
         let mut codec = Http11Codec::new();
         // X-Empty header with no value after the colon.

@@ -258,6 +258,79 @@ mod tests {
 
     // --- prepare_next() compacts buffer and resets session ---
 
+    // --- Request decoding from pre-filled buffers ---
+
+    #[test]
+    fn decode_http11_get_from_prefilled_buffer() {
+        let mut conn = new_test_connection_http11();
+        let req_bytes = b"GET /hello HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        conn.read_buf.append(req_bytes);
+
+        let buf = conn.read_buf.unconsumed();
+        let offset = conn.read_buf.start();
+        let result = conn.session.try_decode_request(buf, offset).unwrap();
+        let (req, consumed) = result.unwrap();
+
+        assert_eq!(req.method, Method::Get);
+        assert_eq!(req.version, Version::Http11);
+        assert_eq!(req.body_framing, BodyFraming::None);
+        assert_eq!(consumed, req_bytes.len());
+    }
+
+    #[test]
+    fn decode_http11_post_with_content_length() {
+        let mut conn = new_test_connection_http11();
+        let req_bytes = b"POST /data HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\n";
+        conn.read_buf.append(req_bytes);
+
+        let buf = conn.read_buf.unconsumed();
+        let offset = conn.read_buf.start();
+        let result = conn.session.try_decode_request(buf, offset).unwrap();
+        let (req, _consumed) = result.unwrap();
+
+        assert_eq!(req.method, Method::Post);
+        assert_eq!(req.body_framing, BodyFraming::ContentLength(5));
+    }
+
+    #[test]
+    fn decode_http11_incomplete_returns_none() {
+        let mut conn = new_test_connection_http11();
+        // Missing final \r\n\r\n
+        conn.read_buf
+            .append(b"GET /hello HTTP/1.1\r\nHost: example.com\r\n");
+
+        let buf = conn.read_buf.unconsumed();
+        let offset = conn.read_buf.start();
+        let result = conn.session.try_decode_request(buf, offset).unwrap();
+        assert!(result.is_none(), "expected None for incomplete request");
+    }
+
+    #[test]
+    fn decode_http11_path_resolution_after_decode() {
+        let mut conn = new_test_connection_http11();
+        let req_bytes = b"GET /test/path HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        conn.read_buf.append(req_bytes);
+
+        let buf = conn.read_buf.unconsumed();
+        let offset = conn.read_buf.start();
+        let result = conn.session.try_decode_request(buf, offset).unwrap();
+        let (req, _consumed) = result.unwrap();
+
+        assert_eq!(conn.request_path(&req), b"/test/path");
+    }
+
+    #[test]
+    fn decode_http11_missing_host_returns_error() {
+        let mut conn = new_test_connection_http11();
+        conn.read_buf
+            .append(b"GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+        let buf = conn.read_buf.unconsumed();
+        let offset = conn.read_buf.start();
+        let result = conn.session.try_decode_request(buf, offset);
+        assert!(result.is_err(), "expected error for missing Host header");
+    }
+
     #[test]
     fn prepare_next_compacts_buffer() {
         let mut conn = new_test_connection_http11();

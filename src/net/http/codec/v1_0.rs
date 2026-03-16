@@ -198,6 +198,52 @@ mod tests {
     }
 
     #[test]
+    fn decode_head_request_http10() {
+        let mut codec = Http10Codec::new();
+        let buf = b"HEAD /status HTTP/1.0\r\nHost: example.com\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(req.method, Method::Head);
+                assert_eq!(req.body_framing, BodyFraming::None);
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_content_length_whitespace_in_value() {
+        // Content-Length with leading/trailing whitespace — the parser should handle
+        // or reject it. This tests the actual behavior.
+        let mut codec = Http10Codec::new();
+        let buf = b"POST /data HTTP/1.0\r\nContent-Length:  42 \r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                // If the parser trims whitespace, it should parse to 42.
+                assert_eq!(req.body_framing, BodyFraming::ContentLength(42));
+            }
+            DecodeResult::Error(ParseError::InvalidContentLength) => {
+                // Also acceptable — some parsers are strict about whitespace.
+            }
+            other => panic!("expected Complete or InvalidContentLength, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_large_content_length() {
+        let mut codec = Http10Codec::new();
+        let buf = b"POST /upload HTTP/1.0\r\nContent-Length: 1048576\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(req.body_framing, BodyFraming::ContentLength(1048576));
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn decode_zero_content_length() {
         let mut codec = Http10Codec::new();
         let buf = b"POST /submit HTTP/1.0\r\nContent-Length: 0\r\n\r\n";

@@ -226,6 +226,57 @@ mod tests {
     }
 
     #[test]
+    fn decode_path_with_query_string() {
+        let mut codec = Http09Codec::new();
+        let buf = b"GET /search?q=hello&lang=en\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(req.method, Method::Get);
+                assert_eq!(req.path_from_buf(buf), b"/search?q=hello&lang=en");
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_path_with_fragment() {
+        let mut codec = Http09Codec::new();
+        let buf = b"GET /page#section\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(req.path_from_buf(buf), b"/page#section");
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_path_with_encoded_chars() {
+        let mut codec = Http09Codec::new();
+        let buf = b"GET /path%20with%20spaces\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(req.path_from_buf(buf), b"/path%20with%20spaces");
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_empty_path_after_space() {
+        let mut codec = Http09Codec::new();
+        let buf = b"GET \r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Error(ParseError::InvalidRequestLine) => {}
+            other => panic!("expected InvalidRequestLine for empty path, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn version_returns_http09() {
         let codec = Http09Codec::new();
         assert_eq!(codec.version(), Version::Http09);
