@@ -134,6 +134,7 @@ impl Codec for Http11Codec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::http::codec::parse::ConnectionDirective;
     use crate::net::http::request::{BodyFraming, Method, Version};
 
     #[test]
@@ -218,5 +219,100 @@ mod tests {
     fn version_returns_http11() {
         let codec = Http11Codec::new();
         assert_eq!(codec.version(), Version::Http11);
+    }
+
+    #[test]
+    fn decode_connection_close_directive() {
+        let mut codec = Http11Codec::new();
+        let buf = b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(req.connection_directive, ConnectionDirective::Close);
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_connection_keep_alive_directive() {
+        let mut codec = Http11Codec::new();
+        let buf = b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(req.connection_directive, ConnectionDirective::KeepAlive);
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_expect_100_continue() {
+        let mut codec = Http11Codec::new();
+        let buf =
+            b"POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 100\r\nExpect: 100-continue\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert!(req.expect_continue);
+                assert_eq!(req.body_framing, BodyFraming::ContentLength(100));
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_expect_not_set_when_absent() {
+        let mut codec = Http11Codec::new();
+        let buf = b"POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert!(!req.expect_continue);
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_multiple_headers_same_name() {
+        let mut codec = Http11Codec::new();
+        // Two X-Custom headers — both should be present in the parsed header list.
+        let buf =
+            b"GET / HTTP/1.1\r\nHost: example.com\r\nX-Custom: first\r\nX-Custom: second\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                let custom_count = req
+                    .headers
+                    .iter()
+                    .filter(|h| buf[h.name_start..h.name_end].eq_ignore_ascii_case(b"X-Custom"))
+                    .count();
+                assert_eq!(custom_count, 2);
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_empty_header_value() {
+        let mut codec = Http11Codec::new();
+        // X-Empty header with no value after the colon.
+        let buf = b"GET / HTTP/1.1\r\nHost: example.com\r\nX-Empty:\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                // Find the X-Empty header and confirm its value span is empty.
+                let empty_header = req
+                    .headers
+                    .iter()
+                    .find(|h| buf[h.name_start..h.name_end].eq_ignore_ascii_case(b"X-Empty"));
+                assert!(empty_header.is_some(), "X-Empty header not found");
+                let h = empty_header.unwrap();
+                assert_eq!(h.value_start, h.value_end, "expected empty value span");
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
     }
 }

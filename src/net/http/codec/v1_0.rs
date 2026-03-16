@@ -180,4 +180,33 @@ mod tests {
         let codec = Http10Codec::new();
         assert_eq!(codec.version(), Version::Http10);
     }
+
+    #[test]
+    fn decode_post_missing_content_length_uses_none_framing() {
+        // HTTP/1.0 POST without Content-Length: connection-close semantics,
+        // body framing defaults to None (not an error).
+        let mut codec = Http10Codec::new();
+        let buf = b"POST /submit HTTP/1.0\r\nHost: example.com\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(req.method, Method::Post);
+                assert_eq!(req.body_framing, BodyFraming::None);
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_zero_content_length() {
+        let mut codec = Http10Codec::new();
+        let buf = b"POST /submit HTTP/1.0\r\nContent-Length: 0\r\n\r\n";
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(req.body_framing, BodyFraming::ContentLength(0));
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
 }

@@ -143,4 +143,58 @@ mod tests {
         assert!(matches!(outcome.result, DecodeResult::Incomplete));
         assert_eq!(outcome.consumed, 0);
     }
+
+    #[test]
+    fn decode_after_transition_to_http11() {
+        // First call transitions Detecting -> Http11 and decodes.
+        let mut codec = HttpCodec::Detecting;
+        let buf = b"GET /hello HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let _ = codec.decode(buf, 0);
+
+        // Second call — codec is now Http11; should decode the same buffer again.
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(req.version, Version::Http11);
+            }
+            other => panic!("expected Complete after transition, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_after_transition_to_http10() {
+        let mut codec = HttpCodec::Detecting;
+        let buf = b"GET /path HTTP/1.0\r\nHost: example.com\r\n\r\n";
+        let _ = codec.decode(buf, 0);
+
+        // Codec is now Http10; call decode again.
+        let outcome = codec.decode(buf, 0);
+        match outcome.result {
+            DecodeResult::Complete(req) => {
+                assert_eq!(req.version, Version::Http10);
+            }
+            other => panic!("expected Complete after transition, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn version_after_transition_to_http11() {
+        let mut codec = HttpCodec::Detecting;
+        // version() before any decode returns Http09 (the Detecting fallback).
+        assert_eq!(codec.version(), Version::Http09);
+
+        let buf = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let _ = codec.decode(buf, 0);
+
+        // After transition the concrete codec's version is returned.
+        assert_eq!(codec.version(), Version::Http11);
+    }
+
+    #[test]
+    fn version_after_transition_to_http10() {
+        let mut codec = HttpCodec::Detecting;
+        let buf = b"GET / HTTP/1.0\r\nHost: example.com\r\n\r\n";
+        let _ = codec.decode(buf, 0);
+        assert_eq!(codec.version(), Version::Http10);
+    }
 }
