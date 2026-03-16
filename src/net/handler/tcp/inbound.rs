@@ -3,11 +3,11 @@ use coarsetime::Instant;
 use crate::{
     net::{
         NeighborHandler,
-        checksum::{verify_tcp_checksum, verify_tcp_checksum_v6},
+        checksum::verify_tcp_checksum_ip,
         socket::LocalQueue,
         wire::{
             ethernet::EthernetFrame,
-            ip::{IpAddress, Ipv4Header, Ipv6Header},
+            ip::{IpAddress, Ipv4, Ipv4Header, Ipv6, Ipv6Header},
             tcp::{
                 TCP_HEADER_LEN, TcpHeader, flags, parse_mss, parse_sack_permitted, parse_timestamp,
                 parse_window_scale,
@@ -106,7 +106,7 @@ impl TcpHandler {
         // Checksum verification.
         if !self.rx_offload {
             let tcp_segment = &frame[tcp_offset..];
-            if !verify_tcp_checksum(&src_addr, &dst_addr, tcp_segment) {
+            if !verify_tcp_checksum_ip::<Ipv4>(&src_addr, &dst_addr, tcp_segment) {
                 rx_return.push(frame);
                 return;
             }
@@ -198,7 +198,7 @@ impl TcpHandler {
 
         if !self.rx_offload {
             let tcp_segment = &frame[tcp_offset..];
-            if !verify_tcp_checksum_v6(&src_addr, &dst_addr, tcp_segment) {
+            if !verify_tcp_checksum_ip::<Ipv6>(&src_addr, &dst_addr, tcp_segment) {
                 rx_return.push(frame);
                 return;
             }

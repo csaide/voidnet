@@ -1,11 +1,9 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use libvoid::net::checksum::{
-    compute_tcp_checksum_from_parts, compute_tcp_checksum_v6_from_parts,
-    compute_udp_checksum_from_parts, compute_udp_checksum_v6_from_parts, sum_words,
-    sum_words_carry, verify_tcp_checksum, verify_tcp_checksum_v6, verify_udp_checksum,
-    verify_udp_checksum_v6,
+    compute_tcp_checksum_ip, compute_udp_checksum_ip, sum_words, sum_words_carry,
+    verify_tcp_checksum_ip, verify_udp_checksum_ip,
 };
-use libvoid::net::wire::ip::{Ipv4Address, Ipv6Address};
+use libvoid::net::wire::ip::{Ipv4, Ipv4Address, Ipv6, Ipv6Address};
 use std::hint::black_box;
 
 fn bench_sum_words(c: &mut Criterion) {
@@ -50,7 +48,7 @@ fn make_tcp_v4_segment(payload_size: usize) -> (Ipv4Address, Ipv4Address, Vec<u8
         segment.push((i & 0xFF) as u8);
     }
     // Compute and fill checksum
-    let cksum = compute_tcp_checksum_from_parts(&src, &dst, &segment, &[]);
+    let cksum = compute_tcp_checksum_ip::<Ipv4>(&src, &dst, &segment, &[]);
     segment[16] = cksum[0];
     segment[17] = cksum[1];
     (src, dst, segment)
@@ -67,7 +65,7 @@ fn make_tcp_v6_segment(payload_size: usize) -> (Ipv6Address, Ipv6Address, Vec<u8
     for i in 0..payload_size {
         segment.push((i & 0xFF) as u8);
     }
-    let cksum = compute_tcp_checksum_v6_from_parts(&src, &dst, &segment, &[]);
+    let cksum = compute_tcp_checksum_ip::<Ipv6>(&src, &dst, &segment, &[]);
     segment[16] = cksum[0];
     segment[17] = cksum[1];
     (src, dst, segment)
@@ -91,7 +89,7 @@ fn make_udp_v4_segment(payload_size: usize) -> (Ipv4Address, Ipv4Address, Vec<u8
     }
     // Compute checksum via from_parts (header + payload separately)
     let payload = &segment[8..].to_vec();
-    let cksum = compute_udp_checksum_from_parts(&src, &dst, 0xC000, 0x0035, udp_len, payload);
+    let cksum = compute_udp_checksum_ip::<Ipv4>(&src, &dst, 0xC000, 0x0035, udp_len, payload);
     segment[6] = cksum[0];
     segment[7] = cksum[1];
     (src, dst, segment)
@@ -109,7 +107,7 @@ fn make_udp_v6_segment(payload_size: usize) -> (Ipv6Address, Ipv6Address, Vec<u8
         segment.push((i & 0xFF) as u8);
     }
     let payload = &segment[8..].to_vec();
-    let cksum = compute_udp_checksum_v6_from_parts(&src, &dst, 0xC000, 0x0035, udp_len, payload);
+    let cksum = compute_udp_checksum_ip::<Ipv6>(&src, &dst, 0xC000, 0x0035, udp_len, payload);
     segment[6] = cksum[0];
     segment[7] = cksum[1];
     (src, dst, segment)
@@ -125,7 +123,7 @@ fn bench_verify_tcp_checksum(c: &mut Criterion) {
         let (src4, dst4, seg4) = make_tcp_v4_segment(payload_size);
         group.bench_with_input(BenchmarkId::new("v4", &label), &(), |b, _| {
             b.iter(|| {
-                black_box(verify_tcp_checksum(
+                black_box(verify_tcp_checksum_ip::<Ipv4>(
                     black_box(&src4),
                     black_box(&dst4),
                     black_box(&seg4),
@@ -136,7 +134,7 @@ fn bench_verify_tcp_checksum(c: &mut Criterion) {
         let (src6, dst6, seg6) = make_tcp_v6_segment(payload_size);
         group.bench_with_input(BenchmarkId::new("v6", &label), &(), |b, _| {
             b.iter(|| {
-                black_box(verify_tcp_checksum_v6(
+                black_box(verify_tcp_checksum_ip::<Ipv6>(
                     black_box(&src6),
                     black_box(&dst6),
                     black_box(&seg6),
@@ -159,7 +157,7 @@ fn bench_compute_tcp_checksum(c: &mut Criterion) {
         seg4_zeroed[17] = 0;
         group.bench_with_input(BenchmarkId::new("v4", &label), &(), |b, _| {
             b.iter(|| {
-                black_box(compute_tcp_checksum_from_parts(
+                black_box(compute_tcp_checksum_ip::<Ipv4>(
                     black_box(&src4),
                     black_box(&dst4),
                     black_box(&seg4_zeroed),
@@ -174,7 +172,7 @@ fn bench_compute_tcp_checksum(c: &mut Criterion) {
         seg6_zeroed[17] = 0;
         group.bench_with_input(BenchmarkId::new("v6", &label), &(), |b, _| {
             b.iter(|| {
-                black_box(compute_tcp_checksum_v6_from_parts(
+                black_box(compute_tcp_checksum_ip::<Ipv6>(
                     black_box(&src6),
                     black_box(&dst6),
                     black_box(&seg6_zeroed),
@@ -194,7 +192,7 @@ fn bench_verify_udp_checksum(c: &mut Criterion) {
         let (src4, dst4, seg4) = make_udp_v4_segment(payload_size);
         group.bench_with_input(BenchmarkId::new("v4", &label), &(), |b, _| {
             b.iter(|| {
-                black_box(verify_udp_checksum(
+                black_box(verify_udp_checksum_ip::<Ipv4>(
                     black_box(&src4),
                     black_box(&dst4),
                     black_box(&seg4),
@@ -205,7 +203,7 @@ fn bench_verify_udp_checksum(c: &mut Criterion) {
         let (src6, dst6, seg6) = make_udp_v6_segment(payload_size);
         group.bench_with_input(BenchmarkId::new("v6", &label), &(), |b, _| {
             b.iter(|| {
-                black_box(verify_udp_checksum_v6(
+                black_box(verify_udp_checksum_ip::<Ipv6>(
                     black_box(&src6),
                     black_box(&dst6),
                     black_box(&seg6),
@@ -227,7 +225,7 @@ fn bench_compute_udp_checksum(c: &mut Criterion) {
         let dst4 = Ipv4Address::new([10, 0, 0, 1]);
         group.bench_with_input(BenchmarkId::new("v4", &label), &(), |b, _| {
             b.iter(|| {
-                black_box(compute_udp_checksum_from_parts(
+                black_box(compute_udp_checksum_ip::<Ipv4>(
                     black_box(&src4),
                     black_box(&dst4),
                     black_box(0xC000),
@@ -242,7 +240,7 @@ fn bench_compute_udp_checksum(c: &mut Criterion) {
         let dst6 = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
         group.bench_with_input(BenchmarkId::new("v6", &label), &(), |b, _| {
             b.iter(|| {
-                black_box(compute_udp_checksum_v6_from_parts(
+                black_box(compute_udp_checksum_ip::<Ipv6>(
                     black_box(&src6),
                     black_box(&dst6),
                     black_box(0xC000),

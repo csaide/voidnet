@@ -1,9 +1,10 @@
 use crate::net::{
-    checksum::{compute_tcp_checksum_from_parts, compute_tcp_checksum_v6_from_parts},
+    checksum::compute_tcp_checksum_ip,
     wire::{
         ethernet::{EtherTypes, EthernetFrame, MacAddress, write_ethernet_header},
         ip::{
-            IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, IpProtocols, Ipv4Address, Ipv6Address,
+            IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, IpProtocols, Ipv4, Ipv4Address, Ipv6,
+            Ipv6Address,
         },
         tcp::{
             TCP_HEADER_LEN, TcpHeader, flags, options, write_mss_option, write_sack_option,
@@ -717,7 +718,7 @@ impl SegmentBuilder {
         // TCP checksum.
         if !tx_offload {
             let tcp_bytes = &frame[tcp_offset..frame_len];
-            let checksum = compute_tcp_checksum_from_parts(&src_ip, &dst_ip, tcp_bytes, &[]);
+            let checksum = compute_tcp_checksum_ip::<Ipv4>(&src_ip, &dst_ip, tcp_bytes, &[]);
             frame[tcp_offset + 16] = checksum[0];
             frame[tcp_offset + 17] = checksum[1];
         }
@@ -795,7 +796,7 @@ impl SegmentBuilder {
         // TCP checksum.
         if !tx_offload {
             let tcp_bytes = &frame[tcp_offset..frame_len];
-            let checksum = compute_tcp_checksum_v6_from_parts(&src_ip, &dst_ip, tcp_bytes, &[]);
+            let checksum = compute_tcp_checksum_ip::<Ipv6>(&src_ip, &dst_ip, tcp_bytes, &[]);
             frame[tcp_offset + 16] = checksum[0];
             frame[tcp_offset + 17] = checksum[1];
         }
@@ -883,7 +884,7 @@ impl SegmentBuilder {
 
         // TCP checksum — must cover header (including options) + payload.
         if !tx_offload {
-            let checksum = compute_tcp_checksum_from_parts(
+            let checksum = compute_tcp_checksum_ip::<Ipv4>(
                 &src_ip,
                 &dst_ip,
                 &frame[tcp_offset..tcp_offset + tcp_header_len],
@@ -970,7 +971,7 @@ impl SegmentBuilder {
 
         // TCP checksum.
         if !tx_offload {
-            let checksum = compute_tcp_checksum_v6_from_parts(
+            let checksum = compute_tcp_checksum_ip::<Ipv6>(
                 &src_ip,
                 &dst_ip,
                 &frame[tcp_offset..tcp_offset + tcp_header_len],
@@ -1072,7 +1073,7 @@ impl SegmentBuilder {
 
         // TCP checksum — computed from the frame after both slices are written.
         if !tx_offload {
-            let checksum = compute_tcp_checksum_from_parts(
+            let checksum = compute_tcp_checksum_ip::<Ipv4>(
                 &src_ip,
                 &dst_ip,
                 &frame[tcp_offset..tcp_offset + tcp_header_len],
@@ -1168,7 +1169,7 @@ impl SegmentBuilder {
 
         // TCP checksum.
         if !tx_offload {
-            let checksum = compute_tcp_checksum_v6_from_parts(
+            let checksum = compute_tcp_checksum_ip::<Ipv6>(
                 &src_ip,
                 &dst_ip,
                 &frame[tcp_offset..tcp_offset + tcp_header_len],
@@ -1227,7 +1228,8 @@ impl SegmentBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::checksum::verify_tcp_checksum;
+    use crate::net::checksum::verify_tcp_checksum_ip;
+    use crate::net::wire::ip::Ipv4;
     use crate::net::wire::ip::{IPV4_MIN_HEADER_LEN, IpAddress, Ipv4Address, Ipv4Header};
     use crate::xdp::frame::{BasicFrameBuffer, Frame};
 
@@ -1279,7 +1281,7 @@ mod tests {
         // Verify TCP checksum.
         let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
         let ip = Ipv4Header::from_bytes(&frame);
-        assert!(verify_tcp_checksum(
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
             &ip.src_addr,
             &ip.dst_addr,
             &frame[tcp_offset..]
@@ -1443,7 +1445,7 @@ mod tests {
 
         // Verify TCP checksum.
         let ip = Ipv4Header::from_bytes(&frame);
-        assert!(verify_tcp_checksum(
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
             &ip.src_addr,
             &ip.dst_addr,
             &frame[tcp_offset..]
@@ -1500,7 +1502,7 @@ mod tests {
 
         // Verify TCP checksum.
         let ip = Ipv4Header::from_bytes(&frame);
-        assert!(verify_tcp_checksum(
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
             &ip.src_addr,
             &ip.dst_addr,
             &frame[tcp_offset..]
@@ -1545,7 +1547,7 @@ mod tests {
         // Verify TCP checksum.
         let tcp_offset = ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN;
         let ip = Ipv4Header::from_bytes(&frame);
-        assert!(verify_tcp_checksum(
+        assert!(verify_tcp_checksum_ip::<Ipv4>(
             &ip.src_addr,
             &ip.dst_addr,
             &frame[tcp_offset..]

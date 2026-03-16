@@ -10,12 +10,12 @@ use coarsetime::Instant;
 use crate::{
     net::{
         NeighborHandler, PmtuCache,
-        checksum::{compute_udp_checksum_from_parts, compute_udp_checksum_v6_from_parts},
+        checksum::compute_udp_checksum_ip,
         fragment::{FragmentWriter, Packet},
         handler::udp::{BindError, ReceivedUdpPacket, UdpHandler},
         wire::{
             ethernet::MacAddress,
-            ip::{IpAddress, Ipv4Address, Ipv6Address},
+            ip::{IpAddress, Ipv4, Ipv4Address, Ipv6, Ipv6Address},
             udp::{UDP_HEADER_LEN, UdpHeader},
         },
     },
@@ -361,7 +361,7 @@ impl<'sock, 'buf, 'umem> SendTo<'sock, 'buf, 'umem> {
         let checksum = if self.tx_offload {
             [0, 0]
         } else {
-            compute_udp_checksum_from_parts(
+            compute_udp_checksum_ip::<Ipv4>(
                 &src_ip,
                 &dst_ip,
                 self.src_port,
@@ -398,7 +398,7 @@ impl<'sock, 'buf, 'umem> SendTo<'sock, 'buf, 'umem> {
         let checksum = if self.tx_offload {
             [0, 0]
         } else {
-            compute_udp_checksum_v6_from_parts(
+            compute_udp_checksum_ip::<Ipv6>(
                 &src_ip,
                 &dst_ip,
                 self.src_port,
