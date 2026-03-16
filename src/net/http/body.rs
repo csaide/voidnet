@@ -423,4 +423,56 @@ mod tests {
             e => panic!("expected InvalidChunkEncoding, got {:?}", e),
         }
     }
+
+    #[test]
+    fn content_length_read_exact() {
+        let payload = b"Hello, World!";
+        let (stream, mut buf) = make_reader_parts(payload);
+        let mut reader = BodyReader::new(
+            &stream,
+            &mut buf,
+            BodyFraming::ContentLength(payload.len()),
+            false,
+        );
+
+        let mut dest = [0u8; 64];
+        let n = futures::executor::block_on(reader.read(&mut dest)).expect("read failed");
+        assert_eq!(&dest[..n], payload);
+        assert!(reader.is_finished());
+    }
+
+    #[test]
+    fn content_length_zero_is_immediately_finished() {
+        let (stream, mut buf) = make_reader_parts(b"");
+        let mut reader = BodyReader::new(&stream, &mut buf, BodyFraming::ContentLength(0), false);
+
+        let mut dest = [0u8; 64];
+        let n = futures::executor::block_on(reader.read(&mut dest)).expect("read failed");
+        assert_eq!(n, 0);
+        assert!(reader.is_finished());
+    }
+
+    #[test]
+    fn body_framing_none_returns_zero() {
+        let (stream, mut buf) = make_reader_parts(b"ignored data");
+        let mut reader = BodyReader::new(&stream, &mut buf, BodyFraming::None, false);
+
+        let mut dest = [0u8; 64];
+        let n = futures::executor::block_on(reader.read(&mut dest)).expect("read failed");
+        assert_eq!(n, 0);
+        assert!(reader.is_finished());
+    }
+
+    #[test]
+    fn chunked_read_large_chunk_size() {
+        // Chunk size in hex: "10" = 16 bytes
+        let payload = b"10\r\n0123456789abcdef\r\n0\r\n\r\n";
+        let (stream, mut buf) = make_reader_parts(payload);
+        let mut reader = BodyReader::new(&stream, &mut buf, BodyFraming::Chunked, false);
+
+        let mut dest = [0u8; 64];
+        let n = futures::executor::block_on(reader.read(&mut dest)).expect("read failed");
+        assert_eq!(n, 16);
+        assert_eq!(&dest[..n], b"0123456789abcdef");
+    }
 }
