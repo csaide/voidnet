@@ -752,4 +752,35 @@ mod tests {
         // offset 25 + TCP_HEADER_LEN 20 = 45 > 40
         let _ = unsafe { TcpHeader::from_bytes_at(&buf, 25) };
     }
+
+    #[test]
+    fn seq_le_equal() {
+        assert!(seq_le(100, 100));
+    }
+
+    #[test]
+    fn seq_lt_equal_is_false() {
+        assert!(!seq_lt(100, 100));
+    }
+
+    #[test]
+    fn parse_sack_blocks_empty_options() {
+        let opts: [u8; 0] = [];
+        let (blocks, count) = parse_sack_blocks(&opts);
+        assert_eq!(count, 0);
+        assert!(blocks[0].is_none());
+    }
+
+    #[test]
+    fn parse_sack_blocks_single_block() {
+        let mut opts = [0u8; 10];
+        opts[0] = options::SACK;
+        opts[1] = 10;
+        opts[2..6].copy_from_slice(&500u32.to_be_bytes());
+        opts[6..10].copy_from_slice(&600u32.to_be_bytes());
+        let (blocks, count) = parse_sack_blocks(&opts);
+        assert_eq!(count, 1);
+        assert_eq!(blocks[0], Some((500, 600)));
+        assert!(blocks[1].is_none());
+    }
 }
