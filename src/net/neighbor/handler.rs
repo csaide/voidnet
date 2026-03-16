@@ -140,8 +140,8 @@ impl NeighborHandler {
     }
 
     /// Directly seed the neighbor cache with an IP-to-MAC mapping.
-    /// Used in tests to populate the cache without requiring ARP/NDP exchange.
-    #[cfg(test)]
+    /// Used in tests and benchmarks to populate the cache without requiring ARP/NDP exchange.
+    #[doc(hidden)]
     pub fn seed_cache(&self, now: Instant, ip: IpAddress, mac: MacAddress) {
         self.table
             .insert(ip, NeighborState::reachable(mac, now + self.ttl));

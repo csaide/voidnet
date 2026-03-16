@@ -142,5 +142,9 @@ name = "tcp_segment"
 harness = false
 
 [[bench]]
+name = "tcp_inbound"
+harness = false
+
+[[bench]]
 name = "http_parse"
 harness = false
