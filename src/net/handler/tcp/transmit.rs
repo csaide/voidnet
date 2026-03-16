@@ -30,9 +30,8 @@ impl TcpHandler {
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         self.send_tracker.swap();
-        let keys: SmallVec<[usize; 128]> = self.send_tracker.drain_active().collect();
         let mut closed: SmallVec<[usize; 4]> = SmallVec::new();
-        for key in keys {
+        while let Some(key) = self.send_tracker.pop_active() {
             let Some(tcb) = self.connections.get_mut(key) else {
                 continue; // connection was removed
             };
