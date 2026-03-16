@@ -554,6 +554,179 @@ mod tests {
     }
 
     #[test]
+    fn new_with_ipv6_unspecified() {
+        with_test_context(|| {
+            let sock = UdpSocket::new(IpAddress::V6(Ipv6Address::unspecified()), 9000).unwrap();
+            assert_eq!(sock.local_addr(), IpAddress::V6(Ipv6Address::unspecified()));
+            assert_eq!(sock.local_port(), 9000);
+        });
+    }
+
+    #[test]
+    fn new_with_specific_ipv4() {
+        with_test_context(|| {
+            let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
+            let sock = UdpSocket::new(addr, 12345).unwrap();
+            assert_eq!(sock.local_addr(), addr);
+            assert_eq!(sock.local_port(), 12345);
+        });
+    }
+
+    #[test]
+    fn new_with_specific_ipv6() {
+        with_test_context(|| {
+            let addr = IpAddress::V6(Ipv6Address::new([
+                0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ]));
+            let sock = UdpSocket::new(addr, 8080).unwrap();
+            assert_eq!(sock.local_addr(), addr);
+            assert_eq!(sock.local_port(), 8080);
+        });
+    }
+
+    #[test]
+    fn close_then_rebind_same_port() {
+        with_test_context(|| {
+            let addr = IpAddress::V4(Ipv4Address::new([192, 168, 1, 1]));
+
+            // First bind.
+            let mut sock = UdpSocket::new(addr, 5000).unwrap();
+            assert_eq!(sock.local_port(), 5000);
+
+            // Explicitly close — should unbind.
+            sock.close();
+
+            // Re-bind the same address:port should succeed after close.
+            // Need to drop the old socket first to avoid the Drop calling close
+            // on an already-unbound port (which is fine, unbind is idempotent).
+            std::mem::forget(sock);
+
+            let sock2 = UdpSocket::new(addr, 5000).unwrap();
+            assert_eq!(sock2.local_addr(), addr);
+            assert_eq!(sock2.local_port(), 5000);
+        });
+    }
+
+    #[test]
+    fn drop_unbinds_port() {
+        with_test_context(|| {
+            let addr = IpAddress::V4(Ipv4Address::new([192, 168, 1, 1]));
+
+            // Bind then drop.
+            {
+                let _sock = UdpSocket::new(addr, 6000).unwrap();
+            }
+
+            // Should be able to re-bind after drop.
+            let sock2 = UdpSocket::new(addr, 6000).unwrap();
+            assert_eq!(sock2.local_port(), 6000);
+        });
+    }
+
+    #[test]
+    fn close_is_idempotent() {
+        with_test_context(|| {
+            let addr = IpAddress::V4(Ipv4Address::new([192, 168, 1, 1]));
+            let mut sock = UdpSocket::new(addr, 7000).unwrap();
+
+            // Close twice should not panic.
+            sock.close();
+            sock.close();
+
+            // Accessors still return the original values (they are not cleared).
+            assert_eq!(sock.local_addr(), addr);
+            assert_eq!(sock.local_port(), 7000);
+        });
+    }
+
+    #[test]
+    fn multiple_sockets_different_ports() {
+        with_test_context(|| {
+            let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
+            let s1 = UdpSocket::new(addr, 3000).unwrap();
+            let s2 = UdpSocket::new(addr, 3001).unwrap();
+            let s3 = UdpSocket::new(addr, 3002).unwrap();
+
+            assert_eq!(s1.local_port(), 3000);
+            assert_eq!(s2.local_port(), 3001);
+            assert_eq!(s3.local_port(), 3002);
+        });
+    }
+
+    #[test]
+    fn multiple_sockets_different_addrs_same_port() {
+        with_test_context(|| {
+            let a1 = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
+            let a2 = IpAddress::V4(Ipv4Address::new([10, 0, 0, 2]));
+
+            let s1 = UdpSocket::new(a1, 4000).unwrap();
+            let s2 = UdpSocket::new(a2, 4000).unwrap();
+
+            assert_eq!(s1.local_addr(), a1);
+            assert_eq!(s2.local_addr(), a2);
+        });
+    }
+
+    #[test]
+    fn split_returns_halves() {
+        with_test_context(|| {
+            let addr = IpAddress::V4(Ipv4Address::new([10, 0, 0, 1]));
+            let mut sock = UdpSocket::new(addr, 8000).unwrap();
+
+            let (_recv_half, _send_half) = sock.split();
+
+            // After splitting, the socket's accessors still work.
+            // (the split borrows mutably so we can't call accessors while split
+            //  is alive, but the socket is still valid after the halves are dropped.)
+            drop(_recv_half);
+            drop(_send_half);
+
+            assert_eq!(sock.local_addr(), addr);
+            assert_eq!(sock.local_port(), 8000);
+        });
+    }
+
+    #[test]
+    fn bind_port_zero_wildcard() {
+        with_test_context(|| {
+            // Port 0 with wildcard address should be bindable.
+            let sock = UdpSocket::new(IpAddress::V4(Ipv4Address::unspecified()), 0).unwrap();
+            assert_eq!(sock.local_port(), 0);
+            assert_eq!(sock.local_addr(), IpAddress::V4(Ipv4Address::unspecified()));
+        });
+    }
+
+    #[test]
+    fn bind_loopback_ipv4() {
+        with_test_context(|| {
+            let addr = IpAddress::V4(Ipv4Address::loopback());
+            let sock = UdpSocket::new(addr, 11000).unwrap();
+            assert_eq!(sock.local_addr(), addr);
+            assert_eq!(sock.local_port(), 11000);
+        });
+    }
+
+    #[test]
+    fn bind_loopback_ipv6() {
+        with_test_context(|| {
+            let addr = IpAddress::V6(Ipv6Address::loopback());
+            let sock = UdpSocket::new(addr, 11001).unwrap();
+            assert_eq!(sock.local_addr(), addr);
+            assert_eq!(sock.local_port(), 11001);
+        });
+    }
+
+    #[test]
+    fn double_bind_ipv6_returns_address_in_use() {
+        with_test_context(|| {
+            let addr = IpAddress::V6(Ipv6Address::loopback());
+            let _sock = UdpSocket::new(addr, 5555).unwrap();
+            let err = UdpSocket::new(addr, 5555).unwrap_err();
+            assert_eq!(err, BindError::AddressInUse);
+        });
+    }
+
+    #[test]
     #[should_panic(expected = "UdpSocket::new() called outside of LocalRuntime::run()")]
     fn new_panics_outside_runtime() {
         let _ = UdpSocket::new(IpAddress::V4(Ipv4Address::unspecified()), 0).unwrap();
