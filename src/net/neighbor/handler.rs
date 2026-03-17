@@ -21,6 +21,13 @@ use super::{
     ndp::{handle_ndp, resolve_v6},
 };
 
+/// A resolved neighbor (IP → MAC) to broadcast to peer queues.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NeighborUpdate {
+    pub ip: IpAddress,
+    pub mac: MacAddress,
+}
+
 /// Unified neighbor-resolution handler for ARP (IPv4) and NDP (IPv6).
 ///
 /// Maintains an internal neighbor cache that maps protocol addresses to

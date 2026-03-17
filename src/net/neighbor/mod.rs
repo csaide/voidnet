@@ -5,3 +5,4 @@ mod ndp;
 
 use entry::NeighborState;
 pub use handler::NeighborHandler;
+pub(crate) use handler::NeighborUpdate;
