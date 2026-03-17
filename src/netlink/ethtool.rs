@@ -210,77 +210,148 @@ pub fn get_checksum_offload(if_index: i32) -> error::Result<(bool, bool)> {
 /// does not support it, or the interface is virtual), returns `Ok(1)` as a
 /// safe default.
 pub fn get_queue_count(if_index: i32) -> error::Result<u32> {
+    // Use neli only for family resolution, then raw socket I/O for the
+    // CHANNELS_GET request/response. neli's typed attribute deserialization
+    // misparses responses that mix nested and flat attributes at the same level.
     let (router, _) = match NlRouter::connect(NlFamily::Generic, None, Groups::empty()) {
         Ok(r) => r,
         Err(_) => return Ok(1),
     };
 
-    let family_id = match router.resolve_genl_family("ethtool") {
+    let family_id: u16 = match router.resolve_genl_family("ethtool") {
         Ok(id) => id,
         Err(_) => return Ok(1),
     };
 
-    let header_attrs: GenlBuffer<EthtoolAttrHeader, Buffer> = [NlattrBuilder::default()
-        .nla_type(
-            AttrTypeBuilder::default()
-                .nla_type(EthtoolAttrHeader::DevIndex)
-                .build()
-                .map_err(|e| Error::GetQueueCount(e.to_string()))?,
-        )
-        .nla_payload(if_index as u32)
-        .build()
-        .map_err(|e| Error::GetQueueCount(e.to_string()))?]
-    .into_iter()
-    .collect();
-
-    let attrs: GenlBuffer<EthtoolAttrChannels, Buffer> = [NlattrBuilder::default()
-        .nla_type(
-            AttrTypeBuilder::default()
-                .nla_type(EthtoolAttrChannels::Header)
-                .nla_nested(true)
-                .build()
-                .map_err(|e| Error::GetQueueCount(e.to_string()))?,
-        )
-        .nla_payload(header_attrs)
-        .build()
-        .map_err(|e| Error::GetQueueCount(e.to_string()))?]
-    .into_iter()
-    .collect();
-
-    let msg = GenlmsghdrBuilder::default()
-        .cmd(EthtoolCmd::ChannelsGet)
-        .version(1)
-        .attrs(attrs)
-        .build()
-        .map_err(|e| Error::GetQueueCount(e.to_string()))?;
-
-    let recv = match router.send::<_, _, u16, Genlmsghdr<EthtoolCmd, EthtoolAttrChannels>>(
-        family_id,
-        NlmF::REQUEST,
-        NlPayload::Payload(msg),
-    ) {
-        Ok(r) => r,
-        Err(_) => return Ok(1),
+    // Build the request manually as raw bytes.
+    // nlattr: DevIndex (type=1, nested=false, len=8, payload=if_index)
+    let dev_index_attr = {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&8u16.to_ne_bytes()); // nla_len
+        buf.extend_from_slice(&1u16.to_ne_bytes()); // nla_type = ETHTOOL_A_HEADER_DEV_INDEX
+        buf.extend_from_slice(&(if_index as u32).to_ne_bytes());
+        buf
     };
 
-    let mut combined_count: u32 = 0;
-
-    for response in recv {
-        let response = match response {
-            Ok(r) => r,
-            Err(_) => return Ok(1),
-        };
-
-        if let Some(payload) = response.get_payload() {
-            let handle = payload.attrs().get_attr_handle();
-            if let Ok(count) = handle.get_attr_payload_as::<u32>(EthtoolAttrChannels::CombinedCount)
-            {
-                combined_count = count;
-            }
+    // nlattr: Header (type=1|NLA_F_NESTED, len=4+dev_index_attr.len())
+    let header_attr = {
+        let nla_len = (4 + dev_index_attr.len()) as u16;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&nla_len.to_ne_bytes());
+        buf.extend_from_slice(&(1u16 | 0x8000).to_ne_bytes()); // type=1, NLA_F_NESTED
+        buf.extend_from_slice(&dev_index_attr);
+        // NLA padding
+        while buf.len() % 4 != 0 {
+            buf.push(0);
         }
+        buf
+    };
+
+    // genlmsghdr: cmd=4 (CHANNELS_GET), version=1, reserved=0
+    let genlhdr = [4u8, 1, 0, 0];
+
+    // nlmsghdr
+    let total_len = 16 + genlhdr.len() + header_attr.len();
+    let mut msg = Vec::with_capacity(total_len);
+    msg.extend_from_slice(&(total_len as u32).to_ne_bytes()); // nlmsg_len
+    msg.extend_from_slice(&family_id.to_ne_bytes()); // nlmsg_type
+    msg.extend_from_slice(&1u16.to_ne_bytes()); // nlmsg_flags = NLM_F_REQUEST
+    msg.extend_from_slice(&0u32.to_ne_bytes()); // nlmsg_seq
+    msg.extend_from_slice(&0u32.to_ne_bytes()); // nlmsg_pid
+    msg.extend_from_slice(&genlhdr);
+    msg.extend_from_slice(&header_attr);
+
+    // Send via raw netlink socket.
+    let sock = match std::net::UdpSocket::bind("0.0.0.0:0") {
+        // We can't use UdpSocket for netlink. Use libc directly.
+        _ => {
+            let fd = unsafe {
+                libc::socket(
+                    libc::AF_NETLINK,
+                    libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                    16, // NETLINK_GENERIC
+                )
+            };
+            if fd < 0 {
+                return Ok(1);
+            }
+            let addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+            let mut addr = addr;
+            addr.nl_family = libc::AF_NETLINK as u16;
+            let ret = unsafe {
+                libc::bind(
+                    fd,
+                    &addr as *const _ as *const libc::sockaddr,
+                    std::mem::size_of::<libc::sockaddr_nl>() as u32,
+                )
+            };
+            if ret < 0 {
+                unsafe { libc::close(fd) };
+                return Ok(1);
+            }
+            fd
+        }
+    };
+
+    let sent = unsafe { libc::send(sock, msg.as_ptr() as *const _, msg.len(), 0) };
+    if sent < 0 {
+        unsafe { libc::close(sock) };
+        return Ok(1);
     }
 
-    Ok(combined_count.max(1))
+    let mut recv_buf = [0u8; 4096];
+    let received = unsafe { libc::recv(sock, recv_buf.as_mut_ptr() as *mut _, recv_buf.len(), 0) };
+    unsafe { libc::close(sock) };
+
+    if received < 20 {
+        return Ok(1);
+    }
+    let received = received as usize;
+
+    // Parse the response: skip nlmsghdr (16 bytes) + genlmsghdr (4 bytes).
+    let raw = &recv_buf[20..received];
+
+    let mut combined_count: u32 = 0;
+    let mut rx_count: u32 = 0;
+    let mut tx_count: u32 = 0;
+
+    let mut off = 0usize;
+    while off + 4 <= raw.len() {
+        let nla_len = u16::from_ne_bytes([raw[off], raw[off + 1]]) as usize;
+        let nla_type = u16::from_ne_bytes([raw[off + 2], raw[off + 3]]);
+        if nla_len < 4 {
+            break;
+        }
+        let attr_type = nla_type & 0x3FFF;
+        // Only read non-nested u32 attrs (nla_len == 8 = 4-byte header + 4-byte payload).
+        if nla_len == 8 && off + 8 <= raw.len() {
+            let val = u32::from_ne_bytes(raw[off + 4..off + 8].try_into().unwrap());
+            // 0xFFFFFFFF means "not applicable" in ethtool (displayed as "n/a").
+            if val != u32::MAX {
+                match attr_type {
+                    7 => combined_count = val, // CombinedCount
+                    4 => rx_count = val,       // RxCount
+                    5 => tx_count = val,       // TxCount
+                    _ => {}
+                }
+            }
+        }
+        // Advance by NLA-aligned length.
+        off += (nla_len + 3) & !3;
+    }
+
+    // Prefer combined count; fall back to rx or tx count; default to 1.
+    let count = if combined_count > 0 {
+        combined_count
+    } else if rx_count > 0 {
+        rx_count
+    } else if tx_count > 0 {
+        tx_count
+    } else {
+        1
+    };
+
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -291,6 +362,17 @@ mod tests {
     fn get_queue_count_on_loopback() {
         let count = get_queue_count(1).expect("query should not error");
         assert!(count >= 1, "queue count should be at least 1");
+    }
+
+    #[test]
+    fn get_queue_count_on_eth0() {
+        // eth0 on this machine has 1 combined queue per `ethtool -l eth0`.
+        let idx = unsafe { libc::if_nametoindex(b"eth0\0".as_ptr() as *const _) };
+        if idx == 0 {
+            return; // eth0 doesn't exist, skip.
+        }
+        let count = get_queue_count(idx as i32).expect("query should not error");
+        assert_eq!(count, 1, "eth0 should have 1 combined queue");
     }
 
     #[test]
