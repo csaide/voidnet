@@ -38,7 +38,7 @@ curl -fsSL https://claude.ai/install.sh | bash
 cat >> ~/.zshrc << EOF
 export PATH="$HOME/.local/bin:$PATH"
 
-SSH_ENV="$HOME/.ssh/agent-environment"
+SSH_ENV="/tmp/agent-environment"
 
 function start_agent {
     echo "Initialising new SSH agent..."

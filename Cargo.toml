@@ -16,6 +16,7 @@ libc = { version = "0.2", default-features = false }
 libxdp-sys = { version = "=0.2.2", default-features = false }                    # Latest version of this library has a broken build....
 memchr = { version = "2", default-features = false }
 memmap2 = { version = "0.9", default-features = false }
+num_cpus = { version = "1.17", default-features = false }
 rustc-hash = { version = "2" }
 neli = { version = "0.7", default-features = false, features = ["sync"] }
 slab = { version = "0.4", default-features = false }

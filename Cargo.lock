@@ -1964,6 +1964,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "neli",
+ "num_cpus",
  "pnet",
  "rand",
  "rustc-hash",

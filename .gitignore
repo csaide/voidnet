@@ -7,3 +7,5 @@
 *.data
 *.data.old
 *.perf
+*.pub
+local.tfvars

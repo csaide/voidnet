@@ -4,32 +4,26 @@ SCRIPT_DIR=$(dirname $0)
 TF_DIR=${SCRIPT_DIR}/tf
 REPO_DIR=${SCRIPT_DIR}/..
 TARGET_DIR=${REPO_DIR}/target
-XDP_TOOLS_DIR=${REPO_DIR}/vendor/xdp-tools
 
 SSH_USER="ec2-user"
 KEY_PATH=""
 REBUILD="false"
 ECHO=""
 
+EXAMPLES="http-server tcp-echo-server tcp-echo-client hyper udp-server udp-client"
+
 function usage() {
     echo "Usage: $0 [-h] -k <key_path> [-u <user>]"
     echo "  -h, --help       Show this help message and exit"
     echo "  -k, --key-path   Path to the SSH key. Required."
     echo "  -u, --user       User to sync with. Default: ${SSH_USER}"
-    echo "  -r, --rebuild    Rebuild the examples and xdp-tools. Default: ${REBUILD}"
-    echo "  -d, --dry-run    Dry run the script. Default: ${DRY_RUN}"
+    echo "  -r, --rebuild    Rebuild the examples. Default: ${REBUILD}"
+    echo "  -d, --dry-run    Dry run the script."
 }
 
 function build_examples() {
-    pushd ${REPO_DIR}
-    ${ECHO} cargo build --release --examples
-    popd > /dev/null
-}
-
-function build_xdp_tools() {
-    pushd ${XDP_TOOLS_DIR}
-    ${ECHO} ./configure
-    ${ECHO} make
+    pushd ${REPO_DIR} > /dev/null
+    ${ECHO} cargo build --profile profiling --examples
     popd > /dev/null
 }
 
@@ -38,15 +32,12 @@ function sync_examples() {
     local USER=$2
     local IP=$3
 
-    ${ECHO} scp -i ${KEY_PATH} ${TARGET_DIR}/release/examples/{rx-bench,tx-bench,echo,rx-mt,tx-mt} ${USER}@${IP}:~/
-}
+    local BINS=""
+    for ex in ${EXAMPLES}; do
+        BINS="${BINS} ${TARGET_DIR}/profiling/examples/${ex}"
+    done
 
-function sync_xdp_tools() {
-    local KEY_PATH=$1
-    local USER=$2
-    local IP=$3
-
-    ${ECHO} scp -i ${KEY_PATH} ${XDP_TOOLS_DIR}/{xdp-bench/xdp-bench,xdp-trafficgen/xdp-trafficgen} ${USER}@${IP}:~/
+    ${ECHO} scp -i ${KEY_PATH} ${BINS} ${USER}@${IP}:~/
 }
 
 function get_ips() {
@@ -61,15 +52,6 @@ function get_ips() {
     popd > /dev/null
 }
 
-function sync_all() {
-    local KEY_PATH=$1
-    local USER=$2
-    local IP=$3
-
-    sync_examples ${KEY_PATH} ${USER} ${IP}
-    sync_xdp_tools ${KEY_PATH} ${USER} ${IP}
-}
-
 function main() {
     local KEY_PATH=$1
     local USER=$2
@@ -77,12 +59,11 @@ function main() {
 
     if [ "${REBUILD}" == "true" ]; then
         build_examples
-        build_xdp_tools
     fi
 
     for IP in $(get_ips); do
         echo "Syncing to ${USER}@${IP}"
-        sync_all ${KEY_PATH} ${USER} ${IP}
+        sync_examples ${KEY_PATH} ${USER} ${IP}
     done
 }
 
