@@ -289,6 +289,36 @@ impl<'umem> LocalRuntime<'umem> {
         })
     }
 
+    /// Drains `rx_return` completely: fill queue first (ring-limited), overflow
+    /// to `free_frames`.
+    ///
+    /// # Frame Accounting
+    ///
+    /// Every frame in `rx_return` moves to exactly one destination:
+    /// - `fill_queue` via `process_fill_queue`: frame leaves our accounting
+    ///   (kernel RX path owns it).
+    /// - `free_frames`: frame stays in our accounting (available for TX).
+    ///
+    /// The fill queue ring size naturally caps how many frames enter the kernel
+    /// RX path. Overflow goes to `free_frames` to maintain TX capacity.
+    ///
+    /// After return: `rx_return.num_frames() == 0`.
+    #[inline(always)]
+    fn recycle_rx_return(&mut self) -> Result<()> {
+        // Feed fill queue — ring size prevents overfilling.
+        while self.rx_return.num_frames() > 0 {
+            if self.umem.process_fill_queue(&mut self.rx_return).is_err() {
+                break; // Fill ring full
+            }
+        }
+        // Overflow to free_frames — available for TX packet building.
+        while self.rx_return.num_frames() > 0 {
+            self.free_frames.push(self.rx_return.pop().unwrap());
+        }
+        // Wake fill queue so kernel processes newly submitted addresses.
+        self.umem.maybe_wake_fill_queue(self.socket.fd())
+    }
+
     /// Runs the event loop until `exit` is set or `fut` completes.
     ///
     /// Each iteration: receive frames, dispatch through the protocol stack,
@@ -320,7 +350,8 @@ impl<'umem> LocalRuntime<'umem> {
             .process_fill_queue(&mut self.free_frames)
             .expect("failed to process fill queue");
 
-        let expected_free_frames = self.free_frames.num_frames();
+        let expected_total = self.free_frames.num_frames() as u32;
+        let mut in_flight_tx: u32 = 0;
 
         // Main future gets a real waker (initialized to woken for first poll).
         let main_waker = MainWaker::new();
@@ -336,10 +367,29 @@ impl<'umem> LocalRuntime<'umem> {
         let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
         let mut now = coarsetime::Instant::now();
         while !exit.load(Ordering::Relaxed) {
+            // ---- Phase 1: Collect TX Completions (non-blocking) ----
+            // Frames completed by the kernel since last iteration return to
+            // rx_return. Runs BEFORE recv to maximize frame availability.
+            // Note: in_flight_tx correctness depends on the socket/interface
+            // remaining operational. ENETDOWN would leave it permanently
+            // inflated, but that is a fatal condition for the event loop.
+            while let Ok(n) = self.umem.process_completion_queue(&mut self.rx_return) {
+                debug_assert!(
+                    in_flight_tx >= n,
+                    "completion underflow: in_flight={in_flight_tx} completed={n}"
+                );
+                in_flight_tx -= n;
+            }
+
+            // ---- Phase 2: Recycle rx_return → fill queue + free_frames ----
+            // rx_return contains: TX completions from Phase 1, plus
+            // handler-returned frames from the PREVIOUS iteration.
+            self.recycle_rx_return()?;
+
             // ---- Receive & Protocol Dispatch ----
-            let received = match self.socket.recv(&mut buffer) {
-                Err(_) => 0,
-                Ok(received) => {
+            match self.socket.recv(&mut buffer) {
+                Err(_) => {}
+                Ok(_) => {
                     // SAFETY: single-threaded, no reentrant handler calls.
                     let udp_handler = unsafe { &mut *self.udp_handler.get() };
                     let tcp_handler = unsafe { &mut *self.tcp_handler.get() };
@@ -367,9 +417,8 @@ impl<'umem> LocalRuntime<'umem> {
                             &mut self.tx_return,
                         );
                     }
-                    received
                 }
-            };
+            }
 
             // ---- Poll Main Future (only if woken) ----
             if main_waker.take_woken() && fut.as_mut().poll(&mut main_cx).is_ready() {
@@ -422,36 +471,41 @@ impl<'umem> LocalRuntime<'umem> {
                 unsafe { &mut *self.pmtu.get() }.evict_stale(now);
             }
 
-            // ---- Transmit & Frame Recycling ----
+            // ---- Transmit (non-blocking) ----
+            // Note: free_before is captured HERE (before transmit/recycle), matching
+            // the current code's placement. Capacity wakes detect frames freed by
+            // the transmit cycle, not by Phase 1+2 completion recycling.
             let free_before = self.free_frames.num_frames();
-            let expected_size = self.tx_return.num_frames() + self.rx_return.num_frames();
 
             while self.tx_return.num_frames() > 0 {
-                if self.socket.send(&mut self.tx_return).is_err() {
-                    self.socket.maybe_wake()?;
-                    let _ = self.umem.process_completion_queue(&mut self.rx_return);
+                match self.socket.send(&mut self.tx_return) {
+                    Ok(n) => in_flight_tx += n,
+                    Err(_) => {
+                        // TX ring full — kick kernel and try to free completions.
+                        self.socket.maybe_wake()?;
+                        while let Ok(n) = self.umem.process_completion_queue(&mut self.rx_return) {
+                            debug_assert!(
+                                in_flight_tx >= n,
+                                "completion underflow: in_flight={in_flight_tx} completed={n}"
+                            );
+                            in_flight_tx -= n;
+                        }
+                        self.recycle_rx_return()?;
+                        // Retry once after freeing ring slots.
+                        match self.socket.send(&mut self.tx_return) {
+                            Ok(n) => in_flight_tx += n,
+                            Err(_) => break, // Still full — defer to next iteration.
+                        }
+                    }
                 }
             }
 
-            while self.rx_return.num_frames() < expected_size {
-                if self
-                    .umem
-                    .process_completion_queue(&mut self.rx_return)
-                    .is_err()
-                {
-                    self.socket.maybe_wake()?;
-                }
-            }
-
-            while self.rx_return.num_frames() > received as usize {
-                self.free_frames.push(self.rx_return.pop().unwrap());
-            }
-
-            while self.rx_return.num_frames() > 0 {
-                if self.umem.process_fill_queue(&mut self.rx_return).is_err() {
-                    self.umem.maybe_wake_fill_queue(self.socket.fd())?;
-                }
-            }
+            // ---- Recycle remaining rx_return ----
+            // Drains whatever is left in rx_return. If all sends above succeeded,
+            // this contains handler-returned RX frames from protocol dispatch.
+            // If the send hit WouldBlock, mid-retry recycle already drained
+            // those, so this is a no-op in that path.
+            self.recycle_rx_return()?;
 
             // ---- Capacity-Driven Wakes ----
             // After frame recycling, wake any futures blocked on capacity.
@@ -466,9 +520,28 @@ impl<'umem> LocalRuntime<'umem> {
                 });
             }
 
-            debug_assert_eq!(self.rx_return.num_frames(), 0);
-            debug_assert_eq!(self.tx_return.num_frames(), 0);
-            debug_assert_eq!(self.free_frames.num_frames(), expected_free_frames);
+            // ---- Frame Accounting Invariant ----
+            debug_assert_eq!(
+                self.rx_return.num_frames(),
+                0,
+                "rx_return must be fully drained"
+            );
+            // Use <= rather than == because frames held by UdpHandler's
+            // FragmentReader are outside our tracked variables. The deficit
+            // equals fragments currently awaiting reassembly. This also
+            // corrects a pre-existing gap in the old == assertion.
+            let tracked = self.free_frames.num_frames() as u32
+                + in_flight_tx
+                + self.tx_return.num_frames() as u32;
+            debug_assert!(
+                tracked <= expected_total,
+                "Frame leak: tracked={} (free={} in_flight={} tx_pending={}) > expected={}",
+                tracked,
+                self.free_frames.num_frames(),
+                in_flight_tx,
+                self.tx_return.num_frames(),
+                expected_total,
+            );
         }
 
         Ok(())
