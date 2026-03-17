@@ -268,7 +268,7 @@ impl NeighborHandler {
         icmpv6_len: usize,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
+    ) -> Option<NeighborUpdate> {
         handle_ndp(
             now,
             self.ttl,
@@ -282,7 +282,7 @@ impl NeighborHandler {
             icmpv6_len,
             rx_return,
             tx_return,
-        );
+        )
     }
 
     /// Look up a neighbor MAC. On cache miss or expired entry, send an

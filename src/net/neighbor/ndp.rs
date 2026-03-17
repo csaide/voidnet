@@ -16,6 +16,7 @@ use crate::{
 };
 
 use super::NeighborState;
+use super::handler::NeighborUpdate;
 
 pub(super) fn resolve_v6<'umem>(
     local_mac: MacAddress,
@@ -91,10 +92,10 @@ pub(super) fn handle_ndp<'umem>(
     icmpv6_len: usize,
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
-) {
+) -> Option<NeighborUpdate> {
     if icmpv6_len < 8 {
         rx_return.push(frame);
-        return;
+        return None;
     }
 
     let icmpv6_end = icmpv6_offset + icmpv6_len;
@@ -108,53 +109,48 @@ pub(super) fn handle_ndp<'umem>(
             != [0x00, 0x00]
         {
             rx_return.push(frame);
-            return;
+            return None;
         }
     }
 
     let icmpv6_type = frame[icmpv6_offset];
 
     match icmpv6_type {
-        Icmpv6Types::NeighborSolicitation => {
-            handle_neighbor_solicitation(
-                now,
-                ttl,
-                table,
-                local_ipv6,
-                local_mac,
-                tx_offload,
-                frame,
-                icmpv6_offset,
-                icmpv6_len,
-                rx_return,
-                tx_return,
-            );
-        }
-        Icmpv6Types::NeighborAdvertisement => {
-            handle_neighbor_advertisement(
-                now,
-                ttl,
-                table,
-                frame,
-                icmpv6_offset,
-                icmpv6_len,
-                rx_return,
-            );
-        }
-        Icmpv6Types::RouterAdvertisement => {
-            handle_router_advertisement(
-                now,
-                ttl,
-                table,
-                frame,
-                icmpv6_offset,
-                icmpv6_len,
-                rx_return,
-            );
-        }
+        Icmpv6Types::NeighborSolicitation => handle_neighbor_solicitation(
+            now,
+            ttl,
+            table,
+            local_ipv6,
+            local_mac,
+            tx_offload,
+            frame,
+            icmpv6_offset,
+            icmpv6_len,
+            rx_return,
+            tx_return,
+        ),
+        Icmpv6Types::NeighborAdvertisement => handle_neighbor_advertisement(
+            now,
+            ttl,
+            table,
+            frame,
+            icmpv6_offset,
+            icmpv6_len,
+            rx_return,
+        ),
+        Icmpv6Types::RouterAdvertisement => handle_router_advertisement(
+            now,
+            ttl,
+            table,
+            frame,
+            icmpv6_offset,
+            icmpv6_len,
+            rx_return,
+        ),
         _ => {
             // RS (133), Redirect (137), or unknown NDP type.
             rx_return.push(frame);
+            None
         }
     }
 }
@@ -171,10 +167,10 @@ fn handle_neighbor_solicitation<'umem>(
     icmpv6_len: usize,
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
-) {
+) -> Option<NeighborUpdate> {
     if icmpv6_len < NDP_MIN_NS_NA_LEN {
         rx_return.push(frame);
-        return;
+        return None;
     }
 
     let icmpv6_end = icmpv6_offset + icmpv6_len;
@@ -193,19 +189,19 @@ fn handle_neighbor_solicitation<'umem>(
     let sender_mac = parse_ndp_link_layer_option(&frame, options_start, icmpv6_end, 1);
 
     // Cache sender's MAC if source is not unspecified (DAD uses ::).
+    let mut resolved = None;
     if !src_addr.is_unspecified()
         && let Some(mac) = sender_mac
     {
-        table.insert(
-            IpAddress::V6(src_addr),
-            NeighborState::reachable(mac, now + ttl),
-        );
+        let ip = IpAddress::V6(src_addr);
+        table.insert(ip, NeighborState::reachable(mac, now + ttl));
+        resolved = Some(NeighborUpdate { ip, mac });
     }
 
     // Check if the target is one of our addresses.
     if !local_ipv6.contains(&target_addr) {
         rx_return.push(frame);
-        return;
+        return resolved;
     }
 
     // Build NA reply.
@@ -264,6 +260,7 @@ fn handle_neighbor_solicitation<'umem>(
     }
 
     tx_return.push(frame);
+    resolved
 }
 
 fn handle_neighbor_advertisement<'umem>(
@@ -274,10 +271,10 @@ fn handle_neighbor_advertisement<'umem>(
     icmpv6_offset: usize,
     icmpv6_len: usize,
     rx_return: &mut impl FrameBuffer<'umem>,
-) {
+) -> Option<NeighborUpdate> {
     if icmpv6_len < NDP_MIN_NS_NA_LEN {
         rx_return.push(frame);
-        return;
+        return None;
     }
 
     let icmpv6_end = icmpv6_offset + icmpv6_len;
@@ -289,14 +286,17 @@ fn handle_neighbor_advertisement<'umem>(
 
     // Parse Target Link-Layer Address option (type=2).
     let options_start = icmpv6_offset + 24;
-    if let Some(mac) = parse_ndp_link_layer_option(&frame, options_start, icmpv6_end, 2) {
-        table.insert(
-            IpAddress::V6(target_addr),
-            NeighborState::reachable(mac, now + ttl),
-        );
-    }
+    let resolved =
+        if let Some(mac) = parse_ndp_link_layer_option(&frame, options_start, icmpv6_end, 2) {
+            let ip = IpAddress::V6(target_addr);
+            table.insert(ip, NeighborState::reachable(mac, now + ttl));
+            Some(NeighborUpdate { ip, mac })
+        } else {
+            None
+        };
 
     rx_return.push(frame);
+    resolved
 }
 
 fn handle_router_advertisement<'umem>(
@@ -307,10 +307,10 @@ fn handle_router_advertisement<'umem>(
     icmpv6_offset: usize,
     icmpv6_len: usize,
     rx_return: &mut impl FrameBuffer<'umem>,
-) {
+) -> Option<NeighborUpdate> {
     if icmpv6_len < NDP_MIN_RA_LEN {
         rx_return.push(frame);
-        return;
+        return None;
     }
 
     let icmpv6_end = icmpv6_offset + icmpv6_len;
@@ -321,14 +321,17 @@ fn handle_router_advertisement<'umem>(
 
     // Parse Source Link-Layer Address option (type=1).
     let options_start = icmpv6_offset + 16; // RA header is 16 bytes
-    if let Some(mac) = parse_ndp_link_layer_option(&frame, options_start, icmpv6_end, 1) {
-        table.insert(
-            IpAddress::V6(src_addr),
-            NeighborState::reachable(mac, now + ttl),
-        );
-    }
+    let resolved =
+        if let Some(mac) = parse_ndp_link_layer_option(&frame, options_start, icmpv6_end, 1) {
+            let ip = IpAddress::V6(src_addr);
+            table.insert(ip, NeighborState::reachable(mac, now + ttl));
+            Some(NeighborUpdate { ip, mac })
+        } else {
+            None
+        };
 
     rx_return.push(frame);
+    resolved
 }
 
 /// Walks NDP options looking for a Link-Layer Address option of the
