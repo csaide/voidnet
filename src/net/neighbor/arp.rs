@@ -11,6 +11,7 @@ use crate::{
 };
 
 use super::NeighborState;
+use super::handler::NeighborUpdate;
 
 #[inline(always)]
 pub(super) fn resolve_v4<'umem>(
@@ -69,11 +70,11 @@ pub(super) fn handle_arp<'umem>(
     mut frame: Frame<'umem>,
     rx_return: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
-) {
+) -> Option<NeighborUpdate> {
     // Check frame length here make sure we at least have enough data to parse the ARP packet.
     if frame.len() < ARP_FRAME_LEN {
         rx_return.push(frame);
-        return;
+        return None;
     }
 
     // Parse the ARP packet from the frame.
@@ -92,7 +93,7 @@ pub(super) fn handle_arp<'umem>(
         || arp.plen != 4
     {
         rx_return.push(frame);
-        return;
+        return None;
     }
 
     // Extract the sender and target addresses from the ARP packet.
@@ -100,13 +101,15 @@ pub(super) fn handle_arp<'umem>(
     let spa = arp.spa;
 
     // Insert the sender into the neighbor table.
-    table.insert(IpAddress::V4(spa), NeighborState::reachable(sha, now + ttl));
+    let ip = IpAddress::V4(spa);
+    table.insert(ip, NeighborState::reachable(sha, now + ttl));
+    let update = NeighborUpdate { ip, mac: sha };
 
     // If we are not dealing with an ARP request or the target IP is not one of our local IPv4 addresses,
     // return the frame to the RX buffer.
     if arp.oper != ArpOperations::Request || !local_ipv4.contains(&arp.tpa) {
         rx_return.push(frame);
-        return;
+        return Some(update);
     }
 
     // Swap the ethernet frame's source and destination MAC addresses.
@@ -122,6 +125,7 @@ pub(super) fn handle_arp<'umem>(
 
     // Push the frame to the TX buffer.
     tx_return.push(frame);
+    Some(update)
 }
 
 #[cfg(test)]

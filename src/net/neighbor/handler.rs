@@ -240,7 +240,7 @@ impl NeighborHandler {
         frame: Frame<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
+    ) -> Option<NeighborUpdate> {
         handle_arp(
             now,
             self.table(),
@@ -250,7 +250,7 @@ impl NeighborHandler {
             frame,
             rx_return,
             tx_return,
-        );
+        )
     }
 
     /// Handles an incoming NDP (ICMPv6 Neighbor Discovery) frame.
