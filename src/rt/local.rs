@@ -163,7 +163,7 @@ impl<'name> LocalRuntimeBuilder<'name> {
 /// the protocol stack, poll the user future, and transmit responses.
 pub struct LocalRuntime<'umem> {
     // Overall context for the XDP program, this is used to own the underlying XDP program and socket.
-    ctx: XdpContext,
+    ctx: Option<XdpContext>,
     // Queue number for the XDP program.
     _queue: u32,
     // Shared memory for reading and writing frames to the network.
@@ -192,6 +192,8 @@ pub struct LocalRuntime<'umem> {
     rx_return: SharedFrameBuffer<'umem>,
     // Counter for rate-limiting evict_stale() calls (~every 1024 iterations).
     evict_counter: u32,
+    // Whether TX checksum offload is enabled on this interface.
+    tx_offload: bool,
 }
 
 impl<'umem> LocalRuntime<'umem> {
@@ -213,7 +215,6 @@ impl<'umem> LocalRuntime<'umem> {
         arp_ttl: Duration,
     ) -> Result<Self> {
         let info = ctx.info();
-        println!("info: {:?}", info);
         let mtu = info.mtu;
         let rx_offload = info.rx_offload;
         let tx_offload = info.tx_offload;
@@ -228,7 +229,7 @@ impl<'umem> LocalRuntime<'umem> {
         let free_frames = umem.init_buffer::<BasicFrameBuffer>().unwrap().into();
 
         Ok(Self {
-            ctx,
+            ctx: Some(ctx),
             _queue: queue,
             umem,
             socket,
@@ -243,6 +244,48 @@ impl<'umem> LocalRuntime<'umem> {
             tx_return,
             rx_return,
             evict_counter: 0,
+            tx_offload,
+        })
+    }
+
+    /// Creates a `LocalRuntime` from pre-built components for use by the
+    /// multi-threaded `Runtime` orchestrator. Does not own an `XdpContext` —
+    /// the orchestrator retains that on the main thread.
+    pub(crate) fn new_worker(
+        if_name: &str,
+        umem: Umem<'umem>,
+        socket: Socket<'umem>,
+        mtu: u32,
+        rx_offload: bool,
+        tx_offload: bool,
+        arp_ttl: Duration,
+    ) -> Result<Self> {
+        let mut neighbor_handler = NeighborHandler::new(if_name, arp_ttl)?;
+        neighbor_handler.set_offload(rx_offload, tx_offload);
+        let neighbor_handler = Rc::new(neighbor_handler);
+        let pmtu = Rc::new(UnsafeCell::new(PmtuCache::with_mtu(mtu)));
+
+        let tx_return = BasicFrameBuffer::new(umem.num_frames()).into();
+        let rx_return = BasicFrameBuffer::new(umem.num_frames()).into();
+        let free_frames = umem.init_buffer::<BasicFrameBuffer>().unwrap().into();
+
+        Ok(Self {
+            ctx: None,
+            _queue: 0,
+            umem,
+            socket,
+            neighbor_handler,
+            pmtu,
+            ethernet_handler: EthernetHandler,
+            ipv4_handler: Ipv4Handler::new(rx_offload, tx_offload),
+            ipv6_handler: Ipv6Handler::new(rx_offload, tx_offload),
+            udp_handler: Rc::new(UnsafeCell::new(UdpHandler::new(256, rx_offload))),
+            tcp_handler: Rc::new(UnsafeCell::new(TcpHandler::new(rx_offload, tx_offload))),
+            free_frames,
+            tx_return,
+            rx_return,
+            evict_counter: 0,
+            tx_offload,
         })
     }
 
@@ -266,7 +309,7 @@ impl<'umem> LocalRuntime<'umem> {
             neighbor_handler: self.neighbor_handler.clone(),
             udp_handler: self.udp_handler.clone(),
             tcp_handler: self.tcp_handler.clone(),
-            tx_offload: self.ctx.info().tx_offload,
+            tx_offload: self.tx_offload,
             task_queue: UnsafeCell::new(TaskQueue::new()),
             capacity_wakers: UnsafeCell::new(Vec::new()),
         });
