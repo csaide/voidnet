@@ -313,6 +313,7 @@ impl Runtime {
                 .spawn(move || -> Result<()> {
                     pin_core(queue_id);
 
+                    println!("spawning worker thread for queue {queue_id}");
                     let mut rt = LocalRuntime::new_worker(
                         &if_name, umem, socket, mtu, rx_offload, tx_offload, arp_ttl,
                     )?;

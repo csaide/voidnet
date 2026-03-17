@@ -163,7 +163,7 @@ impl<'name> LocalRuntimeBuilder<'name> {
 /// the protocol stack, poll the user future, and transmit responses.
 pub struct LocalRuntime<'umem> {
     // Overall context for the XDP program, this is used to own the underlying XDP program and socket.
-    ctx: Option<XdpContext>,
+    _ctx: Option<XdpContext>,
     // Queue number for the XDP program.
     _queue: u32,
     // Shared memory for reading and writing frames to the network.
@@ -229,7 +229,7 @@ impl<'umem> LocalRuntime<'umem> {
         let free_frames = umem.init_buffer::<BasicFrameBuffer>().unwrap().into();
 
         Ok(Self {
-            ctx: Some(ctx),
+            _ctx: Some(ctx),
             _queue: queue,
             umem,
             socket,
@@ -270,7 +270,7 @@ impl<'umem> LocalRuntime<'umem> {
         let free_frames = umem.init_buffer::<BasicFrameBuffer>().unwrap().into();
 
         Ok(Self {
-            ctx: None,
+            _ctx: None,
             _queue: 0,
             umem,
             socket,

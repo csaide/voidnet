@@ -18,13 +18,6 @@ use crate::xdp::{
     umem::UmemOwner,
 };
 
-#[cfg(feature = "local")]
-use crate::xdp::futures::LocalSocket;
-#[cfg(feature = "smol")]
-use crate::xdp::futures::SmolSocket;
-#[cfg(feature = "tokio")]
-use crate::xdp::futures::TokioSocket;
-
 use super::{SocketOwner, SocketRx, SocketTx};
 
 /// Builder for creating a new socket.
@@ -142,44 +135,6 @@ impl<'if_name> SocketBuilder<'if_name> {
         umem: Arc<UmemOwner<'umem>>,
     ) -> Result<Socket<'umem>> {
         self.build_internal(ctx, umem)
-    }
-
-    /// Builds the socket as a [TokioSocket].
-    #[cfg(feature = "tokio")]
-    pub fn build_tokio<'umem>(
-        mut self,
-        ctx: &mut XdpContext,
-        umem: Arc<UmemOwner<'umem>>,
-    ) -> Result<TokioSocket<'umem>> {
-        let (owner, rx, tx) = self.build_internal(ctx, umem)?.split();
-        let async_fd = ctx.get_tokio_fd(owner.fd())?;
-
-        Ok(TokioSocket::new(owner, rx, tx, async_fd))
-    }
-
-    /// Builds the socket as a [LocalSocket].
-    #[cfg(feature = "local")]
-    pub fn build_local<'umem>(
-        mut self,
-        ctx: &mut XdpContext,
-        umem: Arc<UmemOwner<'umem>>,
-    ) -> Result<LocalSocket<'umem>> {
-        let (owner, rx, tx) = self.build_internal(ctx, umem)?.split();
-
-        LocalSocket::new(owner, rx, tx)
-    }
-
-    /// Builds the socket as a [SmolSocket].
-    #[cfg(feature = "smol")]
-    pub fn build_smol<'umem>(
-        mut self,
-        ctx: &mut XdpContext,
-        umem: Arc<UmemOwner<'umem>>,
-    ) -> Result<SmolSocket<'umem>> {
-        let (owner, rx, tx) = self.build_internal(ctx, umem)?.split();
-        let async_fd = ctx.get_smol_fd(owner.fd())?;
-
-        Ok(SmolSocket::new(owner, rx, tx, async_fd))
     }
 }
 

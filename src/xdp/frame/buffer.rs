@@ -153,62 +153,6 @@ impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for std::sync::MutexGuard<
     }
 }
 
-#[cfg(feature = "async")]
-impl<'umem, B: FrameBuffer<'umem>> FrameBuffer<'umem> for futures_util::lock::MutexGuard<'_, B> {
-    type Drain<'a>
-        = B::Drain<'a>
-    where
-        Self: 'a,
-        'umem: 'a;
-
-    type Iter<'a>
-        = B::Iter<'a>
-    where
-        Self: 'a,
-        'umem: 'a;
-
-    type IterMut<'a>
-        = B::IterMut<'a>
-    where
-        Self: 'a,
-        'umem: 'a;
-
-    #[inline(always)]
-    fn free_space(&self) -> usize {
-        B::free_space(self)
-    }
-
-    #[inline(always)]
-    fn num_frames(&self) -> usize {
-        B::num_frames(self)
-    }
-
-    #[inline(always)]
-    fn push(&mut self, frame: Frame<'umem>) {
-        B::push(self, frame)
-    }
-
-    #[inline(always)]
-    fn pop(&mut self) -> Option<Frame<'umem>> {
-        B::pop(self)
-    }
-
-    #[inline(always)]
-    fn take_frames(&mut self) -> Self::Drain<'_> {
-        B::take_frames(self)
-    }
-
-    #[inline(always)]
-    fn iter_frames(&self) -> Self::Iter<'_> {
-        B::iter_frames(self)
-    }
-
-    #[inline(always)]
-    fn iter_frames_mut(&mut self) -> Self::IterMut<'_> {
-        B::iter_frames_mut(self)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{
@@ -314,15 +258,6 @@ mod tests {
     fn test_std_mutex_wrapper() {
         let mock = std::sync::Mutex::new(MockFrameBuffer::new(10));
         let guard = mock.lock().unwrap();
-        let mut data = vec![0u8; 10];
-        test_buffer_logic(guard, &mut data);
-    }
-
-    #[cfg(feature = "async")]
-    #[test]
-    fn test_futures_mutex_wrapper() {
-        let mock = futures_util::lock::Mutex::new(MockFrameBuffer::new(10));
-        let guard = futures::executor::block_on(mock.lock());
         let mut data = vec![0u8; 10];
         test_buffer_logic(guard, &mut data);
     }

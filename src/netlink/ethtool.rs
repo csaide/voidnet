@@ -262,35 +262,32 @@ pub fn get_queue_count(if_index: i32) -> error::Result<u32> {
     msg.extend_from_slice(&header_attr);
 
     // Send via raw netlink socket.
-    let sock = match std::net::UdpSocket::bind("0.0.0.0:0") {
-        // We can't use UdpSocket for netlink. Use libc directly.
-        _ => {
-            let fd = unsafe {
-                libc::socket(
-                    libc::AF_NETLINK,
-                    libc::SOCK_RAW | libc::SOCK_CLOEXEC,
-                    16, // NETLINK_GENERIC
-                )
-            };
-            if fd < 0 {
-                return Ok(1);
-            }
-            let addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
-            let mut addr = addr;
-            addr.nl_family = libc::AF_NETLINK as u16;
-            let ret = unsafe {
-                libc::bind(
-                    fd,
-                    &addr as *const _ as *const libc::sockaddr,
-                    std::mem::size_of::<libc::sockaddr_nl>() as u32,
-                )
-            };
-            if ret < 0 {
-                unsafe { libc::close(fd) };
-                return Ok(1);
-            }
-            fd
+    let sock = {
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                16, // NETLINK_GENERIC
+            )
+        };
+        if fd < 0 {
+            return Ok(1);
         }
+        let addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+        let mut addr = addr;
+        addr.nl_family = libc::AF_NETLINK as u16;
+        let ret = unsafe {
+            libc::bind(
+                fd,
+                &addr as *const _ as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_nl>() as u32,
+            )
+        };
+        if ret < 0 {
+            unsafe { libc::close(fd) };
+            return Ok(1);
+        }
+        fd
     };
 
     let sent = unsafe { libc::send(sock, msg.as_ptr() as *const _, msg.len(), 0) };
@@ -366,7 +363,7 @@ mod tests {
     #[test]
     fn get_queue_count_on_eth0() {
         // eth0 on this machine has 1 combined queue per `ethtool -l eth0`.
-        let idx = unsafe { libc::if_nametoindex(b"eth0\0".as_ptr() as *const _) };
+        let idx = unsafe { libc::if_nametoindex(c"eth0".as_ptr() as *const _) };
         if idx == 0 {
             return; // eth0 doesn't exist, skip.
         }

@@ -1,6 +1,3 @@
-#[cfg(feature = "tokio")]
-use std::{os::fd::RawFd, sync::Arc};
-
 use crate::xdp::{
     error::{Error, Result},
     program::{AttachMode, Map, XdpInfo, XdpProgram},
@@ -73,10 +70,6 @@ pub struct XdpContext {
     xsks_map: Map,
     /// The loaded and attached XDP program.
     program: XdpProgram,
-    #[cfg(feature = "tokio")]
-    tokio_fd_factory: crate::xdp::futures::TokioFdFactory,
-    #[cfg(feature = "smol")]
-    smol_fd_factory: crate::xdp::futures::SmolFdFactory,
 }
 
 impl XdpContext {
@@ -90,14 +83,7 @@ impl XdpContext {
 
         let xsks_map = program.find_map("xsks_map")?;
 
-        Ok(Self {
-            xsks_map,
-            program,
-            #[cfg(feature = "tokio")]
-            tokio_fd_factory: crate::xdp::futures::TokioFdFactory::new(),
-            #[cfg(feature = "smol")]
-            smol_fd_factory: crate::xdp::futures::SmolFdFactory::new(),
-        })
+        Ok(Self { xsks_map, program })
     }
 
     #[cfg(test)]
@@ -105,10 +91,6 @@ impl XdpContext {
         Ok(Self {
             xsks_map: Map::new(std::ptr::null_mut(), unsafe { std::mem::zeroed() }),
             program: XdpProgram::new_no_init()?,
-            #[cfg(feature = "tokio")]
-            tokio_fd_factory: crate::xdp::futures::TokioFdFactory::new(),
-            #[cfg(feature = "smol")]
-            smol_fd_factory: crate::xdp::futures::SmolFdFactory::new(),
         })
     }
 
@@ -134,19 +116,6 @@ impl XdpContext {
         // SAFETY: The map was created with u32 keys and i32 (fd) values.
         unsafe { self.xsks_map.update_elem(&map_index, &socket.fd())? };
         Ok(())
-    }
-
-    #[cfg(feature = "tokio")]
-    pub(crate) fn get_tokio_fd(&self, fd: RawFd) -> Result<Arc<tokio::io::unix::AsyncFd<RawFd>>> {
-        self.tokio_fd_factory.get_tokio_fd(fd)
-    }
-
-    #[cfg(feature = "smol")]
-    pub(crate) fn get_smol_fd(
-        &self,
-        fd: RawFd,
-    ) -> Result<Arc<async_io::Async<crate::xdp::futures::SmolFd>>> {
-        self.smol_fd_factory.get_smol_fd(fd)
     }
 }
 

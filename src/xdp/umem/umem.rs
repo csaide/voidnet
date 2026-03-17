@@ -11,20 +11,11 @@ use libxdp_sys::{
 };
 use memmap2::MmapOptions;
 
-#[cfg(any(feature = "tokio", feature = "smol"))]
-use crate::xdp::context::XdpContext;
 use crate::xdp::{
     error::{Error, NonBlocking, Result},
     frame::{Frame, FrameBuffer},
     ring::{Consumer, Producer},
 };
-
-#[cfg(feature = "local")]
-use crate::xdp::futures::LocalUmem;
-#[cfg(feature = "smol")]
-use crate::xdp::futures::SmolUmem;
-#[cfg(feature = "tokio")]
-use crate::xdp::futures::TokioUmem;
 
 use super::{CompletionQueue, FillQueue, UmemOwner};
 
@@ -135,30 +126,6 @@ impl UmemBuilder {
     /// Builds the Umem.
     pub fn build<'umem>(mut self) -> Result<Umem<'umem>> {
         self.build_internal()
-    }
-
-    /// Builds the Umem as a Tokio Umem.
-    #[cfg(feature = "tokio")]
-    pub fn build_tokio<'umem>(mut self, ctx: &mut XdpContext) -> Result<TokioUmem<'umem>> {
-        let (owner, fq, cq) = self.build_internal()?.split();
-        let async_fd = ctx.get_tokio_fd(owner.fd())?;
-
-        Ok(TokioUmem::new(owner, fq, cq, async_fd))
-    }
-
-    #[cfg(feature = "local")]
-    pub fn build_local<'umem>(mut self) -> Result<LocalUmem<'umem>> {
-        let (owner, fq, cq) = self.build_internal()?.split();
-
-        LocalUmem::new(owner, fq, cq)
-    }
-
-    #[cfg(feature = "smol")]
-    pub fn build_smol<'umem>(mut self, ctx: &mut XdpContext) -> Result<SmolUmem<'umem>> {
-        let (owner, fq, cq) = self.build_internal()?.split();
-        let async_fd = ctx.get_smol_fd(owner.fd())?;
-
-        Ok(SmolUmem::new(owner, fq, cq, async_fd))
     }
 }
 

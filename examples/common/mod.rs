@@ -253,7 +253,7 @@ pub fn build_frame(args: &GeneratorArgs) -> Vec<u8> {
     data
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 pub struct BaseArgs {
     #[arg(short, long, help = "The name of the network interface to use.")]
     pub if_name: String,

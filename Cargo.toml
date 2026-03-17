@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-async-io = { version = "2", default-features = false, optional = true }
 coarsetime = { version = "0.1", default-features = false }
 core_affinity = { version = "0.8", default-features = false }
 crossbeam-queue = { version = "0.3", default-features = true }
@@ -15,7 +14,7 @@ futures-core = { version = "0.3", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getifaddrs = { version = "0.6", default-features = false }
 libc = { version = "0.2", default-features = false }
-libxdp-sys = { version = "=0.2.2", default-features = false } # Latest version of this library has a broken build....
+libxdp-sys = { version = "=0.2.2", default-features = false }                    # Latest version of this library has a broken build....
 memchr = { version = "2", default-features = false }
 memmap2 = { version = "0.9", default-features = false }
 rustc-hash = { version = "2" }
@@ -23,9 +22,6 @@ neli = { version = "0.7", default-features = false, features = ["sync"] }
 slab = { version = "0.4", default-features = false }
 smallvec = { version = "1.15", default-features = false }
 thiserror = { version = "2", default-features = false }
-tokio = { version = "1", default-features = false, features = [
-    "net",
-], optional = true }
 
 [dev-dependencies]
 bytes = { version = "1.11" }
@@ -45,10 +41,6 @@ tokio = { version = "1.40", features = ["full"] }
 
 [features]
 default = []
-async = []
-local = ["async"]
-smol = ["dep:async-io", "async"]
-tokio = ["dep:tokio", "async"]
 
 [profile.profiling]
 inherits = "release"
@@ -65,34 +57,9 @@ doctest = true
 name = "sync"
 path = "tests/sync.rs"
 
-[[test]]
-name = "local"
-path = "tests/local.rs"
-required-features = ["local"]
-
-[[test]]
-name = "smol"
-path = "tests/smol.rs"
-required-features = ["smol"]
-
-[[test]]
-name = "tokio"
-path = "tests/tokio.rs"
-required-features = ["tokio"]
-
 [[example]]
 name = "info"
 path = "examples/info.rs"
-
-[[example]]
-name = "local-rx"
-path = "examples/local-rx.rs"
-required-features = ["local"]
-
-[[example]]
-name = "smol-rx"
-path = "examples/smol-rx.rs"
-required-features = ["smol"]
 
 [[example]]
 name = "sync-rx-ms"
@@ -109,21 +76,6 @@ path = "examples/sync-tx-ms.rs"
 [[example]]
 name = "sync-tx"
 path = "examples/sync-tx.rs"
-
-[[example]]
-name = "tokio-rx-ms"
-path = "examples/tokio-rx-ms.rs"
-required-features = ["tokio"]
-
-[[example]]
-name = "tokio-rx"
-path = "examples/tokio-rx.rs"
-required-features = ["tokio"]
-
-[[example]]
-name = "tokio-tx"
-path = "examples/tokio-tx.rs"
-required-features = ["tokio"]
 
 [[example]]
 name = "std-tcp-echo-server"

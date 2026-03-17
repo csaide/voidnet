@@ -1,5 +1,3 @@
-#[cfg(feature = "async")]
-use std::os::fd::RawFd;
 use std::{
     marker::PhantomData,
     sync::{
@@ -8,8 +6,6 @@ use std::{
     },
 };
 
-#[cfg(feature = "async")]
-use libxdp_sys::xsk_umem__fd;
 use libxdp_sys::{xsk_umem, xsk_umem__delete};
 use memmap2::MmapMut;
 
@@ -27,8 +23,6 @@ pub struct UmemOwner<'umem> {
     frame_size: usize,
     num_frames: usize,
     init: AtomicBool,
-    #[cfg(feature = "async")]
-    fd: RawFd,
 
     // Ok so some explanation here, to make sure our Frame's can't outlive the actual memory that is backing them we need some lifetime to use. That said
     // we are going to end up being wrapped in an Arc which will lose all concept of lifetimes for its references as it should. So to get around this
@@ -56,8 +50,6 @@ impl<'umem> UmemOwner<'umem> {
             frame_size,
             num_frames,
             init: AtomicBool::new(false),
-            #[cfg(feature = "async")]
-            fd: unsafe { xsk_umem__fd(umem) },
             _lifetime: PhantomData,
         }
     }
@@ -86,13 +78,6 @@ impl<'umem> UmemOwner<'umem> {
             len,
             is_fragment,
         )
-    }
-
-    /// Returns the file descriptor of the umem.
-    #[cfg(feature = "async")]
-    #[inline(always)]
-    pub(crate) fn fd(&self) -> RawFd {
-        self.fd
     }
 
     /// Returns the pointer to the umem.
