@@ -20,8 +20,8 @@ use crate::xdp::error::{self, Error};
 /// Ethtool generic netlink command IDs (from linux/ethtool_netlink.h).
 #[neli_enum(serialized_type = "u8")]
 pub enum EthtoolCmd {
-    ChannelsGet = 4,
     FeaturesGet = 11,
+    ChannelsGet = 17,
 }
 impl Cmd for EthtoolCmd {}
 
@@ -77,19 +77,19 @@ pub enum EthtoolAttrBitsetBit {
 }
 impl NlAttrType for EthtoolAttrBitsetBit {}
 
-/// Ethtool CHANNELS request/reply attributes.
+/// Ethtool CHANNELS request/reply attributes (from linux/ethtool_netlink.h).
 #[neli_enum(serialized_type = "u16")]
 pub enum EthtoolAttrChannels {
     Unspec = 0,
     Header = 1,
     RxMax = 2,
     TxMax = 3,
-    RxCount = 4,
-    TxCount = 5,
-    CombinedMax = 6,
-    CombinedCount = 7,
-    OtherMax = 8,
-    OtherCount = 9,
+    OtherMax = 4,
+    CombinedMax = 5,
+    RxCount = 6,
+    TxCount = 7,
+    OtherCount = 8,
+    CombinedCount = 9,
 }
 impl NlAttrType for EthtoolAttrChannels {}
 
@@ -247,8 +247,8 @@ pub fn get_queue_count(if_index: i32) -> error::Result<u32> {
         buf
     };
 
-    // genlmsghdr: cmd=4 (CHANNELS_GET), version=1, reserved=0
-    let genlhdr = [4u8, 1, 0, 0];
+    // genlmsghdr: cmd=17 (CHANNELS_GET), version=1, reserved=0
+    let genlhdr = [17u8, 1, 0, 0];
 
     // nlmsghdr
     let total_len = 16 + genlhdr.len() + header_attr.len();
@@ -329,9 +329,9 @@ pub fn get_queue_count(if_index: i32) -> error::Result<u32> {
             // 0xFFFFFFFF means "not applicable" in ethtool (displayed as "n/a").
             if val != u32::MAX {
                 match attr_type {
-                    7 => combined_count = val, // CombinedCount
-                    4 => rx_count = val,       // RxCount
-                    5 => tx_count = val,       // TxCount
+                    9 => combined_count = val, // CombinedCount
+                    6 => rx_count = val,       // RxCount
+                    7 => tx_count = val,       // TxCount
                     _ => {}
                 }
             }
@@ -339,7 +339,6 @@ pub fn get_queue_count(if_index: i32) -> error::Result<u32> {
         // Advance by NLA-aligned length.
         off += (nla_len + 3) & !3;
     }
-
     // Prefer combined count; fall back to rx or tx count; default to 1.
     let count = if combined_count > 0 {
         combined_count
