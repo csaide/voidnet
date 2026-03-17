@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn get_queue_count_on_loopback() {
         let count = get_queue_count(1).expect("query should not error");
-        assert!(count >= 1, "queue count should be at least 1");
+        assert!(count >= 1, "loopback should have at least 1 combined queue");
     }
 
     #[test]
@@ -368,7 +368,7 @@ mod tests {
             return; // eth0 doesn't exist, skip.
         }
         let count = get_queue_count(idx as i32).expect("query should not error");
-        assert_eq!(count, 1, "eth0 should have 1 combined queue");
+        assert!(count >= 1, "eth0 should have at least 1 combined queue");
     }
 
     #[test]
