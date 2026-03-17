@@ -4,12 +4,14 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender},
     },
 };
 
 use coarsetime::Duration;
 
 use crate::{
+    net::NeighborUpdate,
     netlink,
     rt::{affinity::pin_core, local::LocalRuntime},
     xdp::{
@@ -298,11 +300,48 @@ impl Runtime {
             workers.push((queue_id, umem, socket));
         }
 
+        // ---- Build neighbor broadcast channel mesh ----
+        let num_queues = workers.len();
+        let mut channels: Vec<(Vec<SyncSender<NeighborUpdate>>, Receiver<NeighborUpdate>)> =
+            Vec::with_capacity(num_queues);
+
+        if num_queues > 1 {
+            let mut receivers: Vec<Receiver<NeighborUpdate>> = Vec::with_capacity(num_queues);
+            let mut all_senders: Vec<SyncSender<NeighborUpdate>> = Vec::with_capacity(num_queues);
+            for _ in 0..num_queues {
+                let (tx, rx) = mpsc::sync_channel(256);
+                all_senders.push(tx);
+                receivers.push(rx);
+            }
+
+            // For each queue i, collect senders to all queues j != i.
+            let mut senders: Vec<Vec<SyncSender<NeighborUpdate>>> = Vec::with_capacity(num_queues);
+            for i in 0..num_queues {
+                let mut queue_senders = Vec::with_capacity(num_queues - 1);
+                for (j, sender) in all_senders.iter().enumerate() {
+                    if i != j {
+                        queue_senders.push(sender.clone());
+                    }
+                }
+                senders.push(queue_senders);
+            }
+
+            for (tx_vec, rx) in senders.into_iter().zip(receivers.into_iter()) {
+                channels.push((tx_vec, rx));
+            }
+        } else {
+            // Single queue via Runtime — no broadcast needed.
+            let (_, rx) = mpsc::sync_channel(1);
+            channels.push((Vec::new(), rx));
+        }
+
         // ---- Phase 2: Run (worker threads) ----
         let factory = Arc::new(factory);
         let mut handles = Vec::new();
 
-        for (queue_id, umem, socket) in workers {
+        for ((queue_id, umem, socket), (neighbor_tx, neighbor_rx)) in
+            workers.into_iter().zip(channels.into_iter())
+        {
             let exit = exit.clone();
             let factory = factory.clone();
             let if_name = self.if_name.clone();
@@ -315,7 +354,15 @@ impl Runtime {
 
                     println!("spawning worker thread for queue {queue_id}");
                     let mut rt = LocalRuntime::new_worker(
-                        &if_name, umem, socket, mtu, rx_offload, tx_offload, arp_ttl,
+                        &if_name,
+                        umem,
+                        socket,
+                        mtu,
+                        rx_offload,
+                        tx_offload,
+                        arp_ttl,
+                        neighbor_tx,
+                        neighbor_rx,
                     )?;
 
                     let result = rt.run(exit.clone(), factory(queue_id));

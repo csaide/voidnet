@@ -4,6 +4,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, SyncSender},
     },
     task::Context,
 };
@@ -13,7 +14,7 @@ use futures_util::pin_mut;
 
 use crate::{
     net::{
-        NeighborHandler, PmtuCache,
+        NeighborHandler, NeighborUpdate, PmtuCache,
         handler::{
             ethernet::EthernetHandler, ipv4::Ipv4Handler, ipv6::Ipv6Handler, tcp::TcpHandler,
             udp::UdpHandler,
@@ -194,6 +195,8 @@ pub struct LocalRuntime<'umem> {
     evict_counter: u32,
     // Whether TX checksum offload is enabled on this interface.
     tx_offload: bool,
+    /// Receiver for neighbor updates from peer queues (multi-queue only).
+    neighbor_rx: Option<Receiver<NeighborUpdate>>,
 }
 
 impl<'umem> LocalRuntime<'umem> {
@@ -245,6 +248,7 @@ impl<'umem> LocalRuntime<'umem> {
             rx_return,
             evict_counter: 0,
             tx_offload,
+            neighbor_rx: None,
         })
     }
 
@@ -259,9 +263,12 @@ impl<'umem> LocalRuntime<'umem> {
         rx_offload: bool,
         tx_offload: bool,
         arp_ttl: Duration,
+        neighbor_tx: Vec<SyncSender<NeighborUpdate>>,
+        neighbor_rx: Receiver<NeighborUpdate>,
     ) -> Result<Self> {
         let mut neighbor_handler = NeighborHandler::new(if_name, arp_ttl)?;
         neighbor_handler.set_offload(rx_offload, tx_offload);
+        neighbor_handler.set_broadcast(neighbor_tx);
         let neighbor_handler = Rc::new(neighbor_handler);
         let pmtu = Rc::new(UnsafeCell::new(PmtuCache::with_mtu(mtu)));
 
@@ -286,6 +293,7 @@ impl<'umem> LocalRuntime<'umem> {
             rx_return,
             evict_counter: 0,
             tx_offload,
+            neighbor_rx: Some(neighbor_rx),
         })
     }
 
@@ -367,6 +375,13 @@ impl<'umem> LocalRuntime<'umem> {
         let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
         let mut now = coarsetime::Instant::now();
         while !exit.load(Ordering::Relaxed) {
+            // ---- Drain neighbor updates from peer queues ----
+            if let Some(ref neighbor_rx) = self.neighbor_rx {
+                while let Ok(update) = neighbor_rx.try_recv() {
+                    self.neighbor_handler.apply_update(update, now);
+                }
+            }
+
             // ---- Phase 1: Collect TX Completions (non-blocking) ----
             // Frames completed by the kernel since last iteration return to
             // rx_return. Runs BEFORE recv to maximize frame availability.
