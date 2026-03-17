@@ -1,3 +1,29 @@
+# README Redesign Implementation Plan
+
+> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Rewrite README.md to accurately present VoidNet as a full userspace networking stack with professional tone targeting Rust developers.
+
+**Architecture:** Single file rewrite of `README.md`. No code changes, no new files beyond the README itself. Content derived from the design spec at `docs/superpowers/specs/2026-03-17-readme-redesign-design.md`.
+
+**Tech Stack:** Markdown, Mermaid diagrams
+
+**Spec:** `docs/superpowers/specs/2026-03-17-readme-redesign-design.md`
+
+---
+
+## Chunk 1: README.md Rewrite
+
+### Task 1: Write the complete README.md
+
+**Files:**
+- Modify: `README.md`
+
+- [ ] **Step 1: Replace README.md with the full rewritten content**
+
+Write the following content to `README.md`:
+
+````markdown
 # voidnet
 
 [![Crates.io](https://img.shields.io/crates/v/voidnet.svg)](https://crates.io/crates/voidnet)
@@ -410,3 +436,20 @@ graph TD
 - [xdp-tools](https://github.com/xdp-project/xdp-tools) — XDP utilities and examples
 - [libbpf-rs](https://github.com/libbpf/libbpf-rs) — Rust bindings for libbpf
 - [Aya](https://github.com/aya-rs/aya) — Pure Rust eBPF library
+````
+
+- [ ] **Step 2: Review the rendered output**
+
+Visually inspect the README on GitHub or with a local markdown preview to verify:
+- Badges render correctly
+- Mermaid diagram renders
+- All `<details>` sections expand/collapse
+- Code syntax highlighting works
+- Links to example files are correct
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add README.md
+git commit -m "docs: rewrite README to reflect full networking stack"
+```
