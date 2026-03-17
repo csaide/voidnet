@@ -25,7 +25,16 @@ impl ContextDropGuard {
 
 impl Drop for ContextDropGuard {
     fn drop(&mut self) {
-        RT_CTX.with(|c| c.set(std::ptr::null()));
+        RT_CTX.with(|c| {
+            let ptr = c.get();
+            if !ptr.is_null() {
+                // SAFETY: We created this pointer via Box::into_raw in new().
+                // The lifetime is erased but still valid — we drop before the
+                // UMEM/socket that the context references.
+                unsafe { drop(Box::from_raw(ptr as *mut RuntimeContext<'_>)) };
+            }
+            c.set(std::ptr::null());
+        });
     }
 }
 
@@ -155,6 +164,18 @@ mod tests {
         }
 
         // After the guard is dropped: context pointer is cleared again.
+        let result = std::panic::catch_unwind(|| {
+            with_runtime_context(|_ctx| {});
+        });
+        assert!(result.is_err(), "expected panic after guard is dropped");
+    }
+
+    #[test]
+    fn context_drop_guard_does_not_leak() {
+        let ctx = make_test_context();
+        let guard = ContextDropGuard::new(ctx);
+        drop(guard);
+
         let result = std::panic::catch_unwind(|| {
             with_runtime_context(|_ctx| {});
         });
