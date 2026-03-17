@@ -29,6 +29,7 @@ use crate::xdp::futures::TokioUmem;
 use super::{CompletionQueue, FillQueue, UmemOwner};
 
 /// A builder for creating a new [Umem] instance.
+#[derive(Clone)]
 pub struct UmemBuilder {
     completion_ring_size: u32,
     fill_ring_size: u32,
