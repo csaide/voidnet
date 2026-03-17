@@ -674,6 +674,7 @@ mod tests {
             id: conn_id,
             state: TcpState::Established,
             from_passive_open: true,
+            dst_mac: None,
             iss: 1000,
             snd_una: 1000,
             snd_nxt: 1000,

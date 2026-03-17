@@ -103,15 +103,21 @@ impl TcpHandler {
                 // Peek the data from the send buffer (don't advance — held until ACKed).
                 let payload = tcb.send_buffer.peek_slices(bytes_in_flight, to_send);
 
-                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
-                    now,
-                    &tcb.id.remote_addr,
-                    &tcb.id.local_addr,
-                    free_frames,
-                    rx_return,
-                    tx_return,
-                ) else {
-                    break; // exit inner loop — TCP retransmit will retry later
+                let dst_mac = if let Some(cached) = tcb.dst_mac {
+                    cached
+                } else {
+                    let Some(mac) = neighbor_handler.lookup_or_resolve(
+                        now,
+                        &tcb.id.remote_addr,
+                        &tcb.id.local_addr,
+                        free_frames,
+                        rx_return,
+                        tx_return,
+                    ) else {
+                        break; // exit inner loop — TCP retransmit will retry later
+                    };
+                    tcb.dst_mac = Some(mac);
+                    mac
                 };
 
                 let ts = tcb.ts_option(tsval);
@@ -176,17 +182,23 @@ impl TcpHandler {
             // pure ACK now. This defers ACK generation from inbound processing to
             // give data segments a chance to piggyback the ACK first.
             if tcb.ack_pending && tcb.ack_delay_count >= MAX_DELAYED_ACK_COUNT {
-                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
-                    now,
-                    &tcb.id.remote_addr,
-                    &tcb.id.local_addr,
-                    free_frames,
-                    rx_return,
-                    tx_return,
-                ) else {
-                    // Neighbor resolution pending — re-mark for next tick.
-                    self.send_tracker.mark(SendReady(key));
-                    continue; // skip to next connection
+                let dst_mac = if let Some(cached) = tcb.dst_mac {
+                    cached
+                } else {
+                    let Some(mac) = neighbor_handler.lookup_or_resolve(
+                        now,
+                        &tcb.id.remote_addr,
+                        &tcb.id.local_addr,
+                        free_frames,
+                        rx_return,
+                        tx_return,
+                    ) else {
+                        // Neighbor resolution pending — re-mark for next tick.
+                        self.send_tracker.mark(SendReady(key));
+                        continue; // skip to next connection
+                    };
+                    tcb.dst_mac = Some(mac);
+                    mac
                 };
 
                 let ts = tcb.ts_option(tsval);
@@ -236,17 +248,23 @@ impl TcpHandler {
                 let mut probe = [0u8; 1];
                 tcb.send_buffer.peek_at(bytes_in_flight, &mut probe);
 
-                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
-                    now,
-                    &tcb.id.remote_addr,
-                    &tcb.id.local_addr,
-                    free_frames,
-                    rx_return,
-                    tx_return,
-                ) else {
-                    // Neighbor resolution pending — re-mark for next tick.
-                    self.send_tracker.mark(SendReady(key));
-                    continue; // skip to next connection
+                let dst_mac = if let Some(cached) = tcb.dst_mac {
+                    cached
+                } else {
+                    let Some(mac) = neighbor_handler.lookup_or_resolve(
+                        now,
+                        &tcb.id.remote_addr,
+                        &tcb.id.local_addr,
+                        free_frames,
+                        rx_return,
+                        tx_return,
+                    ) else {
+                        // Neighbor resolution pending — re-mark for next tick.
+                        self.send_tracker.mark(SendReady(key));
+                        continue; // skip to next connection
+                    };
+                    tcb.dst_mac = Some(mac);
+                    mac
                 };
 
                 let ts = tcb.ts_option(tsval);
@@ -282,17 +300,23 @@ impl TcpHandler {
             {
                 // Send RST to peer.
                 let id = tcb.id;
-                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
-                    now,
-                    &tcb.id.remote_addr,
-                    &tcb.id.local_addr,
-                    free_frames,
-                    rx_return,
-                    tx_return,
-                ) else {
-                    // Neighbor resolution pending — re-mark for next tick.
-                    self.send_tracker.mark(SendReady(key));
-                    continue; // skip to next connection
+                let dst_mac = if let Some(cached) = tcb.dst_mac {
+                    cached
+                } else {
+                    let Some(mac) = neighbor_handler.lookup_or_resolve(
+                        now,
+                        &tcb.id.remote_addr,
+                        &tcb.id.local_addr,
+                        free_frames,
+                        rx_return,
+                        tx_return,
+                    ) else {
+                        // Neighbor resolution pending — re-mark for next tick.
+                        self.send_tracker.mark(SendReady(key));
+                        continue; // skip to next connection
+                    };
+                    tcb.dst_mac = Some(mac);
+                    mac
                 };
 
                 // Use build_rst by simulating an "incoming ACK" segment.
@@ -328,17 +352,23 @@ impl TcpHandler {
                 // Only send FIN when all data has been sent and ACKed.
                 if data_available == 0 && bytes_in_flight == 0 {
                     let id = tcb.id;
-                    let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
-                        now,
-                        &tcb.id.remote_addr,
-                        &tcb.id.local_addr,
-                        free_frames,
-                        rx_return,
-                        tx_return,
-                    ) else {
-                        // Neighbor resolution pending — re-mark for next tick.
-                        self.send_tracker.mark(SendReady(key));
-                        continue; // skip to next connection
+                    let dst_mac = if let Some(cached) = tcb.dst_mac {
+                        cached
+                    } else {
+                        let Some(mac) = neighbor_handler.lookup_or_resolve(
+                            now,
+                            &tcb.id.remote_addr,
+                            &tcb.id.local_addr,
+                            free_frames,
+                            rx_return,
+                            tx_return,
+                        ) else {
+                            // Neighbor resolution pending — re-mark for next tick.
+                            self.send_tracker.mark(SendReady(key));
+                            continue; // skip to next connection
+                        };
+                        tcb.dst_mac = Some(mac);
+                        mac
                     };
                     let ts = tcb.ts_option(tsval);
                     SegmentBuilder::build_fin_ack(
