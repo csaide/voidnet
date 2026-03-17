@@ -1,15 +1,17 @@
 use coarsetime::Instant;
 
-use crate::xdp::frame::{Frame, FrameBuffer};
-
-use crate::net::wire::tcp::flags;
+use crate::{
+    net::wire::tcp::flags,
+    xdp::frame::{Frame, FrameBuffer},
+};
 
 use super::super::handler::TcpHandler;
 use super::super::options::ParsedOptions;
 use super::super::segment::SegmentBuilder;
 use super::super::state::TcpState;
 use super::super::tcb::{Tcb, TcpEvent};
-use super::{PostAction, is_segment_acceptable};
+
+use super::segment::{PostAction, is_segment_acceptable};
 
 impl TcpHandler {
     // --- Connection teardown ---

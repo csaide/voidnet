@@ -1,6 +1,6 @@
-use coarsetime::Instant;
 use std::collections::BTreeMap;
 
+use coarsetime::Instant;
 use rustc_hash::FxHashMap;
 use slab::Slab;
 
@@ -28,8 +28,6 @@ use super::super::tcb::{
 };
 
 impl TcpHandler {
-    // --- LISTEN state processing (RFC §16.2) ---
-
     pub(super) fn process_listen<'umem>(
         connections: &mut Slab<Tcb>,
         connection_map: &mut FxHashMap<ConnectionId, usize>,

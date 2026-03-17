@@ -1,8 +1,9 @@
 use coarsetime::Instant;
 
-use crate::xdp::frame::{Frame, FrameBuffer};
-
-use crate::net::wire::tcp::flags;
+use crate::{
+    net::wire::tcp::flags,
+    xdp::frame::{Frame, FrameBuffer},
+};
 
 use super::super::handler::TcpHandler;
 use super::super::options::ParsedOptions;
@@ -10,11 +11,10 @@ use super::super::recovery::FRtoAction;
 use super::super::segment::SegmentBuilder;
 use super::super::state::TcpState;
 use super::super::tcb::{Tcb, TcpEvent};
-use super::{PostAction, is_segment_acceptable};
+
+use super::segment::{PostAction, is_segment_acceptable};
 
 impl TcpHandler {
-    // --- ESTABLISHED state processing: cold-path helpers ---
-
     /// Handle RST in established state (RFC 5961).
     /// Returns PostAction indicating if connection should be removed.
     #[inline(never)]
@@ -150,8 +150,6 @@ impl TcpHandler {
             tx_return,
         );
     }
-
-    // --- ESTABLISHED state processing ---
 
     pub(super) fn process_established<'umem>(
         tcb: &mut Tcb,

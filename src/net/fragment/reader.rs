@@ -19,7 +19,7 @@ use super::pkt::Packet;
 pub struct ReassembledPacket<'umem> {
     /// The reassembled frames (original fragment frames, sorted by offset).
     pub packet: Packet<'umem>,
-    /// IP protocol number from the fragment headers (e.g. 17 for UDP, 6 for TCP).
+    /// IP protocol number from the fragment headers.
     pub protocol: u8,
 }
 

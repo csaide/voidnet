@@ -5,13 +5,12 @@ use super::super::listener::ListenEntry;
 use super::super::segment::SegmentBuilder;
 use super::super::state::TcpState;
 use super::super::tcb::{DEFAULT_RCV_WND, Tcb, TcpEvent};
-use super::PostAction;
+
+use super::segment::PostAction;
 
 use crate::net::wire::tcp::flags;
 
 impl TcpHandler {
-    // --- SYN-RECEIVED state processing (RFC §16.4) ---
-
     pub(super) fn process_syn_received<'umem>(
         tcb: &mut Tcb,
         key: usize,

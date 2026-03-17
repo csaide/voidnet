@@ -11,7 +11,7 @@ use crate::{
     xdp::frame::{BasicFrameBuffer, Frame},
 };
 
-use super::inbound::is_segment_acceptable;
+use super::inbound::segment::is_segment_acceptable;
 use super::state::TcpState;
 use super::tcb::{ConnectionId, DEFAULT_RCV_WSCALE, TcpConfig, TcpEvent};
 use super::*;

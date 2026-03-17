@@ -1,7 +1,4 @@
 /// Pre-computed fragment sizing plan for IP fragmentation.
-///
-/// Accepts a `transport_header_len` parameter instead of hardcoding
-/// `UDP_HEADER_LEN`, making it usable with any transport protocol.
 pub(crate) struct FragmentPlan {
     /// Maximum data bytes per fragment, 8-byte aligned: `(mtu - ip_overhead) & !7`.
     pub max_frag_data: usize,
@@ -14,13 +11,6 @@ pub(crate) struct FragmentPlan {
 
 impl FragmentPlan {
     /// Compute a fragmentation plan.
-    ///
-    /// - `ip_header_overhead`: total IP-layer overhead per fragment
-    ///   (e.g. 20 for IPv4, 48 for IPv6 + fragment ext).
-    /// - `transport_header_len`: bytes consumed by the transport header
-    ///   in the first fragment (e.g. 8 for UDP).
-    /// - `pmtu`: path MTU in bytes.
-    /// - `payload_len`: application payload length (excluding transport header).
     pub fn new(
         ip_header_overhead: usize,
         transport_header_len: usize,
@@ -43,10 +33,6 @@ impl FragmentPlan {
     }
 
     /// Returns `(ip_payload_len, data_to_copy)` for fragment `i`.
-    ///
-    /// - `transport_header_len`: size of the transport header (only relevant for i==0).
-    /// - `payload_offset`: current offset into the application payload.
-    /// - `payload_len`: total application payload length.
     pub fn fragment_sizes(
         &self,
         i: usize,

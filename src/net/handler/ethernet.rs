@@ -9,9 +9,11 @@ use crate::{
     xdp::frame::{Frame, FrameBuffer},
 };
 
+/// A ZST representing the entrypoint of the handlers and handles Ethernet frame parsing.
 pub struct EthernetHandler;
 
 impl EthernetHandler {
+    /// Handle an incoming raw Ethernet frame, dispatching to the appropriate protocol handler based on the EtherType.
     pub fn handle<'umem>(
         &mut self,
         frame: Frame<'umem>,

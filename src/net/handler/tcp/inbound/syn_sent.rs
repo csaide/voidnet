@@ -1,16 +1,16 @@
 use coarsetime::Instant;
 
-use crate::xdp::frame::FrameBuffer;
-
-use crate::net::wire::tcp::{
-    flags, parse_mss, parse_sack_permitted, parse_timestamp, parse_window_scale,
+use crate::{
+    net::wire::tcp::{flags, parse_mss, parse_sack_permitted, parse_timestamp, parse_window_scale},
+    xdp::frame::FrameBuffer,
 };
 
 use super::super::handler::{INITIAL_RTO_MS, TcpHandler};
 use super::super::segment::SegmentBuilder;
 use super::super::state::TcpState;
 use super::super::tcb::{DEFAULT_RCV_WND, TS_OPTION_LEN, Tcb, TcpEvent};
-use super::PostAction;
+
+use super::segment::PostAction;
 
 impl TcpHandler {
     // --- SYN-SENT state processing (RFC §16.3) ---

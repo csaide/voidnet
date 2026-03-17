@@ -6,14 +6,14 @@ use crate::{
     net::{
         checksum::{
             fold_and_verify, pseudo_header_sum_v4, pseudo_header_sum_v6, sum_words_carry,
-            verify_udp_checksum, verify_udp_checksum_ip,
+            verify_udp_checksum_ip,
         },
         fragment::{FragmentReader, Packet},
         socket::LocalQueue,
         wire::{
             ethernet::EthernetFrame,
             ip::{
-                EXT_FRAGMENT, FRAGMENT_EXT_LEN, IPV6_HEADER_LEN, IpAddress, Ipv4Header, Ipv6,
+                EXT_FRAGMENT, FRAGMENT_EXT_LEN, IPV6_HEADER_LEN, IpAddress, Ipv4, Ipv4Header, Ipv6,
                 Ipv6Header,
             },
             udp::{UDP_HEADER_LEN, UdpHeader},
@@ -224,7 +224,7 @@ impl<'umem> UdpHandler<'umem> {
                             if available < udp_len {
                                 false
                             } else {
-                                verify_udp_checksum(
+                                verify_udp_checksum_ip::<Ipv4>(
                                     &ip.src_addr,
                                     &ip.dst_addr,
                                     &f[udp_offset..udp_offset + udp_len],

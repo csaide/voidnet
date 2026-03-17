@@ -1,5 +1,5 @@
 use crate::net::wire::{
-    ip::{IpProtocols, IpVersion, Ipv4Address},
+    ip::{IpProtocols, IpVersion},
     tcp::TCP_HEADER_LEN,
     udp::UDP_HEADER_LEN,
 };
@@ -60,7 +60,7 @@ pub fn verify_udp_checksum_ip<V: IpVersion>(
         return false;
     }
     if udp_segment[6] == 0 && udp_segment[7] == 0 {
-        return false;
+        return V::VERSION == 4; // IPv4 zero-means-no-checksum
     }
     let sum = V::pseudo_header_sum(
         src_addr,
@@ -69,24 +69,6 @@ pub fn verify_udp_checksum_ip<V: IpVersion>(
         udp_segment.len() as u32,
     ) + sum_words(udp_segment);
     fold_and_verify(sum, 0x0000)
-}
-
-/// Verifies the UDP checksum for an IPv4 packet.
-///
-/// Returns `true` if the checksum field is zero (no checksum, per RFC 768)
-/// or if the one's complement sum of the pseudo-header and full UDP segment
-/// yields the expected result.
-#[inline]
-pub fn verify_udp_checksum(
-    src_addr: &Ipv4Address,
-    dst_addr: &Ipv4Address,
-    udp_segment: &[u8],
-) -> bool {
-    // IPv4 UDP: zero checksum means "no checksum" (RFC 768)
-    if udp_segment.len() >= UDP_HEADER_LEN && udp_segment[6] == 0 && udp_segment[7] == 0 {
-        return true;
-    }
-    verify_udp_checksum_ip::<crate::net::wire::ip::Ipv4>(src_addr, dst_addr, udp_segment)
 }
 
 #[cfg(test)]
@@ -129,7 +111,7 @@ mod tests {
         let checksum = compute_udp_checksum(&src, &dst, &segment);
         segment[6] = checksum[0];
         segment[7] = checksum[1];
-        assert!(verify_udp_checksum(&src, &dst, &segment));
+        assert!(verify_udp_checksum_ip::<Ipv4>(&src, &dst, &segment));
     }
 
     #[test]
@@ -137,14 +119,14 @@ mod tests {
         let src = Ipv4Address::new([0; 4]);
         let dst = Ipv4Address::new([0; 4]);
         let segment = [0u8; 8];
-        assert!(verify_udp_checksum(&src, &dst, &segment));
+        assert!(verify_udp_checksum_ip::<Ipv4>(&src, &dst, &segment));
     }
 
     #[test]
     fn udp_v4_too_short() {
         let src = Ipv4Address::new([0; 4]);
         let dst = Ipv4Address::new([0; 4]);
-        assert!(!verify_udp_checksum(&src, &dst, &[0; 7]));
+        assert!(!verify_udp_checksum_ip::<Ipv4>(&src, &dst, &[0; 7]));
     }
 
     #[test]
@@ -154,7 +136,7 @@ mod tests {
         let segment = [
             0x12, 0x34, 0x00, 0x35, 0x00, 0x0C, 0xFF, 0xFF, 0x01, 0x02, 0x03, 0x04,
         ];
-        assert!(!verify_udp_checksum(&src, &dst, &segment));
+        assert!(!verify_udp_checksum_ip::<Ipv4>(&src, &dst, &segment));
     }
 
     #[test]

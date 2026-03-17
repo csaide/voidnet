@@ -322,8 +322,6 @@ mod tests {
         UdpHeader::new(12345, 53, (8 + payload_len) as u16, [0xAB, 0xCD])
     }
 
-    // --- IPv4 single frame ---
-
     #[test]
     fn ipv4_single_frame() {
         let mut bufs: Vec<Vec<u8>> = (0..4).map(|_| vec![0u8; 2048]).collect();
@@ -372,8 +370,6 @@ mod tests {
             _ => panic!("expected Single"),
         }
     }
-
-    // --- IPv4 fragmented ---
 
     #[test]
     fn ipv4_fragmented() {
@@ -438,8 +434,6 @@ mod tests {
         }
     }
 
-    // --- IPv6 single frame ---
-
     #[test]
     fn ipv6_single_frame() {
         let mut bufs: Vec<Vec<u8>> = (0..4).map(|_| vec![0u8; 2048]).collect();
@@ -471,8 +465,6 @@ mod tests {
             _ => panic!("expected Single"),
         }
     }
-
-    // --- IPv6 fragmented ---
 
     #[test]
     fn ipv6_fragmented() {
@@ -530,8 +522,6 @@ mod tests {
         }
     }
 
-    // --- WouldBlock on insufficient frames ---
-
     #[test]
     fn ipv4_would_block_no_frames() {
         let mut free = BasicFrameBuffer::new(16);
@@ -585,8 +575,6 @@ mod tests {
         assert_eq!(result.unwrap_err(), WouldBlock);
     }
 
-    // --- Custom transport header ---
-
     struct FakeTransport {
         protocol: u8,
         header: [u8; 4],
@@ -634,8 +622,6 @@ mod tests {
             _ => panic!("expected Single"),
         }
     }
-
-    // --- Empty payload ---
 
     #[test]
     fn ipv4_empty_payload() {

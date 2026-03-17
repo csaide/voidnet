@@ -1,9 +1,6 @@
 use crate::net::wire::ip::{Ipv4Address, Ipv6Address};
 
 /// Sum all 16-bit words in `data`, handling trailing bytes.
-///
-/// Uses a `u64` accumulator and processes 32 bytes (sixteen 16-bit words)
-/// per iteration to reduce loop overhead and let the CPU pipeline loads.
 #[inline]
 pub fn sum_words(data: &[u8]) -> u64 {
     let (mut sum, pending) = sum_words_carry(data, 0, None);
@@ -14,10 +11,6 @@ pub fn sum_words(data: &[u8]) -> u64 {
 }
 
 /// Sum 16-bit words across a slice, carrying a pending odd byte in/out.
-///
-/// This is the building block for checksumming fragmented (multi-frame)
-/// packets without heap-allocating a `Vec` of slices. Call it once per
-/// fragment and thread the `(sum, pending)` state through.
 #[inline]
 pub fn sum_words_carry(data: &[u8], mut sum: u64, pending: Option<u8>) -> (u64, Option<u8>) {
     let len = data.len();
@@ -37,83 +30,19 @@ pub fn sum_words_carry(data: &[u8], mut sum: u64, pending: Option<u8>) -> (u64, 
     {
         if len - i >= 32 {
             // Safety: aarch64 always has NEON.
-            return unsafe { super::neon::sum_words_carry_neon(&data[i..], sum, None) };
+            return unsafe { super::neon::sum_words_carry(&data[i..], sum) };
         }
     }
 
-    // Process 32 bytes per iteration using 4x u64 wide reads.
-    // Each u64 is split into 4 u16 words via shifts — safe for unaligned data
-    // because from_be_bytes copies rather than casting pointers.
-    while i + 31 < len {
-        let w0 = u64::from_be_bytes([
-            data[i],
-            data[i + 1],
-            data[i + 2],
-            data[i + 3],
-            data[i + 4],
-            data[i + 5],
-            data[i + 6],
-            data[i + 7],
-        ]);
-        let w1 = u64::from_be_bytes([
-            data[i + 8],
-            data[i + 9],
-            data[i + 10],
-            data[i + 11],
-            data[i + 12],
-            data[i + 13],
-            data[i + 14],
-            data[i + 15],
-        ]);
-        let w2 = u64::from_be_bytes([
-            data[i + 16],
-            data[i + 17],
-            data[i + 18],
-            data[i + 19],
-            data[i + 20],
-            data[i + 21],
-            data[i + 22],
-            data[i + 23],
-        ]);
-        let w3 = u64::from_be_bytes([
-            data[i + 24],
-            data[i + 25],
-            data[i + 26],
-            data[i + 27],
-            data[i + 28],
-            data[i + 29],
-            data[i + 30],
-            data[i + 31],
-        ]);
-        sum += (w0 >> 48) + ((w0 >> 32) & 0xFFFF) + ((w0 >> 16) & 0xFFFF) + (w0 & 0xFFFF);
-        sum += (w1 >> 48) + ((w1 >> 32) & 0xFFFF) + ((w1 >> 16) & 0xFFFF) + (w1 & 0xFFFF);
-        sum += (w2 >> 48) + ((w2 >> 32) & 0xFFFF) + ((w2 >> 16) & 0xFFFF) + (w2 & 0xFFFF);
-        sum += (w3 >> 48) + ((w3 >> 32) & 0xFFFF) + ((w3 >> 16) & 0xFFFF) + (w3 & 0xFFFF);
-        i += 32;
-    }
+    // TODO: Implement a SIMD-based implementation for x86_64.
 
-    // Handle remaining 4 bytes at a time.
-    while i + 3 < len {
-        sum += ((data[i] as u64) << 8) | (data[i + 1] as u64);
-        sum += ((data[i + 2] as u64) << 8) | (data[i + 3] as u64);
-        i += 4;
-    }
-
-    if i + 1 < len {
-        sum += ((data[i] as u64) << 8) | (data[i + 1] as u64);
-        i += 2;
-    }
-
-    if i < len {
-        return (sum, Some(data[i]));
-    }
-
-    (sum, None)
+    // Fallback path just incase the SIMD implementation is not available, or the data is so small it would cost more to do SIMD.
+    super::std::sum_words_carry(&data[i..], sum)
 }
 
 /// Fold 64-bit running sum to 16 bits, then one's-complement.
 #[inline]
-pub(crate) fn fold_checksum(mut sum: u64) -> u16 {
+pub fn fold_checksum(mut sum: u64) -> u16 {
     while (sum >> 16) != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
@@ -122,7 +51,7 @@ pub(crate) fn fold_checksum(mut sum: u64) -> u16 {
 
 /// Fold and check for 0xFFFF (verification path).
 #[inline]
-pub(crate) fn fold_and_verify(mut sum: u64, actual: u16) -> bool {
+pub fn fold_and_verify(mut sum: u64, actual: u16) -> bool {
     while (sum >> 16) != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
@@ -131,7 +60,7 @@ pub(crate) fn fold_and_verify(mut sum: u64, actual: u16) -> bool {
 
 /// Build the IPv4 pseudo-header sum: src IP + dst IP + protocol + length.
 #[inline]
-pub(crate) fn pseudo_header_sum_v4(
+pub fn pseudo_header_sum_v4(
     src_addr: &Ipv4Address,
     dst_addr: &Ipv4Address,
     protocol: u8,
@@ -142,7 +71,7 @@ pub(crate) fn pseudo_header_sum_v4(
 
 /// Build the IPv6 pseudo-header sum: src IP + dst IP + length (u32) + next header.
 #[inline]
-pub(crate) fn pseudo_header_sum_v6(
+pub fn pseudo_header_sum_v6(
     src_addr: &Ipv6Address,
     dst_addr: &Ipv6Address,
     protocol: u8,
@@ -157,7 +86,7 @@ pub(crate) fn pseudo_header_sum_v6(
 
 /// Convert a folded checksum to wire bytes, mapping zero to 0xFFFF per RFC 768.
 #[inline]
-pub(crate) fn checksum_to_bytes(checksum: u16) -> [u8; 2] {
+pub fn checksum_to_bytes(checksum: u16) -> [u8; 2] {
     if checksum == 0 {
         [0xFF, 0xFF]
     } else {

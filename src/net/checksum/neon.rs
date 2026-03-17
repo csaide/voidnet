@@ -17,28 +17,18 @@ use std::arch::aarch64::*;
 /// Produces the same intermediate `sum` values as the scalar path,
 /// so partial sums can be safely mixed across fragments.
 ///
+/// This is meant to be consumed by the [common::sum_words_carry] function.
+///
 /// # Safety
 ///
 /// Requires aarch64 NEON support (guaranteed on all AArch64 CPUs).
+///
+/// [common::sum_words_carry]: crate::net::checksum::common::sum_words_carry
 #[inline]
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn sum_words_carry_neon(
-    data: &[u8],
-    mut sum: u64,
-    pending: Option<u8>,
-) -> (u64, Option<u8>) {
+pub(crate) unsafe fn sum_words_carry(data: &[u8], mut sum: u64) -> (u64, Option<u8>) {
     let len = data.len();
     let mut i = 0;
-
-    // Handle pending byte from previous fragment.
-    if let Some(hi) = pending {
-        if len > 0 {
-            sum += ((hi as u64) << 8) | (data[0] as u64);
-            i = 1;
-        } else {
-            return (sum, Some(hi));
-        }
-    }
 
     // SAFETY: all NEON intrinsics below require aarch64 NEON, which is
     // guaranteed on all AArch64 CPUs. Pointer arithmetic is bounded by
