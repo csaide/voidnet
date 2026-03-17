@@ -1,4 +1,4 @@
-use std::{cell::UnsafeCell, net::IpAddr};
+use std::{cell::UnsafeCell, net::IpAddr, sync::mpsc::SyncSender};
 
 use coarsetime::{Duration, Instant};
 use getifaddrs::InterfaceFilter;
@@ -42,6 +42,7 @@ pub struct NeighborHandler {
     ttl: Duration,
     rx_offload: bool,
     tx_offload: bool,
+    broadcast: Vec<SyncSender<NeighborUpdate>>,
 }
 
 impl NeighborHandler {
@@ -92,6 +93,7 @@ impl NeighborHandler {
             ttl,
             rx_offload: false,
             tx_offload: false,
+            broadcast: Vec::new(),
         })
     }
 
@@ -99,6 +101,11 @@ impl NeighborHandler {
     pub fn set_offload(&mut self, rx_offload: bool, tx_offload: bool) {
         self.rx_offload = rx_offload;
         self.tx_offload = tx_offload;
+    }
+
+    /// Sets the broadcast senders for cross-queue neighbor replication.
+    pub fn set_broadcast(&mut self, senders: Vec<SyncSender<NeighborUpdate>>) {
+        self.broadcast = senders;
     }
 
     /// Sets the local MAC address.
@@ -223,6 +230,21 @@ impl NeighborHandler {
         );
     }
 
+    /// Broadcasts a neighbor update to all peer queues. Drops silently if full.
+    fn broadcast_update(&self, update: NeighborUpdate) {
+        for sender in &self.broadcast {
+            let _ = sender.try_send(update);
+        }
+    }
+
+    /// Applies a neighbor update received from a peer queue.
+    pub fn apply_update(&self, update: NeighborUpdate, now: Instant) {
+        self.table().insert(
+            update.ip,
+            NeighborState::reachable(update.mac, now + self.ttl),
+        );
+    }
+
     /// Processes an incoming ARP frame.
     ///
     /// The frame is always consumed and pushed to exactly one buffer:
@@ -241,7 +263,7 @@ impl NeighborHandler {
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) -> Option<NeighborUpdate> {
-        handle_arp(
+        let resolved = handle_arp(
             now,
             self.table(),
             self.local_mac,
@@ -250,7 +272,11 @@ impl NeighborHandler {
             frame,
             rx_return,
             tx_return,
-        )
+        );
+        if let Some(update) = resolved {
+            self.broadcast_update(update);
+        }
+        resolved
     }
 
     /// Handles an incoming NDP (ICMPv6 Neighbor Discovery) frame.
@@ -269,7 +295,7 @@ impl NeighborHandler {
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) -> Option<NeighborUpdate> {
-        handle_ndp(
+        let resolved = handle_ndp(
             now,
             self.ttl,
             self.table(),
@@ -282,7 +308,11 @@ impl NeighborHandler {
             icmpv6_len,
             rx_return,
             tx_return,
-        )
+        );
+        if let Some(update) = resolved {
+            self.broadcast_update(update);
+        }
+        resolved
     }
 
     /// Look up a neighbor MAC. On cache miss or expired entry, send an
