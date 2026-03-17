@@ -366,3 +366,57 @@ impl Runtime {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xdp::test_utils::TestVethPair;
+
+    /// Test that Runtime can be constructed and run with a single queue on a veth pair.
+    #[test]
+    fn runtime_single_queue_veth() {
+        let veth = TestVethPair::new().expect("failed to create veth pair");
+
+        let exit = Arc::new(AtomicBool::new(false));
+        let exit_clone = exit.clone();
+
+        // Signal exit after a brief moment so the test doesn't run forever.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            exit_clone.store(true, Ordering::Relaxed);
+        });
+
+        let rt = Runtime::builder(veth.outer_name())
+            .queues(&[0])
+            .build()
+            .expect("failed to build runtime");
+
+        let result = rt.run(exit, |_queue_id| async {
+            // No-op: just confirm the event loop runs and exits cleanly.
+        });
+
+        assert!(
+            result.is_ok(),
+            "runtime should exit cleanly: {:?}",
+            result.err()
+        );
+    }
+
+    /// Test that explicit queue selection works at build time.
+    #[test]
+    fn runtime_builder_explicit_queues() {
+        let veth = TestVethPair::new().expect("failed to create veth pair");
+
+        let rt = Runtime::builder(veth.outer_name()).queues(&[0]).build();
+
+        assert!(rt.is_ok(), "should build with explicit queue 0");
+    }
+
+    /// Test that queue ID validation rejects out-of-range values.
+    #[test]
+    fn runtime_builder_rejects_out_of_range_queue() {
+        let result = Runtime::builder("lo").queues(&[3000]).build();
+
+        assert!(result.is_err(), "should reject queue ID >= 2048");
+    }
+}
