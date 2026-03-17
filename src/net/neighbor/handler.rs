@@ -104,7 +104,7 @@ impl NeighborHandler {
     }
 
     /// Sets the broadcast senders for cross-queue neighbor replication.
-    pub fn set_broadcast(&mut self, senders: Vec<SyncSender<NeighborUpdate>>) {
+    pub(crate) fn set_broadcast(&mut self, senders: Vec<SyncSender<NeighborUpdate>>) {
         self.broadcast = senders;
     }
 
@@ -238,7 +238,7 @@ impl NeighborHandler {
     }
 
     /// Applies a neighbor update received from a peer queue.
-    pub fn apply_update(&self, update: NeighborUpdate, now: Instant) {
+    pub(crate) fn apply_update(&self, update: NeighborUpdate, now: Instant) {
         self.table().insert(
             update.ip,
             NeighborState::reachable(update.mac, now + self.ttl),
@@ -256,7 +256,7 @@ impl NeighborHandler {
     ///
     /// Both requests and replies from structurally valid Ethernet/IPv4 ARP
     /// packets update the neighbor cache.
-    pub fn handle_arp<'umem>(
+    pub(crate) fn handle_arp<'umem>(
         &self,
         now: Instant,
         frame: Frame<'umem>,
@@ -286,7 +286,7 @@ impl NeighborHandler {
     /// * Neighbor Advertisement (136) -- cache the advertised MAC
     /// * Router Advertisement (134) -- cache the router's MAC
     /// * Router Solicitation (133) and Redirect (137) -- pass to `rx_return`
-    pub fn handle_ndp<'umem>(
+    pub(crate) fn handle_ndp<'umem>(
         &self,
         now: Instant,
         frame: Frame<'umem>,
