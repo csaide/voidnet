@@ -1,5 +1,5 @@
 use coarsetime::{Duration, Instant};
-use dashmap::DashMap;
+use rustc_hash::FxHashMap;
 
 use crate::{
     net::wire::{
@@ -62,7 +62,7 @@ pub(super) fn resolve_v4<'umem>(
 
 pub(super) fn handle_arp<'umem>(
     now: Instant,
-    table: &DashMap<IpAddress, NeighborState>,
+    table: &mut FxHashMap<IpAddress, NeighborState>,
     local_mac: MacAddress,
     local_ipv4: &[Ipv4Address],
     ttl: Duration,

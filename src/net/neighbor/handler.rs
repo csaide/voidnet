@@ -1,8 +1,8 @@
-use std::net::IpAddr;
+use std::{cell::UnsafeCell, net::IpAddr};
 
 use coarsetime::{Duration, Instant};
-use dashmap::DashMap;
 use getifaddrs::InterfaceFilter;
+use rustc_hash::FxHashMap;
 
 use crate::{
     net::wire::{
@@ -31,13 +31,28 @@ pub struct NeighborHandler {
     local_mac: MacAddress,
     local_ipv4: Vec<Ipv4Address>,
     local_ipv6: Vec<Ipv6Address>,
-    table: DashMap<IpAddress, NeighborState>,
+    table: UnsafeCell<FxHashMap<IpAddress, NeighborState>>,
     ttl: Duration,
     rx_offload: bool,
     tx_offload: bool,
 }
 
 impl NeighborHandler {
+    /// Returns a mutable reference to the inner neighbor table.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure no other references to the table exist. This is
+    /// trivially satisfied because `NeighborHandler` is only used via
+    /// `Rc` within a single-threaded `LocalRuntime`.
+    #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
+    fn table(&self) -> &mut FxHashMap<IpAddress, NeighborState> {
+        // SAFETY: single-threaded access guaranteed by Rc<NeighborHandler>
+        // within LocalRuntime. No concurrent or reentrant callers exist.
+        unsafe { &mut *self.table.get() }
+    }
+
     /// Creates a new handler bound to the given MAC and IPv4 address.
     pub fn new(if_name: &str, ttl: Duration) -> Result<Self> {
         let mut local_ipv4 = Vec::new();
@@ -66,7 +81,7 @@ impl NeighborHandler {
             local_mac,
             local_ipv4,
             local_ipv6,
-            table: DashMap::new(),
+            table: UnsafeCell::new(FxHashMap::default()),
             ttl,
             rx_offload: false,
             tx_offload: false,
@@ -108,8 +123,9 @@ impl NeighborHandler {
 
     /// Removes all entries whose TTL has expired.
     pub fn evict_stale(&self, now: Instant) {
+        let table = self.table();
         // First pass: transition expired Reachable → Stale.
-        for mut entry in self.table.iter_mut() {
+        for entry in table.values_mut() {
             if entry.is_expired(now)
                 && let NeighborState::Reachable { mac, .. } = *entry
             {
@@ -117,14 +133,14 @@ impl NeighborHandler {
             }
         }
         // Second pass: remove Incomplete and Stale entries past their timeouts.
-        self.table.retain(|_, entry| !entry.should_evict(now));
+        table.retain(|_, entry| !entry.should_evict(now));
     }
 
     /// Looks up a cached MAC for the given IP address (v4 or v6).
     ///
     /// Returns `None` if the entry is missing or expired.
     pub fn lookup(&self, now: Instant, ip: &IpAddress) -> Option<MacAddress> {
-        self.table
+        self.table()
             .get(ip)
             .and_then(|e| if !e.is_expired(now) { e.mac() } else { None })
     }
@@ -143,7 +159,7 @@ impl NeighborHandler {
     /// Used in tests and benchmarks to populate the cache without requiring ARP/NDP exchange.
     #[doc(hidden)]
     pub fn seed_cache(&self, now: Instant, ip: IpAddress, mac: MacAddress) {
-        self.table
+        self.table()
             .insert(ip, NeighborState::reachable(mac, now + self.ttl));
     }
 
@@ -220,7 +236,7 @@ impl NeighborHandler {
     ) {
         handle_arp(
             now,
-            &self.table,
+            self.table(),
             self.local_mac,
             &self.local_ipv4,
             self.ttl,
@@ -249,7 +265,7 @@ impl NeighborHandler {
         handle_ndp(
             now,
             self.ttl,
-            &self.table,
+            self.table(),
             &self.local_ipv6,
             self.local_mac,
             self.rx_offload,
@@ -276,8 +292,10 @@ impl NeighborHandler {
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) -> Option<MacAddress> {
+        let table = self.table();
+
         // Fast path: entry exists.
-        if let Some(mut entry) = self.table.get_mut(addr) {
+        if let Some(entry) = table.get_mut(addr) {
             match *entry {
                 NeighborState::Reachable { mac, expires_at } => {
                     if now < expires_at {
@@ -289,7 +307,6 @@ impl NeighborHandler {
                         stale_since: now,
                         solicited_at: Some(now),
                     };
-                    drop(entry);
                     self.send_solicitation(now, addr, src_addr, free_frames, rx_return, tx_return);
                     return Some(mac);
                 }
@@ -298,7 +315,6 @@ impl NeighborHandler {
                     if needs_solicit {
                         entry.mark_solicited(now);
                     }
-                    drop(entry);
                     if needs_solicit {
                         self.send_solicitation(
                             now,
@@ -316,7 +332,6 @@ impl NeighborHandler {
                     if needs_solicit {
                         entry.mark_solicited(now);
                     }
-                    drop(entry);
                     if needs_solicit {
                         self.send_solicitation(
                             now,
@@ -333,7 +348,7 @@ impl NeighborHandler {
         }
 
         // No entry — insert Incomplete and solicit.
-        self.table.insert(*addr, NeighborState::incomplete(now));
+        table.insert(*addr, NeighborState::incomplete(now));
         self.send_solicitation(now, addr, src_addr, free_frames, rx_return, tx_return);
         None
     }

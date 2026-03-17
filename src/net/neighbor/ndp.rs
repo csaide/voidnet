@@ -1,5 +1,5 @@
 use coarsetime::{Duration, Instant};
-use dashmap::DashMap;
+use rustc_hash::FxHashMap;
 
 use crate::{
     net::checksum::compute_icmpv6_checksum,
@@ -81,7 +81,7 @@ pub(super) fn resolve_v6<'umem>(
 pub(super) fn handle_ndp<'umem>(
     now: Instant,
     ttl: Duration,
-    table: &DashMap<IpAddress, NeighborState>,
+    table: &mut FxHashMap<IpAddress, NeighborState>,
     local_ipv6: &[Ipv6Address],
     local_mac: MacAddress,
     rx_offload: bool,
@@ -162,7 +162,7 @@ pub(super) fn handle_ndp<'umem>(
 fn handle_neighbor_solicitation<'umem>(
     now: Instant,
     ttl: Duration,
-    table: &DashMap<IpAddress, NeighborState>,
+    table: &mut FxHashMap<IpAddress, NeighborState>,
     local_ipv6: &[Ipv6Address],
     local_mac: MacAddress,
     tx_offload: bool,
@@ -269,7 +269,7 @@ fn handle_neighbor_solicitation<'umem>(
 fn handle_neighbor_advertisement<'umem>(
     now: Instant,
     ttl: Duration,
-    table: &DashMap<IpAddress, NeighborState>,
+    table: &mut FxHashMap<IpAddress, NeighborState>,
     frame: Frame<'umem>,
     icmpv6_offset: usize,
     icmpv6_len: usize,
@@ -302,7 +302,7 @@ fn handle_neighbor_advertisement<'umem>(
 fn handle_router_advertisement<'umem>(
     now: Instant,
     ttl: Duration,
-    table: &DashMap<IpAddress, NeighborState>,
+    table: &mut FxHashMap<IpAddress, NeighborState>,
     frame: Frame<'umem>,
     icmpv6_offset: usize,
     icmpv6_len: usize,
