@@ -119,7 +119,6 @@ impl TcpHandler {
                 id,
                 state: TcpState::SynReceived,
                 from_passive_open: true,
-                dst_mac: Some(dst_mac),
                 iss,
                 snd_una: iss,
                 snd_nxt: iss.wrapping_add(1),

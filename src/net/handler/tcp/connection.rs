@@ -84,7 +84,6 @@ impl TcpHandler {
             id,
             state: TcpState::SynSent,
             from_passive_open: false,
-            dst_mac: None,
             iss,
             snd_una: iss,
             snd_nxt: iss.wrapping_add(1),

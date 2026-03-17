@@ -33,7 +33,6 @@ fn make_test_tcb(state: TcpState, local_port: u16, remote_port: u16) -> Tcb {
         },
         state,
         from_passive_open: false,
-        dst_mac: None,
         iss: 1000,
         snd_una: 1000,
         snd_nxt: 1001,

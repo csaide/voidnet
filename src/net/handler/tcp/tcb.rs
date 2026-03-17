@@ -3,10 +3,7 @@ use std::fmt;
 
 use coarsetime::Instant;
 
-use crate::net::{
-    socket::LocalQueue,
-    wire::{ethernet::MacAddress, ip::IpAddress},
-};
+use crate::net::{socket::LocalQueue, wire::ip::IpAddress};
 
 use super::congestion::CubicState;
 use super::recovery::{FRtoState, PrrState, SackRecovery};
@@ -191,10 +188,6 @@ pub struct Tcb {
     pub delayed_ack_deadline: Option<Instant>,
     /// Delayed ACK timeout in milliseconds.
     pub delayed_ack_ms: u64,
-    /// Cached destination MAC address. Resolved once via NeighborHandler and
-    /// reused for all subsequent segments on this connection, avoiding repeated
-    /// hash table lookups in the transmit hot path.
-    pub dst_mac: Option<MacAddress>,
 
     // === ACK processing ===
     /// Segment sequence number used for last window update.
@@ -389,7 +382,6 @@ mod tests {
             },
             state: TcpState::Established,
             from_passive_open: false,
-            dst_mac: None,
             iss: 0,
             snd_una: 0,
             snd_nxt: 0,
