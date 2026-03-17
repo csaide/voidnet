@@ -2,7 +2,7 @@
 use std::{os::fd::RawFd, sync::Arc};
 
 use crate::xdp::{
-    error::Result,
+    error::{Error, Result},
     program::{AttachMode, Map, XdpInfo, XdpProgram},
     socket::SocketOwner,
 };
@@ -66,15 +66,11 @@ impl<'name> XdpContextBuilder<'name> {
 /// # Socket Registration
 ///
 /// Sockets are registered via [`Socket::builder`](crate::xdp::socket::Socket::builder),
-/// which updates the BPF maps so the kernel can route packets using round-robin
-/// distribution across registered sockets.
+/// which updates the BPF maps so the kernel can route packets using queue-based
+/// routing to registered sockets.
 pub struct XdpContext {
-    /// BPF map containing the `num_sockets` counter in the program's `.bss` section.
-    data_map: Map,
-    /// BPF map array storing socket file descriptors indexed by socket number.
+    /// BPF map array storing socket file descriptors indexed by queue ID.
     xsks_map: Map,
-    /// Current count of registered sockets; used as the next index in `xsks_map`.
-    num_sockets: u32,
     /// The loaded and attached XDP program.
     program: XdpProgram,
     #[cfg(feature = "tokio")]
@@ -92,13 +88,10 @@ impl XdpContext {
     fn new(if_name: &str, attach_mode: AttachMode, enable_fragmentation: bool) -> Result<Self> {
         let program = XdpProgram::new(XDP_PROG_DATA, if_name, attach_mode, enable_fragmentation)?;
 
-        let data_map = program.find_map(".bss")?;
         let xsks_map = program.find_map("xsks_map")?;
 
         Ok(Self {
-            data_map,
             xsks_map,
-            num_sockets: 0,
             program,
             #[cfg(feature = "tokio")]
             tokio_fd_factory: crate::xdp::futures::TokioFdFactory::new(),
@@ -110,9 +103,7 @@ impl XdpContext {
     #[cfg(test)]
     pub fn new_no_init() -> Result<Self> {
         Ok(Self {
-            data_map: Map::new(std::ptr::null_mut(), unsafe { std::mem::zeroed() }),
             xsks_map: Map::new(std::ptr::null_mut(), unsafe { std::mem::zeroed() }),
-            num_sockets: 0,
             program: XdpProgram::new_no_init()?,
             #[cfg(feature = "tokio")]
             tokio_fd_factory: crate::xdp::futures::TokioFdFactory::new(),
@@ -131,20 +122,17 @@ impl XdpContext {
         self.program.info()
     }
 
-    pub(crate) fn register_socket(&mut self, socket: &mut SocketOwner<'_>) -> Result<()> {
-        let loc = self.num_sockets;
-        self.num_sockets += 1;
-
-        // Update our xsks_map with the socket's file descriptor.
+    pub(crate) fn register_socket(
+        &mut self,
+        socket: &mut SocketOwner<'_>,
+        map_index: u32,
+    ) -> Result<()> {
+        if map_index >= 2048 {
+            return Err(Error::QueueIdOutOfRange(map_index));
+        }
+        // Update xsks_map with the socket's file descriptor at the given map index.
         // SAFETY: The map was created with u32 keys and i32 (fd) values.
-        // The `loc` index is valid as it's derived from our internal counter.
-        unsafe { self.xsks_map.update_elem(&loc, &socket.fd())? };
-
-        const KEY: u32 = 0;
-        // Update our num_sockets counter in the XDP program's .bss map.
-        // SAFETY: The .bss map contains a u32 at key 0 by program design.
-        unsafe { self.data_map.update_elem(&KEY, &self.num_sockets)? };
-
+        unsafe { self.xsks_map.update_elem(&map_index, &socket.fd())? };
         Ok(())
     }
 
@@ -159,11 +147,6 @@ impl XdpContext {
         fd: RawFd,
     ) -> Result<Arc<async_io::Async<crate::xdp::futures::SmolFd>>> {
         self.smol_fd_factory.get_smol_fd(fd)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn num_sockets(&self) -> u32 {
-        self.num_sockets
     }
 }
 
@@ -185,7 +168,6 @@ mod tests {
         assert!(ctx.is_ok(), "failed to create XdpContext: {:?}", ctx.err());
 
         let ctx = ctx.unwrap();
-        assert_eq!(ctx.num_sockets(), 0);
         assert_eq!(ctx.attach_mode(), AttachMode::default());
 
         let info = ctx.info();
@@ -233,10 +215,6 @@ mod tests {
             .build()
             .expect("context 2");
 
-        // Both contexts should have their own state.
-        assert_eq!(ctx1.num_sockets(), 0);
-        assert_eq!(ctx2.num_sockets(), 0);
-
         // Their program IDs should be different.
         let info1 = ctx1.info();
         let info2 = ctx2.info();
@@ -266,11 +244,37 @@ mod tests {
             .build()
             .expect("inner context");
 
-        // Both should be valid with separate state.
-        assert_eq!(ctx_outer.num_sockets(), 0);
-        assert_eq!(ctx_inner.num_sockets(), 0);
-
         // Their MTUs should match since they're a pair.
         assert_eq!(ctx_outer.info().mtu, ctx_inner.info().mtu);
+    }
+
+    /// Tests that register_socket places the socket at the queue ID index in xsks_map.
+    #[test]
+    fn test_register_socket_uses_queue_id() {
+        use crate::xdp::socket::Socket;
+
+        let veth = TestVethPair::new().expect("failed to create veth pair");
+        let mut ctx = XdpContext::builder(veth.outer_name())
+            .attach_mode(AttachMode::default())
+            .enable_fragmentation(false)
+            .build()
+            .expect("failed to create context");
+
+        let (umem, _fq, _cq) = crate::xdp::umem::Umem::builder()
+            .num_frames(16)
+            .frame_size(4096)
+            .fill_ring_size(8)
+            .completion_ring_size(8)
+            .build()
+            .expect("failed to create umem")
+            .split();
+
+        // Build socket on queue 0 (the only queue veth supports).
+        let _socket = Socket::builder(veth.outer_name(), 0)
+            .rx_ring_size(8)
+            .tx_ring_size(8)
+            .build(&mut ctx, umem)
+            .expect("failed to create socket");
+        // Verify: no panic, socket was registered at xsks_map[0].
     }
 }

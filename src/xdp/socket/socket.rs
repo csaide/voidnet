@@ -258,7 +258,7 @@ impl<'umem> Socket<'umem> {
         let tx = unsafe { tx.assume_init() };
 
         let mut owner = SocketOwner::new(umem.clone(), xsk);
-        xdp_ctx.register_socket(&mut owner)?;
+        xdp_ctx.register_socket(&mut owner, queue)?;
         let owner = Arc::new(owner);
         let rx = SocketRx::new(owner.clone(), rx);
         let tx = SocketTx::new(owner.clone(), tx, busy_poll);
@@ -542,9 +542,6 @@ mod tests {
 
         // Socket should have valid fd
         assert!(socket.fd() >= 0, "socket fd should be valid");
-
-        // Context should now have 1 socket registered
-        assert_eq!(ctx.num_sockets(), 1, "context should have 1 socket");
     }
 
     /// Test socket split into owner, rx, tx components.
