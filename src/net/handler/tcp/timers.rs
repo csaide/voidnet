@@ -45,17 +45,23 @@ impl TcpHandler {
                 && now >= deadline
             {
                 let id = tcb.id;
-                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
-                    now,
-                    &id.remote_addr,
-                    &id.local_addr,
-                    free_frames,
-                    rx_return,
-                    tx_return,
-                ) else {
-                    // Neighbor resolution pending — mark for poll_send to retry.
-                    to_mark.push(key);
-                    continue; // skip to next connection
+                let dst_mac = if let Some(cached) = tcb.dst_mac {
+                    cached
+                } else {
+                    let Some(mac) = neighbor_handler.lookup_or_resolve(
+                        now,
+                        &id.remote_addr,
+                        &id.local_addr,
+                        free_frames,
+                        rx_return,
+                        tx_return,
+                    ) else {
+                        // Neighbor resolution pending — mark for poll_send to retry.
+                        to_mark.push(key);
+                        continue; // skip to next connection
+                    };
+                    tcb.dst_mac = Some(mac);
+                    mac
                 };
                 let ts = tcb.ts_option(tsval);
                 let ack_flags = if tcb.ecn_ce_received {
@@ -118,15 +124,21 @@ impl TcpHandler {
 
                 // Send keep-alive probe: seq = snd_una - 1, no data, ACK.
                 let id = tcb.id;
-                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
-                    now,
-                    &id.remote_addr,
-                    &id.local_addr,
-                    free_frames,
-                    rx_return,
-                    tx_return,
-                ) else {
-                    continue; // skip to next connection
+                let dst_mac = if let Some(cached) = tcb.dst_mac {
+                    cached
+                } else {
+                    let Some(mac) = neighbor_handler.lookup_or_resolve(
+                        now,
+                        &id.remote_addr,
+                        &id.local_addr,
+                        free_frames,
+                        rx_return,
+                        tx_return,
+                    ) else {
+                        continue; // skip to next connection
+                    };
+                    tcb.dst_mac = Some(mac);
+                    mac
                 };
                 let ts = tcb.ts_option(tsval);
                 let ack_flags = if tcb.ecn_ce_received {
@@ -205,15 +217,21 @@ impl TcpHandler {
                     }
 
                     let id = tcb.id;
-                    let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
-                        now,
-                        &id.remote_addr,
-                        &id.local_addr,
-                        free_frames,
-                        rx_return,
-                        tx_return,
-                    ) else {
-                        continue; // skip to next connection
+                    let dst_mac = if let Some(cached) = tcb.dst_mac {
+                        cached
+                    } else {
+                        let Some(mac) = neighbor_handler.lookup_or_resolve(
+                            now,
+                            &id.remote_addr,
+                            &id.local_addr,
+                            free_frames,
+                            rx_return,
+                            tx_return,
+                        ) else {
+                            continue; // skip to next connection
+                        };
+                        tcb.dst_mac = Some(mac);
+                        mac
                     };
 
                     let payload = tcb.send_buffer.peek_slices(offset, retransmit_len);
@@ -289,17 +307,24 @@ impl TcpHandler {
 
             // Retransmit.
             let id = tcb.id;
-            let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
-                now,
-                &id.remote_addr,
-                &id.local_addr,
-                free_frames,
-                rx_return,
-                tx_return,
-            ) else {
-                // Re-arm retransmit timer so we retry after the solicitation completes.
-                tcb.retransmit_deadline = Some(now + coarsetime::Duration::from_millis(tcb.rto));
-                continue;
+            let dst_mac = if let Some(cached) = tcb.dst_mac {
+                cached
+            } else {
+                let Some(mac) = neighbor_handler.lookup_or_resolve(
+                    now,
+                    &id.remote_addr,
+                    &id.local_addr,
+                    free_frames,
+                    rx_return,
+                    tx_return,
+                ) else {
+                    // Re-arm retransmit timer so we retry after the solicitation completes.
+                    tcb.retransmit_deadline =
+                        Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                    continue;
+                };
+                tcb.dst_mac = Some(mac);
+                mac
             };
 
             match tcb.state {
