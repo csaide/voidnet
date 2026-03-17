@@ -500,6 +500,11 @@ impl<'umem> LocalRuntime<'umem> {
                 }
             }
 
+            // Kick the kernel to process the TX ring. send() only writes
+            // descriptors — the kernel needs a sendto() to start DMA.
+            // Without this, frames sit in the TX ring and never transmit.
+            self.socket.maybe_wake()?;
+
             // ---- Recycle remaining rx_return ----
             // Drains whatever is left in rx_return. If all sends above succeeded,
             // this contains handler-returned RX frames from protocol dispatch.
