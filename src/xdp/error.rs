@@ -61,6 +61,10 @@ pub enum Error {
     GetMtu(String),
     #[error("failed to query checksum offload capabilities: {0}")]
     GetChecksumOffload(String),
+    #[error("failed to query queue count: {0}")]
+    GetQueueCount(String),
+    #[error("queue ID {0} exceeds xsks_map max_entries (2048)")]
+    QueueIdOutOfRange(u32),
     #[error("fragmentation not supported by the network interface")]
     FragmentationNotSupported,
     #[error("zero copy not supported by the network interface")]
@@ -152,6 +156,12 @@ mod tests {
 
         let e = Error::GetChecksumOffload("not supported".to_string());
         assert!(e.to_string().contains("not supported"));
+
+        let e = Error::GetQueueCount("not supported".to_string());
+        assert!(e.to_string().contains("not supported"));
+
+        let e = Error::QueueIdOutOfRange(3000);
+        assert!(e.to_string().contains("3000"));
     }
 
     #[test]
