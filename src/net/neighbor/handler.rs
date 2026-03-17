@@ -897,4 +897,58 @@ mod tests {
         let addr = Ipv6Address::new([0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 99]);
         assert!(handler.lookup_v6(now, &addr).is_none());
     }
+
+    #[test]
+    fn apply_update_inserts_reachable_entry() {
+        let now = Instant::now();
+        let handler = new_handler();
+        let ip = IpAddress::V4(TEST_REMOTE_IP);
+
+        handler.apply_update(
+            NeighborUpdate {
+                ip,
+                mac: TEST_REMOTE_MAC,
+            },
+            now,
+        );
+
+        assert_eq!(handler.lookup(now, &ip), Some(TEST_REMOTE_MAC));
+    }
+
+    #[test]
+    fn apply_update_refreshes_existing_entry() {
+        let now = Instant::now();
+        let handler = new_handler();
+        let ip = IpAddress::V4(TEST_REMOTE_IP);
+
+        handler.seed_cache(now, ip, TEST_REMOTE_MAC);
+
+        let new_mac = MacAddress::new([0x99, 0x88, 0x77, 0x66, 0x55, 0x44]);
+        let later = now + Duration::from_secs(30);
+        handler.apply_update(NeighborUpdate { ip, mac: new_mac }, later);
+
+        assert_eq!(handler.lookup(later, &ip), Some(new_mac));
+    }
+
+    #[test]
+    fn handle_arp_broadcasts_to_peers() {
+        use std::sync::mpsc;
+
+        let now = Instant::now();
+        let mut handler = new_handler();
+
+        let (tx, rx) = mpsc::sync_channel(16);
+        handler.set_broadcast(vec![tx]);
+
+        let mut rx_buf = BasicFrameBuffer::new(4);
+        let mut tx_buf = BasicFrameBuffer::new(4);
+
+        let mut data = build_arp_reply(TEST_REMOTE_MAC, TEST_REMOTE_IP);
+        let frame = Frame::new(0, &mut data, ARP_FRAME_LEN, false);
+        handler.handle_arp(now, frame, &mut rx_buf, &mut tx_buf);
+
+        let update = rx.try_recv().expect("should have received broadcast");
+        assert_eq!(update.ip, IpAddress::V4(TEST_REMOTE_IP));
+        assert_eq!(update.mac, TEST_REMOTE_MAC);
+    }
 }
