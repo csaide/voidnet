@@ -198,11 +198,12 @@ fn rto_retransmit_on_timer_expiry() {
 
     // Simulate timer expiry by arming retransmit at tick 0.
     let key = handler.first_connection_key();
-    let handle = wheel.arm(
-        tcp_timer_id(key, TcpTimerKind::Retransmit),
+    handler.timer_handles[key].arm(
+        TcpTimerKind::Retransmit,
+        key,
         coarsetime::Instant::now(),
+        &mut wheel,
     );
-    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     handler.first_connection_mut().rto_backoff = 0;
 
     // poll_timers should trigger RTO retransmit.

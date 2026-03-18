@@ -592,11 +592,12 @@ fn delayed_ack_timer_flushes_pending_ack() {
     assert_eq!(tx.num_frames(), 0, "should not flush before deadline");
 
     // After deadline — arm and fire the delayed ACK timer.
-    let handle = wheel.arm(
-        tcp_timer_id(key, TcpTimerKind::DelayedAck),
+    handler.timer_handles[key].arm(
+        TcpTimerKind::DelayedAck,
+        key,
         coarsetime::Instant::now(),
+        &mut wheel,
     );
-    handler.timer_handles[key].set(TcpTimerKind::DelayedAck, handle);
     let later = now + coarsetime::Duration::from_millis(50);
     poll_timers(
         &mut handler,

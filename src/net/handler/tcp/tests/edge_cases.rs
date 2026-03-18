@@ -1289,11 +1289,12 @@ fn persist_timer_cleared_on_new_ack_with_window() {
     tcb.persist_backoff = 3;
     let snd_una = tcb.snd_una;
     // Arm persist timer.
-    let handle = wheel.arm(
-        tcp_timer_id(key, TcpTimerKind::Persist),
+    handler.timer_handles[key].arm(
+        TcpTimerKind::Persist,
+        key,
         coarsetime::Instant::now(),
+        &mut wheel,
     );
-    handler.timer_handles[key].set(TcpTimerKind::Persist, handle);
 
     // Send a new ACK that advances snd_una, with a non-zero window.
     let new_ack = snd_una.wrapping_add(50);

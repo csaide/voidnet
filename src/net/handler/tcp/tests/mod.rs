@@ -27,8 +27,15 @@ pub(super) fn new_wheel() -> TimerWheel {
     TimerWheel::new(coarsetime::Instant::now())
 }
 
-/// Test-only helper: advance the wheel far enough to fire all pending timers,
-/// then dispatch each to `handler.handle_timer`.
+/// Cancel all armed timers for a connection. Call after establish_connection
+/// to ensure test-armed timers don't conflict with handshake-armed ones.
+pub(super) fn clear_timers(handler: &mut TcpHandler, wheel: &mut TimerWheel, key: usize) {
+    handler.timer_handles[key].cancel_all(wheel);
+}
+
+/// Test-only helper: advance the wheel by a short window (1 second past `now`)
+/// and fire all expired timers. This fires timers armed at or before `now + 1s`
+/// without touching timers armed far in the future.
 pub(super) fn poll_timers<'umem>(
     handler: &mut TcpHandler,
     wheel: &mut TimerWheel,
@@ -46,9 +53,11 @@ pub(super) fn poll_timers<'umem>(
     }
 }
 
-/// Test-only helper: drain the wheel and fire any TimeWait timers to evict stale connections.
+/// Test-only helper: drain the wheel and fire any TimeWait timers.
 pub(super) fn evict_stale(handler: &mut TcpHandler, wheel: &mut TimerWheel) {
-    let fired = wheel.drain_all();
+    let now = coarsetime::Instant::now();
+    let deadline = now + coarsetime::Duration::from_millis(10);
+    let fired = wheel.advance(deadline);
     for id in fired {
         let (key, kind) = unpack_tcp_timer_id(id);
         if matches!(kind, TcpTimerKind::TimeWait) {
@@ -306,6 +315,10 @@ pub(super) fn establish_connection(
         tx,
     );
     while tx.pop().is_some() {}
+    // Clear any timers armed during handshake so tests start with a clean wheel.
+    let key = handler.first_connection_key();
+    handler.timer_handles[key].cancel_all(wheel);
+    wheel.drain_all();
     server_iss
 }
 
@@ -374,6 +387,9 @@ pub(super) fn establish_connection_with_sack(
     );
     while tx.pop().is_some() {}
     assert_eq!(handler.first_connection().state, TcpState::Established);
+    let key = handler.first_connection_key();
+    handler.timer_handles[key].cancel_all(wheel);
+    wheel.drain_all();
     server_iss
 }
 
@@ -443,6 +459,9 @@ pub(super) fn active_open_handshake(
     assert_eq!(handler.first_connection().state, TcpState::Established);
     handler.first_connection_mut().snd_wnd = 65535;
 
+    let key = handler.first_connection_key();
+    handler.timer_handles[key].cancel_all(wheel);
+    wheel.drain_all();
     client_iss
 }
 
@@ -511,6 +530,9 @@ pub(super) fn active_open_handshake_with_config(
     assert_eq!(handler.first_connection().state, TcpState::Established);
     handler.first_connection_mut().snd_wnd = 65535;
 
+    let key = handler.first_connection_key();
+    handler.timer_handles[key].cancel_all(wheel);
+    wheel.drain_all();
     client_iss
 }
 

@@ -1047,11 +1047,12 @@ fn time_wait_evicted_after_deadline() {
     // Force into TimeWait state with expired deadline.
     handler.first_connection_mut().state = TcpState::TimeWait;
     let key = handler.first_connection_key();
-    let handle = wheel.arm(
-        super::super::timer_kinds::tcp_timer_id(key, TcpTimerKind::TimeWait),
+    handler.timer_handles[key].arm(
+        TcpTimerKind::TimeWait,
+        key,
         coarsetime::Instant::now(),
+        &mut wheel,
     );
-    handler.timer_handles[key].set(TcpTimerKind::TimeWait, handle);
 
     // Evict with a time in the future.
     evict_stale(&mut handler, &mut wheel);
@@ -1753,12 +1754,13 @@ fn fin_retransmitted_in_fin_wait1() {
         tcb.fin_seq = Some(fin_seq);
         tcb.rto_backoff = 0;
     }
-    // Arm retransmit timer at tick 0 (already expired).
-    let handle = wheel.arm(
-        super::super::timer_kinds::tcp_timer_id(key, TcpTimerKind::Retransmit),
+    // Arm retransmit timer at now (will fire on next poll_timers).
+    handler.timer_handles[key].arm(
+        TcpTimerKind::Retransmit,
+        key,
         coarsetime::Instant::now(),
+        &mut wheel,
     );
-    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
 
     // poll_timers should retransmit the FIN-ACK.
     poll_timers(
