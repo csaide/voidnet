@@ -11,6 +11,7 @@ pub(crate) mod segment;
 pub(crate) mod send_tracker;
 pub(crate) mod state;
 pub(crate) mod tcb;
+pub(crate) mod timer_kinds;
 mod timers;
 mod transmit;
 

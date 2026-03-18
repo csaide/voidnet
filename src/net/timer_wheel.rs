@@ -11,6 +11,13 @@ pub struct TimerId(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimerHandle(usize);
 
+impl TimerHandle {
+    /// Construct a handle from a raw slab key. Intended for tests and internal use only.
+    pub(crate) fn from_raw(key: usize) -> Self {
+        Self(key)
+    }
+}
+
 // --- Internal types ---
 
 struct TimerEntry {
