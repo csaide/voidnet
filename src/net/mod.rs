@@ -3,6 +3,7 @@ pub mod checksum;
 mod fragment;
 mod neighbor;
 mod pmtu;
+pub mod timer_wheel;
 
 pub mod handler;
 pub mod http;
