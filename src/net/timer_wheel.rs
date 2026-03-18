@@ -1,4 +1,5 @@
 use slab::Slab;
+use smallvec::SmallVec;
 
 // --- Public types ---
 
@@ -119,6 +120,69 @@ impl TimerWheel {
     /// Returns `true` if the timer identified by `handle` is still armed.
     pub fn is_armed(&self, handle: TimerHandle) -> bool {
         self.entries.contains(handle.0)
+    }
+
+    /// Advance the wheel to `now_ms`, firing all timers whose deadline has
+    /// passed.  Returns the [`TimerId`]s of every fired timer.
+    pub fn advance(&mut self, now_ms: u64) -> SmallVec<[TimerId; 16]> {
+        let mut fired: SmallVec<[TimerId; 16]> = SmallVec::new();
+
+        while self.current_tick_ms < now_ms {
+            let inner_slot_idx = (self.current_tick_ms & 0xFF) as usize;
+
+            // Drain the inner wheel slot for this tick.
+            let mut cursor = self.tiers[0].slots[inner_slot_idx].head;
+            self.tiers[0].slots[inner_slot_idx].head = None;
+            while let Some(key) = cursor {
+                let entry = self.entries.remove(key);
+                cursor = entry.next;
+                fired.push(entry.id);
+            }
+
+            self.current_tick_ms += 1;
+
+            // After incrementing, check whether we need to cascade.
+            // Inner → middle cascade: inner slot just wrapped back to 0.
+            if (self.current_tick_ms & 0xFF) == 0 && self.current_tick_ms > 0 {
+                self.cascade(1);
+
+                // Middle → outer cascade: middle slot also just wrapped.
+                let middle_slot_idx =
+                    ((self.current_tick_ms >> self.tiers[1].shift) & 0xFF) as usize;
+                if middle_slot_idx == 0 {
+                    self.cascade(2);
+                }
+            }
+        }
+
+        fired
+    }
+
+    /// Re-distribute entries from one tier's current slot into lower tiers.
+    ///
+    /// Tier `tier_idx` has just advanced such that its slot pointer has wrapped
+    /// to 0.  We drain the slot that `current_tick_ms` now points to in that
+    /// tier and re-arm each entry using its stored `deadline_ms` so it lands in
+    /// the correct (lower) tier.
+    fn cascade(&mut self, tier_idx: usize) {
+        let shift = self.tiers[tier_idx].shift;
+        let slot_idx = ((self.current_tick_ms >> shift) & 0xFF) as usize;
+
+        // Collect all entries from the slot BEFORE re-arming (arm() mutates
+        // the entries slab, so we cannot hold borrows across that call).
+        let mut to_rearm: SmallVec<[(TimerId, u64); 64]> = SmallVec::new();
+        let mut cursor = self.tiers[tier_idx].slots[slot_idx].head;
+        self.tiers[tier_idx].slots[slot_idx].head = None;
+        while let Some(key) = cursor {
+            let entry = self.entries.remove(key);
+            cursor = entry.next;
+            to_rearm.push((entry.id, entry.deadline_ms));
+        }
+
+        // Re-arm each entry; the smaller delta will place it in a lower tier.
+        for (id, deadline_ms) in to_rearm {
+            self.arm(id, deadline_ms);
+        }
     }
 
     /// Cancel a previously armed timer.
@@ -306,5 +370,35 @@ mod tests {
         wheel.cancel(h);
         // Cancelling the same handle again should not panic.
         wheel.cancel(h);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 3: advance basic tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn advance_fires_inner_slot_timer() {
+        let mut wheel = TimerWheel::new(0);
+        wheel.arm(TimerId(1), 50);
+        let fired = wheel.advance(51);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0], TimerId(1));
+    }
+
+    #[test]
+    fn advance_fires_multiple_timers_same_slot() {
+        let mut wheel = TimerWheel::new(0);
+        wheel.arm(TimerId(1), 50);
+        wheel.arm(TimerId(2), 50);
+        let fired = wheel.advance(51);
+        assert_eq!(fired.len(), 2);
+    }
+
+    #[test]
+    fn advance_does_not_fire_future_timer() {
+        let mut wheel = TimerWheel::new(0);
+        wheel.arm(TimerId(1), 100);
+        let fired = wheel.advance(50);
+        assert!(fired.is_empty());
     }
 }
