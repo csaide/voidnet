@@ -13,6 +13,7 @@ use super::{
     send_tracker::SendTracker,
     state::TcpState,
     tcb::{ConnectionId, Tcb},
+    timer_kinds::TcpTimerHandles,
 };
 
 /// Initial RTO for SYN retransmission (1 second in coarsetime ticks).
@@ -27,6 +28,7 @@ pub(super) const SYN_R2_THRESHOLD_MS: u64 = 180_000;
 /// incoming TCP segments through the appropriate state machine.
 pub struct TcpHandler {
     pub(super) connections: Slab<Tcb>,
+    pub(crate) timer_handles: Slab<TcpTimerHandles>,
     pub(super) connection_map: FxHashMap<ConnectionId, usize>,
     pub(super) listeners: Vec<listener::ListenEntry>,
     pub(super) isn_generator: IsnGenerator,
@@ -39,6 +41,7 @@ impl TcpHandler {
     pub fn new(rx_offload: bool, tx_offload: bool) -> Self {
         Self {
             connections: Slab::new(),
+            timer_handles: Slab::new(),
             connection_map: FxHashMap::default(),
             listeners: Vec::new(),
             isn_generator: IsnGenerator::new(),
@@ -81,6 +84,8 @@ impl TcpHandler {
     pub fn insert_connection(&mut self, tcb: Tcb) -> usize {
         let id = tcb.id;
         let key = self.connections.insert(tcb);
+        let handle_key = self.timer_handles.insert(TcpTimerHandles::new());
+        debug_assert_eq!(key, handle_key, "timer_handles slab key mismatch");
         self.connection_map.insert(id, key);
         key
     }
@@ -90,6 +95,9 @@ impl TcpHandler {
         if self.connections.contains(key) {
             let tcb = self.connections.remove(key);
             self.connection_map.remove(&tcb.id);
+            if self.timer_handles.contains(key) {
+                self.timer_handles.remove(key);
+            }
             Some(tcb)
         } else {
             None
