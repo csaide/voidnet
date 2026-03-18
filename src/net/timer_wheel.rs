@@ -120,6 +120,38 @@ impl TimerWheel {
     pub fn is_armed(&self, handle: TimerHandle) -> bool {
         self.entries.contains(handle.0)
     }
+
+    /// Cancel a previously armed timer.
+    ///
+    /// If `handle` does not refer to an active timer (already fired or already
+    /// cancelled), this is a no-op.
+    pub fn cancel(&mut self, handle: TimerHandle) {
+        // Remove the entry from the slab; bail silently if not present.
+        let entry = match self.entries.try_remove(handle.0) {
+            Some(e) => e,
+            None => return,
+        };
+
+        // Decode the packed slot field.
+        let tier_idx = ((entry.slot >> 8) & 0x3) as usize;
+        let slot_idx = (entry.slot & 0xFF) as usize;
+
+        // Unlink from the doubly-linked list.
+        match entry.prev {
+            Some(prev_key) => {
+                // There is a predecessor — point it past the removed entry.
+                self.entries[prev_key].next = entry.next;
+            }
+            None => {
+                // No predecessor: this entry was the slot head.
+                self.tiers[tier_idx].slots[slot_idx].head = entry.next;
+            }
+        }
+
+        if let Some(next_key) = entry.next {
+            self.entries[next_key].prev = entry.prev;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -191,5 +223,88 @@ mod tests {
         // h1.prev must be h2.
         let h1_entry = &wheel.entries[h1.0];
         assert_eq!(h1_entry.prev, Some(h2.0));
+    }
+
+    // --- cancel tests ---
+
+    #[test]
+    fn cancel_removes_entry() {
+        let mut wheel = TimerWheel::new(0);
+        let h = wheel.arm(TimerId(1), 50);
+        assert!(wheel.is_armed(h));
+        wheel.cancel(h);
+        assert!(!wheel.is_armed(h));
+    }
+
+    #[test]
+    fn cancel_unlinks_head() {
+        // arm h1, then h2 → chain: h2(head) → h1
+        // cancel h2 (head) → h1 should become the new head
+        let mut wheel = TimerWheel::new(0);
+        let h1 = wheel.arm(TimerId(1), 50);
+        let h2 = wheel.arm(TimerId(2), 50);
+
+        wheel.cancel(h2);
+
+        assert!(!wheel.is_armed(h2));
+        assert!(wheel.is_armed(h1));
+
+        // h1 should now be the slot head
+        let tier_idx = 0usize; // delta=50 < 256
+        let slot_idx = 50usize; // (50 >> 0) & 0xFF
+        let head_key = wheel.tiers[tier_idx].slots[slot_idx]
+            .head
+            .expect("slot should still have a head after cancelling h2");
+        assert_eq!(head_key, h1.0);
+
+        // h1.prev should be None (it is now the head)
+        assert_eq!(wheel.entries[h1.0].prev, None);
+    }
+
+    #[test]
+    fn cancel_unlinks_middle() {
+        // arm h1, h2, h3 → chain: h3(head) → h2 → h1
+        // cancel h2 → chain should be: h3 → h1
+        let mut wheel = TimerWheel::new(0);
+        let h1 = wheel.arm(TimerId(1), 50);
+        let h2 = wheel.arm(TimerId(2), 50);
+        let h3 = wheel.arm(TimerId(3), 50);
+
+        wheel.cancel(h2);
+
+        assert!(wheel.is_armed(h1));
+        assert!(!wheel.is_armed(h2));
+        assert!(wheel.is_armed(h3));
+
+        // h3.next should now point to h1
+        assert_eq!(wheel.entries[h3.0].next, Some(h1.0));
+        // h1.prev should now point to h3
+        assert_eq!(wheel.entries[h1.0].prev, Some(h3.0));
+    }
+
+    #[test]
+    fn cancel_unlinks_tail() {
+        // arm h1, h2 → chain: h2(head) → h1(tail)
+        // cancel h1 (tail) → chain: h2 only
+        let mut wheel = TimerWheel::new(0);
+        let h1 = wheel.arm(TimerId(1), 50);
+        let h2 = wheel.arm(TimerId(2), 50);
+
+        wheel.cancel(h1);
+
+        assert!(!wheel.is_armed(h1));
+        assert!(wheel.is_armed(h2));
+
+        // h2.next should now be None (h1 was removed)
+        assert_eq!(wheel.entries[h2.0].next, None);
+    }
+
+    #[test]
+    fn cancel_invalid_handle_is_noop() {
+        let mut wheel = TimerWheel::new(0);
+        let h = wheel.arm(TimerId(1), 50);
+        wheel.cancel(h);
+        // Cancelling the same handle again should not panic.
+        wheel.cancel(h);
     }
 }
