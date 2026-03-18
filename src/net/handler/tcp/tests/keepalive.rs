@@ -474,11 +474,12 @@ fn linger_zero_sends_rst_on_poll_send() {
         "linger timer should be armed"
     );
 
-    // Call poll_send — linger deadline is already expired, should send RST.
+    // Fire linger timer — linger deadline is already expired, should send RST.
     let now = coarsetime::Instant::now();
-    handler.poll_send(
-        now,
+    poll_timers(
+        &mut handler,
         &mut wheel,
+        now,
         nh.local_mac(),
         &nh,
         &mut free,
@@ -1056,11 +1057,12 @@ fn linger_zero_immediate_rst() {
         "linger timer should be armed for linger(0)"
     );
 
-    // Call poll_send — linger deadline is already expired, should send RST.
+    // Fire linger timer — linger deadline is already expired, should send RST.
     let now = coarsetime::Instant::now();
-    handler.poll_send(
-        now,
+    poll_timers(
+        &mut handler,
         &mut wheel,
+        now,
         nh.local_mac(),
         &nh,
         &mut free,

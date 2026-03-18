@@ -464,11 +464,15 @@ fn fast_retransmit_uses_sack_gap() {
     tcb.prr.enter(tcb.snd_nxt.wrapping_sub(tcb.snd_una));
     tcb.cubic.on_loss();
 
+    // SACK recovery is handled by poll_send (it's ACK-driven, not timer-driven).
+    let key = handler.first_connection_key();
+    handler
+        .send_tracker
+        .mark(super::send_tracker::SendReady(key));
     let now = coarsetime::Instant::now();
-    poll_timers(
-        &mut handler,
-        &mut wheel,
+    handler.poll_send(
         now,
+        &mut wheel,
         nh.local_mac(),
         &nh,
         &mut free,

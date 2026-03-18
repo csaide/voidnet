@@ -53,10 +53,11 @@ pub(super) fn poll_timers<'umem>(
     }
 }
 
-/// Test-only helper: drain the wheel and fire any TimeWait timers.
+/// Test-only helper: advance wheel by 120 seconds and fire TimeWait timers.
+/// This is long enough to expire normal TIME-WAIT (60s default) but short
+/// enough that timers armed far in the future (e.g., 1 hour) won't fire.
 pub(super) fn evict_stale(handler: &mut TcpHandler, wheel: &mut TimerWheel) {
-    let now = coarsetime::Instant::now();
-    let deadline = now + coarsetime::Duration::from_millis(10);
+    let deadline = coarsetime::Instant::now() + coarsetime::Duration::from_secs(120);
     let fired = wheel.advance(deadline);
     for id in fired {
         let (key, kind) = unpack_tcp_timer_id(id);
