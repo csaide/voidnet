@@ -7,6 +7,7 @@ use std::{
 use crate::{
     net::{
         handler::{tcp::TcpHandler, udp::UdpHandler},
+        timer_wheel::TimerWheel,
         {NeighborHandler, PmtuCache},
     },
     rt::task::TaskQueue,
@@ -58,6 +59,10 @@ pub(crate) struct RuntimeContext<'umem> {
     pub udp_handler: Rc<UnsafeCell<UdpHandler<'umem>>>,
     /// TCP handler manages TCP connections and the TCP state machine.
     pub tcp_handler: Rc<UnsafeCell<TcpHandler>>,
+    /// Timer wheel for TCP timers.
+    pub wheel: Rc<UnsafeCell<TimerWheel>>,
+    /// Base instant for converting coarsetime to wheel milliseconds.
+    pub base_instant: coarsetime::Instant,
     /// TX checksum offload.
     pub tx_offload: bool,
     /// Task queue for spawned tasks.
@@ -110,6 +115,7 @@ mod tests {
         net::{
             NeighborHandler, PmtuCache,
             handler::{tcp::TcpHandler, udp::UdpHandler},
+            timer_wheel::TimerWheel,
         },
         rt::task::TaskQueue,
         xdp::frame::BasicFrameBuffer,
@@ -132,6 +138,8 @@ mod tests {
             ),
             udp_handler: Rc::new(UnsafeCell::new(UdpHandler::new(256, false))),
             tcp_handler: Rc::new(UnsafeCell::new(TcpHandler::new(false, false))),
+            wheel: Rc::new(UnsafeCell::new(TimerWheel::new(0))),
+            base_instant: coarsetime::Instant::now(),
             tx_offload: false,
             task_queue: UnsafeCell::new(TaskQueue::new()),
             capacity_wakers: UnsafeCell::new(Vec::new()),

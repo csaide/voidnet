@@ -7,6 +7,7 @@ fn syn_to_listener_generates_syn_ack() {
     let mut free = BasicFrameBuffer::new(4);
     let mut rx = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
+    let mut wheel = new_wheel();
 
     free.push(alloc_free_frame(100));
 
@@ -31,6 +32,7 @@ fn syn_to_listener_generates_syn_ack() {
     handler.process_ipv4(
         frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -52,6 +54,7 @@ fn handshake_completes_on_ack() {
     let mut free = BasicFrameBuffer::new(8);
     let mut rx = BasicFrameBuffer::new(8);
     let mut tx = BasicFrameBuffer::new(8);
+    let mut wheel = new_wheel();
 
     for i in 0..4 {
         free.push(alloc_free_frame(100 + i));
@@ -76,6 +79,7 @@ fn handshake_completes_on_ack() {
     handler.process_ipv4(
         syn_frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -103,6 +107,7 @@ fn handshake_completes_on_ack() {
     handler.process_ipv4(
         ack_frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -120,6 +125,7 @@ fn rst_in_syn_received_removes_connection() {
     let mut free = BasicFrameBuffer::new(8);
     let mut rx = BasicFrameBuffer::new(8);
     let mut tx = BasicFrameBuffer::new(8);
+    let mut wheel = new_wheel();
 
     for i in 0..4 {
         free.push(alloc_free_frame(100 + i));
@@ -144,6 +150,7 @@ fn rst_in_syn_received_removes_connection() {
     handler.process_ipv4(
         syn_frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -169,6 +176,7 @@ fn rst_in_syn_received_removes_connection() {
     handler.process_ipv4(
         rst_frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -185,6 +193,7 @@ fn backlog_limits_syn_received() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -210,6 +219,7 @@ fn backlog_limits_syn_received() {
         handler.process_ipv4(
             syn_frame,
             coarsetime::Instant::now(),
+            &mut wheel,
             &nh,
             &mut free,
             &mut rx,
@@ -227,6 +237,7 @@ fn window_scale_negotiation() {
     let mut free = BasicFrameBuffer::new(8);
     let mut rx = BasicFrameBuffer::new(8);
     let mut tx = BasicFrameBuffer::new(8);
+    let mut wheel = new_wheel();
 
     for i in 0..4 {
         free.push(alloc_free_frame(100 + i));
@@ -256,6 +267,7 @@ fn window_scale_negotiation() {
     handler.process_ipv4(
         syn_frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -285,6 +297,7 @@ fn simultaneous_open_both_reach_established() {
     let mut free_b = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free_a.push(alloc_free_frame(200 + i));
@@ -301,6 +314,7 @@ fn simultaneous_open_both_reach_established() {
             mac_a,
             mac_b,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free_a,
             &mut tx,
         )
@@ -317,6 +331,7 @@ fn simultaneous_open_both_reach_established() {
             mac_b,
             mac_a,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free_b,
             &mut tx,
         )
@@ -346,6 +361,7 @@ fn simultaneous_open_both_reach_established() {
     handler_a.process_ipv4(
         Frame::new(10, leak(syn_b), syn_b_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free_a,
         &mut rx,
@@ -377,6 +393,7 @@ fn simultaneous_open_both_reach_established() {
     handler_b.process_ipv4(
         Frame::new(11, leak(syn_a), syn_a_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free_b,
         &mut rx,
@@ -408,6 +425,7 @@ fn simultaneous_open_both_reach_established() {
     handler_a.process_ipv4(
         Frame::new(12, leak(syn_ack_b), syn_ack_b_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free_a,
         &mut rx,
@@ -437,6 +455,7 @@ fn simultaneous_open_both_reach_established() {
     handler_b.process_ipv4(
         Frame::new(13, leak(syn_ack_a), syn_ack_a_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free_b,
         &mut rx,
@@ -460,6 +479,7 @@ fn bad_seq_in_syn_received_sends_challenge_ack() {
     let mut free = BasicFrameBuffer::new(8);
     let mut rx = BasicFrameBuffer::new(8);
     let mut tx = BasicFrameBuffer::new(8);
+    let mut wheel = new_wheel();
 
     for i in 0..4 {
         free.push(alloc_free_frame(100 + i));
@@ -483,6 +503,7 @@ fn bad_seq_in_syn_received_sends_challenge_ack() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -511,6 +532,7 @@ fn bad_seq_in_syn_received_sends_challenge_ack() {
     handler.process_ipv4(
         Frame::new(2, leak(bad_data), bad_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -529,6 +551,7 @@ fn bad_seq_rst_in_syn_received_is_ignored() {
     let mut free = BasicFrameBuffer::new(8);
     let mut rx = BasicFrameBuffer::new(8);
     let mut tx = BasicFrameBuffer::new(8);
+    let mut wheel = new_wheel();
 
     for i in 0..4 {
         free.push(alloc_free_frame(100 + i));
@@ -552,6 +575,7 @@ fn bad_seq_rst_in_syn_received_is_ignored() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -579,6 +603,7 @@ fn bad_seq_rst_in_syn_received_is_ignored() {
     handler.process_ipv4(
         Frame::new(2, leak(rst_data), rst_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -597,6 +622,7 @@ fn rst_in_syn_received_active_open_signals_refused() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -621,6 +647,7 @@ fn rst_in_syn_received_active_open_signals_refused() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -645,6 +672,7 @@ fn rst_in_syn_received_active_open_signals_refused() {
     handler.process_ipv4(
         Frame::new(10, leak(syn_b), syn_b_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -662,6 +690,7 @@ fn rst_in_syn_received_active_open_signals_refused() {
     handler.process_ipv4(
         Frame::new(11, leak(rst_data), rst_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -685,6 +714,7 @@ fn syn_retransmit_in_syn_received_passive_resends_syn_ack() {
     let mut free = BasicFrameBuffer::new(8);
     let mut rx = BasicFrameBuffer::new(8);
     let mut tx = BasicFrameBuffer::new(8);
+    let mut wheel = new_wheel();
 
     for i in 0..4 {
         free.push(alloc_free_frame(100 + i));
@@ -708,6 +738,7 @@ fn syn_retransmit_in_syn_received_passive_resends_syn_ack() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -735,6 +766,7 @@ fn syn_retransmit_in_syn_received_passive_resends_syn_ack() {
     handler.process_ipv4(
         Frame::new(2, leak(syn_retransmit), syn_rt_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -753,6 +785,7 @@ fn syn_retransmit_in_syn_received_active_sends_challenge_ack() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -777,6 +810,7 @@ fn syn_retransmit_in_syn_received_active_sends_challenge_ack() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -799,6 +833,7 @@ fn syn_retransmit_in_syn_received_active_sends_challenge_ack() {
     handler.process_ipv4(
         Frame::new(10, leak(syn_b), syn_b_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -825,6 +860,7 @@ fn syn_retransmit_in_syn_received_active_sends_challenge_ack() {
     handler.process_ipv4(
         Frame::new(11, leak(syn_b2), syn_b2_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -847,6 +883,7 @@ fn bad_ack_in_syn_received_sends_rst() {
     let mut free = BasicFrameBuffer::new(8);
     let mut rx = BasicFrameBuffer::new(8);
     let mut tx = BasicFrameBuffer::new(8);
+    let mut wheel = new_wheel();
 
     for i in 0..4 {
         free.push(alloc_free_frame(100 + i));
@@ -870,6 +907,7 @@ fn bad_ack_in_syn_received_sends_rst() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -896,6 +934,7 @@ fn bad_ack_in_syn_received_sends_rst() {
     handler.process_ipv4(
         Frame::new(2, leak(bad_ack_data), bad_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -914,6 +953,7 @@ fn syn_ack_without_timestamp_disables_timestamps() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -932,6 +972,7 @@ fn syn_ack_without_timestamp_disables_timestamps() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -960,6 +1001,7 @@ fn syn_ack_without_timestamp_disables_timestamps() {
     handler.process_ipv4(
         Frame::new(50, leak(syn_ack), syn_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -989,6 +1031,7 @@ fn syn_ack_without_sack_permitted_disables_sack() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -1007,6 +1050,7 @@ fn syn_ack_without_sack_permitted_disables_sack() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -1035,6 +1079,7 @@ fn syn_ack_without_sack_permitted_disables_sack() {
     handler.process_ipv4(
         Frame::new(50, leak(syn_ack), syn_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1055,6 +1100,7 @@ fn syn_ack_without_ece_disables_ecn() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -1073,6 +1119,7 @@ fn syn_ack_without_ece_disables_ecn() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -1101,6 +1148,7 @@ fn syn_ack_without_ece_disables_ecn() {
     handler.process_ipv4(
         Frame::new(50, leak(syn_ack), syn_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1121,6 +1169,7 @@ fn unacceptable_ack_in_syn_sent_sends_rst() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -1138,6 +1187,7 @@ fn unacceptable_ack_in_syn_sent_sends_rst() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -1163,6 +1213,7 @@ fn unacceptable_ack_in_syn_sent_sends_rst() {
     handler.process_ipv4(
         Frame::new(50, leak(bad_ack), bad_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1181,6 +1232,7 @@ fn unacceptable_ack_too_high_in_syn_sent_sends_rst() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -1198,6 +1250,7 @@ fn unacceptable_ack_too_high_in_syn_sent_sends_rst() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -1222,6 +1275,7 @@ fn unacceptable_ack_too_high_in_syn_sent_sends_rst() {
     handler.process_ipv4(
         Frame::new(50, leak(bad_ack), bad_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1239,6 +1293,7 @@ fn simultaneous_open_syn_without_ack_transitions_to_syn_received() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -1256,6 +1311,7 @@ fn simultaneous_open_syn_without_ack_transitions_to_syn_received() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -1280,6 +1336,7 @@ fn simultaneous_open_syn_without_ack_transitions_to_syn_received() {
     handler.process_ipv4(
         Frame::new(50, leak(peer_syn), peer_syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1309,6 +1366,7 @@ fn rst_with_ack_in_syn_sent_signals_connection_refused() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -1326,6 +1384,7 @@ fn rst_with_ack_in_syn_sent_signals_connection_refused() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -1350,6 +1409,7 @@ fn rst_with_ack_in_syn_sent_signals_connection_refused() {
     handler.process_ipv4(
         Frame::new(50, leak(rst_ack), rst_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1372,6 +1432,7 @@ fn rst_without_ack_in_syn_sent_is_dropped() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -1389,6 +1450,7 @@ fn rst_without_ack_in_syn_sent_is_dropped() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -1411,6 +1473,7 @@ fn rst_without_ack_in_syn_sent_is_dropped() {
     handler.process_ipv4(
         Frame::new(50, leak(rst_only), rst_only_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1430,6 +1493,7 @@ fn window_scale_applied_on_handshake_completion() {
     let mut free = BasicFrameBuffer::new(8);
     let mut rx = BasicFrameBuffer::new(8);
     let mut tx = BasicFrameBuffer::new(8);
+    let mut wheel = new_wheel();
 
     for i in 0..4 {
         free.push(alloc_free_frame(100 + i));
@@ -1458,6 +1522,7 @@ fn window_scale_applied_on_handshake_completion() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1486,6 +1551,7 @@ fn window_scale_applied_on_handshake_completion() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1506,6 +1572,7 @@ fn bare_ack_in_syn_sent_is_dropped() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
@@ -1530,6 +1597,7 @@ fn bare_ack_in_syn_sent_is_dropped() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -1556,6 +1624,7 @@ fn bare_ack_in_syn_sent_is_dropped() {
     handler.process_ipv4(
         Frame::new(50, leak(bare_ack), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,

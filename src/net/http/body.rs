@@ -296,8 +296,17 @@ mod tests {
             remote_port: 0,
         };
         let event_queue = LocalQueue::new(16);
-        let stream =
-            crate::net::socket::TcpStream::from_accepted_for_test(0, conn_id, event_queue, handler);
+        let wheel = std::rc::Rc::new(std::cell::UnsafeCell::new(
+            crate::net::timer_wheel::TimerWheel::new(0),
+        ));
+        let stream = crate::net::socket::TcpStream::from_accepted_for_test(
+            0,
+            conn_id,
+            event_queue,
+            handler,
+            wheel,
+            coarsetime::Instant::now(),
+        );
 
         let mut buf = ReadBuffer::new(4096);
         let written = buf.append(data);

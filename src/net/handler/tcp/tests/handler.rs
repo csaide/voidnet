@@ -19,6 +19,7 @@ use crate::{
 
 use super::{
     LOCAL_IP, REMOTE_IP, alloc_free_frame, establish_connection, new_handler, new_neighbor_handler,
+    new_wheel,
 };
 
 /// Build a minimal Tcb for unit testing handler methods.
@@ -48,7 +49,6 @@ fn make_test_tcb(state: TcpState, local_port: u16, remote_port: u16) -> Tcb {
         snd_wscale: 0,
         rcv_wscale: 7,
         wscale_enabled: false,
-        retransmit_deadline: None,
         rto_backoff: 0,
         event_queue: LocalQueue::new(16),
         send_buffer: RingBuffer::new(1024),
@@ -64,10 +64,8 @@ fn make_test_tcb(state: TcpState, local_port: u16, remote_port: u16) -> Tcb {
         last_send_time: None,
         pending_fin: false,
         fin_seq: None,
-        time_wait_deadline: None,
         time_wait_duration: 60_000,
         ack_pending: false,
-        delayed_ack_deadline: None,
         ack_delay_count: 0,
         delayed_ack_ms: DEFAULT_DELAYED_ACK_MS,
         nagle_enabled: true,
@@ -78,7 +76,6 @@ fn make_test_tcb(state: TcpState, local_port: u16, remote_port: u16) -> Tcb {
         last_activity: now,
         keep_alive_probes_sent: 0,
         linger: None,
-        linger_deadline: None,
         ts_enabled: false,
         ts_recent: 0,
         ts_recent_age: now,
@@ -88,7 +85,6 @@ fn make_test_tcb(state: TcpState, local_port: u16, remote_port: u16) -> Tcb {
         ecn_enabled: false,
         ecn_ce_received: false,
         ecn_cwr_sent: false,
-        persist_deadline: None,
         persist_backoff: 0,
         max_snd_wnd: 0,
         last_advertised_right_edge: 0,
@@ -217,9 +213,11 @@ fn remove_connection_synchronized_generates_rst() {
     let mut free = BasicFrameBuffer::new(4);
     let mut rx = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
+    let mut wheel = new_wheel();
 
     // Establish a real connection via 3-way handshake.
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(handler.first_connection().state, TcpState::Established);
 
     let id = handler.first_connection().id;
@@ -249,6 +247,7 @@ fn remove_connection_syn_received_generates_rst() {
     let dst_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
     let mut free = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
+    let mut wheel = new_wheel();
 
     free.push(alloc_free_frame(200));
     handler.remove_connection(&id, src_mac, dst_mac, &mut free, &mut tx);
@@ -268,6 +267,7 @@ fn remove_connection_syn_sent_no_rst() {
     let dst_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
     let mut free = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
+    let mut wheel = new_wheel();
 
     handler.remove_connection(&id, src_mac, dst_mac, &mut free, &mut tx);
 
@@ -288,6 +288,7 @@ fn remove_connection_not_found_is_noop() {
     let dst_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
     let mut free = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
+    let mut wheel = new_wheel();
 
     // Should not panic — just returns early.
     handler.remove_connection(&id, src_mac, dst_mac, &mut free, &mut tx);

@@ -1,7 +1,9 @@
+use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
 use super::*;
 
 #[test]
 fn ecn_negotiated_when_both_sides_support() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -25,6 +27,7 @@ fn ecn_negotiated_when_both_sides_support() {
             nh.local_mac(),
             crate::net::wire::ethernet::MacAddress::broadcast(),
             coarsetime::Instant::now(),
+            &mut wheel,
             config,
             &mut free,
             &mut tx,
@@ -72,6 +75,7 @@ fn ecn_negotiated_when_both_sides_support() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_ack_data), syn_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -92,6 +96,7 @@ fn ecn_negotiated_when_both_sides_support() {
 
 #[test]
 fn ecn_disabled_when_peer_doesnt_support() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -111,6 +116,7 @@ fn ecn_disabled_when_peer_doesnt_support() {
             nh.local_mac(),
             crate::net::wire::ethernet::MacAddress::broadcast(),
             coarsetime::Instant::now(),
+            &mut wheel,
             TcpConfig::default(),
             &mut free,
             &mut tx,
@@ -141,6 +147,7 @@ fn ecn_disabled_when_peer_doesnt_support() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_ack_data), syn_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -161,6 +168,7 @@ fn ecn_disabled_when_peer_doesnt_support() {
 
 #[test]
 fn ecn_negotiated_on_passive_open() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -191,6 +199,7 @@ fn ecn_negotiated_on_passive_open() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -240,6 +249,7 @@ fn ecn_negotiated_on_passive_open() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -256,6 +266,7 @@ fn ecn_negotiated_on_passive_open() {
 
 #[test]
 fn ecn_ect_set_on_outgoing_data() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -283,6 +294,7 @@ fn ecn_ect_set_on_outgoing_data() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -304,6 +316,7 @@ fn ecn_ect_set_on_outgoing_data() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -320,7 +333,15 @@ fn ecn_ect_set_on_outgoing_data() {
     handler.first_connection_mut().send_buffer.write(payload);
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(tx.num_frames(), 1, "should have one data segment");
     let frame = tx.pop().unwrap();
@@ -331,6 +352,7 @@ fn ecn_ect_set_on_outgoing_data() {
 
 #[test]
 fn ecn_ect_not_set_on_retransmit() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -358,6 +380,7 @@ fn ecn_ect_not_set_on_retransmit() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -379,6 +402,7 @@ fn ecn_ect_not_set_on_retransmit() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -395,13 +419,32 @@ fn ecn_ect_not_set_on_retransmit() {
         .write(b"RTO test data");
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     // Drain the initial data segment.
     while tx.pop().is_some() {}
 
     // Expire the retransmit timer to trigger RTO retransmit.
-    handler.first_connection_mut().retransmit_deadline = Some(now);
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    let key = handler.first_connection_key();
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(tx.num_frames(), 1, "should have one retransmit segment");
     let frame = tx.pop().unwrap();
@@ -411,6 +454,7 @@ fn ecn_ect_not_set_on_retransmit() {
 
 #[test]
 fn ecn_ce_detected_on_incoming() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -438,6 +482,7 @@ fn ecn_ce_detected_on_incoming() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -459,6 +504,7 @@ fn ecn_ce_detected_on_incoming() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -497,6 +543,7 @@ fn ecn_ce_detected_on_incoming() {
     handler.process_ipv4(
         Frame::new(2, leak(data_frame), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -511,6 +558,7 @@ fn ecn_ce_detected_on_incoming() {
 
 #[test]
 fn ecn_ece_sent_when_ce_received() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -538,6 +586,7 @@ fn ecn_ece_sent_when_ce_received() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -559,6 +608,7 @@ fn ecn_ece_sent_when_ce_received() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -587,6 +637,7 @@ fn ecn_ece_sent_when_ce_received() {
     handler.process_ipv4(
         Frame::new(2, leak(data_frame), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -597,8 +648,19 @@ fn ecn_ece_sent_when_ce_received() {
     // Force delayed ACK flush if needed.
     if tx.num_frames() == 0 {
         let now = coarsetime::Instant::now();
-        handler.first_connection_mut().delayed_ack_deadline = Some(now);
-        handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+        let key = handler.first_connection_key();
+        let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::DelayedAck), 0);
+        handler.timer_handles[key].set(TcpTimerKind::DelayedAck, handle);
+        poll_timers(
+            &mut handler,
+            &mut wheel,
+            now,
+            nh.local_mac(),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
     }
 
     assert!(
@@ -616,6 +678,7 @@ fn ecn_ece_sent_when_ce_received() {
 
 #[test]
 fn ecn_cwnd_halved_on_ece() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -643,6 +706,7 @@ fn ecn_cwnd_halved_on_ece() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -664,6 +728,7 @@ fn ecn_cwnd_halved_on_ece() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -684,7 +749,15 @@ fn ecn_cwnd_halved_on_ece() {
         .send_buffer
         .write(b"test data for ecn");
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     let snd_nxt = handler.first_connection().snd_nxt;
@@ -708,6 +781,7 @@ fn ecn_cwnd_halved_on_ece() {
     handler.process_ipv4(
         Frame::new(3, leak(ece_ack), ece_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -739,6 +813,7 @@ fn ecn_cwnd_halved_on_ece() {
 
 #[test]
 fn ecn_cwr_sent_on_next_data() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -766,6 +841,7 @@ fn ecn_cwr_sent_on_next_data() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -787,6 +863,7 @@ fn ecn_cwr_sent_on_next_data() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -805,7 +882,15 @@ fn ecn_cwr_sent_on_next_data() {
         .send_buffer
         .write(b"cwr test data");
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(tx.num_frames(), 1, "should have one data segment");
     let frame = tx.pop().unwrap();
@@ -825,6 +910,7 @@ fn ecn_cwr_sent_on_next_data() {
 
 #[test]
 fn ecn_ce_received_cleared_on_cwr() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -852,6 +938,7 @@ fn ecn_ce_received_cleared_on_cwr() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -873,6 +960,7 @@ fn ecn_ce_received_cleared_on_cwr() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -902,6 +990,7 @@ fn ecn_ce_received_cleared_on_cwr() {
     handler.process_ipv4(
         Frame::new(2, leak(cwr_frame), cwr_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,

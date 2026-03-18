@@ -2,16 +2,13 @@ use coarsetime::Instant;
 use smallvec::SmallVec;
 
 use crate::{
-    net::{NeighborHandler, wire::tcp::flags},
+    net::{NeighborHandler, timer_wheel::TimerWheel, wire::tcp::flags},
     xdp::frame::FrameBuffer,
 };
 
 use super::{
-    TcpHandler,
-    segment::SegmentBuilder,
-    send_tracker::SendReady,
-    state::TcpState,
-    tcb::{MAX_DELAYED_ACK_COUNT, TcpEvent},
+    TcpHandler, segment::SegmentBuilder, send_tracker::SendReady, state::TcpState,
+    tcb::MAX_DELAYED_ACK_COUNT, timer_kinds::TcpTimerKind,
 };
 
 impl TcpHandler {
@@ -23,6 +20,7 @@ impl TcpHandler {
     pub fn poll_send<'umem>(
         &mut self,
         now: Instant,
+        wheel: &mut TimerWheel,
         src_mac: crate::net::wire::ethernet::MacAddress,
         neighbor_handler: &NeighborHandler,
         free_frames: &mut impl FrameBuffer<'umem>,
@@ -154,9 +152,13 @@ impl TcpHandler {
                 tcb.keep_alive_probes_sent = 0;
 
                 // Set retransmit timer if not already running.
-                if tcb.retransmit_deadline.is_none() {
-                    tcb.retransmit_deadline =
-                        Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                if !self.timer_handles[key].is_armed(TcpTimerKind::Retransmit) {
+                    self.timer_handles[key].arm(
+                        TcpTimerKind::Retransmit,
+                        key,
+                        now + coarsetime::Duration::from_millis(tcb.rto),
+                        wheel,
+                    );
                 }
 
                 // Clear CWR after sending (only needs to be on one segment).
@@ -168,7 +170,7 @@ impl TcpHandler {
                 tcb.update_advertised_edge();
                 tcb.ack_pending = false;
                 tcb.ack_delay_count = 0;
-                tcb.delayed_ack_deadline = None;
+                self.timer_handles[key].cancel_timer(TcpTimerKind::DelayedAck, wheel);
             }
 
             // Delayed ACK fallback: if the data send loop didn't piggyback an ACK
@@ -213,7 +215,7 @@ impl TcpHandler {
                 tcb.update_advertised_edge();
                 tcb.ack_pending = false;
                 tcb.ack_delay_count = 0;
-                tcb.delayed_ack_deadline = None;
+                self.timer_handles[key].cancel_timer(TcpTimerKind::DelayedAck, wheel);
             }
 
             // --- Zero-window probing (persist timer) ---
@@ -223,101 +225,16 @@ impl TcpHandler {
             let send_window = (tcb.snd_wnd as usize).min(tcb.cubic.cwnd as usize);
 
             // A. Arm persist timer when peer advertises window=0 and we have data to send.
-            if send_window == 0 && data_available > 0 && tcb.persist_deadline.is_none() {
-                tcb.persist_deadline = Some(now + coarsetime::Duration::from_millis(tcb.rto));
-            }
-
-            // B. Send 1-byte probe when persist deadline expires.
-            if let Some(deadline) = tcb.persist_deadline
-                && now >= deadline
-                && send_window == 0
+            if send_window == 0
                 && data_available > 0
+                && !self.timer_handles[key].is_armed(TcpTimerKind::Persist)
             {
-                let mut probe = [0u8; 1];
-                tcb.send_buffer.peek_at(bytes_in_flight, &mut probe);
-
-                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
-                    now,
-                    &tcb.id.remote_addr,
-                    &tcb.id.local_addr,
-                    free_frames,
-                    rx_return,
-                    tx_return,
-                ) else {
-                    // Neighbor resolution pending — re-mark for next tick.
-                    self.send_tracker.mark(SendReady(key));
-                    continue; // skip to next connection
-                };
-
-                let ts = tcb.ts_option(tsval);
-                SegmentBuilder::build_data(
-                    tcb.id.local_addr,
-                    tcb.id.remote_addr,
-                    tcb.id.local_port,
-                    tcb.id.remote_port,
-                    tcb.snd_nxt,
-                    tcb.rcv_nxt,
-                    tcb.advertised_window(),
-                    &probe,
-                    ts,
-                    src_mac,
-                    dst_mac,
-                    self.tx_offload,
-                    free_frames,
-                    tx_return,
+                self.timer_handles[key].arm(
+                    TcpTimerKind::Persist,
+                    key,
+                    now + coarsetime::Duration::from_millis(tcb.rto),
+                    wheel,
                 );
-
-                tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
-
-                // Schedule next probe with exponential backoff, capped at 60s.
-                let backoff_ms = (tcb.rto << tcb.persist_backoff).min(60_000);
-                tcb.persist_deadline = Some(now + coarsetime::Duration::from_millis(backoff_ms));
-                tcb.persist_backoff = tcb.persist_backoff.saturating_add(1).min(6);
-            }
-
-            // Check linger deadline — if expired, abort with RST.
-            if tcb.pending_fin
-                && let Some(deadline) = tcb.linger_deadline
-                && now >= deadline
-            {
-                // Send RST to peer.
-                let id = tcb.id;
-                let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
-                    now,
-                    &tcb.id.remote_addr,
-                    &tcb.id.local_addr,
-                    free_frames,
-                    rx_return,
-                    tx_return,
-                ) else {
-                    // Neighbor resolution pending — re-mark for next tick.
-                    self.send_tracker.mark(SendReady(key));
-                    continue; // skip to next connection
-                };
-
-                // Use build_rst by simulating an "incoming ACK" segment.
-                // This produces: <SEQ=SEG.ACK><CTL=RST> = <SEQ=snd_nxt><CTL=RST>
-                SegmentBuilder::build_rst(
-                    id.remote_addr,
-                    id.local_addr, // swapped: "incoming" from remote
-                    id.remote_port,
-                    id.local_port, // swapped
-                    0,
-                    tcb.snd_nxt, // incoming_seq=0, incoming_ack=snd_nxt
-                    flags::ACK,  // pretend incoming has ACK set
-                    0,           // seg_len doesn't matter
-                    src_mac,
-                    dst_mac,
-                    self.tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-
-                tcb.event_queue.push(TcpEvent::Reset);
-                tcb.state = TcpState::Closed;
-                tcb.pending_fin = false;
-                closed.push(key);
-                continue; // connection is Closed, will be removed after loop
             }
 
             // After data sending: check if we should send FIN.
@@ -370,9 +287,13 @@ impl TcpHandler {
                     }
 
                     // Set retransmit timer for FIN.
-                    if tcb.retransmit_deadline.is_none() {
-                        tcb.retransmit_deadline =
-                            Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                    if !self.timer_handles[key].is_armed(TcpTimerKind::Retransmit) {
+                        self.timer_handles[key].arm(
+                            TcpTimerKind::Retransmit,
+                            key,
+                            now + coarsetime::Duration::from_millis(tcb.rto),
+                            wheel,
+                        );
                     }
                 }
             }
@@ -384,8 +305,8 @@ impl TcpHandler {
                 let has_work = has_data
                     || tcb.ack_pending
                     || tcb.pending_fin
-                    || tcb.persist_deadline.is_some()
-                    || tcb.retransmit_deadline.is_some();
+                    || self.timer_handles[key].is_armed(TcpTimerKind::Persist)
+                    || self.timer_handles[key].is_armed(TcpTimerKind::Retransmit);
                 if has_work {
                     self.send_tracker.mark(SendReady(key));
                 }
@@ -395,6 +316,7 @@ impl TcpHandler {
         // Remove connections aborted by linger deadline.
         for key in &closed {
             self.send_tracker.unmark(*key);
+            self.timer_handles[*key].cancel_all(wheel);
             self.remove_connection_by_key(*key);
         }
     }

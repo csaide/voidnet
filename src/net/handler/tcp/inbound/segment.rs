@@ -11,6 +11,9 @@ use super::super::segment::SegmentBuilder;
 use super::super::send_tracker::SendReady;
 use super::super::state::TcpState;
 use super::super::tcb::ConnectionId;
+use super::super::timer_kinds::TcpTimerKind;
+
+use crate::net::timer_wheel::TimerWheel;
 
 /// Actions that must be performed after releasing the `&mut Tcb` borrow.
 pub(super) enum PostAction {
@@ -52,6 +55,7 @@ impl TcpHandler {
         &mut self,
         frame: Frame<'umem>,
         now: Instant,
+        wheel: &mut TimerWheel,
         incoming_src: IpAddress,
         incoming_dst: IpAddress,
         src_port: u16,
@@ -82,6 +86,7 @@ impl TcpHandler {
         // Destructure self for split borrows.
         let Self {
             connections,
+            timer_handles,
             connection_map,
             listeners,
             isn_generator,
@@ -95,6 +100,7 @@ impl TcpHandler {
         if let Some(&key) = connection_map.get(&conn_id)
             && let Some(tcb) = connections.get_mut(key)
         {
+            let handles = &mut timer_handles[key];
             let tsval = if tcb.ts_enabled {
                 now.duration_since(tcb.ts_offset).as_millis() as u32
             } else {
@@ -105,8 +111,10 @@ impl TcpHandler {
                 TcpState::SynSent => {
                     let action = Self::process_syn_sent(
                         tcb,
+                        handles,
                         key,
                         now,
+                        wheel,
                         tsval,
                         seg_seq,
                         seg_ack,
@@ -125,8 +133,10 @@ impl TcpHandler {
                 TcpState::SynReceived => {
                     let action = Self::process_syn_received(
                         tcb,
+                        handles,
                         key,
                         listeners,
+                        wheel,
                         tsval,
                         seg_seq,
                         seg_ack,
@@ -148,9 +158,11 @@ impl TcpHandler {
                     let opts = ParsedOptions::parse(options);
                     Self::process_established(
                         tcb,
+                        handles,
                         key,
                         frame,
                         now,
+                        wheel,
                         tsval,
                         seg_seq,
                         seg_ack,
@@ -179,9 +191,11 @@ impl TcpHandler {
                     let opts = ParsedOptions::parse(options);
                     Self::process_teardown(
                         tcb,
+                        handles,
                         key,
                         frame,
                         now,
+                        wheel,
                         tsval,
                         seg_seq,
                         seg_ack,
@@ -211,7 +225,9 @@ impl TcpHandler {
                         connection_map.remove(&tcb.id);
                     }
                     send_tracker.unmark(rm_key);
+                    timer_handles[rm_key].cancel_all(wheel);
                     connections.remove(rm_key);
+                    timer_handles.remove(rm_key);
                 }
                 PostAction::RemoveAndDecrement(rm_key) => {
                     if let Some(tcb) = connections.get(rm_key) {
@@ -219,7 +235,9 @@ impl TcpHandler {
                         connection_map.remove(&tcb.id);
                     }
                     send_tracker.unmark(rm_key);
+                    timer_handles[rm_key].cancel_all(wheel);
                     connections.remove(rm_key);
+                    timer_handles.remove(rm_key);
                 }
                 PostAction::None => {
                     // Mark connection for send processing if it has pending work.
@@ -228,8 +246,8 @@ impl TcpHandler {
                             || tcb.pending_fin
                             || tcb.send_buffer.available() > 0
                             || tcb.ecn_cwr_sent
-                            || tcb.persist_deadline.is_some()
-                            || tcb.retransmit_deadline.is_some())
+                            || timer_handles[key].is_armed(TcpTimerKind::Persist)
+                            || timer_handles[key].is_armed(TcpTimerKind::Retransmit))
                     {
                         send_tracker.mark(SendReady(key));
                     }
@@ -245,11 +263,13 @@ impl TcpHandler {
         {
             Self::process_listen(
                 connections,
+                timer_handles,
                 connection_map,
                 listeners,
                 isn_generator,
                 listener_idx,
                 now,
+                wheel,
                 incoming_src,
                 incoming_dst,
                 src_port,

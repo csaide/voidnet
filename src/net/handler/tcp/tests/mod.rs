@@ -2,6 +2,7 @@ use crate::{
     net::{
         NeighborHandler,
         checksum::{compute_ipv4_checksum, compute_tcp_checksum},
+        timer_wheel::TimerWheel,
         wire::{
             ethernet::MacAddress,
             ip::{IPV4_MIN_HEADER_LEN, IpAddress, IpProtocols, Ipv4Address},
@@ -14,9 +15,47 @@ use crate::{
 use super::inbound::segment::is_segment_acceptable;
 use super::state::TcpState;
 use super::tcb::{ConnectionId, DEFAULT_RCV_WSCALE, TcpConfig, TcpEvent};
+use super::timer_kinds::TcpTimerKind;
 use super::*;
 
 use crate::xdp::frame::FrameBuffer;
+
+use super::timer_kinds::unpack_tcp_timer_id;
+
+/// Test-only helper: creates a TimerWheel starting at tick 0.
+pub(super) fn new_wheel() -> TimerWheel {
+    TimerWheel::new(0)
+}
+
+/// Test-only helper: advance the wheel far enough to fire all pending timers,
+/// then dispatch each to `handler.handle_timer`.
+pub(super) fn poll_timers<'umem>(
+    handler: &mut TcpHandler,
+    wheel: &mut TimerWheel,
+    now: coarsetime::Instant,
+    src_mac: MacAddress,
+    nh: &crate::net::NeighborHandler,
+    free: &mut impl crate::xdp::frame::FrameBuffer<'umem>,
+    rx: &mut impl crate::xdp::frame::FrameBuffer<'umem>,
+    tx: &mut impl crate::xdp::frame::FrameBuffer<'umem>,
+) {
+    let fired = wheel.advance(u64::MAX / 2);
+    for id in fired {
+        let (key, kind) = unpack_tcp_timer_id(id);
+        handler.handle_timer(key, kind, now, 0, wheel, src_mac, nh, free, rx, tx);
+    }
+}
+
+/// Test-only helper: advance the wheel and fire any TimeWait timers to evict stale connections.
+pub(super) fn evict_stale(handler: &mut TcpHandler, wheel: &mut TimerWheel) {
+    let fired = wheel.advance(u64::MAX / 2);
+    for id in fired {
+        let (key, kind) = unpack_tcp_timer_id(id);
+        if matches!(kind, TcpTimerKind::TimeWait) {
+            handler.fire_time_wait(key, wheel);
+        }
+    }
+}
 
 pub(super) const LOCAL_IP: Ipv4Address = Ipv4Address::new([10, 0, 0, 1]);
 pub(super) const REMOTE_IP: Ipv4Address = Ipv4Address::new([10, 0, 0, 2]);
@@ -211,6 +250,7 @@ pub(super) fn build_ts_option(tsval: u32, tsecr: u32) -> Vec<u8> {
 /// Drains tx after handshake so callers start with an empty tx buffer.
 pub(super) fn establish_connection(
     handler: &mut TcpHandler,
+    wheel: &mut TimerWheel,
     nh: &NeighborHandler,
     free: &mut BasicFrameBuffer<'static>,
     rx: &mut BasicFrameBuffer<'static>,
@@ -237,6 +277,8 @@ pub(super) fn establish_connection(
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        0,
+        wheel,
         nh,
         free,
         rx,
@@ -258,6 +300,8 @@ pub(super) fn establish_connection(
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        0,
+        wheel,
         nh,
         free,
         rx,
@@ -270,6 +314,7 @@ pub(super) fn establish_connection(
 /// Helper: establish a connection with SACK enabled, returning server_iss.
 pub(super) fn establish_connection_with_sack(
     handler: &mut TcpHandler,
+    wheel: &mut TimerWheel,
     nh: &NeighborHandler,
     free: &mut BasicFrameBuffer<'static>,
     rx: &mut BasicFrameBuffer<'static>,
@@ -298,6 +343,8 @@ pub(super) fn establish_connection_with_sack(
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        0,
+        wheel,
         nh,
         free,
         rx,
@@ -322,6 +369,8 @@ pub(super) fn establish_connection_with_sack(
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        0,
+        wheel,
         nh,
         free,
         rx,
@@ -336,6 +385,7 @@ pub(super) fn establish_connection_with_sack(
 /// Returns the client ISS (so the caller knows snd_una/snd_nxt base).
 pub(super) fn active_open_handshake(
     handler: &mut TcpHandler,
+    wheel: &mut TimerWheel,
     nh: &NeighborHandler,
     free: &mut BasicFrameBuffer<'static>,
     rx: &mut BasicFrameBuffer<'static>,
@@ -361,6 +411,8 @@ pub(super) fn active_open_handshake(
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            0,
+            wheel,
             free,
             tx,
         )
@@ -385,6 +437,8 @@ pub(super) fn active_open_handshake(
     handler.process_ipv4(
         Frame::new(50, leak(syn_ack), syn_ack_len, false),
         coarsetime::Instant::now(),
+        0,
+        wheel,
         nh,
         free,
         rx,
@@ -401,6 +455,7 @@ pub(super) fn active_open_handshake(
 /// Helper: perform active open handshake with custom TcpConfig.
 pub(super) fn active_open_handshake_with_config(
     handler: &mut TcpHandler,
+    wheel: &mut TimerWheel,
     nh: &NeighborHandler,
     config: TcpConfig,
     free: &mut BasicFrameBuffer<'static>,
@@ -426,6 +481,8 @@ pub(super) fn active_open_handshake_with_config(
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            0,
+            wheel,
             config,
             free,
             tx,
@@ -450,6 +507,8 @@ pub(super) fn active_open_handshake_with_config(
     handler.process_ipv4(
         Frame::new(50, leak(syn_ack), syn_ack_len, false),
         coarsetime::Instant::now(),
+        0,
+        wheel,
         nh,
         free,
         rx,

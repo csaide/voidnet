@@ -1,3 +1,4 @@
+use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
 use super::*;
 
 #[test]
@@ -7,25 +8,36 @@ fn persist_timer_activates_on_zero_window() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Write data into send buffer, but set window to 0.
     handler.first_connection_mut().send_buffer.write(b"Hello");
     handler.first_connection_mut().snd_wnd = 0;
 
-    assert!(handler.first_connection().persist_deadline.is_none());
+    let key = handler.first_connection_key();
+    assert!(!handler.timer_handles[key].is_armed(TcpTimerKind::Persist));
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Persist timer should now be armed.
     assert!(
-        handler.first_connection().persist_deadline.is_some(),
-        "persist_deadline should be set when window=0 and data available"
+        handler.timer_handles[key].is_armed(TcpTimerKind::Persist),
+        "persist timer should be armed when window=0 and data available"
     );
     // No data segment should have been sent (deadline not yet reached).
     assert_eq!(tx.num_frames(), 0, "no segment sent before deadline");
@@ -38,25 +50,47 @@ fn persist_probe_sent_when_deadline_expires() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Write data, set window to 0.
     handler.first_connection_mut().send_buffer.write(b"Hello");
     handler.first_connection_mut().snd_wnd = 0;
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
-    assert!(handler.first_connection().persist_deadline.is_some());
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+    let key = handler.first_connection_key();
+    assert!(handler.timer_handles[key].is_armed(TcpTimerKind::Persist));
     assert_eq!(handler.first_connection().persist_backoff, 0);
 
-    // Simulate time passing beyond the deadline by setting it to the past.
-    handler.first_connection_mut().persist_deadline = Some(now);
+    // Simulate time passing beyond the deadline by arming persist at tick 0.
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Persist), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Persist, handle);
 
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    // Fire the persist timer via poll_timers, then let poll_send handle the probe.
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // A 1-byte probe should have been sent.
     assert_eq!(tx.num_frames(), 1, "probe segment should be sent");
@@ -68,8 +102,8 @@ fn persist_probe_sent_when_deadline_expires() {
     );
     // persist_backoff should have incremented.
     assert_eq!(handler.first_connection().persist_backoff, 1);
-    // persist_deadline should be rescheduled (not None).
-    assert!(handler.first_connection().persist_deadline.is_some());
+    // persist timer should be rescheduled.
+    assert!(handler.timer_handles[key].is_armed(TcpTimerKind::Persist));
 }
 
 #[test]
@@ -79,19 +113,30 @@ fn persist_timer_clears_when_window_reopens() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Write data, set window to 0, arm persist timer.
     handler.first_connection_mut().send_buffer.write(b"Hello");
     handler.first_connection_mut().snd_wnd = 0;
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
-    assert!(handler.first_connection().persist_deadline.is_some());
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+    let key = handler.first_connection_key();
+    assert!(handler.timer_handles[key].is_armed(TcpTimerKind::Persist));
     handler.first_connection_mut().persist_backoff = 3; // simulate some backoff
 
     // Peer sends ACK with non-zero window, reopening it.
@@ -110,6 +155,7 @@ fn persist_timer_clears_when_window_reopens() {
     handler.process_ipv4(
         Frame::new(2, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -118,8 +164,8 @@ fn persist_timer_clears_when_window_reopens() {
 
     // Persist timer should be cleared.
     assert!(
-        handler.first_connection().persist_deadline.is_none(),
-        "persist_deadline should be cleared when window reopens"
+        !handler.timer_handles[key].is_armed(TcpTimerKind::Persist),
+        "persist timer should be cleared when window reopens"
     );
     assert_eq!(
         handler.first_connection().persist_backoff,
@@ -135,11 +181,13 @@ fn persist_backoff_caps_at_six() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Write enough data to sustain many probes (each probe sends 1 byte).
     handler
@@ -149,16 +197,35 @@ fn persist_backoff_caps_at_six() {
     handler.first_connection_mut().snd_wnd = 0;
 
     let now = coarsetime::Instant::now();
+    let key = handler.first_connection_key();
 
     // Arm the persist timer.
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
-    assert!(handler.first_connection().persist_deadline.is_some());
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+    assert!(handler.timer_handles[key].is_armed(TcpTimerKind::Persist));
     assert_eq!(handler.first_connection().persist_backoff, 0);
 
-    // Fire the persist probe multiple times (more than 6) by setting deadline to past.
+    // Fire the persist probe multiple times (more than 6) by arming at tick 0.
     for i in 0..10 {
-        handler.first_connection_mut().persist_deadline = Some(now);
-        handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+        let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Persist), 0);
+        handler.timer_handles[key].set(TcpTimerKind::Persist, handle);
+        poll_timers(
+            &mut handler,
+            &mut wheel,
+            now,
+            nh.local_mac(),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
         while tx.pop().is_some() {}
 
         let expected = (i + 1).min(6);

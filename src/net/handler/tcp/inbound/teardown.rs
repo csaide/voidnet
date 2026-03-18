@@ -1,7 +1,7 @@
 use coarsetime::Instant;
 
 use crate::{
-    net::wire::tcp::flags,
+    net::{timer_wheel::TimerWheel, wire::tcp::flags},
     xdp::frame::{Frame, FrameBuffer},
 };
 
@@ -10,6 +10,7 @@ use super::super::options::ParsedOptions;
 use super::super::segment::SegmentBuilder;
 use super::super::state::TcpState;
 use super::super::tcb::{Tcb, TcpEvent};
+use super::super::timer_kinds::{TcpTimerHandles, TcpTimerKind};
 
 use super::segment::{PostAction, is_segment_acceptable};
 
@@ -20,9 +21,11 @@ impl TcpHandler {
 
     pub(super) fn process_teardown<'umem>(
         tcb: &mut Tcb,
+        handles: &mut TcpTimerHandles,
         key: usize,
         frame: Frame<'umem>,
         now: Instant,
+        wheel: &mut TimerWheel,
         tsval: u32,
         seg_seq: u32,
         seg_ack: u32,
@@ -219,13 +222,17 @@ impl TcpHandler {
                 if fin_acked && remote_fin {
                     // Both sides FINed and our FIN is ACKed → TimeWait.
                     tcb.state = TcpState::TimeWait;
-                    tcb.time_wait_deadline =
-                        Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
-                    tcb.retransmit_deadline = None;
+                    handles.arm(
+                        TcpTimerKind::TimeWait,
+                        key,
+                        now + coarsetime::Duration::from_millis(tcb.time_wait_duration),
+                        wheel,
+                    );
+                    handles.cancel_timer(TcpTimerKind::Retransmit, wheel);
                 } else if fin_acked {
                     // Our FIN ACKed but no remote FIN yet → FinWait2.
                     tcb.state = TcpState::FinWait2;
-                    tcb.retransmit_deadline = None;
+                    handles.cancel_timer(TcpTimerKind::Retransmit, wheel);
                 } else if remote_fin {
                     // Remote FINed but our FIN not yet ACKed → Closing.
                     tcb.state = TcpState::Closing;
@@ -271,8 +278,12 @@ impl TcpHandler {
                 if seg_flags & flags::FIN != 0 {
                     tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
                     tcb.state = TcpState::TimeWait;
-                    tcb.time_wait_deadline =
-                        Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
+                    handles.arm(
+                        TcpTimerKind::TimeWait,
+                        key,
+                        now + coarsetime::Duration::from_millis(tcb.time_wait_duration),
+                        wheel,
+                    );
                 }
 
                 // Send ACK if FIN or data.
@@ -310,9 +321,13 @@ impl TcpHandler {
                 {
                     tcb.snd_una = seg_ack;
                     tcb.state = TcpState::TimeWait;
-                    tcb.time_wait_deadline =
-                        Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
-                    tcb.retransmit_deadline = None;
+                    handles.arm(
+                        TcpTimerKind::TimeWait,
+                        key,
+                        now + coarsetime::Duration::from_millis(tcb.time_wait_duration),
+                        wheel,
+                    );
+                    handles.cancel_timer(TcpTimerKind::Retransmit, wheel);
                 }
                 rx_return.push(frame);
             }
@@ -352,8 +367,12 @@ impl TcpHandler {
                         free_frames,
                         tx_return,
                     );
-                    tcb.time_wait_deadline =
-                        Some(now + coarsetime::Duration::from_millis(tcb.time_wait_duration));
+                    handles.arm(
+                        TcpTimerKind::TimeWait,
+                        key,
+                        now + coarsetime::Duration::from_millis(tcb.time_wait_duration),
+                        wheel,
+                    );
                 }
                 // Everything else (including RST) is ignored — RST handled above.
                 rx_return.push(frame);

@@ -184,8 +184,6 @@ pub struct Tcb {
     pub recv_buffer: RingBuffer,
     /// Most recent TSval received from peer.
     pub ts_recent: u32,
-    /// Deadline for sending the deferred ACK.
-    pub delayed_ack_deadline: Option<Instant>,
     /// Delayed ACK timeout in milliseconds.
     pub delayed_ack_ms: u64,
 
@@ -228,8 +226,6 @@ pub struct Tcb {
     pub ts_offset: Instant,
 
     // === COLD: rarely accessed ===
-    /// Deadline for retransmitting unacknowledged SYN or SYN-ACK.
-    pub retransmit_deadline: Option<Instant>,
     /// Exponential backoff counter for retransmissions.
     pub rto_backoff: u8,
     /// Queue for delivering events to user-facing socket.
@@ -244,12 +240,8 @@ pub struct Tcb {
     pub pending_fin: bool,
     /// Sequence number of our FIN (set when FIN is sent).
     pub fin_seq: Option<u32>,
-    /// Deadline for exiting TIME-WAIT state.
-    pub time_wait_deadline: Option<Instant>,
     /// Duration to remain in TIME-WAIT state in milliseconds.
     pub time_wait_duration: u64,
-    /// Deadline for next zero-window probe.
-    pub persist_deadline: Option<Instant>,
     /// Exponential backoff counter for persist probes (cap at 6).
     pub persist_backoff: u8,
     pub keep_alive_enabled: bool,
@@ -259,7 +251,6 @@ pub struct Tcb {
     pub last_activity: Instant,
     pub keep_alive_probes_sent: u8,
     pub linger: Option<u64>,
-    pub linger_deadline: Option<Instant>,
 }
 
 impl Tcb {
@@ -397,7 +388,6 @@ mod tests {
             snd_wscale,
             rcv_wscale,
             wscale_enabled,
-            retransmit_deadline: None,
             rto_backoff: 0,
             event_queue: LocalQueue::new(16),
             send_buffer: RingBuffer::new(1024),
@@ -413,10 +403,8 @@ mod tests {
             last_send_time: None,
             pending_fin: false,
             fin_seq: None,
-            time_wait_deadline: None,
             time_wait_duration: 60_000,
             ack_pending: false,
-            delayed_ack_deadline: None,
             ack_delay_count: 0,
             delayed_ack_ms: DEFAULT_DELAYED_ACK_MS,
             nagle_enabled: true,
@@ -427,7 +415,6 @@ mod tests {
             last_activity: Instant::now(),
             keep_alive_probes_sent: 0,
             linger: None,
-            linger_deadline: None,
             ts_enabled: false,
             ts_recent: 0,
             ts_recent_age: Instant::now(),
@@ -437,7 +424,6 @@ mod tests {
             ecn_enabled: false,
             ecn_ce_received: false,
             ecn_cwr_sent: false,
-            persist_deadline: None,
             persist_backoff: 0,
             max_snd_wnd: 0,
             last_advertised_right_edge: 0,

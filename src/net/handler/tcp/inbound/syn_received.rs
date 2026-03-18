@@ -1,10 +1,11 @@
-use crate::xdp::frame::FrameBuffer;
+use crate::{net::timer_wheel::TimerWheel, xdp::frame::FrameBuffer};
 
 use super::super::handler::TcpHandler;
 use super::super::listener::ListenEntry;
 use super::super::segment::SegmentBuilder;
 use super::super::state::TcpState;
 use super::super::tcb::{DEFAULT_RCV_WND, Tcb, TcpEvent};
+use super::super::timer_kinds::{TcpTimerHandles, TcpTimerKind};
 
 use super::segment::PostAction;
 
@@ -13,8 +14,10 @@ use crate::net::wire::tcp::flags;
 impl TcpHandler {
     pub(super) fn process_syn_received<'umem>(
         tcb: &mut Tcb,
+        handles: &mut TcpTimerHandles,
         key: usize,
         listeners: &mut [ListenEntry],
+        wheel: &mut TimerWheel,
         tsval: u32,
         seg_seq: u32,
         seg_ack: u32,
@@ -137,7 +140,7 @@ impl TcpHandler {
                 tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
                 tcb.snd_wl1 = seg_seq;
                 tcb.snd_wl2 = seg_ack;
-                tcb.retransmit_deadline = None;
+                handles.cancel_timer(TcpTimerKind::Retransmit, wheel);
                 tcb.rto_backoff = 0;
 
                 let from_passive = tcb.from_passive_open;

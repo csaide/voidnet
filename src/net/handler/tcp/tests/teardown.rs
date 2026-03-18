@@ -1,3 +1,4 @@
+use super::super::timer_kinds::TcpTimerKind;
 use super::*;
 
 #[test]
@@ -7,6 +8,7 @@ fn established_receives_fin_transitions_to_close_wait() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -29,6 +31,7 @@ fn established_receives_fin_transitions_to_close_wait() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -50,6 +53,7 @@ fn established_receives_fin_transitions_to_close_wait() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -73,6 +77,7 @@ fn established_receives_fin_transitions_to_close_wait() {
     handler.process_ipv4(
         Frame::new(2, leak(fin_data), fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -91,6 +96,7 @@ fn established_receives_fin_with_data() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -113,6 +119,7 @@ fn established_receives_fin_with_data() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -134,6 +141,7 @@ fn established_receives_fin_with_data() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -159,6 +167,7 @@ fn established_receives_fin_with_data() {
     handler.process_ipv4(
         Frame::new(2, leak(fin_data), fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -184,6 +193,7 @@ fn poll_send_sends_fin_when_pending() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -206,6 +216,7 @@ fn poll_send_sends_fin_when_pending() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -227,6 +238,7 @@ fn poll_send_sends_fin_when_pending() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -238,7 +250,15 @@ fn poll_send_sends_fin_when_pending() {
     handler.first_connection_mut().pending_fin = true;
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // FIN should have been sent.
     assert_eq!(tx.num_frames(), 1, "FIN segment sent");
@@ -255,6 +275,7 @@ fn poll_send_drains_data_before_fin() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -277,6 +298,7 @@ fn poll_send_drains_data_before_fin() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -298,6 +320,7 @@ fn poll_send_drains_data_before_fin() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -314,7 +337,15 @@ fn poll_send_drains_data_before_fin() {
     handler.first_connection_mut().pending_fin = true;
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Should send data first, NOT FIN yet (data still in flight).
     assert_eq!(tx.num_frames(), 1, "data segment sent");
@@ -336,6 +367,7 @@ fn active_close_fin_wait1_to_fin_wait2() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -358,6 +390,7 @@ fn active_close_fin_wait1_to_fin_wait2() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -379,6 +412,7 @@ fn active_close_fin_wait1_to_fin_wait2() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -389,7 +423,15 @@ fn active_close_fin_wait1_to_fin_wait2() {
     // Active close: set pending_fin, poll_send sends FIN → FinWait1.
     handler.first_connection_mut().pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
     assert_eq!(handler.first_connection().state, TcpState::FinWait1);
     let fin_seq = handler.first_connection().fin_seq.unwrap();
@@ -410,6 +452,7 @@ fn active_close_fin_wait1_to_fin_wait2() {
     handler.process_ipv4(
         Frame::new(3, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -426,6 +469,7 @@ fn fin_wait2_receives_fin_to_time_wait() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -448,6 +492,7 @@ fn fin_wait2_receives_fin_to_time_wait() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -469,6 +514,7 @@ fn fin_wait2_receives_fin_to_time_wait() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -479,7 +525,15 @@ fn fin_wait2_receives_fin_to_time_wait() {
     // Active close → FinWait1 → FinWait2.
     handler.first_connection_mut().pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
     let fin_seq = handler.first_connection().fin_seq.unwrap();
     let ack = build_tcp_frame(
@@ -497,6 +551,7 @@ fn fin_wait2_receives_fin_to_time_wait() {
     handler.process_ipv4(
         Frame::new(3, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -521,6 +576,7 @@ fn fin_wait2_receives_fin_to_time_wait() {
     handler.process_ipv4(
         Frame::new(4, leak(fin), fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -528,7 +584,8 @@ fn fin_wait2_receives_fin_to_time_wait() {
     );
 
     assert_eq!(handler.first_connection().state, TcpState::TimeWait);
-    assert!(handler.first_connection().time_wait_deadline.is_some());
+    let key = handler.first_connection_key();
+    assert!(handler.timer_handles[key].is_armed(TcpTimerKind::TimeWait));
     assert_eq!(tx.num_frames(), 1, "ACK for remote FIN");
 }
 
@@ -539,6 +596,7 @@ fn simultaneous_close_closing_to_time_wait() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -561,6 +619,7 @@ fn simultaneous_close_closing_to_time_wait() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -582,6 +641,7 @@ fn simultaneous_close_closing_to_time_wait() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -592,7 +652,15 @@ fn simultaneous_close_closing_to_time_wait() {
     // Active close → FinWait1.
     handler.first_connection_mut().pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
     assert_eq!(handler.first_connection().state, TcpState::FinWait1);
 
@@ -612,6 +680,7 @@ fn simultaneous_close_closing_to_time_wait() {
     handler.process_ipv4(
         Frame::new(3, leak(fin), fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -637,6 +706,7 @@ fn simultaneous_close_closing_to_time_wait() {
     handler.process_ipv4(
         Frame::new(4, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -652,6 +722,7 @@ fn passive_close_last_ack_removes_connection() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -674,6 +745,7 @@ fn passive_close_last_ack_removes_connection() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -695,6 +767,7 @@ fn passive_close_last_ack_removes_connection() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -718,6 +791,7 @@ fn passive_close_last_ack_removes_connection() {
     handler.process_ipv4(
         Frame::new(2, leak(fin), fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -729,7 +803,15 @@ fn passive_close_last_ack_removes_connection() {
     // We close → pending_fin, poll_send sends FIN → LastAck.
     handler.first_connection_mut().pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
     assert_eq!(handler.first_connection().state, TcpState::LastAck);
     let fin_seq = handler.first_connection().fin_seq.unwrap();
@@ -750,6 +832,7 @@ fn passive_close_last_ack_removes_connection() {
     handler.process_ipv4(
         Frame::new(4, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -769,6 +852,7 @@ fn time_wait_ignores_rst() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -791,6 +875,7 @@ fn time_wait_ignores_rst() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -812,6 +897,7 @@ fn time_wait_ignores_rst() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -822,7 +908,15 @@ fn time_wait_ignores_rst() {
     // Full active close → TimeWait.
     handler.first_connection_mut().pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
     let fin_seq = handler.first_connection().fin_seq.unwrap();
     let ack = build_tcp_frame(
@@ -840,6 +934,7 @@ fn time_wait_ignores_rst() {
     handler.process_ipv4(
         Frame::new(3, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -860,6 +955,7 @@ fn time_wait_ignores_rst() {
     handler.process_ipv4(
         Frame::new(4, leak(fin), fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -874,6 +970,7 @@ fn time_wait_ignores_rst() {
     handler.process_ipv4(
         Frame::new(5, leak(rst), rst_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -894,6 +991,7 @@ fn time_wait_evicted_after_deadline() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -916,6 +1014,7 @@ fn time_wait_evicted_after_deadline() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -937,6 +1036,7 @@ fn time_wait_evicted_after_deadline() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -946,11 +1046,15 @@ fn time_wait_evicted_after_deadline() {
 
     // Force into TimeWait state with expired deadline.
     handler.first_connection_mut().state = TcpState::TimeWait;
-    handler.first_connection_mut().time_wait_deadline = Some(coarsetime::Instant::now());
+    let key = handler.first_connection_key();
+    let handle = wheel.arm(
+        super::super::timer_kinds::tcp_timer_id(key, TcpTimerKind::TimeWait),
+        0,
+    );
+    handler.timer_handles[key].set(TcpTimerKind::TimeWait, handle);
 
     // Evict with a time in the future.
-    let future = coarsetime::Instant::now() + coarsetime::Duration::from_secs(120);
-    handler.evict_stale(future, &mut rx);
+    evict_stale(&mut handler, &mut wheel);
     assert_eq!(handler.connections.len(), 0, "TIME-WAIT connection evicted");
 }
 
@@ -961,6 +1065,7 @@ fn full_active_close_lifecycle() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -985,6 +1090,7 @@ fn full_active_close_lifecycle() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1006,6 +1112,7 @@ fn full_active_close_lifecycle() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1031,6 +1138,7 @@ fn full_active_close_lifecycle() {
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1040,7 +1148,15 @@ fn full_active_close_lifecycle() {
     // 3. Active close.
     handler.first_connection_mut().pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     assert_eq!(handler.first_connection().state, TcpState::FinWait1);
     while tx.pop().is_some() {}
 
@@ -1061,6 +1177,7 @@ fn full_active_close_lifecycle() {
     handler.process_ipv4(
         Frame::new(3, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1084,6 +1201,7 @@ fn full_active_close_lifecycle() {
     handler.process_ipv4(
         Frame::new(4, leak(fin), fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1094,7 +1212,7 @@ fn full_active_close_lifecycle() {
 
     // 6. TIME-WAIT expires -> connection removed.
     let future = coarsetime::Instant::now() + coarsetime::Duration::from_secs(120);
-    handler.evict_stale(future, &mut rx);
+    evict_stale(&mut handler, &mut wheel);
     assert_eq!(
         handler.connections.len(),
         0,
@@ -1134,6 +1252,7 @@ fn full_passive_close_lifecycle() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -1156,6 +1275,7 @@ fn full_passive_close_lifecycle() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1177,6 +1297,7 @@ fn full_passive_close_lifecycle() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1200,6 +1321,7 @@ fn full_passive_close_lifecycle() {
     handler.process_ipv4(
         Frame::new(2, leak(fin), fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1211,7 +1333,15 @@ fn full_passive_close_lifecycle() {
     // 3. We close -> LastAck.
     handler.first_connection_mut().pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     assert_eq!(handler.first_connection().state, TcpState::LastAck);
     while tx.pop().is_some() {}
     let fin_seq = handler.first_connection().fin_seq.unwrap();
@@ -1232,6 +1362,7 @@ fn full_passive_close_lifecycle() {
     handler.process_ipv4(
         Frame::new(3, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1251,6 +1382,7 @@ fn shutdown_sets_pending_fin() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -1273,6 +1405,7 @@ fn shutdown_sets_pending_fin() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1294,6 +1427,7 @@ fn shutdown_sets_pending_fin() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1308,7 +1442,7 @@ fn shutdown_sets_pending_fin() {
     );
 
     // Call initiate_close (the handler method that shutdown() delegates to).
-    handler.initiate_close(handler.first_connection_key());
+    handler.initiate_close(handler.first_connection_key(), &mut wheel);
 
     // Verify pending_fin is now true.
     assert!(
@@ -1331,6 +1465,7 @@ fn half_close_writes_blocked_reads_continue() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -1353,6 +1488,7 @@ fn half_close_writes_blocked_reads_continue() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1374,6 +1510,7 @@ fn half_close_writes_blocked_reads_continue() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1383,7 +1520,7 @@ fn half_close_writes_blocked_reads_continue() {
     assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Initiate half-close (shutdown write side).
-    handler.initiate_close(handler.first_connection_key());
+    handler.initiate_close(handler.first_connection_key(), &mut wheel);
 
     // Verify pending_fin is set but state is still Established (FIN not sent yet).
     assert!(
@@ -1423,6 +1560,7 @@ fn close_wait_processes_ack_for_sent_data() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -1445,6 +1583,7 @@ fn close_wait_processes_ack_for_sent_data() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1466,6 +1605,7 @@ fn close_wait_processes_ack_for_sent_data() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1480,7 +1620,15 @@ fn close_wait_processes_ack_for_sent_data() {
 
     // poll_send to transmit data (advances snd_nxt).
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     let snd_nxt_after_send = handler.first_connection().snd_nxt;
@@ -1512,6 +1660,7 @@ fn close_wait_processes_ack_for_sent_data() {
     handler.process_ipv4(
         Frame::new(2, leak(fin_data), fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1536,6 +1685,7 @@ fn close_wait_processes_ack_for_sent_data() {
     handler.process_ipv4(
         Frame::new(3, leak(data_ack), data_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1569,12 +1719,14 @@ fn fin_retransmitted_in_fin_wait1() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(200 + i));
     }
 
     // Establish connection via passive open.
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let id = ConnectionId {
         local_addr: IpAddress::V4(LOCAL_IP),
@@ -1585,17 +1737,32 @@ fn fin_retransmitted_in_fin_wait1() {
 
     // Manually transition TCB to FinWait1 with an expired retransmit deadline.
     let now = coarsetime::Instant::now();
+    let key = handler.connection_key(&id).unwrap();
     {
         let tcb = handler.get_connection_mut(&id).unwrap();
         let fin_seq = tcb.snd_nxt;
         tcb.state = TcpState::FinWait1;
         tcb.fin_seq = Some(fin_seq);
-        tcb.retransmit_deadline = Some(coarsetime::Instant::recent()); // already expired
         tcb.rto_backoff = 0;
     }
+    // Arm retransmit timer at tick 0 (already expired).
+    let handle = wheel.arm(
+        super::super::timer_kinds::tcp_timer_id(key, TcpTimerKind::Retransmit),
+        0,
+    );
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
 
     // poll_timers should retransmit the FIN-ACK.
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // (1) A FIN-ACK segment must be emitted.
     assert!(
@@ -1615,12 +1782,12 @@ fn fin_retransmitted_in_fin_wait1() {
         "retransmitted segment must have FIN|ACK flags"
     );
 
-    // (2) retransmit_deadline must be rescheduled with backoff.
-    let tcb = handler.get_connection(&id).unwrap();
+    // (2) retransmit timer must be re-armed with backoff.
     assert!(
-        tcb.retransmit_deadline.is_some(),
-        "retransmit_deadline must be rescheduled"
+        handler.timer_handles[key].is_armed(TcpTimerKind::Retransmit),
+        "retransmit timer must be rescheduled"
     );
+    let tcb = handler.get_connection(&id).unwrap();
     assert_eq!(tcb.rto_backoff, 1, "rto_backoff must be incremented");
 }
 
@@ -1631,13 +1798,15 @@ fn out_of_order_fin_does_not_transition_to_close_wait() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
     // Complete handshake: remote ISS=1000, so after SYN rcv_nxt=1001.
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(handler.first_connection().state, TcpState::Established);
     assert_eq!(handler.first_connection().rcv_nxt, 1001);
 
@@ -1660,6 +1829,7 @@ fn out_of_order_fin_does_not_transition_to_close_wait() {
     handler.process_ipv4(
         Frame::new(2, leak(fin_data), fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1698,6 +1868,7 @@ fn out_of_order_fin_does_not_transition_to_close_wait() {
     handler.process_ipv4(
         Frame::new(3, leak(fill_data), fill_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1728,6 +1899,7 @@ fn out_of_order_fin_does_not_transition_to_close_wait() {
     handler.process_ipv4(
         Frame::new(4, leak(fin_retry), fin_retry_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1752,15 +1924,16 @@ fn out_of_order_fin_does_not_transition_to_close_wait() {
 // ---------------------------------------------------------------------------
 fn setup_fin_wait1(
     handler: &mut super::super::handler::TcpHandler,
+    wheel: &mut crate::net::timer_wheel::TimerWheel,
     nh: &crate::net::NeighborHandler,
     free: &mut BasicFrameBuffer<'static>,
     rx: &mut BasicFrameBuffer<'static>,
     tx: &mut BasicFrameBuffer<'static>,
 ) -> (u32, u32) {
-    let server_iss = establish_connection(handler, nh, free, rx, tx);
+    let server_iss = establish_connection(handler, wheel, nh, free, rx, tx);
     handler.first_connection_mut().pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), nh, free, rx, tx);
+    handler.poll_send(now, 0, wheel, nh.local_mac(), nh, free, rx, tx);
     while tx.pop().is_some() {}
     assert_eq!(handler.first_connection().state, TcpState::FinWait1);
     let fin_seq = handler.first_connection().fin_seq.unwrap();
@@ -1770,12 +1943,13 @@ fn setup_fin_wait1(
 // Helper: bring connection to FinWait2 and return (server_iss, fin_seq).
 fn setup_fin_wait2(
     handler: &mut super::super::handler::TcpHandler,
+    wheel: &mut crate::net::timer_wheel::TimerWheel,
     nh: &crate::net::NeighborHandler,
     free: &mut BasicFrameBuffer<'static>,
     rx: &mut BasicFrameBuffer<'static>,
     tx: &mut BasicFrameBuffer<'static>,
 ) -> (u32, u32) {
-    let (server_iss, fin_seq) = setup_fin_wait1(handler, nh, free, rx, tx);
+    let (server_iss, fin_seq) = setup_fin_wait1(handler, wheel, nh, free, rx, tx);
     // Remote ACKs our FIN.
     let ack = build_tcp_frame(
         REMOTE_IP,
@@ -1792,6 +1966,8 @@ fn setup_fin_wait2(
     handler.process_ipv4(
         Frame::new(10, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        0,
+        wheel,
         nh,
         free,
         rx,
@@ -1805,12 +1981,13 @@ fn setup_fin_wait2(
 // Helper: bring connection to TimeWait and return (server_iss, fin_seq).
 fn setup_time_wait(
     handler: &mut super::super::handler::TcpHandler,
+    wheel: &mut crate::net::timer_wheel::TimerWheel,
     nh: &crate::net::NeighborHandler,
     free: &mut BasicFrameBuffer<'static>,
     rx: &mut BasicFrameBuffer<'static>,
     tx: &mut BasicFrameBuffer<'static>,
 ) -> (u32, u32) {
-    let (server_iss, fin_seq) = setup_fin_wait2(handler, nh, free, rx, tx);
+    let (server_iss, fin_seq) = setup_fin_wait2(handler, wheel, nh, free, rx, tx);
     // Remote sends FIN.
     let fin = build_tcp_frame(
         REMOTE_IP,
@@ -1827,6 +2004,8 @@ fn setup_time_wait(
     handler.process_ipv4(
         Frame::new(11, leak(fin), fin_len, false),
         coarsetime::Instant::now(),
+        0,
+        wheel,
         nh,
         free,
         rx,
@@ -1840,12 +2019,13 @@ fn setup_time_wait(
 // Helper: bring connection to CloseWait and return server_iss.
 fn setup_close_wait(
     handler: &mut super::super::handler::TcpHandler,
+    wheel: &mut crate::net::timer_wheel::TimerWheel,
     nh: &crate::net::NeighborHandler,
     free: &mut BasicFrameBuffer<'static>,
     rx: &mut BasicFrameBuffer<'static>,
     tx: &mut BasicFrameBuffer<'static>,
 ) -> u32 {
-    let server_iss = establish_connection(handler, nh, free, rx, tx);
+    let server_iss = establish_connection(handler, wheel, nh, free, rx, tx);
     // Remote sends FIN.
     let fin = build_tcp_frame(
         REMOTE_IP,
@@ -1862,6 +2042,8 @@ fn setup_close_wait(
     handler.process_ipv4(
         Frame::new(10, leak(fin), fin_len, false),
         coarsetime::Instant::now(),
+        0,
+        wheel,
         nh,
         free,
         rx,
@@ -1891,11 +2073,13 @@ fn alloc_buffers() -> (
 // ---------------------------------------------------------------------------
 #[test]
 fn fin_wait1_fin_and_ack_simultaneously_transitions_to_time_wait() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (_server_iss, fin_seq) = setup_fin_wait1(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (_server_iss, fin_seq) =
+        setup_fin_wait1(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Remote sends FIN+ACK that also ACKs our FIN.
     let fin_ack = build_tcp_frame(
@@ -1913,6 +2097,7 @@ fn fin_wait1_fin_and_ack_simultaneously_transitions_to_time_wait() {
     handler.process_ipv4(
         Frame::new(20, leak(fin_ack), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1920,8 +2105,9 @@ fn fin_wait1_fin_and_ack_simultaneously_transitions_to_time_wait() {
     );
 
     assert_eq!(handler.first_connection().state, TcpState::TimeWait);
-    assert!(handler.first_connection().time_wait_deadline.is_some());
-    assert!(handler.first_connection().retransmit_deadline.is_none());
+    let key = handler.first_connection_key();
+    assert!(handler.timer_handles[key].is_armed(TcpTimerKind::TimeWait));
+    assert!(!handler.timer_handles[key].is_armed(TcpTimerKind::Retransmit));
     // Should have sent an ACK for the FIN.
     assert!(tx.num_frames() >= 1, "ACK for remote FIN expected");
 }
@@ -1931,11 +2117,13 @@ fn fin_wait1_fin_and_ack_simultaneously_transitions_to_time_wait() {
 // ---------------------------------------------------------------------------
 #[test]
 fn fin_wait1_processes_incoming_data() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (server_iss, _fin_seq) = setup_fin_wait1(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (server_iss, _fin_seq) =
+        setup_fin_wait1(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let rcv_nxt_before = handler.first_connection().rcv_nxt;
 
@@ -1956,6 +2144,7 @@ fn fin_wait1_processes_incoming_data() {
     handler.process_ipv4(
         Frame::new(20, leak(data), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1979,11 +2168,13 @@ fn fin_wait1_processes_incoming_data() {
 // ---------------------------------------------------------------------------
 #[test]
 fn fin_wait2_processes_data_before_fin() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (_server_iss, fin_seq) = setup_fin_wait2(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (_server_iss, fin_seq) =
+        setup_fin_wait2(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let rcv_nxt_before = handler.first_connection().rcv_nxt;
 
@@ -2004,6 +2195,7 @@ fn fin_wait2_processes_data_before_fin() {
     handler.process_ipv4(
         Frame::new(20, leak(data), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2024,13 +2216,16 @@ fn fin_wait2_processes_data_before_fin() {
 // ---------------------------------------------------------------------------
 #[test]
 fn time_wait_duplicate_fin_reacks_and_restarts_timer() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (_server_iss, fin_seq) = setup_time_wait(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (_server_iss, fin_seq) =
+        setup_time_wait(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
-    let old_deadline = handler.first_connection().time_wait_deadline.unwrap();
+    let key = handler.first_connection_key();
+    assert!(handler.timer_handles[key].is_armed(TcpTimerKind::TimeWait));
 
     // Remote retransmits FIN.
     let dup_fin = build_tcp_frame(
@@ -2048,6 +2243,7 @@ fn time_wait_duplicate_fin_reacks_and_restarts_timer() {
     handler.process_ipv4(
         Frame::new(30, leak(dup_fin), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2056,11 +2252,10 @@ fn time_wait_duplicate_fin_reacks_and_restarts_timer() {
 
     // Connection still in TimeWait.
     assert_eq!(handler.first_connection().state, TcpState::TimeWait);
-    // Timer restarted (new deadline >= old deadline).
-    let new_deadline = handler.first_connection().time_wait_deadline.unwrap();
+    // Timer should still be armed (restarted).
     assert!(
-        new_deadline >= old_deadline,
-        "time_wait_deadline should be restarted"
+        handler.timer_handles[key].is_armed(TcpTimerKind::TimeWait),
+        "time_wait timer should be restarted"
     );
     // ACK should be sent.
     assert!(tx.num_frames() >= 1, "re-ACK for duplicate FIN expected");
@@ -2071,11 +2266,12 @@ fn time_wait_duplicate_fin_reacks_and_restarts_timer() {
 // ---------------------------------------------------------------------------
 #[test]
 fn close_wait_window_update_with_wl_guard() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let _server_iss = setup_close_wait(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss = setup_close_wait(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Set up known snd_wl1/snd_wl2 values.
     let snd_una = handler.first_connection().snd_una;
@@ -2090,7 +2286,15 @@ fn close_wait_window_update_with_wl_guard() {
         .write(b"test data");
     handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
     let snd_nxt = handler.first_connection().snd_nxt;
 
@@ -2109,6 +2313,7 @@ fn close_wait_window_update_with_wl_guard() {
     handler.process_ipv4(
         Frame::new(20, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2130,11 +2335,13 @@ fn close_wait_window_update_with_wl_guard() {
 // ---------------------------------------------------------------------------
 #[test]
 fn teardown_rst_exact_match_removes_connection() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (_server_iss, _fin_seq) = setup_fin_wait1(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (_server_iss, _fin_seq) =
+        setup_fin_wait1(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let rcv_nxt = handler.first_connection().rcv_nxt;
 
@@ -2154,6 +2361,7 @@ fn teardown_rst_exact_match_removes_connection() {
     handler.process_ipv4(
         Frame::new(20, leak(rst), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2168,11 +2376,13 @@ fn teardown_rst_exact_match_removes_connection() {
 // ---------------------------------------------------------------------------
 #[test]
 fn teardown_rst_in_window_sends_challenge_ack() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (_server_iss, _fin_seq) = setup_fin_wait1(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (_server_iss, _fin_seq) =
+        setup_fin_wait1(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let rcv_nxt = handler.first_connection().rcv_nxt;
 
@@ -2192,6 +2402,7 @@ fn teardown_rst_in_window_sends_challenge_ack() {
     handler.process_ipv4(
         Frame::new(20, leak(rst), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2216,11 +2427,13 @@ fn teardown_rst_in_window_sends_challenge_ack() {
 // ---------------------------------------------------------------------------
 #[test]
 fn teardown_syn_sends_challenge_ack() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (_server_iss, _fin_seq) = setup_fin_wait1(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (_server_iss, _fin_seq) =
+        setup_fin_wait1(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let rcv_nxt = handler.first_connection().rcv_nxt;
 
@@ -2240,6 +2453,7 @@ fn teardown_syn_sends_challenge_ack() {
     handler.process_ipv4(
         Frame::new(20, leak(syn), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2261,11 +2475,13 @@ fn teardown_syn_sends_challenge_ack() {
 // ---------------------------------------------------------------------------
 #[test]
 fn teardown_no_ack_bit_drops_segment() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (_server_iss, _fin_seq) = setup_fin_wait1(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (_server_iss, _fin_seq) =
+        setup_fin_wait1(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let rcv_nxt = handler.first_connection().rcv_nxt;
 
@@ -2277,6 +2493,7 @@ fn teardown_no_ack_bit_drops_segment() {
     handler.process_ipv4(
         Frame::new(20, leak(bare), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2294,11 +2511,13 @@ fn teardown_no_ack_bit_drops_segment() {
 // ---------------------------------------------------------------------------
 #[test]
 fn teardown_out_of_window_sends_ack() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (_server_iss, _fin_seq) = setup_fin_wait1(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (_server_iss, _fin_seq) =
+        setup_fin_wait1(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let rcv_nxt = handler.first_connection().rcv_nxt;
 
@@ -2318,6 +2537,7 @@ fn teardown_out_of_window_sends_ack() {
     handler.process_ipv4(
         Frame::new(20, leak(oow), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2339,11 +2559,13 @@ fn teardown_out_of_window_sends_ack() {
 // ---------------------------------------------------------------------------
 #[test]
 fn teardown_out_of_window_rst_silently_dropped() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (_server_iss, _fin_seq) = setup_fin_wait1(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (_server_iss, _fin_seq) =
+        setup_fin_wait1(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let rcv_nxt = handler.first_connection().rcv_nxt;
 
@@ -2363,6 +2585,7 @@ fn teardown_out_of_window_rst_silently_dropped() {
     handler.process_ipv4(
         Frame::new(20, leak(rst), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2384,11 +2607,13 @@ fn teardown_out_of_window_rst_silently_dropped() {
 // ---------------------------------------------------------------------------
 #[test]
 fn fin_wait1_ack_advances_snd_una() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Write data, send it, ACK it, then close — so FIN and data are separate.
     handler
@@ -2397,7 +2622,15 @@ fn fin_wait1_ack_advances_snd_una() {
         .write(b"data before close");
     handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     let snd_nxt_after_data = handler.first_connection().snd_nxt;
@@ -2418,6 +2651,7 @@ fn fin_wait1_ack_advances_snd_una() {
     handler.process_ipv4(
         Frame::new(15, leak(data_ack), data_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2427,7 +2661,15 @@ fn fin_wait1_ack_advances_snd_una() {
 
     // Now close: set pending_fin and poll_send to send FIN.
     handler.first_connection_mut().pending_fin = true;
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
     assert_eq!(handler.first_connection().state, TcpState::FinWait1);
 
@@ -2449,6 +2691,7 @@ fn fin_wait1_ack_advances_snd_una() {
     handler.process_ipv4(
         Frame::new(20, leak(fin_ack), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2474,11 +2717,13 @@ fn fin_wait1_ack_advances_snd_una() {
 // ---------------------------------------------------------------------------
 #[test]
 fn closing_ack_of_fin_transitions_to_time_wait() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (server_iss, fin_seq) = setup_fin_wait1(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (server_iss, fin_seq) =
+        setup_fin_wait1(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Remote sends FIN without ACKing ours → Closing.
     let fin = build_tcp_frame(
@@ -2496,6 +2741,7 @@ fn closing_ack_of_fin_transitions_to_time_wait() {
     handler.process_ipv4(
         Frame::new(20, leak(fin), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2520,6 +2766,7 @@ fn closing_ack_of_fin_transitions_to_time_wait() {
     handler.process_ipv4(
         Frame::new(21, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2527,8 +2774,9 @@ fn closing_ack_of_fin_transitions_to_time_wait() {
     );
 
     assert_eq!(handler.first_connection().state, TcpState::TimeWait);
-    assert!(handler.first_connection().time_wait_deadline.is_some());
-    assert!(handler.first_connection().retransmit_deadline.is_none());
+    let key = handler.first_connection_key();
+    assert!(handler.timer_handles[key].is_armed(TcpTimerKind::TimeWait));
+    assert!(!handler.timer_handles[key].is_armed(TcpTimerKind::Retransmit));
     assert_eq!(
         handler.first_connection().snd_una,
         fin_seq.wrapping_add(1),
@@ -2541,11 +2789,13 @@ fn closing_ack_of_fin_transitions_to_time_wait() {
 // ---------------------------------------------------------------------------
 #[test]
 fn fin_wait2_data_and_fin_transitions_to_time_wait() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (_server_iss, fin_seq) = setup_fin_wait2(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (_server_iss, fin_seq) =
+        setup_fin_wait2(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let rcv_nxt_before = handler.first_connection().rcv_nxt;
 
@@ -2566,6 +2816,7 @@ fn fin_wait2_data_and_fin_transitions_to_time_wait() {
     handler.process_ipv4(
         Frame::new(20, leak(data_fin), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2579,7 +2830,8 @@ fn fin_wait2_data_and_fin_transitions_to_time_wait() {
         rcv_nxt_before.wrapping_add(9 + 1),
         "rcv_nxt should advance by data + FIN"
     );
-    assert!(handler.first_connection().time_wait_deadline.is_some());
+    let key = handler.first_connection_key();
+    assert!(handler.timer_handles[key].is_armed(TcpTimerKind::TimeWait));
     assert!(tx.num_frames() >= 1, "ACK expected for data+FIN");
 }
 
@@ -2588,16 +2840,25 @@ fn fin_wait2_data_and_fin_transitions_to_time_wait() {
 // ---------------------------------------------------------------------------
 #[test]
 fn last_ack_partial_ack_does_not_remove_connection() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let _server_iss = setup_close_wait(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss = setup_close_wait(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Close → LastAck.
     handler.first_connection_mut().pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
     assert_eq!(handler.first_connection().state, TcpState::LastAck);
     let fin_seq = handler.first_connection().fin_seq.unwrap();
@@ -2618,6 +2879,7 @@ fn last_ack_partial_ack_does_not_remove_connection() {
     handler.process_ipv4(
         Frame::new(20, leak(ack), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2634,11 +2896,13 @@ fn last_ack_partial_ack_does_not_remove_connection() {
 // ---------------------------------------------------------------------------
 #[test]
 fn closing_partial_ack_stays_in_closing() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let (mut free, mut rx, mut tx) = alloc_buffers();
 
-    let (server_iss, fin_seq) = setup_fin_wait1(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let (server_iss, fin_seq) =
+        setup_fin_wait1(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Remote sends FIN without ACKing ours → Closing.
     let fin = build_tcp_frame(
@@ -2656,6 +2920,7 @@ fn closing_partial_ack_stays_in_closing() {
     handler.process_ipv4(
         Frame::new(20, leak(fin), len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -2680,6 +2945,7 @@ fn closing_partial_ack_stays_in_closing() {
     handler.process_ipv4(
         Frame::new(21, leak(partial_ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,

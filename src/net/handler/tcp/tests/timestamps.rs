@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn paws_rejects_old_timestamp() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(16);
@@ -30,6 +31,7 @@ fn paws_rejects_old_timestamp() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -52,6 +54,7 @@ fn paws_rejects_old_timestamp() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -84,6 +87,7 @@ fn paws_rejects_old_timestamp() {
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -104,6 +108,7 @@ fn paws_rejects_old_timestamp() {
 
 #[test]
 fn paws_drops_rst_with_old_timestamp() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(16);
@@ -132,6 +137,7 @@ fn paws_drops_rst_with_old_timestamp() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -154,6 +160,7 @@ fn paws_drops_rst_with_old_timestamp() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -186,6 +193,7 @@ fn paws_drops_rst_with_old_timestamp() {
     handler.process_ipv4(
         Frame::new(2, leak(rst_data), rst_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -203,6 +211,7 @@ fn paws_drops_rst_with_old_timestamp() {
 
 #[test]
 fn paws_accepts_stale_ts_recent() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(16);
@@ -231,6 +240,7 @@ fn paws_accepts_stale_ts_recent() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -253,6 +263,7 @@ fn paws_accepts_stale_ts_recent() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -293,6 +304,7 @@ fn paws_accepts_stale_ts_recent() {
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
         now,
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,

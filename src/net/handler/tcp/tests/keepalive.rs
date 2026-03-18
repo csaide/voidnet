@@ -1,3 +1,4 @@
+use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
 use super::*;
 
 #[test]
@@ -7,6 +8,7 @@ fn keep_alive_activity_resets_probe_timer() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -29,6 +31,7 @@ fn keep_alive_activity_resets_probe_timer() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -50,6 +53,7 @@ fn keep_alive_activity_resets_probe_timer() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -82,6 +86,7 @@ fn keep_alive_activity_resets_probe_timer() {
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -107,6 +112,7 @@ fn keep_alive_probe_sent_after_idle_timeout() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -129,6 +135,7 @@ fn keep_alive_probe_sent_after_idle_timeout() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -150,6 +157,7 @@ fn keep_alive_probe_sent_after_idle_timeout() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -172,7 +180,16 @@ fn keep_alive_probe_sent_after_idle_timeout() {
     std::thread::sleep(std::time::Duration::from_millis(150));
     let now = coarsetime::Instant::now();
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(
         handler.first_connection().keep_alive_probes_sent,
@@ -192,6 +209,7 @@ fn keep_alive_no_probe_when_disabled() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -214,6 +232,7 @@ fn keep_alive_no_probe_when_disabled() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -235,6 +254,7 @@ fn keep_alive_no_probe_when_disabled() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -250,7 +270,16 @@ fn keep_alive_no_probe_when_disabled() {
     std::thread::sleep(std::time::Duration::from_millis(150));
     let now = coarsetime::Instant::now();
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(
         handler.first_connection().keep_alive_probes_sent,
@@ -267,6 +296,7 @@ fn keep_alive_connection_aborted_after_max_probes() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -289,6 +319,7 @@ fn keep_alive_connection_aborted_after_max_probes() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -310,6 +341,7 @@ fn keep_alive_connection_aborted_after_max_probes() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -336,7 +368,16 @@ fn keep_alive_connection_aborted_after_max_probes() {
     std::thread::sleep(std::time::Duration::from_millis(150));
     let now = coarsetime::Instant::now();
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Connection should be removed.
     assert!(
@@ -360,6 +401,7 @@ fn linger_zero_sends_rst_on_poll_send() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -382,6 +424,7 @@ fn linger_zero_sends_rst_on_poll_send() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -403,6 +446,7 @@ fn linger_zero_sends_rst_on_poll_send() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -418,20 +462,29 @@ fn linger_zero_sends_rst_on_poll_send() {
     // Clear tx from handshake.
     while tx.pop().is_some() {}
 
-    // Call initiate_close — should set pending_fin and linger_deadline to Instant::recent().
-    handler.initiate_close(handler.first_connection_key());
+    // Call initiate_close — should set pending_fin and arm linger timer.
+    let key = handler.first_connection_key();
+    handler.initiate_close(key, &mut wheel);
     assert!(
         handler.first_connection().pending_fin,
         "pending_fin should be set"
     );
     assert!(
-        handler.first_connection().linger_deadline.is_some(),
-        "linger_deadline should be set"
+        handler.timer_handles[key].is_armed(TcpTimerKind::Linger),
+        "linger timer should be armed"
     );
 
     // Call poll_send — linger deadline is already expired, should send RST.
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Connection should be removed.
     assert!(
@@ -458,6 +511,7 @@ fn linger_timeout_sets_deadline() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -480,6 +534,7 @@ fn linger_timeout_sets_deadline() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -501,6 +556,7 @@ fn linger_timeout_sets_deadline() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -516,19 +572,28 @@ fn linger_timeout_sets_deadline() {
     while tx.pop().is_some() {}
 
     // Call initiate_close.
-    handler.initiate_close(handler.first_connection_key());
+    let key = handler.first_connection_key();
+    handler.initiate_close(key, &mut wheel);
     assert!(
         handler.first_connection().pending_fin,
         "pending_fin should be set"
     );
     assert!(
-        handler.first_connection().linger_deadline.is_some(),
-        "linger_deadline should be set"
+        handler.timer_handles[key].is_armed(TcpTimerKind::Linger),
+        "linger timer should be armed"
     );
 
     // Call poll_send immediately — deadline is 5s in the future, should NOT abort.
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Connection should still exist.
     assert!(
@@ -544,6 +609,7 @@ fn linger_none_normal_close() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -566,6 +632,7 @@ fn linger_none_normal_close() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -587,6 +654,7 @@ fn linger_none_normal_close() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -600,16 +668,17 @@ fn linger_none_normal_close() {
         "linger should be None by default"
     );
     // Call initiate_close.
-    handler.initiate_close(handler.first_connection_key());
+    let key = handler.first_connection_key();
+    handler.initiate_close(key, &mut wheel);
 
-    // Verify pending_fin is true and linger_deadline is None.
+    // Verify pending_fin is true and linger timer is NOT armed (no linger set).
     assert!(
         handler.first_connection().pending_fin,
         "pending_fin should be set"
     );
     assert!(
-        handler.first_connection().linger_deadline.is_none(),
-        "linger_deadline should be None for default close"
+        !handler.timer_handles[key].is_armed(TcpTimerKind::Linger),
+        "linger timer should not be armed for default close"
     );
 }
 
@@ -620,6 +689,7 @@ fn keep_alive_probe_and_recovery() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -642,6 +712,7 @@ fn keep_alive_probe_and_recovery() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -663,6 +734,7 @@ fn keep_alive_probe_and_recovery() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -679,7 +751,12 @@ fn keep_alive_probe_and_recovery() {
         tcb.keep_alive_interval_ms = 50;
         tcb.keep_alive_count = 3;
         tcb.ack_pending = false;
-        tcb.delayed_ack_deadline = None;
+    }
+    // Clear delayed ACK timer if armed.
+    let key = handler.first_connection_key();
+    if let Some(h) = handler.timer_handles[key].get(TcpTimerKind::DelayedAck) {
+        wheel.cancel(h);
+        handler.timer_handles[key].clear(TcpTimerKind::DelayedAck);
     }
 
     // Wait past the idle threshold.
@@ -688,7 +765,16 @@ fn keep_alive_probe_and_recovery() {
     let now = coarsetime::Instant::now();
 
     let tx_before = tx.num_frames();
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Verify probe was sent.
     assert!(
@@ -726,6 +812,7 @@ fn keep_alive_probe_and_recovery() {
     handler.process_ipv4(
         Frame::new(10, leak(ack_frame), ack_frame_len, false),
         recv_now,
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -753,6 +840,7 @@ fn keep_alive_exhaustion_removes_connection() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -775,6 +863,7 @@ fn keep_alive_exhaustion_removes_connection() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -796,6 +885,7 @@ fn keep_alive_exhaustion_removes_connection() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -815,14 +905,30 @@ fn keep_alive_exhaustion_removes_connection() {
         tcb.keep_alive_idle_ms = 50;
         tcb.keep_alive_interval_ms = 50;
         tcb.ack_pending = false;
-        tcb.delayed_ack_deadline = None;
+    }
+    // Clear delayed ACK timer if armed.
+    {
+        let key = handler.first_connection_key();
+        if let Some(h) = handler.timer_handles[key].get(TcpTimerKind::DelayedAck) {
+            wheel.cancel(h);
+            handler.timer_handles[key].clear(TcpTimerKind::DelayedAck);
+        }
     }
 
     // Wait past the idle threshold and send first probe.
     std::thread::sleep(std::time::Duration::from_millis(100));
     coarsetime::Instant::update();
     let now1 = coarsetime::Instant::now();
-    handler.poll_timers(now1, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now1,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // First probe should have been sent.
     assert_eq!(
@@ -840,7 +946,16 @@ fn keep_alive_exhaustion_removes_connection() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     coarsetime::Instant::update();
     let now2 = coarsetime::Instant::now();
-    handler.poll_timers(now2, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now2,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Connection should be removed.
     assert!(
@@ -864,6 +979,7 @@ fn linger_zero_immediate_rst() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -886,6 +1002,7 @@ fn linger_zero_immediate_rst() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -907,6 +1024,7 @@ fn linger_zero_immediate_rst() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -927,19 +1045,28 @@ fn linger_zero_immediate_rst() {
     let conn_id = handler.first_connection().id;
 
     // Initiate close — linger(0) sets immediate deadline.
-    handler.initiate_close(handler.first_connection_key());
+    let key = handler.first_connection_key();
+    handler.initiate_close(key, &mut wheel);
     assert!(
         handler.first_connection().pending_fin,
         "pending_fin should be set"
     );
     assert!(
-        handler.first_connection().linger_deadline.is_some(),
-        "linger_deadline should be set for linger(0)"
+        handler.timer_handles[key].is_armed(TcpTimerKind::Linger),
+        "linger timer should be armed for linger(0)"
     );
 
     // Call poll_send — linger deadline is already expired, should send RST.
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Connection should be removed.
     assert!(

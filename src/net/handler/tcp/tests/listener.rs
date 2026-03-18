@@ -69,6 +69,7 @@ fn unlisten_nonexistent_is_noop() {
 
 #[test]
 fn unlisten_cleans_up_syn_received_connections() {
+    let mut wheel = new_wheel();
     use crate::net::wire::tcp::flags;
     use crate::xdp::frame::{BasicFrameBuffer, Frame};
 
@@ -99,6 +100,7 @@ fn unlisten_cleans_up_syn_received_connections() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -118,6 +120,7 @@ fn unlisten_cleans_up_syn_received_connections() {
 
 #[test]
 fn unlisten_preserves_established_connections() {
+    let mut wheel = new_wheel();
     use crate::xdp::frame::BasicFrameBuffer;
 
     let mut handler = new_handler();
@@ -130,7 +133,8 @@ fn unlisten_preserves_established_connections() {
     }
 
     // Complete a full handshake to get an ESTABLISHED connection.
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
     assert_eq!(handler.first_connection().state, TcpState::Established);
     assert_eq!(handler.connections.len(), 1);
 

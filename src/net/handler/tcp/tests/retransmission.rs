@@ -1,3 +1,4 @@
+use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
 use super::*;
 
 #[test]
@@ -7,6 +8,7 @@ fn fast_retransmit_on_three_dup_acks() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -29,6 +31,7 @@ fn fast_retransmit_on_three_dup_acks() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -50,6 +53,7 @@ fn fast_retransmit_on_three_dup_acks() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -61,7 +65,15 @@ fn fast_retransmit_on_three_dup_acks() {
     handler.first_connection_mut().send_buffer.write(b"AAAA");
     handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {} // consume sent segment
 
     let cwnd_before = handler.first_connection().cubic.cwnd;
@@ -84,6 +96,7 @@ fn fast_retransmit_on_three_dup_acks() {
         handler.process_ipv4(
             Frame::new(10 + i, leak(dup), dup_len, false),
             coarsetime::Instant::now(),
+            &mut wheel,
             &nh,
             &mut free,
             &mut rx,
@@ -113,6 +126,7 @@ fn rto_retransmit_on_timer_expiry() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -135,6 +149,7 @@ fn rto_retransmit_on_timer_expiry() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -156,6 +171,7 @@ fn rto_retransmit_on_timer_expiry() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -167,18 +183,36 @@ fn rto_retransmit_on_timer_expiry() {
     handler.first_connection_mut().send_buffer.write(b"BBBB");
     handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     let cwnd_before = handler.first_connection().cubic.cwnd;
 
-    // Simulate timer expiry by setting a deadline in the past.
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
+    // Simulate timer expiry by arming retransmit at tick 0.
+    let key = handler.first_connection_key();
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     handler.first_connection_mut().rto_backoff = 0;
 
     // poll_timers should trigger RTO retransmit.
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     assert!(tx.num_frames() >= 1, "retransmitted segment expected");
 
     let tcb = handler.first_connection();
@@ -201,6 +235,7 @@ fn rtt_estimation_updates_rto() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -223,6 +258,7 @@ fn rtt_estimation_updates_rto() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -244,6 +280,7 @@ fn rtt_estimation_updates_rto() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -258,7 +295,15 @@ fn rtt_estimation_updates_rto() {
         .write(b"test data");
     handler.first_connection_mut().snd_wnd = 65535;
     let send_time = coarsetime::Instant::now();
-    handler.poll_send(send_time, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        send_time,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     // Verify last_send_time is set.
@@ -285,6 +330,7 @@ fn rtt_estimation_updates_rto() {
     handler.process_ipv4(
         Frame::new(5, leak(ack), ack_len, false),
         recv_time,
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -313,6 +359,7 @@ fn limited_transmit_sends_on_first_dup_ack() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
@@ -334,6 +381,7 @@ fn limited_transmit_sends_on_first_dup_ack() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -355,6 +403,7 @@ fn limited_transmit_sends_on_first_dup_ack() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -373,7 +422,15 @@ fn limited_transmit_sends_on_first_dup_ack() {
 
     // Send 3 segments (fills cwnd).
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     let snd_nxt_before = handler.first_connection().snd_nxt;
@@ -395,6 +452,7 @@ fn limited_transmit_sends_on_first_dup_ack() {
     handler.process_ipv4(
         Frame::new(10, leak(dup), dup_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -404,7 +462,15 @@ fn limited_transmit_sends_on_first_dup_ack() {
     assert_eq!(handler.first_connection().recovery.dup_ack_count, 1);
 
     // poll_send should allow 1 MSS of new data (limited transmit).
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     let snd_nxt_after = handler.first_connection().snd_nxt;
     assert_eq!(
@@ -421,24 +487,34 @@ fn rto_backoff_resets_on_new_ack() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Put data in server's send buffer and transmit it.
     handler.first_connection_mut().send_buffer.write(b"CCCC");
     handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     // Artificially set rto_backoff as if an RTO had fired.
+    let key = handler.first_connection_key();
     handler.first_connection_mut().rto_backoff = 2;
-    handler.first_connection_mut().retransmit_deadline =
-        Some(coarsetime::Instant::now() + coarsetime::Duration::from_millis(10_000));
+    // Retransmit timer is already armed by poll_send; leave it armed.
 
     // Client ACKs the server's data (new ACK that advances snd_una).
     let new_ack = server_iss.wrapping_add(1).wrapping_add(4); // ISS+1 + 4 bytes
@@ -459,6 +535,7 @@ fn rto_backoff_resets_on_new_ack() {
     handler.process_ipv4(
         Frame::new(10, leak(data), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -469,7 +546,7 @@ fn rto_backoff_resets_on_new_ack() {
     assert_eq!(tcb.rto_backoff, 0, "rto_backoff should be reset on new ACK");
     // snd_una == snd_nxt (all data ACKed), so retransmit timer should be off.
     assert!(
-        tcb.retransmit_deadline.is_none(),
-        "retransmit_deadline should be None when all data is ACKed"
+        !handler.timer_handles[key].is_armed(TcpTimerKind::Retransmit),
+        "retransmit timer should be disarmed when all data is ACKed"
     );
 }

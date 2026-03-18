@@ -1,3 +1,4 @@
+use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
 use super::*;
 
 #[test]
@@ -7,6 +8,7 @@ fn unmatched_syn_generates_rst() {
     let mut free = BasicFrameBuffer::new(4);
     let mut rx = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
+    let mut wheel = new_wheel();
 
     free.push(alloc_free_frame(100));
 
@@ -27,6 +29,7 @@ fn unmatched_syn_generates_rst() {
     handler.process_ipv4(
         frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -45,6 +48,7 @@ fn rst_to_unbound_port_silently_dropped() {
     let mut free = BasicFrameBuffer::new(4);
     let mut rx = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
+    let mut wheel = new_wheel();
 
     let data = build_tcp_frame(REMOTE_IP, LOCAL_IP, 12345, 80, 1000, 0, flags::RST, 0, &[]);
     let len = data.len();
@@ -53,6 +57,7 @@ fn rst_to_unbound_port_silently_dropped() {
     handler.process_ipv4(
         frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -70,6 +75,7 @@ fn invalid_checksum_dropped() {
     let mut free = BasicFrameBuffer::new(4);
     let mut rx = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
+    let mut wheel = new_wheel();
 
     let data = build_tcp_frame(
         REMOTE_IP,
@@ -92,6 +98,7 @@ fn invalid_checksum_dropped() {
     handler.process_ipv4(
         frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -109,6 +116,7 @@ fn truncated_tcp_header_dropped() {
     let mut free = BasicFrameBuffer::new(4);
     let mut rx = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
+    let mut wheel = new_wheel();
 
     // Build a frame that's too short for a TCP header.
     let mut data = vec![0u8; ETH_HEADER_LEN + IPV4_MIN_HEADER_LEN + 10]; // only 10 bytes of TCP
@@ -133,6 +141,7 @@ fn truncated_tcp_header_dropped() {
     handler.process_ipv4(
         frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -150,6 +159,7 @@ fn frame_accounting_after_rst() {
     let mut free = BasicFrameBuffer::new(4);
     let mut rx = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
+    let mut wheel = new_wheel();
 
     free.push(alloc_free_frame(100));
 
@@ -170,6 +180,7 @@ fn frame_accounting_after_rst() {
     handler.process_ipv4(
         frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -187,11 +198,13 @@ fn rst_outside_window_is_dropped() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // rcv_nxt is 1001, window is 65535 → valid range [1001, 66536).
     // Send RST with seq far outside the window.
@@ -210,6 +223,7 @@ fn rst_outside_window_is_dropped() {
     handler.process_ipv4(
         Frame::new(50, leak(rst_data), rst_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -232,11 +246,13 @@ fn rst_in_window_but_not_exact_sends_challenge_ack() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // rcv_nxt is 1001. Send RST with seq = 1005 (in-window but not exact).
     let rst_data = build_tcp_frame(
@@ -254,6 +270,7 @@ fn rst_in_window_but_not_exact_sends_challenge_ack() {
     handler.process_ipv4(
         Frame::new(50, leak(rst_data), rst_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -282,11 +299,13 @@ fn syn_in_established_sends_challenge_ack() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Send a SYN segment to the established connection.
     let syn_data = build_tcp_frame(
@@ -304,6 +323,7 @@ fn syn_in_established_sends_challenge_ack() {
     handler.process_ipv4(
         Frame::new(50, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -339,11 +359,13 @@ fn segment_without_ack_is_dropped() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let rcv_nxt_before = handler.first_connection().rcv_nxt;
 
@@ -364,6 +386,7 @@ fn segment_without_ack_is_dropped() {
     handler.process_ipv4(
         Frame::new(50, leak(no_ack_data), no_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -392,11 +415,13 @@ fn ack_beyond_snd_nxt_sends_ack_and_drops() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let snd_una_before = handler.first_connection().snd_una;
     let snd_nxt_before = handler.first_connection().snd_nxt;
@@ -418,6 +443,7 @@ fn ack_beyond_snd_nxt_sends_ack_and_drops() {
     handler.process_ipv4(
         Frame::new(50, leak(bad_ack), bad_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -473,11 +499,13 @@ fn stale_segment_does_not_regress_window() {
     let mut free = BasicFrameBuffer::new(8);
     let mut rx = BasicFrameBuffer::new(8);
     let mut tx = BasicFrameBuffer::new(8);
+    let mut wheel = new_wheel();
     for i in 0..6 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
     while rx.pop().is_some() {}
 
     // Segment B arrives first: higher seg_seq (1002), window = 8000.
@@ -496,6 +524,7 @@ fn stale_segment_does_not_regress_window() {
     handler.process_ipv4(
         Frame::new(10, leak(seg_b), seg_b_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -532,6 +561,7 @@ fn stale_segment_does_not_regress_window() {
     handler.process_ipv4(
         Frame::new(11, leak(seg_a), seg_a_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -559,6 +589,7 @@ fn sender_sws_avoidance_holds_small_sends() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -581,6 +612,7 @@ fn sender_sws_avoidance_holds_small_sends() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -602,6 +634,7 @@ fn sender_sws_avoidance_holds_small_sends() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -623,7 +656,15 @@ fn sender_sws_avoidance_holds_small_sends() {
         .write(&[0x41u8; 100]);
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // SWS check: can_send=10, eff_snd_mss=1460, max_snd_wnd/2=32767, data_available=100.
     // 10 < 1460 (not full MSS), 10 < 32767 (not half max window), 100 > 10 (not all data fits).
@@ -636,7 +677,15 @@ fn sender_sws_avoidance_holds_small_sends() {
 
     // Now set snd_wnd to eff_snd_mss — should send.
     handler.first_connection_mut().snd_wnd = mss as u32;
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     assert_eq!(
         tx.num_frames(),
         1,
@@ -653,6 +702,7 @@ fn handshake_with_wrapping_isn() {
     let mut free = BasicFrameBuffer::new(8);
     let mut rx = BasicFrameBuffer::new(8);
     let mut tx = BasicFrameBuffer::new(8);
+    let mut wheel = new_wheel();
 
     for i in 0..4 {
         free.push(alloc_free_frame(100 + i));
@@ -679,6 +729,7 @@ fn handshake_with_wrapping_isn() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -725,6 +776,7 @@ fn handshake_with_wrapping_isn() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -753,6 +805,7 @@ fn data_transfer_across_sequence_wrap() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -784,6 +837,7 @@ fn data_transfer_across_sequence_wrap() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -809,6 +863,7 @@ fn data_transfer_across_sequence_wrap() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -837,6 +892,7 @@ fn data_transfer_across_sequence_wrap() {
     handler.process_ipv4(
         Frame::new(2, leak(data_frame), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -871,6 +927,7 @@ fn data_transfer_across_sequence_wrap() {
     handler.process_ipv4(
         Frame::new(3, leak(data_frame2), data2_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -880,6 +937,7 @@ fn data_transfer_across_sequence_wrap() {
     // poll_send flushes the pending delayed ACK.
     handler.poll_send(
         coarsetime::Instant::now(),
+        &mut wheel,
         nh.local_mac(),
         &nh,
         &mut free,
@@ -917,12 +975,14 @@ fn remove_connection_sends_rst_with_correct_seq() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // snd_nxt after handshake = server_iss + 1 (SYN consumed one sequence number).
     let expected_seq = server_iss.wrapping_add(1);
@@ -977,11 +1037,13 @@ fn rst_exact_match_resets_connection() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // rcv_nxt is 1001. Send RST with seq = 1001 (exact match).
     let rst_data = build_tcp_frame(
@@ -999,6 +1061,7 @@ fn rst_exact_match_resets_connection() {
     handler.process_ipv4(
         Frame::new(50, leak(rst_data), rst_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1020,11 +1083,13 @@ fn duplicate_data_sends_ack() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Send data to advance rcv_nxt.
     let payload = b"hello";
@@ -1044,6 +1109,7 @@ fn duplicate_data_sends_ack() {
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1069,6 +1135,7 @@ fn duplicate_data_sends_ack() {
     handler.process_ipv4(
         Frame::new(3, leak(dup_data), dup_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1095,11 +1162,13 @@ fn out_of_window_non_rst_sends_ack() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Send a data segment with seq far outside the window (not RST).
     let oow_data = build_tcp_frame_with_payload(
@@ -1118,6 +1187,7 @@ fn out_of_window_non_rst_sends_ack() {
     handler.process_ipv4(
         Frame::new(50, leak(oow_data), oow_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1140,11 +1210,13 @@ fn recovery_exit_on_full_ack() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let tcb = handler.first_connection_mut();
     tcb.eff_snd_mss = 100;
@@ -1180,6 +1252,7 @@ fn recovery_exit_on_full_ack() {
     handler.process_ipv4(
         Frame::new(20, leak(full_ack), full_ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1200,19 +1273,24 @@ fn persist_timer_cleared_on_new_ack_with_window() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Set up: send some data so snd_nxt > snd_una, then arm persist timer.
+    let key = handler.first_connection_key();
     let tcb = handler.first_connection_mut();
     tcb.send_buffer.write(&[0u8; 100]);
     tcb.snd_nxt = tcb.snd_una.wrapping_add(100);
-    tcb.persist_deadline = Some(coarsetime::Instant::now());
     tcb.persist_backoff = 3;
     let snd_una = tcb.snd_una;
+    // Arm persist timer.
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Persist), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Persist, handle);
 
     // Send a new ACK that advances snd_una, with a non-zero window.
     let new_ack = snd_una.wrapping_add(50);
@@ -1231,6 +1309,7 @@ fn persist_timer_cleared_on_new_ack_with_window() {
     handler.process_ipv4(
         Frame::new(5, leak(ack_frame), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1240,7 +1319,7 @@ fn persist_timer_cleared_on_new_ack_with_window() {
     let tcb = handler.first_connection();
     assert_eq!(tcb.snd_una, new_ack, "snd_una should advance");
     assert!(
-        tcb.persist_deadline.is_none(),
+        !handler.timer_handles[key].is_armed(TcpTimerKind::Persist),
         "persist timer should be cleared when window reopens on new ACK"
     );
     assert_eq!(tcb.persist_backoff, 0, "persist backoff should be reset");
@@ -1253,11 +1332,13 @@ fn rtt_update_with_existing_srtt_slow_path() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Set up: some data in flight, with an existing SRTT.
     let tcb = handler.first_connection_mut();
@@ -1285,6 +1366,7 @@ fn rtt_update_with_existing_srtt_slow_path() {
     handler.process_ipv4(
         Frame::new(5, leak(ack_frame), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1308,6 +1390,7 @@ fn sender_sws_allows_send_when_all_data_fits() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -1330,6 +1413,7 @@ fn sender_sws_allows_send_when_all_data_fits() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1351,6 +1435,7 @@ fn sender_sws_allows_send_when_all_data_fits() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -1366,7 +1451,15 @@ fn sender_sws_allows_send_when_all_data_fits() {
     handler.first_connection_mut().send_buffer.write(b"abc");
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // SWS: can_send=5, data_available=3, 3 <= 5 → all data fits → sws_ok = true.
     assert_eq!(

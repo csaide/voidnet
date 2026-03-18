@@ -4,6 +4,7 @@ use coarsetime::Instant;
 
 use crate::net::handler::udp::BindError;
 use crate::net::socket::LocalQueue;
+use crate::net::timer_wheel::TimerWheel;
 use crate::net::wire::ethernet::MacAddress;
 use crate::net::wire::ip::IpAddress;
 use crate::xdp::frame::FrameBuffer;
@@ -20,6 +21,7 @@ use super::tcb::{
     ConnectionId, DEFAULT_DELAYED_ACK_MS, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE,
     Tcb, TcpConfig, TcpEvent,
 };
+use super::timer_kinds::TcpTimerKind;
 
 impl TcpHandler {
     // --- Active open ---
@@ -34,6 +36,7 @@ impl TcpHandler {
         src_mac: MacAddress,
         dst_mac: MacAddress,
         now: Instant,
+        wheel: &mut TimerWheel,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) -> Result<(usize, LocalQueue<TcpEvent>), BindError> {
@@ -45,6 +48,7 @@ impl TcpHandler {
             src_mac,
             dst_mac,
             now,
+            wheel,
             TcpConfig::default(),
             free_frames,
             tx_return,
@@ -61,6 +65,7 @@ impl TcpHandler {
         src_mac: MacAddress,
         dst_mac: MacAddress,
         now: Instant,
+        wheel: &mut TimerWheel,
         config: TcpConfig,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
@@ -99,7 +104,6 @@ impl TcpHandler {
             snd_wscale: 0,
             rcv_wscale: DEFAULT_RCV_WSCALE,
             wscale_enabled: false,
-            retransmit_deadline: Some(now + coarsetime::Duration::from_millis(INITIAL_RTO_MS)),
             rto_backoff: 0,
             event_queue: event_queue.clone(),
             send_buffer: RingBuffer::new(config.send_buffer_size),
@@ -115,10 +119,8 @@ impl TcpHandler {
             last_send_time: None,
             pending_fin: false,
             fin_seq: None,
-            time_wait_deadline: None,
             time_wait_duration: config.time_wait_duration_ms,
             ack_pending: false,
-            delayed_ack_deadline: None,
             ack_delay_count: 0,
             delayed_ack_ms: DEFAULT_DELAYED_ACK_MS,
             nagle_enabled: !config.tcp_no_delay,
@@ -129,7 +131,6 @@ impl TcpHandler {
             last_activity: now,
             keep_alive_probes_sent: 0,
             linger: config.linger,
-            linger_deadline: None,
             ts_enabled: config.timestamps,
             ts_recent: 0,
             ts_recent_age: now,
@@ -139,7 +140,6 @@ impl TcpHandler {
             ecn_enabled: config.ecn,
             ecn_ce_received: false,
             ecn_cwr_sent: false,
-            persist_deadline: None,
             persist_backoff: 0,
             max_snd_wnd: 0,
             last_advertised_right_edge: 0,
@@ -171,13 +171,22 @@ impl TcpHandler {
         );
 
         let key = self.insert_connection(tcb);
+
+        // Arm retransmit timer for the SYN.
+        self.timer_handles[key].arm(
+            TcpTimerKind::Retransmit,
+            key,
+            now + coarsetime::Duration::from_millis(INITIAL_RTO_MS),
+            wheel,
+        );
+
         // New connection has a retransmit timer — mark for send tracking.
         self.send_tracker.mark(SendReady(key));
         Ok((key, event_queue))
     }
 
     /// Initiate a graceful close for a connection.
-    pub fn initiate_close(&mut self, key: usize) {
+    pub fn initiate_close(&mut self, key: usize, now: coarsetime::Instant, wheel: &mut TimerWheel) {
         if let Some(tcb) = self.connections.get_mut(key) {
             if tcb.pending_fin
                 || (tcb.state != TcpState::Established && tcb.state != TcpState::CloseWait)
@@ -189,13 +198,17 @@ impl TcpHandler {
             self.send_tracker.mark(SendReady(key));
             match tcb.linger {
                 Some(0) => {
-                    // Linger(0): set deadline to now — poll_send will send RST immediately.
-                    tcb.linger_deadline = Some(Instant::recent());
+                    // Linger(0): set deadline to now — fire_linger will send RST immediately.
+                    self.timer_handles[key].arm(TcpTimerKind::Linger, key, now, wheel);
                 }
                 Some(ms) => {
                     // Linger(timeout): graceful close with deadline.
-                    tcb.linger_deadline =
-                        Some(Instant::now() + coarsetime::Duration::from_millis(ms));
+                    self.timer_handles[key].arm(
+                        TcpTimerKind::Linger,
+                        key,
+                        now + coarsetime::Duration::from_millis(ms),
+                        wheel,
+                    );
                 }
                 None => {
                     // Default: graceful close, no deadline.

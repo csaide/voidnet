@@ -4,6 +4,7 @@ use crate::{
     net::{
         NeighborHandler, PmtuCache,
         checksum::verify_ipv4_checksum,
+        timer_wheel::TimerWheel,
         wire::{
             ethernet::EthernetFrame,
             icmpv4::Icmpv4Codes,
@@ -50,6 +51,7 @@ impl Ipv4Handler {
         neighbor_handler: &NeighborHandler,
         pmtu: &mut PmtuCache,
         now: Instant,
+        wheel: &mut TimerWheel,
         free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
@@ -109,6 +111,7 @@ impl Ipv4Handler {
                 tcp_handler.process_ipv4(
                     frame,
                     now,
+                    wheel,
                     neighbor_handler,
                     free_frames,
                     rx_return,
@@ -271,6 +274,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
 
         let frame = Frame::new(0, &mut data, 30, false);
 
@@ -281,6 +285,7 @@ mod tests {
             &nh,
             &mut PmtuCache::new(),
             Instant::now(),
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -303,6 +308,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -314,6 +320,7 @@ mod tests {
             &nh,
             &mut PmtuCache::new(),
             Instant::now(),
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -333,6 +340,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -344,6 +352,7 @@ mod tests {
             &nh,
             &mut PmtuCache::new(),
             Instant::now(),
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -363,6 +372,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -374,6 +384,7 @@ mod tests {
             &nh,
             &mut PmtuCache::new(),
             Instant::now(),
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -401,6 +412,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -412,6 +424,7 @@ mod tests {
             &nh,
             &mut PmtuCache::new(),
             Instant::now(),
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -431,6 +444,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -442,6 +456,7 @@ mod tests {
             &nh,
             &mut PmtuCache::new(),
             Instant::now(),
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -486,6 +501,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
 
         let frame = Frame::new(0, &mut data, frame_len, false);
         handler.handle(
@@ -495,6 +511,7 @@ mod tests {
             &nh,
             &mut PmtuCache::new(),
             Instant::now(),
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -515,6 +532,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -526,6 +544,7 @@ mod tests {
             &nh,
             &mut PmtuCache::new(),
             Instant::now(),
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -547,6 +566,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
 
         let frame = Frame::new(0, &mut data, raw.len(), false);
 
@@ -557,6 +577,7 @@ mod tests {
             &nh,
             &mut PmtuCache::new(),
             Instant::now(),
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,

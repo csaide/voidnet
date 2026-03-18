@@ -70,6 +70,43 @@ impl TcpTimerHandles {
     pub fn is_armed(&self, kind: TcpTimerKind) -> bool {
         self.handles[kind as usize].is_some()
     }
+
+    /// Cancel the timer for `kind` on `wheel` (if armed), then arm a new one
+    /// at `deadline_ms` with the given `key`. Stores the new handle.
+    pub fn arm(
+        &mut self,
+        kind: TcpTimerKind,
+        key: usize,
+        deadline: coarsetime::Instant,
+        wheel: &mut crate::net::timer_wheel::TimerWheel,
+    ) {
+        if let Some(old) = self.get(kind) {
+            wheel.cancel(old);
+        }
+        let handle = wheel.arm(tcp_timer_id(key, kind), deadline);
+        self.set(kind, handle);
+    }
+
+    /// Cancel the timer for `kind` on `wheel` (if armed), then clear the handle.
+    pub fn cancel_timer(
+        &mut self,
+        kind: TcpTimerKind,
+        wheel: &mut crate::net::timer_wheel::TimerWheel,
+    ) {
+        if let Some(old) = self.get(kind) {
+            wheel.cancel(old);
+            self.clear(kind);
+        }
+    }
+
+    /// Cancel all armed timers on `wheel` and clear all handles.
+    pub fn cancel_all(&mut self, wheel: &mut crate::net::timer_wheel::TimerWheel) {
+        for slot in self.handles.iter_mut() {
+            if let Some(h) = slot.take() {
+                wheel.cancel(h);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

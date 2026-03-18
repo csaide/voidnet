@@ -1,7 +1,9 @@
+use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
 use super::*;
 
 #[test]
 fn cubic_slow_start_on_new_ack() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -28,6 +30,7 @@ fn cubic_slow_start_on_new_ack() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -49,6 +52,7 @@ fn cubic_slow_start_on_new_ack() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -66,7 +70,15 @@ fn cubic_slow_start_on_new_ack() {
         .write(&[0xAA; 1460]);
     handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     // ACK the data.
@@ -86,6 +98,7 @@ fn cubic_slow_start_on_new_ack() {
     handler.process_ipv4(
         Frame::new(2, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -103,6 +116,7 @@ fn cubic_slow_start_on_new_ack() {
 
 #[test]
 fn frto_restores_cwnd_on_spurious_rto() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(64);
@@ -129,6 +143,7 @@ fn frto_restores_cwnd_on_spurious_rto() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -150,6 +165,7 @@ fn frto_restores_cwnd_on_spurious_rto() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -165,16 +181,43 @@ fn frto_restores_cwnd_on_spurious_rto() {
         .write(&vec![0xAA; mss * 2]);
     handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     let cwnd_before_rto = handler.first_connection().cubic.cwnd;
 
-    // Trigger RTO by setting deadline in the past.
-    handler.first_connection_mut().retransmit_deadline = Some(now);
+    // Trigger RTO by arming retransmit at tick 0.
+    let key = handler.first_connection_key();
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     let rto_time = now + coarsetime::Duration::from_millis(1100);
-    handler.poll_timers(rto_time, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        rto_time,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     // F-RTO should be active.
@@ -206,6 +249,7 @@ fn frto_restores_cwnd_on_spurious_rto() {
     handler.process_ipv4(
         Frame::new(10, leak(ack1), ack1_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -235,6 +279,7 @@ fn frto_restores_cwnd_on_spurious_rto() {
     handler.process_ipv4(
         Frame::new(11, leak(ack2), ack2_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,

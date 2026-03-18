@@ -31,6 +31,8 @@ pub struct TcpListener {
     local_port: u16,
     accept_queue: LocalQueue<usize>,
     handler: Rc<UnsafeCell<TcpHandler>>,
+    wheel: Rc<UnsafeCell<crate::net::timer_wheel::TimerWheel>>,
+    base_instant: coarsetime::Instant,
 }
 
 impl TcpListener {
@@ -55,6 +57,8 @@ impl TcpListener {
                 local_port: port,
                 accept_queue,
                 handler: ctx.tcp_handler.clone(),
+                wheel: ctx.wheel.clone(),
+                base_instant: ctx.base_instant,
             })
         })
     }
@@ -75,6 +79,8 @@ impl TcpListener {
                 local_port: port,
                 accept_queue,
                 handler: ctx.tcp_handler.clone(),
+                wheel: ctx.wheel.clone(),
+                base_instant: ctx.base_instant,
             })
         })
     }
@@ -85,6 +91,8 @@ impl TcpListener {
         Accept {
             accept_queue: &self.accept_queue,
             handler: &self.handler,
+            wheel: &self.wheel,
+            base_instant: self.base_instant,
         }
     }
 
@@ -117,6 +125,8 @@ impl Drop for TcpListener {
 pub struct Accept<'listener> {
     accept_queue: &'listener LocalQueue<usize>,
     handler: &'listener Rc<UnsafeCell<TcpHandler>>,
+    wheel: &'listener Rc<UnsafeCell<crate::net::timer_wheel::TimerWheel>>,
+    base_instant: coarsetime::Instant,
 }
 
 impl<'listener> Future for Accept<'listener> {
@@ -137,6 +147,8 @@ impl<'listener> Future for Accept<'listener> {
                         conn_id,
                         event_queue,
                         this.handler.clone(),
+                        this.wheel.clone(),
+                        this.base_instant,
                     ))
                 } else {
                     // Connection was removed (e.g. by RST) before we accepted it.
@@ -163,6 +175,8 @@ pub struct TcpStream {
     #[allow(dead_code)] // used in future data transfer phases
     event_queue: LocalQueue<TcpEvent>,
     handler: Rc<UnsafeCell<TcpHandler>>,
+    wheel: Rc<UnsafeCell<crate::net::timer_wheel::TimerWheel>>,
+    base_instant: coarsetime::Instant,
     closed: bool,
     write_closed: bool,
 }
@@ -182,6 +196,7 @@ impl TcpStream {
     ) -> Result<Connect, TcpError> {
         with_runtime_context(|ctx| {
             let handler = unsafe { &mut *ctx.tcp_handler.get() };
+            let wheel = unsafe { &mut *ctx.wheel.get() };
             let neighbor_handler = &*ctx.neighbor_handler;
             let now = Instant::now();
 
@@ -203,6 +218,7 @@ impl TcpStream {
                     src_mac,
                     dst_mac,
                     now,
+                    wheel,
                     &mut free_frames,
                     &mut tx_return,
                 )
@@ -220,6 +236,8 @@ impl TcpStream {
                 conn_id,
                 event_queue,
                 handler: ctx.tcp_handler.clone(),
+                wheel: ctx.wheel.clone(),
+                base_instant: ctx.base_instant,
             })
         })
     }
@@ -239,6 +257,7 @@ impl TcpStream {
     ) -> Result<Connect, TcpError> {
         with_runtime_context(|ctx| {
             let handler = unsafe { &mut *ctx.tcp_handler.get() };
+            let wheel = unsafe { &mut *ctx.wheel.get() };
             let neighbor_handler = &*ctx.neighbor_handler;
             let now = Instant::now();
 
@@ -260,6 +279,7 @@ impl TcpStream {
                     src_mac,
                     dst_mac,
                     now,
+                    wheel,
                     config,
                     &mut free_frames,
                     &mut tx_return,
@@ -278,6 +298,8 @@ impl TcpStream {
                 conn_id,
                 event_queue,
                 handler: ctx.tcp_handler.clone(),
+                wheel: ctx.wheel.clone(),
+                base_instant: ctx.base_instant,
             })
         })
     }
@@ -288,12 +310,16 @@ impl TcpStream {
         conn_id: ConnectionId,
         event_queue: LocalQueue<TcpEvent>,
         handler: Rc<UnsafeCell<TcpHandler>>,
+        wheel: Rc<UnsafeCell<crate::net::timer_wheel::TimerWheel>>,
+        base_instant: coarsetime::Instant,
     ) -> Self {
         Self {
             conn_key,
             conn_id,
             event_queue,
             handler,
+            wheel,
+            base_instant,
             closed: false,
             write_closed: false,
         }
@@ -305,12 +331,16 @@ impl TcpStream {
         conn_id: ConnectionId,
         event_queue: LocalQueue<TcpEvent>,
         handler: Rc<UnsafeCell<TcpHandler>>,
+        wheel: Rc<UnsafeCell<crate::net::timer_wheel::TimerWheel>>,
+        base_instant: coarsetime::Instant,
     ) -> Self {
         Self {
             conn_key,
             conn_id,
             event_queue,
             handler,
+            wheel,
+            base_instant,
             closed: false,
             write_closed: false,
         }
@@ -387,7 +417,9 @@ impl TcpStream {
         }
         self.closed = true;
         let handler = unsafe { &mut *self.handler.get() };
-        handler.initiate_close(self.conn_key);
+        let wheel = unsafe { &mut *self.wheel.get() };
+        let now = Instant::now();
+        handler.initiate_close(self.conn_key, now, wheel);
     }
 
     /// Shut down the write side of this connection (half-close).
@@ -400,7 +432,9 @@ impl TcpStream {
         }
         self.write_closed = true;
         let handler = unsafe { &mut *self.handler.get() };
-        handler.initiate_close(self.conn_key);
+        let wheel = unsafe { &mut *self.wheel.get() };
+        let now = Instant::now();
+        handler.initiate_close(self.conn_key, now, wheel);
     }
 
     /// Enable or disable the Nagle algorithm (TCP_NODELAY).
@@ -474,6 +508,8 @@ pub struct Connect {
     conn_id: ConnectionId,
     event_queue: LocalQueue<TcpEvent>,
     handler: Rc<UnsafeCell<TcpHandler>>,
+    wheel: Rc<UnsafeCell<crate::net::timer_wheel::TimerWheel>>,
+    base_instant: coarsetime::Instant,
 }
 
 impl Future for Connect {
@@ -487,6 +523,8 @@ impl Future for Connect {
                 conn_id: this.conn_id,
                 event_queue: this.event_queue.clone(),
                 handler: this.handler.clone(),
+                wheel: this.wheel.clone(),
+                base_instant: this.base_instant,
                 closed: false,
                 write_closed: false,
             })),
@@ -689,7 +727,6 @@ mod tests {
             snd_wscale: 0,
             rcv_wscale: 0,
             wscale_enabled: false,
-            retransmit_deadline: None,
             rto_backoff: 0,
             event_queue: event_queue.clone(),
             send_buffer: RingBuffer::new(1024),
@@ -705,10 +742,8 @@ mod tests {
             last_send_time: None,
             pending_fin: false,
             fin_seq: None,
-            time_wait_deadline: None,
             time_wait_duration: 60_000,
             ack_pending: false,
-            delayed_ack_deadline: None,
             ack_delay_count: 0,
             delayed_ack_ms: DEFAULT_DELAYED_ACK_MS,
             nagle_enabled: true,
@@ -719,7 +754,6 @@ mod tests {
             last_activity: Instant::now(),
             keep_alive_probes_sent: 0,
             linger: None,
-            linger_deadline: None,
             ts_enabled: false,
             ts_recent: 0,
             ts_recent_age: Instant::now(),
@@ -729,7 +763,6 @@ mod tests {
             ecn_enabled: false,
             ecn_ce_received: false,
             ecn_cwr_sent: false,
-            persist_deadline: None,
             persist_backoff: 0,
             max_snd_wnd: 0,
             last_advertised_right_edge: 0,
@@ -739,7 +772,15 @@ mod tests {
         let key = handler.insert_connection(tcb);
         let handler_rc = Rc::new(UnsafeCell::new(handler));
 
-        TcpStream::from_accepted_for_test(key, conn_id, event_queue, handler_rc)
+        let wheel_rc = Rc::new(UnsafeCell::new(crate::net::timer_wheel::TimerWheel::new(0)));
+        TcpStream::from_accepted_for_test(
+            key,
+            conn_id,
+            event_queue,
+            handler_rc,
+            wheel_rc,
+            Instant::now(),
+        )
     }
 
     #[test]

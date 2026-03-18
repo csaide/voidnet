@@ -107,6 +107,7 @@ fn build_ipv6_tcp_frame(
 /// Frame too short to contain a TCP header should be returned to rx_return.
 #[test]
 fn frame_too_short_for_tcp_header_returned_to_rx() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(4);
@@ -122,7 +123,15 @@ fn frame_too_short_for_tcp_header_returned_to_rx() {
     let len = data.len();
     let frame = Frame::new(100, data, len, false);
 
-    handler.process_ipv4(frame, Instant::now(), &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(
+        frame,
+        Instant::now(),
+        &mut wheel,
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Frame should be returned to rx_return (free pool), not consumed.
     assert!(
@@ -138,6 +147,7 @@ fn frame_too_short_for_tcp_header_returned_to_rx() {
 /// Data offset < 5 (invalid) should cause the frame to be returned.
 #[test]
 fn invalid_data_offset_too_small_returned() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(4);
@@ -155,7 +165,15 @@ fn invalid_data_offset_too_small_returned() {
     let len = data.len();
     let frame = Frame::new(200, leak(data), len, false);
 
-    handler.process_ipv4(frame, Instant::now(), &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(
+        frame,
+        Instant::now(),
+        &mut wheel,
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert!(
         rx.pop().is_some(),
@@ -167,6 +185,7 @@ fn invalid_data_offset_too_small_returned() {
 /// Data offset claims more bytes than available in the frame → returned.
 #[test]
 fn data_offset_exceeds_frame_length_returned() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(4);
@@ -184,7 +203,15 @@ fn data_offset_exceeds_frame_length_returned() {
     let len = data.len();
     let frame = Frame::new(300, leak(data), len, false);
 
-    handler.process_ipv4(frame, Instant::now(), &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(
+        frame,
+        Instant::now(),
+        &mut wheel,
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert!(
         rx.pop().is_some(),
@@ -196,6 +223,7 @@ fn data_offset_exceeds_frame_length_returned() {
 /// When rx_offload is disabled, a bad checksum should cause the frame to be returned.
 #[test]
 fn bad_checksum_returned_when_rx_offload_disabled() {
+    let mut wheel = new_wheel();
     // new_handler() already creates with rx_offload=false.
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
@@ -215,7 +243,15 @@ fn bad_checksum_returned_when_rx_offload_disabled() {
     let len = data.len();
     let frame = Frame::new(400, leak(data), len, false);
 
-    handler.process_ipv4(frame, Instant::now(), &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(
+        frame,
+        Instant::now(),
+        &mut wheel,
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert!(rx.pop().is_some(), "bad checksum frame should be returned");
     assert!(tx.pop().is_none(), "no response for bad checksum");
@@ -225,6 +261,7 @@ fn bad_checksum_returned_when_rx_offload_disabled() {
 /// rejected (the NIC already verified it).
 #[test]
 fn bad_checksum_accepted_when_rx_offload_enabled() {
+    let mut wheel = new_wheel();
     let mut handler = TcpHandler::new(true, false); // rx_offload = true
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(4);
@@ -244,7 +281,15 @@ fn bad_checksum_accepted_when_rx_offload_enabled() {
     let len = data.len();
     let frame = Frame::new(500, leak(data), len, false);
 
-    handler.process_ipv4(frame, Instant::now(), &nh, &mut free, &mut rx, &mut tx);
+    handler.process_ipv4(
+        frame,
+        Instant::now(),
+        &mut wheel,
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Should produce a SYN-ACK response (frame was not rejected).
     assert!(
@@ -256,6 +301,7 @@ fn bad_checksum_accepted_when_rx_offload_enabled() {
 /// IPv6 path: a valid SYN over IPv6 should be processed (covers process_ipv6).
 #[test]
 fn ipv6_valid_syn_processed() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(4);
@@ -282,6 +328,7 @@ fn ipv6_valid_syn_processed() {
         frame,
         tcp_offset,
         Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -295,6 +342,7 @@ fn ipv6_valid_syn_processed() {
 /// IPv6 path: frame too short for TCP header should be returned.
 #[test]
 fn ipv6_frame_too_short_returned() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(4);
@@ -316,6 +364,7 @@ fn ipv6_frame_too_short_returned() {
         frame,
         tcp_offset,
         Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -329,6 +378,7 @@ fn ipv6_frame_too_short_returned() {
 /// IPv6 path: bad checksum with rx_offload disabled should be returned.
 #[test]
 fn ipv6_bad_checksum_returned() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler(); // rx_offload = false
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(4);
@@ -354,6 +404,7 @@ fn ipv6_bad_checksum_returned() {
         frame,
         tcp_off,
         Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,

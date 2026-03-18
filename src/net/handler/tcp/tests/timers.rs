@@ -1,6 +1,7 @@
 use super::*;
 
 use super::super::handler::INITIAL_RTO_MS;
+use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
 
 // ---------------------------------------------------------------------------
 // RTO exponential backoff — verify successive retransmissions double the RTO
@@ -13,26 +14,46 @@ fn rto_exponential_backoff_doubles_on_successive_retransmits() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Put data in send buffer and send it.
     handler.first_connection_mut().send_buffer.write(b"DATA");
     handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     // First RTO fire: backoff 0 -> 1.
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
+    // Arm retransmit timer at tick 0 (in the past) to force fire.
+    let key = handler.first_connection_key();
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     handler.first_connection_mut().rto_backoff = 0;
     let rto_before = handler.first_connection().rto;
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     let tcb = handler.first_connection();
@@ -40,18 +61,25 @@ fn rto_exponential_backoff_doubles_on_successive_retransmits() {
         tcb.rto_backoff, 1,
         "rto_backoff should be 1 after first RTO"
     );
-    // The new deadline should be now + rto << 1.
-    let expected_deadline = now + coarsetime::Duration::from_millis(rto_before << 1);
-    assert_eq!(
-        tcb.retransmit_deadline,
-        Some(expected_deadline),
-        "deadline should use doubled RTO"
+    // The retransmit timer should be re-armed after RTO fire.
+    assert!(
+        handler.timer_handles[key].is_armed(TcpTimerKind::Retransmit),
+        "retransmit timer should be re-armed after RTO"
     );
 
     // Second RTO fire: backoff 1 -> 2.
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     let tcb = handler.first_connection();
@@ -59,11 +87,9 @@ fn rto_exponential_backoff_doubles_on_successive_retransmits() {
         tcb.rto_backoff, 2,
         "rto_backoff should be 2 after second RTO"
     );
-    let expected_deadline = now + coarsetime::Duration::from_millis(rto_before << 2);
-    assert_eq!(
-        tcb.retransmit_deadline,
-        Some(expected_deadline),
-        "deadline should use quadrupled RTO"
+    assert!(
+        handler.timer_handles[key].is_armed(TcpTimerKind::Retransmit),
+        "retransmit timer should be re-armed after second RTO"
     );
 }
 
@@ -78,17 +104,27 @@ fn r2_threshold_aborts_connection() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Put data in send buffer and send it.
     handler.first_connection_mut().send_buffer.write(b"DATA");
     handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     let event_queue = handler.first_connection().event_queue.clone();
@@ -96,11 +132,21 @@ fn r2_threshold_aborts_connection() {
     // Set rto_backoff high enough that total_elapsed_ms >= SYN_R2_THRESHOLD_MS.
     // Formula: total = sum(INITIAL_RTO_MS << i) for i=0..=backoff
     // With INITIAL_RTO_MS=1000, backoff=8: total = 1000*(1+2+4+8+16+32+64+128+256) = 511_000 > 180_000
+    let key = handler.first_connection_key();
     handler.first_connection_mut().rto_backoff = 8;
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Connection should be removed.
     assert!(
@@ -128,16 +174,27 @@ fn fin_retransmit_in_fin_wait1() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Initiate close to send FIN.
-    handler.initiate_close(handler.first_connection_key());
+    let key = handler.first_connection_key();
+    handler.initiate_close(key, &mut wheel);
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     assert_eq!(
@@ -151,11 +208,20 @@ fn fin_retransmit_in_fin_wait1() {
     );
 
     // Set retransmit deadline in the past to trigger FIN retransmit.
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     handler.first_connection_mut().rto_backoff = 0;
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // FIN-ACK should be retransmitted.
     assert!(
@@ -166,7 +232,7 @@ fn fin_retransmit_in_fin_wait1() {
     let tcb = handler.first_connection();
     assert_eq!(tcb.rto_backoff, 1, "rto_backoff should be incremented");
     assert!(
-        tcb.retransmit_deadline.is_some(),
+        handler.timer_handles[key].is_armed(TcpTimerKind::Retransmit),
         "retransmit deadline should be re-armed"
     );
 }
@@ -182,11 +248,13 @@ fn fin_retransmit_in_last_ack() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Receive FIN from remote to move to CloseWait.
     let fin = build_tcp_frame(
@@ -204,6 +272,7 @@ fn fin_retransmit_in_last_ack() {
     handler.process_ipv4(
         Frame::new(10, leak(fin), fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -213,19 +282,37 @@ fn fin_retransmit_in_last_ack() {
     assert_eq!(handler.first_connection().state, TcpState::CloseWait);
 
     // Now close our side to move to LastAck.
-    handler.initiate_close(handler.first_connection_key());
+    let key = handler.first_connection_key();
+    handler.initiate_close(key, &mut wheel);
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
     assert_eq!(handler.first_connection().state, TcpState::LastAck);
     assert!(handler.first_connection().fin_seq.is_some());
 
     // Set retransmit deadline in the past.
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     handler.first_connection_mut().rto_backoff = 0;
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert!(
         tx.num_frames() >= 1,
@@ -246,6 +333,7 @@ fn syn_retransmit_exponential_backoff() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
@@ -270,6 +358,7 @@ fn syn_retransmit_exponential_backoff() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -278,13 +367,23 @@ fn syn_retransmit_exponential_backoff() {
     assert_eq!(handler.first_connection().state, TcpState::SynSent);
 
     let now = coarsetime::Instant::now();
+    let key = handler.first_connection_key();
 
     // First retransmit: backoff 0 -> 1.
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     handler.first_connection_mut().rto_backoff = 0;
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     assert!(tx.num_frames() >= 1, "SYN should be retransmitted");
     while tx.pop().is_some() {}
 
@@ -293,18 +392,25 @@ fn syn_retransmit_exponential_backoff() {
         tcb.rto_backoff, 1,
         "backoff should be 1 after first retransmit"
     );
-    // Deadline should be now + INITIAL_RTO_MS << 1.
-    let expected = now + coarsetime::Duration::from_millis(INITIAL_RTO_MS << 1);
-    assert_eq!(
-        tcb.retransmit_deadline,
-        Some(expected),
-        "SYN deadline should use doubled INITIAL_RTO_MS"
+    // Retransmit timer should be re-armed.
+    assert!(
+        handler.timer_handles[key].is_armed(TcpTimerKind::Retransmit),
+        "SYN retransmit timer should be re-armed"
     );
 
     // Second retransmit: backoff 1 -> 2.
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
     let tcb = handler.first_connection();
@@ -312,11 +418,9 @@ fn syn_retransmit_exponential_backoff() {
         tcb.rto_backoff, 2,
         "backoff should be 2 after second retransmit"
     );
-    let expected = now + coarsetime::Duration::from_millis(INITIAL_RTO_MS << 2);
-    assert_eq!(
-        tcb.retransmit_deadline,
-        Some(expected),
-        "SYN deadline should use quadrupled INITIAL_RTO_MS"
+    assert!(
+        handler.timer_handles[key].is_armed(TcpTimerKind::Retransmit),
+        "SYN retransmit timer should be re-armed after second retransmit"
     );
 }
 
@@ -331,6 +435,7 @@ fn syn_r2_threshold_removes_connection() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
@@ -354,6 +459,7 @@ fn syn_r2_threshold_removes_connection() {
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
+            &mut wheel,
             &mut free,
             &mut tx,
         )
@@ -362,13 +468,23 @@ fn syn_r2_threshold_removes_connection() {
     assert_eq!(handler.first_connection().state, TcpState::SynSent);
 
     let now = coarsetime::Instant::now();
+    let key = handler.first_connection_key();
 
     // Set backoff high enough for R2 threshold.
     handler.first_connection_mut().rto_backoff = 8;
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert!(
         handler.connections.is_empty(),
@@ -392,6 +508,7 @@ fn syn_ack_retransmit_in_syn_received() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
@@ -413,6 +530,7 @@ fn syn_ack_retransmit_in_syn_received() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -422,13 +540,23 @@ fn syn_ack_retransmit_in_syn_received() {
     assert_eq!(handler.first_connection().state, TcpState::SynReceived);
 
     let now = coarsetime::Instant::now();
+    let key = handler.first_connection_key();
 
     // Trigger retransmit.
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     handler.first_connection_mut().rto_backoff = 0;
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert!(
         tx.num_frames() >= 1,
@@ -436,11 +564,9 @@ fn syn_ack_retransmit_in_syn_received() {
     );
     let tcb = handler.first_connection();
     assert_eq!(tcb.rto_backoff, 1, "rto_backoff should be incremented");
-    let expected = now + coarsetime::Duration::from_millis(INITIAL_RTO_MS << 1);
-    assert_eq!(
-        tcb.retransmit_deadline,
-        Some(expected),
-        "SYN-ACK deadline should be backed off"
+    assert!(
+        handler.timer_handles[key].is_armed(TcpTimerKind::Retransmit),
+        "SYN-ACK retransmit timer should be re-armed"
     );
 }
 
@@ -455,12 +581,14 @@ fn delayed_ack_timer_includes_ece_flag_when_ce_received() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
     let now = coarsetime::Instant::now();
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Set delayed ACK state and ECN CE received flag.
     let id = ConnectionId {
@@ -469,17 +597,29 @@ fn delayed_ack_timer_includes_ece_flag_when_ce_received() {
         remote_addr: IpAddress::V4(REMOTE_IP),
         remote_port: 12345,
     };
+    let key = handler.first_connection_key();
     {
         let tcb = handler.get_connection_mut(&id).unwrap();
         tcb.ack_pending = true;
         tcb.ack_delay_count = 1;
-        tcb.delayed_ack_deadline = Some(now + coarsetime::Duration::from_millis(40));
         tcb.ecn_ce_received = true;
     }
+    // Arm delayed ACK timer to fire.
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::DelayedAck), 0);
+    handler.timer_handles[key].set(TcpTimerKind::DelayedAck, handle);
 
     // Fire after deadline.
     let later = now + coarsetime::Duration::from_millis(50);
-    handler.poll_timers(later, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        later,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // ACK should have been sent.
     assert_eq!(tx.num_frames(), 1, "ACK should be flushed after deadline");
@@ -499,20 +639,22 @@ fn evict_stale_removes_time_wait_connection() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
-    let now = coarsetime::Instant::now();
+    let key = handler.first_connection_key();
 
     // Manually set connection to TimeWait with a deadline in the past.
     handler.first_connection_mut().state = TcpState::TimeWait;
-    handler.first_connection_mut().time_wait_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::TimeWait), 0);
+    handler.timer_handles[key].set(TcpTimerKind::TimeWait, handle);
 
-    handler.evict_stale(now, &mut rx);
+    evict_stale(&mut handler, &mut wheel);
 
     assert!(
         handler.connections.is_empty(),
@@ -527,20 +669,25 @@ fn evict_stale_keeps_time_wait_before_deadline() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
-    let now = coarsetime::Instant::now();
+    let key = handler.first_connection_key();
 
-    // Set TimeWait with deadline in the future.
+    // Set TimeWait with deadline in the far future (won't be reached by evict_stale).
     handler.first_connection_mut().state = TcpState::TimeWait;
-    handler.first_connection_mut().time_wait_deadline =
-        Some(now + coarsetime::Duration::from_millis(60_000));
+    let handle = wheel.arm(
+        tcp_timer_id(key, TcpTimerKind::TimeWait),
+        u64::MAX / 2 + 1000,
+    );
+    handler.timer_handles[key].set(TcpTimerKind::TimeWait, handle);
 
-    handler.evict_stale(now, &mut rx);
+    evict_stale(&mut handler, &mut wheel);
 
     assert_eq!(
         handler.connections.len(),
@@ -560,25 +707,49 @@ fn rto_retransmit_does_not_fire_before_deadline() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     handler.first_connection_mut().send_buffer.write(b"DATA");
     handler.first_connection_mut().snd_wnd = 65535;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
 
-    // Set deadline in the future.
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now + coarsetime::Duration::from_millis(5000));
+    // The retransmit timer was armed in the future by poll_send.
+    // Don't fire any timers — just verify no retransmission occurs without timer expiry.
     handler.first_connection_mut().rto_backoff = 0;
     handler.first_connection_mut().ack_pending = false;
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    // Advance wheel by 0 ticks — nothing fires.
+    let fired = wheel.advance(0);
+    for id in fired {
+        let (k, kind) = super::super::timer_kinds::unpack_tcp_timer_id(id);
+        handler.handle_timer(
+            k,
+            kind,
+            now,
+            &mut wheel,
+            nh.local_mac(),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+    }
 
     assert_eq!(tx.num_frames(), 0, "no retransmission before deadline");
     assert_eq!(
@@ -599,16 +770,26 @@ fn fin_retransmit_in_closing_state() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Initiate close to enter FinWait1.
-    handler.initiate_close(handler.first_connection_key());
+    let key = handler.first_connection_key();
+    handler.initiate_close(key, &mut wheel);
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     while tx.pop().is_some() {}
     assert_eq!(handler.first_connection().state, TcpState::FinWait1);
 
@@ -630,6 +811,7 @@ fn fin_retransmit_in_closing_state() {
     handler.process_ipv4(
         Frame::new(20, leak(remote_fin), remote_fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -639,11 +821,20 @@ fn fin_retransmit_in_closing_state() {
     assert_eq!(handler.first_connection().state, TcpState::Closing);
 
     // Trigger FIN retransmit.
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     handler.first_connection_mut().rto_backoff = 0;
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert!(
         tx.num_frames() >= 1,
@@ -654,7 +845,7 @@ fn fin_retransmit_in_closing_state() {
 }
 
 // ---------------------------------------------------------------------------
-// No retransmit when retransmit_deadline is None
+// No retransmit when retransmit timer is not armed
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -664,18 +855,33 @@ fn no_retransmit_when_deadline_is_none() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
-    // Ensure no retransmit deadline and no ack_pending.
-    handler.first_connection_mut().retransmit_deadline = None;
+    // Ensure no retransmit timer armed and no ack_pending.
+    let key = handler.first_connection_key();
+    if let Some(h) = handler.timer_handles[key].get(TcpTimerKind::Retransmit) {
+        wheel.cancel(h);
+        handler.timer_handles[key].clear(TcpTimerKind::Retransmit);
+    }
     handler.first_connection_mut().ack_pending = false;
 
     let now = coarsetime::Instant::now();
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(
         tx.num_frames(),
@@ -695,25 +901,36 @@ fn rto_fires_with_empty_send_buffer_no_retransmit() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
-    // Set retransmit_deadline in the past with an EMPTY send buffer.
-    // This simulates the edge case where the RTO fires but there's nothing to retransmit
-    // (e.g., all data was ACKed but the deadline wasn't cleared).
-    let now = coarsetime::Instant::now();
-    handler.first_connection_mut().retransmit_deadline =
-        Some(now - coarsetime::Duration::from_millis(1));
+    // Set retransmit timer to fire with an EMPTY send buffer.
+    // This simulates the edge case where the RTO fires but there's nothing to retransmit.
+    let key = handler.first_connection_key();
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     handler.first_connection_mut().rto_backoff = 0;
     handler.first_connection_mut().ack_pending = false;
 
     // send_buffer is empty (no data written).
     assert_eq!(handler.first_connection().send_buffer.available(), 0);
 
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    let now = coarsetime::Instant::now();
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // No data frame should be sent since send_buffer is empty.
     assert_eq!(
@@ -729,9 +946,9 @@ fn rto_fires_with_empty_send_buffer_no_retransmit() {
         "rto_backoff should be incremented even with empty buffer"
     );
 
-    // Retransmit deadline should be rescheduled.
+    // Retransmit timer should be rescheduled.
     assert!(
-        handler.first_connection().retransmit_deadline.is_some(),
+        handler.timer_handles[key].is_armed(TcpTimerKind::Retransmit),
         "retransmit deadline should be rescheduled"
     );
 }

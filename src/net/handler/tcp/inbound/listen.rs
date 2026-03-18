@@ -7,6 +7,7 @@ use slab::Slab;
 use crate::{
     net::{
         socket::LocalQueue,
+        timer_wheel::TimerWheel,
         wire::{
             ip::IpAddress,
             tcp::{flags, parse_mss, parse_sack_permitted, parse_timestamp, parse_window_scale},
@@ -26,15 +27,18 @@ use super::super::state::TcpState;
 use super::super::tcb::{
     ConnectionId, DEFAULT_RCV_MSS, DEFAULT_RCV_WND, DEFAULT_RCV_WSCALE, TS_OPTION_LEN, Tcb,
 };
+use super::super::timer_kinds::{TcpTimerHandles, TcpTimerKind};
 
 impl TcpHandler {
     pub(super) fn process_listen<'umem>(
         connections: &mut Slab<Tcb>,
+        timer_handles: &mut Slab<TcpTimerHandles>,
         connection_map: &mut FxHashMap<ConnectionId, usize>,
         listeners: &mut [ListenEntry],
         isn_generator: &mut IsnGenerator,
         listener_idx: usize,
         now: Instant,
+        wheel: &mut TimerWheel,
         incoming_src: IpAddress,
         incoming_dst: IpAddress,
         src_port: u16,
@@ -143,7 +147,6 @@ impl TcpHandler {
                     0
                 },
                 wscale_enabled,
-                retransmit_deadline: Some(now + coarsetime::Duration::from_millis(INITIAL_RTO_MS)),
                 rto_backoff: 0,
                 event_queue,
                 send_buffer: RingBuffer::new(send_buffer_size),
@@ -166,10 +169,8 @@ impl TcpHandler {
                 last_send_time: None,
                 pending_fin: false,
                 fin_seq: None,
-                time_wait_deadline: None,
                 time_wait_duration,
                 ack_pending: false,
-                delayed_ack_deadline: None,
                 ack_delay_count: 0,
                 delayed_ack_ms: listener.delayed_ack_ms,
                 nagle_enabled: !listener.tcp_no_delay,
@@ -180,7 +181,6 @@ impl TcpHandler {
                 last_activity: now,
                 keep_alive_probes_sent: 0,
                 linger: listener.linger,
-                linger_deadline: None,
                 ts_enabled,
                 ts_recent: if ts_enabled { peer_tsval } else { 0 },
                 ts_recent_age: now,
@@ -190,7 +190,6 @@ impl TcpHandler {
                 ecn_enabled,
                 ecn_ce_received: false,
                 ecn_cwr_sent: false,
-                persist_deadline: None,
                 persist_backoff: 0,
                 max_snd_wnd: 0,
                 last_advertised_right_edge: 0,
@@ -229,8 +228,18 @@ impl TcpHandler {
 
             let tcb_id = tcb.id;
             let key = connections.insert(tcb);
+            let handle_key = timer_handles.insert(TcpTimerHandles::new());
+            debug_assert_eq!(key, handle_key, "timer_handles slab key mismatch");
             connection_map.insert(tcb_id, key);
             listeners[listener_idx].syn_received_count += 1;
+
+            // Arm retransmit timer for the SYN-ACK.
+            timer_handles[key].arm(
+                TcpTimerKind::Retransmit,
+                key,
+                now + coarsetime::Duration::from_millis(INITIAL_RTO_MS),
+                wheel,
+            );
         }
 
         // Step 4: Other → drop (frame returned by caller).

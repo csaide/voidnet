@@ -1,7 +1,9 @@
+use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
 use super::*;
 
 #[test]
 fn ooo_data_sends_sack_blocks_in_dup_ack() {
+    let mut wheel = new_wheel();
     use crate::net::wire::tcp::{options as tcp_options, parse_sack_blocks};
 
     let mut handler = new_handler();
@@ -32,6 +34,7 @@ fn ooo_data_sends_sack_blocks_in_dup_ack() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -60,6 +63,7 @@ fn ooo_data_sends_sack_blocks_in_dup_ack() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -86,6 +90,7 @@ fn ooo_data_sends_sack_blocks_in_dup_ack() {
     handler.process_ipv4(
         Frame::new(2, leak(ooo_seg), ooo_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -115,6 +120,7 @@ fn ooo_data_sends_sack_blocks_in_dup_ack() {
 
 #[test]
 fn sack_blocks_update_scoreboard_on_ack() {
+    let mut wheel = new_wheel();
     use crate::net::wire::tcp::write_sack_option;
 
     let mut handler = new_handler();
@@ -127,7 +133,7 @@ fn sack_blocks_update_scoreboard_on_ack() {
     }
 
     let _server_iss =
-        establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+        establish_connection_with_sack(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Put data in the send buffer and advance snd_nxt to simulate sent data.
     let tcb = handler.first_connection_mut();
@@ -163,6 +169,7 @@ fn sack_blocks_update_scoreboard_on_ack() {
     handler.process_ipv4(
         Frame::new(2, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -182,6 +189,7 @@ fn sack_blocks_update_scoreboard_on_ack() {
 
 #[test]
 fn sack_scoreboard_pruned_on_cumulative_ack_advance() {
+    let mut wheel = new_wheel();
     use crate::net::wire::tcp::write_sack_option;
 
     let mut handler = new_handler();
@@ -194,7 +202,7 @@ fn sack_scoreboard_pruned_on_cumulative_ack_advance() {
     }
 
     let _server_iss =
-        establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+        establish_connection_with_sack(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let tcb = handler.first_connection_mut();
     tcb.send_buffer.write(&[0u8; 200]);
@@ -228,6 +236,7 @@ fn sack_scoreboard_pruned_on_cumulative_ack_advance() {
     handler.process_ipv4(
         Frame::new(2, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -255,6 +264,7 @@ fn sack_scoreboard_pruned_on_cumulative_ack_advance() {
     handler.process_ipv4(
         Frame::new(3, leak(ack_data2), ack_len2, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -275,6 +285,7 @@ fn sack_scoreboard_pruned_on_cumulative_ack_advance() {
 
 #[test]
 fn sack_blocks_updated_on_dup_ack() {
+    let mut wheel = new_wheel();
     use crate::net::wire::tcp::write_sack_option;
 
     let mut handler = new_handler();
@@ -287,7 +298,7 @@ fn sack_blocks_updated_on_dup_ack() {
     }
 
     let _server_iss =
-        establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+        establish_connection_with_sack(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let tcb = handler.first_connection_mut();
     tcb.send_buffer.write(&[0u8; 100]);
@@ -315,6 +326,7 @@ fn sack_blocks_updated_on_dup_ack() {
     handler.process_ipv4(
         Frame::new(2, leak(dup_ack), dup_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -329,6 +341,7 @@ fn sack_blocks_updated_on_dup_ack() {
 
 #[test]
 fn sack_scoreboard_cleared_on_rto() {
+    let mut wheel = new_wheel();
     use crate::net::wire::tcp::write_sack_option;
 
     let mut handler = new_handler();
@@ -341,7 +354,7 @@ fn sack_scoreboard_cleared_on_rto() {
     }
 
     let _server_iss =
-        establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+        establish_connection_with_sack(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let tcb = handler.first_connection_mut();
     tcb.send_buffer.write(&[0u8; 100]);
@@ -369,6 +382,7 @@ fn sack_scoreboard_cleared_on_rto() {
     handler.process_ipv4(
         Frame::new(2, leak(dup_ack), dup_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -376,13 +390,24 @@ fn sack_scoreboard_cleared_on_rto() {
     );
     assert_eq!(handler.first_connection().sack_scoreboard.len(), 1);
 
-    // Set up RTO: arm the retransmit deadline in the past.
+    // Set up RTO: arm the retransmit timer at tick 0 (in the past).
     let now = coarsetime::Instant::now();
-    handler.first_connection_mut().retransmit_deadline = Some(now);
+    let key = handler.first_connection_key();
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     handler.first_connection_mut().rto_backoff = 0;
 
     // Trigger poll_timers, which should fire the RTO and clear the scoreboard.
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert!(
         handler.first_connection().sack_scoreboard.is_empty(),
@@ -392,6 +417,7 @@ fn sack_scoreboard_cleared_on_rto() {
 
 #[test]
 fn fast_retransmit_uses_sack_gap() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -402,7 +428,7 @@ fn fast_retransmit_uses_sack_gap() {
     }
 
     let _server_iss =
-        establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+        establish_connection_with_sack(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let tcb = handler.first_connection_mut();
     // Use a small effective MSS so the retransmit fits in a 256-byte frame.
@@ -435,7 +461,16 @@ fn fast_retransmit_uses_sack_gap() {
     tcb.cubic.on_loss();
 
     let now = coarsetime::Instant::now();
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Verify a segment was emitted (the 1st MSS gap should be retransmitted).
     assert!(tx.pop().is_some(), "expected a retransmitted segment");
@@ -455,6 +490,7 @@ fn fast_retransmit_uses_sack_gap() {
 
 #[test]
 fn fast_retransmit_fallback_when_scoreboard_empty() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(32);
@@ -465,7 +501,7 @@ fn fast_retransmit_fallback_when_scoreboard_empty() {
     }
 
     let _server_iss =
-        establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+        establish_connection_with_sack(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     let tcb = handler.first_connection_mut();
     // Use a small effective MSS so the retransmit fits in a 256-byte frame.
@@ -487,7 +523,16 @@ fn fast_retransmit_fallback_when_scoreboard_empty() {
     tcb.cubic.on_loss();
 
     let now = coarsetime::Instant::now();
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        now,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // With empty scoreboard, next_lost_segment returns None (nothing marked lost
     // by RFC 6675 criteria), so no retransmit is emitted from the recovery loop.
@@ -506,6 +551,7 @@ fn fast_retransmit_fallback_when_scoreboard_empty() {
 
 #[test]
 fn sack_recovery_enters_on_3_dup_acks() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(64);
@@ -532,6 +578,7 @@ fn sack_recovery_enters_on_3_dup_acks() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -553,6 +600,7 @@ fn sack_recovery_enters_on_3_dup_acks() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -596,6 +644,7 @@ fn sack_recovery_enters_on_3_dup_acks() {
         handler.process_ipv4(
             Frame::new(10 + i, leak(dup), dup_len, false),
             coarsetime::Instant::now(),
+            &mut wheel,
             &nh,
             &mut free,
             &mut rx,
@@ -615,6 +664,7 @@ fn sack_recovery_enters_on_3_dup_acks() {
 
 #[test]
 fn sack_recovery_partial_ack_stays_in_recovery() {
+    let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
     let mut free = BasicFrameBuffer::new(64);
@@ -641,6 +691,7 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -662,6 +713,7 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -704,6 +756,7 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
         handler.process_ipv4(
             Frame::new(10 + i, leak(dup), dup_len, false),
             coarsetime::Instant::now(),
+            &mut wheel,
             &nh,
             &mut free,
             &mut rx,
@@ -729,6 +782,7 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
     handler.process_ipv4(
         Frame::new(20, leak(partial), partial_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -744,6 +798,7 @@ fn sack_recovery_partial_ack_stays_in_recovery() {
 
 #[test]
 fn ooo_multiple_ranges_generates_multiple_sack_blocks() {
+    let mut wheel = new_wheel();
     use crate::net::wire::tcp::parse_sack_blocks;
 
     let mut handler = new_handler();
@@ -757,7 +812,8 @@ fn ooo_multiple_ranges_generates_multiple_sack_blocks() {
     }
 
     // Complete handshake with SACK enabled.
-    let server_iss = establish_connection_with_sack(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection_with_sack(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Send first OOO segment: seq=1021, 5 bytes (gap from 1001..1021).
     let ooo1 = build_tcp_frame_with_payload(
@@ -776,6 +832,7 @@ fn ooo_multiple_ranges_generates_multiple_sack_blocks() {
     handler.process_ipv4(
         Frame::new(2, leak(ooo1), ooo1_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -800,6 +857,7 @@ fn ooo_multiple_ranges_generates_multiple_sack_blocks() {
     handler.process_ipv4(
         Frame::new(3, leak(ooo2), ooo2_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,

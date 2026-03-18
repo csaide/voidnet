@@ -19,6 +19,7 @@ use crate::{
             ethernet::EthernetHandler, ipv4::Ipv4Handler, ipv6::Ipv6Handler, tcp::TcpHandler,
             udp::UdpHandler,
         },
+        timer_wheel::TimerWheel,
     },
     rt::task::TaskQueue,
     xdp::{
@@ -191,6 +192,10 @@ pub struct LocalRuntime<'umem> {
     tx_return: SharedFrameBuffer<'umem>,
     // Frames that were read from the network and should be handed back to the kernel for re-use.
     rx_return: SharedFrameBuffer<'umem>,
+    // Timer wheel for TCP timers.
+    wheel: Rc<UnsafeCell<TimerWheel>>,
+    // Base instant for converting coarsetime to wheel milliseconds.
+    base_instant: coarsetime::Instant,
     // Counter for rate-limiting evict_stale() calls (~every 1024 iterations).
     evict_counter: u32,
     // Whether TX checksum offload is enabled on this interface.
@@ -231,6 +236,7 @@ impl<'umem> LocalRuntime<'umem> {
         let rx_return = BasicFrameBuffer::new(umem.num_frames()).into();
         let free_frames = umem.init_buffer::<BasicFrameBuffer>().unwrap().into();
 
+        let base_instant = coarsetime::Instant::now();
         Ok(Self {
             _ctx: Some(ctx),
             _queue: queue,
@@ -246,6 +252,8 @@ impl<'umem> LocalRuntime<'umem> {
             free_frames,
             tx_return,
             rx_return,
+            wheel: Rc::new(UnsafeCell::new(TimerWheel::new(base_instant))),
+            base_instant,
             evict_counter: 0,
             tx_offload,
             neighbor_rx: None,
@@ -276,6 +284,7 @@ impl<'umem> LocalRuntime<'umem> {
         let rx_return = BasicFrameBuffer::new(umem.num_frames()).into();
         let free_frames = umem.init_buffer::<BasicFrameBuffer>().unwrap().into();
 
+        let base_instant = coarsetime::Instant::now();
         Ok(Self {
             _ctx: None,
             _queue: 0,
@@ -291,6 +300,8 @@ impl<'umem> LocalRuntime<'umem> {
             free_frames,
             tx_return,
             rx_return,
+            wheel: Rc::new(UnsafeCell::new(TimerWheel::new(base_instant))),
+            base_instant,
             evict_counter: 0,
             tx_offload,
             neighbor_rx: Some(neighbor_rx),
@@ -347,6 +358,8 @@ impl<'umem> LocalRuntime<'umem> {
             neighbor_handler: self.neighbor_handler.clone(),
             udp_handler: self.udp_handler.clone(),
             tcp_handler: self.tcp_handler.clone(),
+            wheel: self.wheel.clone(),
+            base_instant: self.base_instant,
             tx_offload: self.tx_offload,
             task_queue: UnsafeCell::new(TaskQueue::new()),
             capacity_wakers: UnsafeCell::new(Vec::new()),
@@ -373,8 +386,13 @@ impl<'umem> LocalRuntime<'umem> {
         let mut task_cx = Context::from_waker(&task_waker);
 
         let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
-        let mut now = coarsetime::Instant::now();
+        let mut now;
+        let base_instant = self.base_instant;
         while !exit.load(Ordering::Relaxed) {
+            // Update time every iteration for timer wheel accuracy.
+            now = coarsetime::Instant::now();
+            let now_ms = now.duration_since(base_instant).as_millis();
+            let wheel = unsafe { &mut *self.wheel.get() };
             // ---- Drain neighbor updates from peer queues ----
             if let Some(ref neighbor_rx) = self.neighbor_rx {
                 while let Ok(update) = neighbor_rx.try_recv() {
@@ -427,6 +445,7 @@ impl<'umem> LocalRuntime<'umem> {
                             neighbor_handler,
                             pmtu,
                             now,
+                            wheel,
                             &mut self.free_frames,
                             &mut self.rx_return,
                             &mut self.tx_return,
@@ -446,11 +465,37 @@ impl<'umem> LocalRuntime<'umem> {
                 tq.poll(&mut task_cx);
             });
 
-            // ---- TCP Timers & Send ----
+            // ---- Timer wheel advance + dispatch ----
+            {
+                use crate::net::handler::tcp::timer_kinds::unpack_tcp_timer_id;
+                let wheel = unsafe { &mut *self.wheel.get() };
+                let fired = wheel.advance(now);
+                if !fired.is_empty() {
+                    let tcp_handler = unsafe { &mut *self.tcp_handler.get() };
+                    for id in fired {
+                        let (key, kind) = unpack_tcp_timer_id(id);
+                        tcp_handler.handle_timer(
+                            key,
+                            kind,
+                            now,
+                            wheel,
+                            self.neighbor_handler.local_mac(),
+                            &self.neighbor_handler,
+                            &mut self.free_frames,
+                            &mut self.rx_return,
+                            &mut self.tx_return,
+                        );
+                    }
+                }
+            }
+
+            // ---- TCP Send ----
             //
             // SAFETY: single-threaded, no reentrant handler calls.
+            let wheel = unsafe { &mut *self.wheel.get() };
             unsafe { &mut *self.tcp_handler.get() }.poll_send(
                 now,
+                wheel,
                 self.neighbor_handler.local_mac(),
                 &self.neighbor_handler,
                 &mut self.free_frames,
@@ -460,25 +505,11 @@ impl<'umem> LocalRuntime<'umem> {
 
             self.evict_counter = self.evict_counter.wrapping_add(1);
             if self.evict_counter & 65535 == 0 {
-                now = coarsetime::Instant::now();
-
                 // SAFETY: single-threaded, no reentrant handler calls.
                 unsafe { &mut *self.udp_handler.get() }.evict_stale(
                     now,
                     Duration::from_secs(30),
                     &mut self.rx_return,
-                );
-
-                // SAFETY: single-threaded, no reentrant handler calls.
-                let tcp_handler = unsafe { &mut *self.tcp_handler.get() };
-                tcp_handler.evict_stale(now, &mut self.rx_return);
-                tcp_handler.poll_timers(
-                    now,
-                    self.neighbor_handler.local_mac(),
-                    &self.neighbor_handler,
-                    &mut self.free_frames,
-                    &mut self.rx_return,
-                    &mut self.tx_return,
                 );
 
                 self.neighbor_handler.evict_stale(now);

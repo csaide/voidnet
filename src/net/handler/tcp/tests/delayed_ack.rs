@@ -1,3 +1,4 @@
+use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
 use super::*;
 
 #[test]
@@ -7,6 +8,7 @@ fn delayed_ack_defers_ack_for_in_order_data() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -29,6 +31,7 @@ fn delayed_ack_defers_ack_for_in_order_data() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -50,6 +53,7 @@ fn delayed_ack_defers_ack_for_in_order_data() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -75,6 +79,7 @@ fn delayed_ack_defers_ack_for_in_order_data() {
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -85,9 +90,10 @@ fn delayed_ack_defers_ack_for_in_order_data() {
     assert_eq!(tx.num_frames(), 0, "ACK should be deferred");
     let tcb = handler.first_connection();
     assert!(tcb.ack_pending, "ack_pending should be true");
+    let key = handler.first_connection_key();
     assert!(
-        tcb.delayed_ack_deadline.is_some(),
-        "delayed_ack_deadline should be set"
+        handler.timer_handles[key].is_armed(TcpTimerKind::DelayedAck),
+        "delayed_ack timer should be armed"
     );
     assert_eq!(tcb.ack_delay_count, 1, "ack_delay_count should be 1");
 }
@@ -99,6 +105,7 @@ fn delayed_ack_flushes_on_second_segment() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -121,6 +128,7 @@ fn delayed_ack_flushes_on_second_segment() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -142,6 +150,7 @@ fn delayed_ack_flushes_on_second_segment() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -166,6 +175,7 @@ fn delayed_ack_flushes_on_second_segment() {
     handler.process_ipv4(
         Frame::new(2, leak(seg1), seg1_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -190,6 +200,7 @@ fn delayed_ack_flushes_on_second_segment() {
     handler.process_ipv4(
         Frame::new(3, leak(seg2), seg2_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -205,6 +216,7 @@ fn delayed_ack_flushes_on_second_segment() {
     // poll_send generates pure ACK since no data to piggyback.
     handler.poll_send(
         coarsetime::Instant::now(),
+        &mut wheel,
         nh.local_mac(),
         &nh,
         &mut free,
@@ -228,6 +240,7 @@ fn out_of_order_data_sends_immediate_ack() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -250,6 +263,7 @@ fn out_of_order_data_sends_immediate_ack() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -271,6 +285,7 @@ fn out_of_order_data_sends_immediate_ack() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -295,6 +310,7 @@ fn out_of_order_data_sends_immediate_ack() {
     handler.process_ipv4(
         Frame::new(2, leak(ooo_data), ooo_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -315,6 +331,7 @@ fn fin_sends_immediate_ack() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -337,6 +354,7 @@ fn fin_sends_immediate_ack() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -358,6 +376,7 @@ fn fin_sends_immediate_ack() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -381,6 +400,7 @@ fn fin_sends_immediate_ack() {
     handler.process_ipv4(
         Frame::new(2, leak(fin_data), fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -398,6 +418,7 @@ fn new_connection_has_delayed_ack_fields() {
     let mut free = BasicFrameBuffer::new(8);
     let mut rx = BasicFrameBuffer::new(8);
     let mut tx = BasicFrameBuffer::new(8);
+    let mut wheel = new_wheel();
 
     for i in 0..4 {
         free.push(alloc_free_frame(100 + i));
@@ -422,6 +443,7 @@ fn new_connection_has_delayed_ack_fields() {
     handler.process_ipv4(
         syn_frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -448,6 +470,7 @@ fn new_connection_has_delayed_ack_fields() {
     handler.process_ipv4(
         ack_frame,
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -459,9 +482,10 @@ fn new_connection_has_delayed_ack_fields() {
     // Verify delayed ACK and Nagle defaults.
     let tcb = handler.first_connection();
     assert!(!tcb.ack_pending, "ack_pending should be false");
+    let key = handler.first_connection_key();
     assert!(
-        tcb.delayed_ack_deadline.is_none(),
-        "delayed_ack_deadline should be None"
+        !handler.timer_handles[key].is_armed(TcpTimerKind::DelayedAck),
+        "delayed_ack timer should not be armed"
     );
     assert_eq!(tcb.ack_delay_count, 0, "ack_delay_count should be 0");
     assert_eq!(
@@ -479,6 +503,7 @@ fn delayed_ack_timer_flushes_pending_ack() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -503,6 +528,7 @@ fn delayed_ack_timer_flushes_pending_ack() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -524,6 +550,7 @@ fn delayed_ack_timer_flushes_pending_ack() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -538,26 +565,52 @@ fn delayed_ack_timer_flushes_pending_ack() {
         remote_addr: IpAddress::V4(REMOTE_IP),
         remote_port: 12345,
     };
+    let key = handler.first_connection_key();
     {
         let tcb = handler.get_connection_mut(&id).unwrap();
         tcb.ack_pending = true;
         tcb.ack_delay_count = 1;
-        tcb.delayed_ack_deadline = Some(now + coarsetime::Duration::from_millis(40));
     }
 
-    // Before deadline — should NOT flush.
-    handler.poll_timers(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    // Before deadline — should NOT flush (no timer armed).
+    // Advance wheel by 0 — nothing fires.
+    let fired = wheel.advance(0);
+    for timer_id in fired {
+        let (k, kind) = super::super::timer_kinds::unpack_tcp_timer_id(timer_id);
+        handler.handle_timer(
+            k,
+            kind,
+            now,
+            &mut wheel,
+            nh.local_mac(),
+            &nh,
+            &mut free,
+            &mut rx,
+            &mut tx,
+        );
+    }
     assert_eq!(tx.num_frames(), 0, "should not flush before deadline");
 
-    // After deadline — should flush.
+    // After deadline — arm and fire the delayed ACK timer.
+    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::DelayedAck), 0);
+    handler.timer_handles[key].set(TcpTimerKind::DelayedAck, handle);
     let later = now + coarsetime::Duration::from_millis(50);
-    handler.poll_timers(later, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    poll_timers(
+        &mut handler,
+        &mut wheel,
+        later,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     assert_eq!(tx.num_frames(), 1, "should flush after deadline");
 
     let tcb = handler.get_connection(&id).unwrap();
     assert!(!tcb.ack_pending);
     assert_eq!(tcb.ack_delay_count, 0);
-    assert!(tcb.delayed_ack_deadline.is_none());
+    assert!(!handler.timer_handles[key].is_armed(TcpTimerKind::DelayedAck));
 }
 
 #[test]
@@ -567,6 +620,7 @@ fn data_send_clears_delayed_ack() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -589,6 +643,7 @@ fn data_send_clears_delayed_ack() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -610,6 +665,7 @@ fn data_send_clears_delayed_ack() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -634,6 +690,7 @@ fn data_send_clears_delayed_ack() {
     handler.process_ipv4(
         Frame::new(2, leak(data_seg), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -655,7 +712,15 @@ fn data_send_clears_delayed_ack() {
 
     // 4. poll_send — sends data (piggybacks ACK).
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
     assert!(tx.num_frames() >= 1, "data segment should be sent");
 
     // 5. Verify delayed ACK state is cleared.
@@ -665,8 +730,9 @@ fn data_send_clears_delayed_ack() {
         "ack_pending should be cleared after data send"
     );
     assert_eq!(tcb.ack_delay_count, 0, "ack_delay_count should be cleared");
+    let key = handler.first_connection_key();
     assert!(
-        tcb.delayed_ack_deadline.is_none(),
-        "delayed_ack_deadline should be cleared"
+        !handler.timer_handles[key].is_armed(TcpTimerKind::DelayedAck),
+        "delayed_ack timer should be cleared"
     );
 }

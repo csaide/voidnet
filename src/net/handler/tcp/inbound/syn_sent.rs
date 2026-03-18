@@ -1,7 +1,10 @@
 use coarsetime::Instant;
 
 use crate::{
-    net::wire::tcp::{flags, parse_mss, parse_sack_permitted, parse_timestamp, parse_window_scale},
+    net::{
+        timer_wheel::TimerWheel,
+        wire::tcp::{flags, parse_mss, parse_sack_permitted, parse_timestamp, parse_window_scale},
+    },
     xdp::frame::FrameBuffer,
 };
 
@@ -9,6 +12,7 @@ use super::super::handler::{INITIAL_RTO_MS, TcpHandler};
 use super::super::segment::SegmentBuilder;
 use super::super::state::TcpState;
 use super::super::tcb::{DEFAULT_RCV_WND, TS_OPTION_LEN, Tcb, TcpEvent};
+use super::super::timer_kinds::{TcpTimerHandles, TcpTimerKind};
 
 use super::segment::PostAction;
 
@@ -17,8 +21,10 @@ impl TcpHandler {
 
     pub(super) fn process_syn_sent<'umem>(
         tcb: &mut Tcb,
+        handles: &mut TcpTimerHandles,
         key: usize,
         now: Instant,
+        wheel: &mut TimerWheel,
         tsval: u32,
         seg_seq: u32,
         seg_ack: u32,
@@ -126,7 +132,7 @@ impl TcpHandler {
                 tcb.max_snd_wnd = tcb.max_snd_wnd.max(tcb.snd_wnd);
                 tcb.snd_wl1 = seg_seq;
                 tcb.snd_wl2 = seg_ack;
-                tcb.retransmit_deadline = None;
+                handles.cancel_timer(TcpTimerKind::Retransmit, wheel);
                 tcb.rto_backoff = 0;
 
                 // Send ACK.
@@ -188,8 +194,12 @@ impl TcpHandler {
                 );
 
                 // Reset retransmit timer for SYN-ACK.
-                tcb.retransmit_deadline =
-                    Some(now + coarsetime::Duration::from_millis(INITIAL_RTO_MS));
+                handles.arm(
+                    TcpTimerKind::Retransmit,
+                    key,
+                    now + coarsetime::Duration::from_millis(INITIAL_RTO_MS),
+                    wheel,
+                );
                 tcb.rto_backoff = 0;
             }
         }

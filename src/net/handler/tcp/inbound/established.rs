@@ -1,7 +1,7 @@
 use coarsetime::Instant;
 
 use crate::{
-    net::wire::tcp::flags,
+    net::{timer_wheel::TimerWheel, wire::tcp::flags},
     xdp::frame::{Frame, FrameBuffer},
 };
 
@@ -11,6 +11,7 @@ use super::super::recovery::FRtoAction;
 use super::super::segment::SegmentBuilder;
 use super::super::state::TcpState;
 use super::super::tcb::{Tcb, TcpEvent};
+use super::super::timer_kinds::{TcpTimerHandles, TcpTimerKind};
 
 use super::segment::{PostAction, is_segment_acceptable};
 
@@ -153,9 +154,11 @@ impl TcpHandler {
 
     pub(super) fn process_established<'umem>(
         tcb: &mut Tcb,
+        handles: &mut TcpTimerHandles,
         key: usize,
         frame: Frame<'umem>,
         now: Instant,
+        wheel: &mut TimerWheel,
         tsval: u32,
         seg_seq: u32,
         seg_ack: u32,
@@ -231,10 +234,14 @@ impl TcpHandler {
                                 // RFC 6298 §5.3: manage retransmit timer on new ACK.
                                 tcb.rto_backoff = 0;
                                 if tcb.snd_una == tcb.snd_nxt {
-                                    tcb.retransmit_deadline = None;
+                                    handles.cancel_timer(TcpTimerKind::Retransmit, wheel);
                                 } else {
-                                    tcb.retransmit_deadline =
-                                        Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                                    handles.arm(
+                                        TcpTimerKind::Retransmit,
+                                        key,
+                                        now + coarsetime::Duration::from_millis(tcb.rto),
+                                        wheel,
+                                    );
                                 }
 
                                 // F-RTO check.
@@ -297,8 +304,8 @@ impl TcpHandler {
                                 }
 
                                 // Clear persist timer when window reopens.
-                                if tcb.snd_wnd > 0 && tcb.persist_deadline.is_some() {
-                                    tcb.persist_deadline = None;
+                                if tcb.snd_wnd > 0 && handles.is_armed(TcpTimerKind::Persist) {
+                                    handles.cancel_timer(TcpTimerKind::Persist, wheel);
                                     tcb.persist_backoff = 0;
                                 }
 
@@ -334,9 +341,12 @@ impl TcpHandler {
                                 // Delayed ACK — defer to poll_send for piggyback opportunity.
                                 tcb.ack_delay_count += 1;
                                 tcb.ack_pending = true;
-                                if tcb.delayed_ack_deadline.is_none() {
-                                    tcb.delayed_ack_deadline = Some(
+                                if !handles.is_armed(TcpTimerKind::DelayedAck) {
+                                    handles.arm(
+                                        TcpTimerKind::DelayedAck,
+                                        key,
                                         now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms),
+                                        wheel,
                                     );
                                 }
 
@@ -361,10 +371,14 @@ impl TcpHandler {
                         // RFC 6298 §5.3: manage retransmit timer on new ACK.
                         tcb.rto_backoff = 0;
                         if tcb.snd_una == tcb.snd_nxt {
-                            tcb.retransmit_deadline = None;
+                            handles.cancel_timer(TcpTimerKind::Retransmit, wheel);
                         } else {
-                            tcb.retransmit_deadline =
-                                Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                            handles.arm(
+                                TcpTimerKind::Retransmit,
+                                key,
+                                now + coarsetime::Duration::from_millis(tcb.rto),
+                                wheel,
+                            );
                         }
 
                         // F-RTO check.
@@ -421,8 +435,8 @@ impl TcpHandler {
                         }
 
                         // Clear persist timer when window reopens.
-                        if tcb.snd_wnd > 0 && tcb.persist_deadline.is_some() {
-                            tcb.persist_deadline = None;
+                        if tcb.snd_wnd > 0 && handles.is_armed(TcpTimerKind::Persist) {
+                            handles.cancel_timer(TcpTimerKind::Persist, wheel);
                             tcb.persist_backoff = 0;
                         }
 
@@ -453,9 +467,13 @@ impl TcpHandler {
                         // Delayed ACK — defer to poll_send for piggyback opportunity.
                         tcb.ack_delay_count += 1;
                         tcb.ack_pending = true;
-                        if tcb.delayed_ack_deadline.is_none() {
-                            tcb.delayed_ack_deadline =
-                                Some(now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms));
+                        if !handles.is_armed(TcpTimerKind::DelayedAck) {
+                            handles.arm(
+                                TcpTimerKind::DelayedAck,
+                                key,
+                                now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms),
+                                wheel,
+                            );
                         }
 
                         rx_return.push(frame);
@@ -606,10 +624,14 @@ impl TcpHandler {
                 // RFC 6298 §5.3: manage retransmit timer on new ACK.
                 tcb.rto_backoff = 0;
                 if tcb.snd_una == tcb.snd_nxt {
-                    tcb.retransmit_deadline = None;
+                    handles.cancel_timer(TcpTimerKind::Retransmit, wheel);
                 } else {
-                    tcb.retransmit_deadline =
-                        Some(now + coarsetime::Duration::from_millis(tcb.rto));
+                    handles.arm(
+                        TcpTimerKind::Retransmit,
+                        key,
+                        now + coarsetime::Duration::from_millis(tcb.rto),
+                        wheel,
+                    );
                 }
 
                 // F-RTO check — must come before recovery/congestion control.
@@ -700,8 +722,8 @@ impl TcpHandler {
                 }
 
                 // C. Clear persist timer when window reopens.
-                if tcb.snd_wnd > 0 && tcb.persist_deadline.is_some() {
-                    tcb.persist_deadline = None;
+                if tcb.snd_wnd > 0 && handles.is_armed(TcpTimerKind::Persist) {
+                    handles.cancel_timer(TcpTimerKind::Persist, wheel);
                     tcb.persist_backoff = 0;
                 }
 
@@ -765,8 +787,8 @@ impl TcpHandler {
                 }
 
                 // Clear persist timer when window reopens via duplicate ACK.
-                if tcb.snd_wnd > 0 && tcb.persist_deadline.is_some() {
-                    tcb.persist_deadline = None;
+                if tcb.snd_wnd > 0 && handles.is_armed(TcpTimerKind::Persist) {
+                    handles.cancel_timer(TcpTimerKind::Persist, wheel);
                     tcb.persist_backoff = 0;
                 }
 
@@ -817,9 +839,13 @@ impl TcpHandler {
                 // Defer ACK (delayed ACK) — defer to poll_send for piggyback opportunity.
                 tcb.ack_delay_count += 1;
                 tcb.ack_pending = true;
-                if tcb.delayed_ack_deadline.is_none() {
-                    tcb.delayed_ack_deadline =
-                        Some(now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms));
+                if !handles.is_armed(TcpTimerKind::DelayedAck) {
+                    handles.arm(
+                        TcpTimerKind::DelayedAck,
+                        key,
+                        now + coarsetime::Duration::from_millis(tcb.delayed_ack_ms),
+                        wheel,
+                    );
                 }
             } else if crate::net::wire::tcp::seq_lt(rcv_nxt, seg_seq) {
                 // Out-of-order data.

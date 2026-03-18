@@ -4,6 +4,7 @@ use crate::{
     net::{
         NeighborHandler, PmtuCache,
         handler::{ipv4::Ipv4Handler, ipv6::Ipv6Handler, tcp::TcpHandler, udp::UdpHandler},
+        timer_wheel::TimerWheel,
         wire::ethernet::{EtherTypes, EthernetFrame},
     },
     xdp::frame::{Frame, FrameBuffer},
@@ -24,6 +25,7 @@ impl EthernetHandler {
         neighbor_handler: &NeighborHandler,
         pmtu: &mut PmtuCache,
         now: Instant,
+        wheel: &mut TimerWheel,
         free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
@@ -38,6 +40,7 @@ impl EthernetHandler {
                     neighbor_handler,
                     pmtu,
                     now,
+                    wheel,
                     free_frames,
                     rx_return,
                     tx_return,
@@ -51,6 +54,7 @@ impl EthernetHandler {
                     tcp_handler,
                     pmtu,
                     now,
+                    wheel,
                     free_frames,
                     rx_return,
                     tx_return,
@@ -178,6 +182,7 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
         eth.handle(
             frame,
             &mut ipv4,
@@ -187,6 +192,7 @@ mod tests {
             &neighbor,
             &mut pmtu,
             now,
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -206,6 +212,7 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
         eth.handle(
             frame,
             &mut ipv4,
@@ -215,6 +222,7 @@ mod tests {
             &neighbor,
             &mut pmtu,
             now,
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -237,6 +245,7 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
         eth.handle(
             frame,
             &mut ipv4,
@@ -246,6 +255,7 @@ mod tests {
             &neighbor,
             &mut pmtu,
             now,
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -268,6 +278,7 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
         eth.handle(
             frame,
             &mut ipv4,
@@ -277,6 +288,7 @@ mod tests {
             &neighbor,
             &mut pmtu,
             now,
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -297,6 +309,7 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
         eth.handle(
             frame,
             &mut ipv4,
@@ -306,6 +319,7 @@ mod tests {
             &neighbor,
             &mut pmtu,
             now,
+            &mut wheel,
             &mut BasicFrameBuffer::new(4),
             &mut rx,
             &mut tx,
@@ -339,6 +353,7 @@ mod tests {
             let len = data.len();
             let frame = Frame::new(0, &mut data, len, false);
 
+            let mut wheel = TimerWheel::new(0);
             eth.handle(
                 frame,
                 &mut ipv4,
@@ -348,6 +363,7 @@ mod tests {
                 &neighbor,
                 &mut pmtu,
                 now,
+                &mut wheel,
                 &mut BasicFrameBuffer::new(4),
                 &mut rx,
                 &mut tx,

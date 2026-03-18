@@ -7,6 +7,7 @@ fn established_receives_in_order_data() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -29,6 +30,7 @@ fn established_receives_in_order_data() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -50,6 +52,7 @@ fn established_receives_in_order_data() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -78,6 +81,7 @@ fn established_receives_in_order_data() {
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -113,6 +117,7 @@ fn established_receives_in_order_data() {
     handler.process_ipv4(
         Frame::new(3, leak(data2), data2_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -129,6 +134,7 @@ fn established_receives_in_order_data() {
     // poll_send generates pure ACK since no data to piggyback.
     handler.poll_send(
         coarsetime::Instant::now(),
+        &mut wheel,
         nh.local_mac(),
         &nh,
         &mut free,
@@ -155,6 +161,7 @@ fn established_out_of_order_reassembly() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -177,6 +184,7 @@ fn established_out_of_order_reassembly() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -198,6 +206,7 @@ fn established_out_of_order_reassembly() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -222,6 +231,7 @@ fn established_out_of_order_reassembly() {
     handler.process_ipv4(
         Frame::new(2, leak(seg2), seg2_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -251,6 +261,7 @@ fn established_out_of_order_reassembly() {
     handler.process_ipv4(
         Frame::new(3, leak(seg1), seg1_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -283,6 +294,7 @@ fn poll_send_builds_data_segment() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
 
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
@@ -305,6 +317,7 @@ fn poll_send_builds_data_segment() {
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -326,6 +339,7 @@ fn poll_send_builds_data_segment() {
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -341,7 +355,15 @@ fn poll_send_builds_data_segment() {
     handler.first_connection_mut().snd_wnd = 65535;
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(tx.num_frames(), 1, "data segment built");
     let tcb = handler.first_connection();
@@ -361,6 +383,7 @@ fn frame_accounting_through_data_transfer() {
     let mut free = BasicFrameBuffer::new(64);
     let mut rx = BasicFrameBuffer::new(64);
     let mut tx = BasicFrameBuffer::new(64);
+    let mut wheel = new_wheel();
 
     for i in 0..32 {
         free.push(alloc_free_frame(100 + i));
@@ -385,6 +408,7 @@ fn frame_accounting_through_data_transfer() {
     handler.process_ipv4(
         Frame::new(0, leak(syn), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -406,6 +430,7 @@ fn frame_accounting_through_data_transfer() {
     handler.process_ipv4(
         Frame::new(1, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -429,6 +454,7 @@ fn frame_accounting_through_data_transfer() {
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -452,6 +478,7 @@ fn frame_accounting_through_data_transfer() {
     handler.process_ipv4(
         Frame::new(3, leak(data2), data2_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -471,17 +498,27 @@ fn poll_send_sets_psh_on_last_segment() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Write small data (< MSS) into send buffer.
     handler.first_connection_mut().send_buffer.write(b"Hello");
 
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(tx.num_frames(), 1, "expected one data segment");
     let frame = tx.pop().unwrap();
@@ -508,13 +545,15 @@ fn poll_send_no_psh_on_first_segment_when_more_data() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     // Allocate frames large enough for MSS-sized segments (ETH+IP+TCP+1460).
     for i in 0..16 {
         let buf = leak(vec![0u8; 2048]);
         free.push(Frame::new(2000 + i, buf, 2048, false));
     }
 
-    let _server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let _server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Write more than 1 MSS of data.
     let mss = handler.first_connection().eff_snd_mss as usize;
@@ -528,7 +567,15 @@ fn poll_send_no_psh_on_first_segment_when_more_data() {
 
     let now = coarsetime::Instant::now();
     // poll_send now sends all segments in one call (fills the window).
-    handler.poll_send(now, nh.local_mac(), &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     assert_eq!(
         tx.num_frames(),
@@ -567,6 +614,7 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
     let mut free = BasicFrameBuffer::new(16);
     let mut rx = BasicFrameBuffer::new(16);
     let mut tx = BasicFrameBuffer::new(16);
+    let mut wheel = new_wheel();
 
     for i in 0..8 {
         free.push(alloc_free_frame(100 + i));
@@ -601,6 +649,7 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
     handler.process_ipv4(
         Frame::new(0, leak(syn), syn_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -624,6 +673,7 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
     handler.process_ipv4(
         Frame::new(1, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -658,6 +708,7 @@ fn rcv_nxt_advances_only_by_bytes_written_to_recv_buffer() {
     handler.process_ipv4(
         Frame::new(2, leak(data), data_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -686,11 +737,13 @@ fn fin_with_data_transitions_to_close_wait() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         free.push(alloc_free_frame(100 + i));
     }
 
-    let server_iss = establish_connection(&mut handler, &nh, &mut free, &mut rx, &mut tx);
+    let server_iss =
+        establish_connection(&mut handler, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
     // Send data+FIN in a single segment.
     let payload = b"final data";
@@ -710,6 +763,7 @@ fn fin_with_data_transitions_to_close_wait() {
     handler.process_ipv4(
         Frame::new(2, leak(data_fin), data_fin_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
@@ -744,6 +798,7 @@ fn fast_path_with_timestamps() {
     let mut free = BasicFrameBuffer::new(32);
     let mut rx = BasicFrameBuffer::new(32);
     let mut tx = BasicFrameBuffer::new(32);
+    let mut wheel = new_wheel();
     for i in 0..16 {
         let buf = leak(vec![0u8; 2048]);
         free.push(Frame::new(100 + i, buf, 2048, false));
@@ -756,8 +811,15 @@ fn fast_path_with_timestamps() {
         ecn: false,
         ..TcpConfig::default()
     };
-    let _client_iss =
-        active_open_handshake_with_config(&mut handler, &nh, config, &mut free, &mut rx, &mut tx);
+    let _client_iss = active_open_handshake_with_config(
+        &mut handler,
+        &mut wheel,
+        &nh,
+        config,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
 
     // Simulate sending data so snd_nxt > snd_una.
     let tcb = handler.first_connection_mut();
@@ -789,6 +851,7 @@ fn fast_path_with_timestamps() {
     handler.process_ipv4(
         Frame::new(60, leak(data_seg), data_seg_len, false),
         coarsetime::Instant::now(),
+        &mut wheel,
         &nh,
         &mut free,
         &mut rx,
