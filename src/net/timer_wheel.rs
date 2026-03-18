@@ -401,4 +401,84 @@ mod tests {
         let fired = wheel.advance(50);
         assert!(fired.is_empty());
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4: Cascade verification tests
+    // -----------------------------------------------------------------------
+
+    /// Arm at 300 ms (goes to middle tier). Advance to 256 (triggers
+    /// inner→middle cascade). The timer should now live in inner tier slot 44
+    /// (300 & 0xFF == 44) but must NOT yet have fired.
+    #[test]
+    fn cascade_middle_to_inner() {
+        let mut wheel = TimerWheel::new(0);
+        let handle = wheel.arm(TimerId(42), 300);
+        assert!(wheel.is_armed(handle));
+
+        // Advancing to 256 crosses the inner wrap boundary and cascades tier 1.
+        let fired = wheel.advance(256);
+        assert!(fired.is_empty(), "timer not due yet; should not fire");
+
+        // After cascade the entry should be in inner tier slot 44 (300 & 0xFF).
+        let expected_slot = 300usize & 0xFF; // 44
+        assert!(
+            wheel.tiers[0].slots[expected_slot].head.is_some(),
+            "cascaded entry should now be in inner slot {expected_slot}"
+        );
+    }
+
+    /// Arm at 300 ms. Advance all the way to 301. The timer must fire.
+    #[test]
+    fn cascade_fires_on_correct_tick() {
+        let mut wheel = TimerWheel::new(0);
+        wheel.arm(TimerId(7), 300);
+        let fired = wheel.advance(301);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0], TimerId(7));
+    }
+
+    /// Arm at 70_000 ms (outer tier). Advance to 65_536 (triggers
+    /// middle→outer cascade). The entry should now be in the middle tier.
+    #[test]
+    fn cascade_outer_to_middle() {
+        let mut wheel = TimerWheel::new(0);
+        let handle = wheel.arm(TimerId(99), 70_000);
+        assert!(wheel.is_armed(handle));
+
+        // 65_536 == 256 * 256; crossing this wraps the middle wheel and
+        // triggers a cascade from the outer tier.
+        let fired = wheel.advance(65_536);
+        assert!(fired.is_empty(), "timer not due yet");
+
+        // After cascade, entry should be in middle tier, not outer.
+        // Outer tier slot for 70_000: (70_000 >> 16) & 0xFF == 1
+        assert!(
+            wheel.tiers[2].slots[1].head.is_none(),
+            "outer slot should be empty after cascade"
+        );
+        // Middle tier: delta from 65_536 to 70_000 is 4_464 < 65_536, and
+        // slot = (70_000 >> 8) & 0xFF == 273 & 0xFF == 17.
+        let expected_slot = (70_000usize >> 8) & 0xFF; // 17
+        assert!(
+            wheel.tiers[1].slots[expected_slot].head.is_some(),
+            "cascaded entry should now be in middle slot {expected_slot}"
+        );
+    }
+
+    /// Arm at 300, 310, 500. Advance to 311. Timers at 300 and 310 must fire;
+    /// the one at 500 must not.
+    #[test]
+    fn cascade_multiple_entries() {
+        let mut wheel = TimerWheel::new(0);
+        wheel.arm(TimerId(1), 300);
+        wheel.arm(TimerId(2), 310);
+        wheel.arm(TimerId(3), 500);
+
+        let fired = wheel.advance(311);
+        assert_eq!(fired.len(), 2, "exactly two timers should fire");
+
+        let mut ids: Vec<u64> = fired.iter().map(|t| t.0).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2]);
+    }
 }
