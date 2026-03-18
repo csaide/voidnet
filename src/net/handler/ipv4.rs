@@ -274,7 +274,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
 
         let frame = Frame::new(0, &mut data, 30, false);
 
@@ -308,7 +308,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -340,7 +340,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -372,7 +372,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -412,7 +412,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -444,7 +444,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -501,7 +501,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
 
         let frame = Frame::new(0, &mut data, frame_len, false);
         handler.handle(
@@ -532,7 +532,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
 
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
@@ -566,7 +566,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
 
         let frame = Frame::new(0, &mut data, raw.len(), false);
 

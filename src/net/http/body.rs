@@ -297,7 +297,7 @@ mod tests {
         };
         let event_queue = LocalQueue::new(16);
         let wheel = std::rc::Rc::new(std::cell::UnsafeCell::new(
-            crate::net::timer_wheel::TimerWheel::new(0),
+            crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now()),
         ));
         let stream = crate::net::socket::TcpStream::from_accepted_for_test(
             0,

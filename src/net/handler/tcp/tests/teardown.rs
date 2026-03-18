@@ -1049,7 +1049,7 @@ fn time_wait_evicted_after_deadline() {
     let key = handler.first_connection_key();
     let handle = wheel.arm(
         super::super::timer_kinds::tcp_timer_id(key, TcpTimerKind::TimeWait),
-        0,
+        coarsetime::Instant::now(),
     );
     handler.timer_handles[key].set(TcpTimerKind::TimeWait, handle);
 
@@ -1442,7 +1442,11 @@ fn shutdown_sets_pending_fin() {
     );
 
     // Call initiate_close (the handler method that shutdown() delegates to).
-    handler.initiate_close(handler.first_connection_key(), &mut wheel);
+    handler.initiate_close(
+        handler.first_connection_key(),
+        coarsetime::Instant::now(),
+        &mut wheel,
+    );
 
     // Verify pending_fin is now true.
     assert!(
@@ -1520,7 +1524,11 @@ fn half_close_writes_blocked_reads_continue() {
     assert_eq!(handler.first_connection().state, TcpState::Established);
 
     // Initiate half-close (shutdown write side).
-    handler.initiate_close(handler.first_connection_key(), &mut wheel);
+    handler.initiate_close(
+        handler.first_connection_key(),
+        coarsetime::Instant::now(),
+        &mut wheel,
+    );
 
     // Verify pending_fin is set but state is still Established (FIN not sent yet).
     assert!(
@@ -1748,7 +1756,7 @@ fn fin_retransmitted_in_fin_wait1() {
     // Arm retransmit timer at tick 0 (already expired).
     let handle = wheel.arm(
         super::super::timer_kinds::tcp_timer_id(key, TcpTimerKind::Retransmit),
-        0,
+        coarsetime::Instant::now(),
     );
     handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
 
@@ -1933,7 +1941,7 @@ fn setup_fin_wait1(
     let server_iss = establish_connection(handler, wheel, nh, free, rx, tx);
     handler.first_connection_mut().pending_fin = true;
     let now = coarsetime::Instant::now();
-    handler.poll_send(now, 0, wheel, nh.local_mac(), nh, free, rx, tx);
+    handler.poll_send(now, wheel, nh.local_mac(), nh, free, rx, tx);
     while tx.pop().is_some() {}
     assert_eq!(handler.first_connection().state, TcpState::FinWait1);
     let fin_seq = handler.first_connection().fin_seq.unwrap();
@@ -1966,7 +1974,6 @@ fn setup_fin_wait2(
     handler.process_ipv4(
         Frame::new(10, leak(ack), ack_len, false),
         coarsetime::Instant::now(),
-        0,
         wheel,
         nh,
         free,
@@ -2004,7 +2011,6 @@ fn setup_time_wait(
     handler.process_ipv4(
         Frame::new(11, leak(fin), fin_len, false),
         coarsetime::Instant::now(),
-        0,
         wheel,
         nh,
         free,
@@ -2042,7 +2048,6 @@ fn setup_close_wait(
     handler.process_ipv4(
         Frame::new(10, leak(fin), fin_len, false),
         coarsetime::Instant::now(),
-        0,
         wheel,
         nh,
         free,

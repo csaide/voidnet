@@ -182,7 +182,7 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
         eth.handle(
             frame,
             &mut ipv4,
@@ -212,7 +212,7 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
         eth.handle(
             frame,
             &mut ipv4,
@@ -245,7 +245,7 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
         eth.handle(
             frame,
             &mut ipv4,
@@ -278,7 +278,7 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
         eth.handle(
             frame,
             &mut ipv4,
@@ -309,7 +309,7 @@ mod tests {
         let len = data.len();
         let frame = Frame::new(0, &mut data, len, false);
 
-        let mut wheel = crate::net::timer_wheel::TimerWheel::new(0);
+        let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
         eth.handle(
             frame,
             &mut ipv4,
@@ -353,7 +353,7 @@ mod tests {
             let len = data.len();
             let frame = Frame::new(0, &mut data, len, false);
 
-            let mut wheel = TimerWheel::new(0);
+            let mut wheel = TimerWheel::new(coarsetime::Instant::now());
             eth.handle(
                 frame,
                 &mut ipv4,

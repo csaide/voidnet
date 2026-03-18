@@ -24,7 +24,7 @@ use super::timer_kinds::unpack_tcp_timer_id;
 
 /// Test-only helper: creates a TimerWheel starting at tick 0.
 pub(super) fn new_wheel() -> TimerWheel {
-    TimerWheel::new(0)
+    TimerWheel::new(coarsetime::Instant::now())
 }
 
 /// Test-only helper: advance the wheel far enough to fire all pending timers,
@@ -39,16 +39,16 @@ pub(super) fn poll_timers<'umem>(
     rx: &mut impl crate::xdp::frame::FrameBuffer<'umem>,
     tx: &mut impl crate::xdp::frame::FrameBuffer<'umem>,
 ) {
-    let fired = wheel.advance(u64::MAX / 2);
+    let fired = wheel.drain_all();
     for id in fired {
         let (key, kind) = unpack_tcp_timer_id(id);
-        handler.handle_timer(key, kind, now, 0, wheel, src_mac, nh, free, rx, tx);
+        handler.handle_timer(key, kind, now, wheel, src_mac, nh, free, rx, tx);
     }
 }
 
-/// Test-only helper: advance the wheel and fire any TimeWait timers to evict stale connections.
+/// Test-only helper: drain the wheel and fire any TimeWait timers to evict stale connections.
 pub(super) fn evict_stale(handler: &mut TcpHandler, wheel: &mut TimerWheel) {
-    let fired = wheel.advance(u64::MAX / 2);
+    let fired = wheel.drain_all();
     for id in fired {
         let (key, kind) = unpack_tcp_timer_id(id);
         if matches!(kind, TcpTimerKind::TimeWait) {
@@ -277,7 +277,6 @@ pub(super) fn establish_connection(
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
-        0,
         wheel,
         nh,
         free,
@@ -300,7 +299,6 @@ pub(super) fn establish_connection(
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
-        0,
         wheel,
         nh,
         free,
@@ -343,7 +341,6 @@ pub(super) fn establish_connection_with_sack(
     handler.process_ipv4(
         Frame::new(0, leak(syn_data), syn_len, false),
         coarsetime::Instant::now(),
-        0,
         wheel,
         nh,
         free,
@@ -369,7 +366,6 @@ pub(super) fn establish_connection_with_sack(
     handler.process_ipv4(
         Frame::new(1, leak(ack_data), ack_len, false),
         coarsetime::Instant::now(),
-        0,
         wheel,
         nh,
         free,
@@ -411,7 +407,6 @@ pub(super) fn active_open_handshake(
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
-            0,
             wheel,
             free,
             tx,
@@ -437,7 +432,6 @@ pub(super) fn active_open_handshake(
     handler.process_ipv4(
         Frame::new(50, leak(syn_ack), syn_ack_len, false),
         coarsetime::Instant::now(),
-        0,
         wheel,
         nh,
         free,
@@ -481,7 +475,6 @@ pub(super) fn active_open_handshake_with_config(
             src_mac,
             dst_mac,
             coarsetime::Instant::now(),
-            0,
             wheel,
             config,
             free,
@@ -507,7 +500,6 @@ pub(super) fn active_open_handshake_with_config(
     handler.process_ipv4(
         Frame::new(50, leak(syn_ack), syn_ack_len, false),
         coarsetime::Instant::now(),
-        0,
         wheel,
         nh,
         free,

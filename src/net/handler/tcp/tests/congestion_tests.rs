@@ -205,7 +205,10 @@ fn frto_restores_cwnd_on_spurious_rto() {
 
     // Trigger RTO by arming retransmit at tick 0.
     let key = handler.first_connection_key();
-    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    let handle = wheel.arm(
+        tcp_timer_id(key, TcpTimerKind::Retransmit),
+        coarsetime::Instant::now(),
+    );
     handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     let rto_time = now + coarsetime::Duration::from_millis(1100);
     poll_timers(

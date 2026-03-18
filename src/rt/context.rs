@@ -138,7 +138,7 @@ mod tests {
             ),
             udp_handler: Rc::new(UnsafeCell::new(UdpHandler::new(256, false))),
             tcp_handler: Rc::new(UnsafeCell::new(TcpHandler::new(false, false))),
-            wheel: Rc::new(UnsafeCell::new(TimerWheel::new(0))),
+            wheel: Rc::new(UnsafeCell::new(TimerWheel::new(coarsetime::Instant::now()))),
             base_instant: coarsetime::Instant::now(),
             tx_offload: false,
             task_queue: UnsafeCell::new(TaskQueue::new()),

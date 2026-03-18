@@ -77,7 +77,10 @@ fn persist_probe_sent_when_deadline_expires() {
     assert_eq!(handler.first_connection().persist_backoff, 0);
 
     // Simulate time passing beyond the deadline by arming persist at tick 0.
-    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Persist), 0);
+    let handle = wheel.arm(
+        tcp_timer_id(key, TcpTimerKind::Persist),
+        coarsetime::Instant::now(),
+    );
     handler.timer_handles[key].set(TcpTimerKind::Persist, handle);
 
     // Fire the persist timer via poll_timers, then let poll_send handle the probe.
@@ -214,7 +217,10 @@ fn persist_backoff_caps_at_six() {
 
     // Fire the persist probe multiple times (more than 6) by arming at tick 0.
     for i in 0..10 {
-        let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Persist), 0);
+        let handle = wheel.arm(
+            tcp_timer_id(key, TcpTimerKind::Persist),
+            coarsetime::Instant::now(),
+        );
         handler.timer_handles[key].set(TcpTimerKind::Persist, handle);
         poll_timers(
             &mut handler,

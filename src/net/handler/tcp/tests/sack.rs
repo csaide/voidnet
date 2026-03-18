@@ -393,7 +393,10 @@ fn sack_scoreboard_cleared_on_rto() {
     // Set up RTO: arm the retransmit timer at tick 0 (in the past).
     let now = coarsetime::Instant::now();
     let key = handler.first_connection_key();
-    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    let handle = wheel.arm(
+        tcp_timer_id(key, TcpTimerKind::Retransmit),
+        coarsetime::Instant::now(),
+    );
     handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     handler.first_connection_mut().rto_backoff = 0;
 

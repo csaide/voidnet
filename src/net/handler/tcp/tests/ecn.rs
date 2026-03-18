@@ -433,7 +433,10 @@ fn ecn_ect_not_set_on_retransmit() {
 
     // Expire the retransmit timer to trigger RTO retransmit.
     let key = handler.first_connection_key();
-    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::Retransmit), 0);
+    let handle = wheel.arm(
+        tcp_timer_id(key, TcpTimerKind::Retransmit),
+        coarsetime::Instant::now(),
+    );
     handler.timer_handles[key].set(TcpTimerKind::Retransmit, handle);
     poll_timers(
         &mut handler,
@@ -649,7 +652,10 @@ fn ecn_ece_sent_when_ce_received() {
     if tx.num_frames() == 0 {
         let now = coarsetime::Instant::now();
         let key = handler.first_connection_key();
-        let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::DelayedAck), 0);
+        let handle = wheel.arm(
+            tcp_timer_id(key, TcpTimerKind::DelayedAck),
+            coarsetime::Instant::now(),
+        );
         handler.timer_handles[key].set(TcpTimerKind::DelayedAck, handle);
         poll_timers(
             &mut handler,

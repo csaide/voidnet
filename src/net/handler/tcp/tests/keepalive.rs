@@ -464,7 +464,7 @@ fn linger_zero_sends_rst_on_poll_send() {
 
     // Call initiate_close — should set pending_fin and arm linger timer.
     let key = handler.first_connection_key();
-    handler.initiate_close(key, &mut wheel);
+    handler.initiate_close(key, coarsetime::Instant::now(), &mut wheel);
     assert!(
         handler.first_connection().pending_fin,
         "pending_fin should be set"
@@ -573,7 +573,7 @@ fn linger_timeout_sets_deadline() {
 
     // Call initiate_close.
     let key = handler.first_connection_key();
-    handler.initiate_close(key, &mut wheel);
+    handler.initiate_close(key, coarsetime::Instant::now(), &mut wheel);
     assert!(
         handler.first_connection().pending_fin,
         "pending_fin should be set"
@@ -669,7 +669,7 @@ fn linger_none_normal_close() {
     );
     // Call initiate_close.
     let key = handler.first_connection_key();
-    handler.initiate_close(key, &mut wheel);
+    handler.initiate_close(key, coarsetime::Instant::now(), &mut wheel);
 
     // Verify pending_fin is true and linger timer is NOT armed (no linger set).
     assert!(
@@ -1046,7 +1046,7 @@ fn linger_zero_immediate_rst() {
 
     // Initiate close — linger(0) sets immediate deadline.
     let key = handler.first_connection_key();
-    handler.initiate_close(key, &mut wheel);
+    handler.initiate_close(key, coarsetime::Instant::now(), &mut wheel);
     assert!(
         handler.first_connection().pending_fin,
         "pending_fin should be set"

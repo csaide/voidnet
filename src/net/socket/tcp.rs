@@ -772,7 +772,9 @@ mod tests {
         let key = handler.insert_connection(tcb);
         let handler_rc = Rc::new(UnsafeCell::new(handler));
 
-        let wheel_rc = Rc::new(UnsafeCell::new(crate::net::timer_wheel::TimerWheel::new(0)));
+        let wheel_rc = Rc::new(UnsafeCell::new(crate::net::timer_wheel::TimerWheel::new(
+            coarsetime::Instant::now(),
+        )));
         TcpStream::from_accepted_for_test(
             key,
             conn_id,

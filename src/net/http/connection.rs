@@ -129,7 +129,9 @@ mod tests {
             remote_port: 0,
         };
         let event_queue = LocalQueue::new(16);
-        let wheel = Rc::new(UnsafeCell::new(crate::net::timer_wheel::TimerWheel::new(0)));
+        let wheel = Rc::new(UnsafeCell::new(crate::net::timer_wheel::TimerWheel::new(
+            coarsetime::Instant::now(),
+        )));
         let stream = TcpStream::from_accepted_for_test(
             0,
             conn_id,
@@ -150,7 +152,9 @@ mod tests {
             remote_port: 0,
         };
         let event_queue = LocalQueue::new(16);
-        let wheel = Rc::new(UnsafeCell::new(crate::net::timer_wheel::TimerWheel::new(0)));
+        let wheel = Rc::new(UnsafeCell::new(crate::net::timer_wheel::TimerWheel::new(
+            coarsetime::Instant::now(),
+        )));
         let stream = TcpStream::from_accepted_for_test(
             0,
             conn_id,

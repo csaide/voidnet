@@ -574,7 +574,7 @@ fn delayed_ack_timer_flushes_pending_ack() {
 
     // Before deadline — should NOT flush (no timer armed).
     // Advance wheel by 0 — nothing fires.
-    let fired = wheel.advance(0);
+    let fired = wheel.advance(coarsetime::Instant::now());
     for timer_id in fired {
         let (k, kind) = super::super::timer_kinds::unpack_tcp_timer_id(timer_id);
         handler.handle_timer(
@@ -592,7 +592,10 @@ fn delayed_ack_timer_flushes_pending_ack() {
     assert_eq!(tx.num_frames(), 0, "should not flush before deadline");
 
     // After deadline — arm and fire the delayed ACK timer.
-    let handle = wheel.arm(tcp_timer_id(key, TcpTimerKind::DelayedAck), 0);
+    let handle = wheel.arm(
+        tcp_timer_id(key, TcpTimerKind::DelayedAck),
+        coarsetime::Instant::now(),
+    );
     handler.timer_handles[key].set(TcpTimerKind::DelayedAck, handle);
     let later = now + coarsetime::Duration::from_millis(50);
     poll_timers(
