@@ -514,7 +514,6 @@ mod tests {
             wheel: Rc::new(UnsafeCell::new(crate::net::timer_wheel::TimerWheel::new(
                 coarsetime::Instant::now(),
             ))),
-            base_instant: coarsetime::Instant::now(),
             tx_offload: false,
             task_queue: UnsafeCell::new(TaskQueue::new()),
             capacity_wakers: UnsafeCell::new(Vec::new()),

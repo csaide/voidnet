@@ -1,121 +1,8 @@
-use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
+use super::super::timer_kinds::TcpTimerKind;
 use super::*;
 
 #[test]
 fn cubic_slow_start_on_new_ack() {
-    let mut wheel = new_wheel();
-    let mut handler = new_handler();
-    let nh = new_neighbor_handler();
-    let mut free = BasicFrameBuffer::new(32);
-    let mut rx = BasicFrameBuffer::new(32);
-    let mut tx = BasicFrameBuffer::new(32);
-    for i in 0..16 {
-        free.push(alloc_free_frame(100 + i));
-    }
-
-    // Complete handshake.
-    let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
-    let syn_data = build_tcp_frame(
-        REMOTE_IP,
-        LOCAL_IP,
-        12345,
-        80,
-        1000,
-        0,
-        flags::SYN,
-        65535,
-        &[],
-    );
-    let syn_len = syn_data.len();
-    handler.process_ipv4(
-        Frame::new(0, leak(syn_data), syn_len, false),
-        coarsetime::Instant::now(),
-        &mut wheel,
-        &nh,
-        &mut free,
-        &mut rx,
-        &mut tx,
-    );
-    let server_iss = handler.first_connection().iss;
-    let ack_data = build_tcp_frame(
-        REMOTE_IP,
-        LOCAL_IP,
-        12345,
-        80,
-        1001,
-        server_iss.wrapping_add(1),
-        flags::ACK,
-        65535,
-        &[],
-    );
-    let ack_len = ack_data.len();
-    handler.process_ipv4(
-        Frame::new(1, leak(ack_data), ack_len, false),
-        coarsetime::Instant::now(),
-        &mut wheel,
-        &nh,
-        &mut free,
-        &mut rx,
-        &mut tx,
-    );
-    while tx.pop().is_some() {}
-
-    let cwnd_before = handler.first_connection().cubic.cwnd;
-    let mss = handler.first_connection().eff_snd_mss;
-
-    // Send data and get it ACKed.
-    handler
-        .first_connection_mut()
-        .send_buffer
-        .write(&[0xAA; 1460]);
-    handler.first_connection_mut().snd_wnd = 65535;
-    let now = coarsetime::Instant::now();
-    handler.poll_send(
-        now,
-        &mut wheel,
-        nh.local_mac(),
-        &nh,
-        &mut free,
-        &mut rx,
-        &mut tx,
-    );
-    while tx.pop().is_some() {}
-
-    // ACK the data.
-    let snd_nxt = handler.first_connection().snd_nxt;
-    let ack = build_tcp_frame(
-        REMOTE_IP,
-        LOCAL_IP,
-        12345,
-        80,
-        1001,
-        snd_nxt,
-        flags::ACK,
-        65535,
-        &[],
-    );
-    let ack_len = ack.len();
-    handler.process_ipv4(
-        Frame::new(2, leak(ack), ack_len, false),
-        coarsetime::Instant::now(),
-        &mut wheel,
-        &nh,
-        &mut free,
-        &mut rx,
-        &mut tx,
-    );
-
-    // In slow start: cwnd should increase by MSS (CUBIC slow start same as Reno).
-    let cwnd_after = handler.first_connection().cubic.cwnd;
-    assert_eq!(
-        cwnd_after,
-        cwnd_before + mss as u32,
-        "slow start: cwnd += MSS"
-    );
-}
-
-#[test]
-fn frto_restores_cwnd_on_spurious_rto() {
     let mut wheel = new_wheel();
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
@@ -171,7 +58,126 @@ fn frto_restores_cwnd_on_spurious_rto() {
         &mut rx,
         &mut tx,
     );
-    while tx.pop().is_some() {}
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
+
+    let cwnd_before = handler.first_connection().cubic.cwnd;
+    let mss = handler.first_connection().eff_snd_mss;
+
+    // Send data and get it ACKed.
+    handler
+        .first_connection_mut()
+        .send_buffer
+        .write(&[0xAA; 1460]);
+    handler.first_connection_mut().snd_wnd = 65535;
+    let now = coarsetime::Instant::now();
+    handler.poll_send(
+        now,
+        &mut wheel,
+        nh.local_mac(),
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
+
+    // ACK the data.
+    let snd_nxt = handler.first_connection().snd_nxt;
+    let ack = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        1001,
+        snd_nxt,
+        flags::ACK,
+        65535,
+        &[],
+    );
+    let ack_len = ack.len();
+    handler.process_ipv4(
+        Frame::new(2, leak(ack), ack_len, false),
+        coarsetime::Instant::now(),
+        &mut wheel,
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+
+    // In slow start: cwnd should increase by MSS (CUBIC slow start same as Reno).
+    let cwnd_after = handler.first_connection().cubic.cwnd;
+    assert_eq!(
+        cwnd_after,
+        cwnd_before + mss as u32,
+        "slow start: cwnd += MSS"
+    );
+}
+
+#[test]
+fn frto_restores_cwnd_on_spurious_rto() {
+    let mut wheel = new_wheel();
+    let mut handler = new_handler();
+    let nh = new_neighbor_handler();
+    let mut free = BasicFrameBuffer::new(128);
+    let mut rx = BasicFrameBuffer::new(128);
+    let mut tx = BasicFrameBuffer::new(128);
+    for i in 0..64 {
+        free.push(alloc_free_frame(100 + i));
+    }
+
+    // Complete handshake.
+    let _accept_queue = handler.listen(IpAddress::V4(LOCAL_IP), 80, 128).unwrap();
+    let syn_data = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        1000,
+        0,
+        flags::SYN,
+        65535,
+        &[],
+    );
+    let syn_len = syn_data.len();
+    handler.process_ipv4(
+        Frame::new(0, leak(syn_data), syn_len, false),
+        coarsetime::Instant::now(),
+        &mut wheel,
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+    let server_iss = handler.first_connection().iss;
+    let ack_data = build_tcp_frame(
+        REMOTE_IP,
+        LOCAL_IP,
+        12345,
+        80,
+        1001,
+        server_iss.wrapping_add(1),
+        flags::ACK,
+        65535,
+        &[],
+    );
+    let ack_len = ack_data.len();
+    handler.process_ipv4(
+        Frame::new(1, leak(ack_data), ack_len, false),
+        coarsetime::Instant::now(),
+        &mut wheel,
+        &nh,
+        &mut free,
+        &mut rx,
+        &mut tx,
+    );
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
 
     // Send 2 MSS of data (poll_send sends 1 MSS per call).
     let mss = handler.first_connection_mut().eff_snd_mss as usize;
@@ -199,7 +205,9 @@ fn frto_restores_cwnd_on_spurious_rto() {
         &mut rx,
         &mut tx,
     );
-    while tx.pop().is_some() {}
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
 
     let cwnd_before_rto = handler.first_connection().cubic.cwnd;
 
@@ -222,7 +230,9 @@ fn frto_restores_cwnd_on_spurious_rto() {
         &mut rx,
         &mut tx,
     );
-    while tx.pop().is_some() {}
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
 
     // F-RTO should be active.
     assert!(

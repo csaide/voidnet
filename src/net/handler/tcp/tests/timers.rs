@@ -1,7 +1,6 @@
 use super::*;
 
-use super::super::handler::INITIAL_RTO_MS;
-use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
+use super::super::timer_kinds::TcpTimerKind;
 
 // ---------------------------------------------------------------------------
 // RTO exponential backoff — verify successive retransmissions double the RTO
@@ -46,7 +45,6 @@ fn rto_exponential_backoff_doubles_on_successive_retransmits() {
         &mut wheel,
     );
     handler.first_connection_mut().rto_backoff = 0;
-    let rto_before = handler.first_connection().rto;
 
     poll_timers(
         &mut handler,

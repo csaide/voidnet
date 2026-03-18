@@ -1,4 +1,4 @@
-use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
+use super::super::timer_kinds::TcpTimerKind;
 use super::*;
 
 #[test]
@@ -59,7 +59,9 @@ fn fast_retransmit_on_three_dup_acks() {
         &mut rx,
         &mut tx,
     );
-    while tx.pop().is_some() {}
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
 
     // Put data in send buffer and send it.
     handler.first_connection_mut().send_buffer.write(b"AAAA");
@@ -74,7 +76,9 @@ fn fast_retransmit_on_three_dup_acks() {
         &mut rx,
         &mut tx,
     );
-    while tx.pop().is_some() {} // consume sent segment
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    } // consume sent segment
 
     let cwnd_before = handler.first_connection().cubic.cwnd;
 
@@ -177,7 +181,9 @@ fn rto_retransmit_on_timer_expiry() {
         &mut rx,
         &mut tx,
     );
-    while tx.pop().is_some() {}
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
 
     // Put data in send buffer and send it.
     handler.first_connection_mut().send_buffer.write(b"BBBB");
@@ -192,7 +198,9 @@ fn rto_retransmit_on_timer_expiry() {
         &mut rx,
         &mut tx,
     );
-    while tx.pop().is_some() {}
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
 
     let cwnd_before = handler.first_connection().cubic.cwnd;
 
@@ -290,7 +298,9 @@ fn rtt_estimation_updates_rto() {
         &mut rx,
         &mut tx,
     );
-    while tx.pop().is_some() {}
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
 
     // Send data.
     handler
@@ -308,7 +318,9 @@ fn rtt_estimation_updates_rto() {
         &mut rx,
         &mut tx,
     );
-    while tx.pop().is_some() {}
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
 
     // Verify last_send_time is set.
     assert!(
@@ -360,11 +372,11 @@ fn rtt_estimation_updates_rto() {
 fn limited_transmit_sends_on_first_dup_ack() {
     let mut handler = new_handler();
     let nh = new_neighbor_handler();
-    let mut free = BasicFrameBuffer::new(64);
-    let mut rx = BasicFrameBuffer::new(64);
-    let mut tx = BasicFrameBuffer::new(64);
+    let mut free = BasicFrameBuffer::new(128);
+    let mut rx = BasicFrameBuffer::new(128);
+    let mut tx = BasicFrameBuffer::new(128);
     let mut wheel = new_wheel();
-    for i in 0..32 {
+    for i in 0..64 {
         free.push(alloc_free_frame(100 + i));
     }
 
@@ -413,7 +425,9 @@ fn limited_transmit_sends_on_first_dup_ack() {
         &mut rx,
         &mut tx,
     );
-    while tx.pop().is_some() {}
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
 
     let mss = handler.first_connection().eff_snd_mss as usize;
     // Fill send buffer with 6 MSS of data, set cwnd to 3*MSS.
@@ -435,7 +449,9 @@ fn limited_transmit_sends_on_first_dup_ack() {
         &mut rx,
         &mut tx,
     );
-    while tx.pop().is_some() {}
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
 
     let snd_nxt_before = handler.first_connection().snd_nxt;
     let snd_una = handler.first_connection().snd_una;
@@ -513,7 +529,9 @@ fn rto_backoff_resets_on_new_ack() {
         &mut rx,
         &mut tx,
     );
-    while tx.pop().is_some() {}
+    while let Some(f) = tx.pop() {
+        free.push(f);
+    }
 
     // Artificially set rto_backoff as if an RTO had fired.
     let key = handler.first_connection_key();

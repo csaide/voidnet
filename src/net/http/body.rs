@@ -305,7 +305,6 @@ mod tests {
             event_queue,
             handler,
             wheel,
-            coarsetime::Instant::now(),
         );
 
         let mut buf = ReadBuffer::new(4096);

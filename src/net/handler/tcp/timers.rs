@@ -163,6 +163,7 @@ impl TcpHandler {
             return;
         };
 
+        let mut syn_sent = false;
         match tcb.state {
             TcpState::SynSent => {
                 let ts_opt = if tcb.ts_enabled {
@@ -170,7 +171,7 @@ impl TcpHandler {
                 } else {
                     None
                 };
-                SegmentBuilder::build_syn(
+                let sent = SegmentBuilder::build_syn(
                     id.local_addr,
                     id.remote_addr,
                     id.local_port,
@@ -188,6 +189,16 @@ impl TcpHandler {
                     free_frames,
                     tx_return,
                 );
+                if !sent {
+                    self.timer_handles[key].arm(
+                        TcpTimerKind::Retransmit,
+                        key,
+                        now + coarsetime::Duration::from_millis(INITIAL_RTO_MS),
+                        wheel,
+                    );
+                    return;
+                }
+                syn_sent = true;
             }
             TcpState::SynReceived => {
                 let wscale_opt = if tcb.wscale_enabled {
@@ -196,7 +207,7 @@ impl TcpHandler {
                     None
                 };
                 let ts_opt = tcb.ts_option(tsval);
-                SegmentBuilder::build_syn_ack(
+                let sent = SegmentBuilder::build_syn_ack(
                     id.local_addr,
                     id.remote_addr,
                     id.local_port,
@@ -215,13 +226,23 @@ impl TcpHandler {
                     free_frames,
                     tx_return,
                 );
+                if !sent {
+                    self.timer_handles[key].arm(
+                        TcpTimerKind::Retransmit,
+                        key,
+                        now + coarsetime::Duration::from_millis(INITIAL_RTO_MS),
+                        wheel,
+                    );
+                    return;
+                }
+                syn_sent = true;
             }
             TcpState::Established => {
                 let retransmit_len = tcb.send_buffer.available().min(tcb.eff_snd_mss as usize);
                 if retransmit_len > 0 {
                     let payload = tcb.send_buffer.peek_slices(0, retransmit_len);
                     let ts = tcb.ts_option(tsval);
-                    SegmentBuilder::build_data_from_slices(
+                    let sent = SegmentBuilder::build_data_from_slices(
                         id.local_addr,
                         id.remote_addr,
                         id.local_port,
@@ -239,6 +260,18 @@ impl TcpHandler {
                         free_frames,
                         tx_return,
                     );
+                    if !sent {
+                        // No frame available — re-arm timer to retry without
+                        // corrupting congestion state.
+                        self.timer_handles[key].arm(
+                            TcpTimerKind::Retransmit,
+                            key,
+                            now + coarsetime::Duration::from_millis(tcb.rto),
+                            wheel,
+                        );
+                        self.send_tracker.mark(SendReady(key));
+                        return;
+                    }
                 }
                 // F-RTO + CUBIC RTO response.
                 tcb.frto.enter(tcb.snd_una);
@@ -288,18 +321,15 @@ impl TcpHandler {
         }
 
         // Exponential backoff for SYN/SYN-ACK states.
-        match tcb.state {
-            TcpState::SynSent | TcpState::SynReceived => {
-                tcb.rto_backoff += 1;
-                let rto = INITIAL_RTO_MS << tcb.rto_backoff;
-                self.timer_handles[key].arm(
-                    TcpTimerKind::Retransmit,
-                    key,
-                    now + coarsetime::Duration::from_millis(rto),
-                    wheel,
-                );
-            }
-            _ => {} // Established handles its own backoff above.
+        if syn_sent {
+            tcb.rto_backoff += 1;
+            let rto = INITIAL_RTO_MS << tcb.rto_backoff;
+            self.timer_handles[key].arm(
+                TcpTimerKind::Retransmit,
+                key,
+                now + coarsetime::Duration::from_millis(rto),
+                wheel,
+            );
         }
     }
 
@@ -312,16 +342,32 @@ impl TcpHandler {
         &mut self,
         key: usize,
         now: Instant,
+        wheel: &mut TimerWheel,
         src_mac: crate::net::wire::ethernet::MacAddress,
         neighbor_handler: &NeighborHandler,
         free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
+        // Clear the handle — this timer has fired.
+        self.timer_handles[key].clear(TcpTimerKind::KeepAlive);
+
         let Some(tcb) = self.connections.get_mut(key) else {
             return;
         };
         if tcb.state != TcpState::Established || !tcb.keep_alive_enabled {
+            return;
+        }
+
+        if tcb.keep_alive_probes_sent >= tcb.keep_alive_count {
+            // Max probes exceeded — abort connection.
+            tcb.event_queue.push(TcpEvent::Timeout);
+            if let Some(tcb) = self.connections.get(key) {
+                Self::decrement_syn_received(&mut self.listeners, &tcb.id);
+            }
+            self.send_tracker.unmark(key);
+            self.timer_handles[key].cancel_all(wheel);
+            self.remove_connection_by_key(key);
             return;
         }
 
@@ -331,63 +377,57 @@ impl TcpHandler {
             0
         };
 
-        let idle_ms = now.duration_since(tcb.last_activity).as_millis();
-
-        let probe_threshold = if tcb.keep_alive_probes_sent == 0 {
-            tcb.keep_alive_idle_ms
-        } else {
-            tcb.keep_alive_idle_ms + tcb.keep_alive_interval_ms * tcb.keep_alive_probes_sent as u64
-        };
-
-        if idle_ms >= probe_threshold {
-            if tcb.keep_alive_probes_sent >= tcb.keep_alive_count {
-                // Max probes exceeded — abort connection.
-                tcb.event_queue.push(TcpEvent::Timeout);
-                if let Some(tcb) = self.connections.get(key) {
-                    Self::decrement_syn_received(&mut self.listeners, &tcb.id);
-                }
-                self.send_tracker.unmark(key);
-                self.remove_connection_by_key(key);
-                return;
-            }
-
-            // Send keep-alive probe: seq = snd_una - 1, no data, ACK.
-            let id = tcb.id;
-            let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
-                now,
-                &id.remote_addr,
-                &id.local_addr,
-                free_frames,
-                rx_return,
-                tx_return,
-            ) else {
-                return;
-            };
-            let ts = tcb.ts_option(tsval);
-            let ack_flags = if tcb.ecn_ce_received {
-                flags::ACK | flags::ECE
-            } else {
-                flags::ACK
-            };
-            SegmentBuilder::build_ack(
-                id.local_addr,
-                id.remote_addr,
-                id.local_port,
-                id.remote_port,
-                tcb.snd_una.wrapping_sub(1),
-                tcb.rcv_nxt,
-                tcb.advertised_window(),
-                ack_flags,
-                ts,
-                src_mac,
-                dst_mac,
-                self.tx_offload,
-                free_frames,
-                tx_return,
+        // Send keep-alive probe: seq = snd_una - 1, no data, ACK.
+        let id = tcb.id;
+        let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
+            now,
+            &id.remote_addr,
+            &id.local_addr,
+            free_frames,
+            rx_return,
+            tx_return,
+        ) else {
+            // Re-arm for retry.
+            self.timer_handles[key].arm(
+                TcpTimerKind::KeepAlive,
+                key,
+                now + coarsetime::Duration::from_millis(tcb.keep_alive_interval_ms),
+                wheel,
             );
+            return;
+        };
+        let ts = tcb.ts_option(tsval);
+        let ack_flags = if tcb.ecn_ce_received {
+            flags::ACK | flags::ECE
+        } else {
+            flags::ACK
+        };
+        SegmentBuilder::build_ack(
+            id.local_addr,
+            id.remote_addr,
+            id.local_port,
+            id.remote_port,
+            tcb.snd_una.wrapping_sub(1),
+            tcb.rcv_nxt,
+            tcb.advertised_window(),
+            ack_flags,
+            ts,
+            src_mac,
+            dst_mac,
+            self.tx_offload,
+            free_frames,
+            tx_return,
+        );
 
-            tcb.keep_alive_probes_sent += 1;
-        }
+        tcb.keep_alive_probes_sent += 1;
+
+        // Re-arm for next probe interval.
+        self.timer_handles[key].arm(
+            TcpTimerKind::KeepAlive,
+            key,
+            now + coarsetime::Duration::from_millis(tcb.keep_alive_interval_ms),
+            wheel,
+        );
     }
 
     /// Fire a zero-window (persist) probe for a single connection identified by slab key.
@@ -445,7 +485,7 @@ impl TcpHandler {
         };
 
         let ts = tcb.ts_option(tsval);
-        SegmentBuilder::build_data(
+        let sent = SegmentBuilder::build_data(
             id.local_addr,
             id.remote_addr,
             id.local_port,
@@ -461,6 +501,17 @@ impl TcpHandler {
             free_frames,
             tx_return,
         );
+
+        if !sent {
+            // No frame available — re-arm persist at base interval to retry.
+            self.timer_handles[key].arm(
+                TcpTimerKind::Persist,
+                key,
+                now + coarsetime::Duration::from_millis(tcb.rto),
+                wheel,
+            );
+            return;
+        }
 
         tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
 
@@ -579,6 +630,11 @@ impl TcpHandler {
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
+        // Guard: if a prior fire_* in this advance() batch already removed the
+        // connection (e.g. R2 timeout), the timer_handles entry is gone. Skip.
+        if !self.timer_handles.contains(key) {
+            return;
+        }
         match kind {
             TcpTimerKind::DelayedAck => {
                 self.fire_delayed_ack(
@@ -607,6 +663,7 @@ impl TcpHandler {
                 self.fire_keep_alive(
                     key,
                     now,
+                    wheel,
                     src_mac,
                     neighbor_handler,
                     free_frames,

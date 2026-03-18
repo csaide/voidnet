@@ -247,7 +247,6 @@ fn remove_connection_syn_received_generates_rst() {
     let dst_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
     let mut free = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
-    let mut wheel = new_wheel();
 
     free.push(alloc_free_frame(200));
     handler.remove_connection(&id, src_mac, dst_mac, &mut free, &mut tx);
@@ -267,7 +266,6 @@ fn remove_connection_syn_sent_no_rst() {
     let dst_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
     let mut free = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
-    let mut wheel = new_wheel();
 
     handler.remove_connection(&id, src_mac, dst_mac, &mut free, &mut tx);
 
@@ -288,7 +286,6 @@ fn remove_connection_not_found_is_noop() {
     let dst_mac = MacAddress::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
     let mut free = BasicFrameBuffer::new(4);
     let mut tx = BasicFrameBuffer::new(4);
-    let mut wheel = new_wheel();
 
     // Should not panic — just returns early.
     handler.remove_connection(&id, src_mac, dst_mac, &mut free, &mut tx);

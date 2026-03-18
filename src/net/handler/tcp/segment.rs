@@ -115,7 +115,7 @@ impl SegmentBuilder {
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
+    ) -> bool {
         // Max options: MSS(4) + NOP(1) + WSCALE(3) + NOP(1) + NOP(1) + TS(10) + SACK_PERM(2) = 22, pad to 24
         let mut opt_buf = [0u8; 24];
         let mut opt_len = write_mss_option(&mut opt_buf, mss);
@@ -140,43 +140,39 @@ impl SegmentBuilder {
         };
 
         match (local_addr, remote_addr) {
-            (IpAddress::V4(l), IpAddress::V4(r)) => {
-                Self::build_segment::<Ipv4>(
-                    l,
-                    r,
-                    local_port,
-                    remote_port,
-                    iss,
-                    0,
-                    syn_flags,
-                    window,
-                    &opt_buf[..opt_len],
-                    src_mac,
-                    dst_mac,
-                    tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            (IpAddress::V6(l), IpAddress::V6(r)) => {
-                Self::build_segment::<Ipv6>(
-                    l,
-                    r,
-                    local_port,
-                    remote_port,
-                    iss,
-                    0,
-                    syn_flags,
-                    window,
-                    &opt_buf[..opt_len],
-                    src_mac,
-                    dst_mac,
-                    tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            _ => {}
+            (IpAddress::V4(l), IpAddress::V4(r)) => Self::build_segment::<Ipv4>(
+                l,
+                r,
+                local_port,
+                remote_port,
+                iss,
+                0,
+                syn_flags,
+                window,
+                &opt_buf[..opt_len],
+                src_mac,
+                dst_mac,
+                tx_offload,
+                free_frames,
+                tx_return,
+            ),
+            (IpAddress::V6(l), IpAddress::V6(r)) => Self::build_segment::<Ipv6>(
+                l,
+                r,
+                local_port,
+                remote_port,
+                iss,
+                0,
+                syn_flags,
+                window,
+                &opt_buf[..opt_len],
+                src_mac,
+                dst_mac,
+                tx_offload,
+                free_frames,
+                tx_return,
+            ),
+            _ => false,
         }
     }
 
@@ -200,7 +196,7 @@ impl SegmentBuilder {
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
+    ) -> bool {
         let mut opt_buf = [0u8; 24];
         let mut opt_len = write_mss_option(&mut opt_buf, mss);
         if let Some(shift) = wscale {
@@ -226,43 +222,39 @@ impl SegmentBuilder {
         };
 
         match (local_addr, remote_addr) {
-            (IpAddress::V4(l), IpAddress::V4(r)) => {
-                Self::build_segment::<Ipv4>(
-                    l,
-                    r,
-                    local_port,
-                    remote_port,
-                    iss,
-                    ack,
-                    syn_ack_flags,
-                    window,
-                    &opt_buf[..opt_len],
-                    src_mac,
-                    dst_mac,
-                    tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            (IpAddress::V6(l), IpAddress::V6(r)) => {
-                Self::build_segment::<Ipv6>(
-                    l,
-                    r,
-                    local_port,
-                    remote_port,
-                    iss,
-                    ack,
-                    syn_ack_flags,
-                    window,
-                    &opt_buf[..opt_len],
-                    src_mac,
-                    dst_mac,
-                    tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            _ => {}
+            (IpAddress::V4(l), IpAddress::V4(r)) => Self::build_segment::<Ipv4>(
+                l,
+                r,
+                local_port,
+                remote_port,
+                iss,
+                ack,
+                syn_ack_flags,
+                window,
+                &opt_buf[..opt_len],
+                src_mac,
+                dst_mac,
+                tx_offload,
+                free_frames,
+                tx_return,
+            ),
+            (IpAddress::V6(l), IpAddress::V6(r)) => Self::build_segment::<Ipv6>(
+                l,
+                r,
+                local_port,
+                remote_port,
+                iss,
+                ack,
+                syn_ack_flags,
+                window,
+                &opt_buf[..opt_len],
+                src_mac,
+                dst_mac,
+                tx_offload,
+                free_frames,
+                tx_return,
+            ),
+            _ => false,
         }
     }
 
@@ -437,7 +429,7 @@ impl SegmentBuilder {
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
+    ) -> bool {
         let mut ts_buf = [0u8; 12];
         let tcp_options: &[u8] = if let Some((tsval, tsecr)) = timestamp {
             ts_buf[0] = options::NOP;
@@ -449,43 +441,39 @@ impl SegmentBuilder {
         };
 
         match (local_addr, remote_addr) {
-            (IpAddress::V4(l), IpAddress::V4(r)) => {
-                Self::build_segment::<Ipv4>(
-                    l,
-                    r,
-                    local_port,
-                    remote_port,
-                    seq,
-                    ack,
-                    flags::ACK | flags::FIN,
-                    window,
-                    tcp_options,
-                    src_mac,
-                    dst_mac,
-                    tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            (IpAddress::V6(l), IpAddress::V6(r)) => {
-                Self::build_segment::<Ipv6>(
-                    l,
-                    r,
-                    local_port,
-                    remote_port,
-                    seq,
-                    ack,
-                    flags::ACK | flags::FIN,
-                    window,
-                    tcp_options,
-                    src_mac,
-                    dst_mac,
-                    tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            _ => {}
+            (IpAddress::V4(l), IpAddress::V4(r)) => Self::build_segment::<Ipv4>(
+                l,
+                r,
+                local_port,
+                remote_port,
+                seq,
+                ack,
+                flags::ACK | flags::FIN,
+                window,
+                tcp_options,
+                src_mac,
+                dst_mac,
+                tx_offload,
+                free_frames,
+                tx_return,
+            ),
+            (IpAddress::V6(l), IpAddress::V6(r)) => Self::build_segment::<Ipv6>(
+                l,
+                r,
+                local_port,
+                remote_port,
+                seq,
+                ack,
+                flags::ACK | flags::FIN,
+                window,
+                tcp_options,
+                src_mac,
+                dst_mac,
+                tx_offload,
+                free_frames,
+                tx_return,
+            ),
+            _ => false,
         }
     }
 
@@ -506,7 +494,7 @@ impl SegmentBuilder {
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
+    ) -> bool {
         let mut ts_buf = [0u8; 12];
         let tcp_options: &[u8] = if let Some((tsval, tsecr)) = timestamp {
             ts_buf[0] = options::NOP;
@@ -518,45 +506,41 @@ impl SegmentBuilder {
         };
 
         match (local_addr, remote_addr) {
-            (IpAddress::V4(l), IpAddress::V4(r)) => {
-                Self::build_data_segment::<Ipv4>(
-                    l,
-                    r,
-                    local_port,
-                    remote_port,
-                    seq,
-                    ack,
-                    flags::ACK,
-                    window,
-                    payload,
-                    tcp_options,
-                    src_mac,
-                    dst_mac,
-                    tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            (IpAddress::V6(l), IpAddress::V6(r)) => {
-                Self::build_data_segment::<Ipv6>(
-                    l,
-                    r,
-                    local_port,
-                    remote_port,
-                    seq,
-                    ack,
-                    flags::ACK,
-                    window,
-                    payload,
-                    tcp_options,
-                    src_mac,
-                    dst_mac,
-                    tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            _ => {}
+            (IpAddress::V4(l), IpAddress::V4(r)) => Self::build_data_segment::<Ipv4>(
+                l,
+                r,
+                local_port,
+                remote_port,
+                seq,
+                ack,
+                flags::ACK,
+                window,
+                payload,
+                tcp_options,
+                src_mac,
+                dst_mac,
+                tx_offload,
+                free_frames,
+                tx_return,
+            ),
+            (IpAddress::V6(l), IpAddress::V6(r)) => Self::build_data_segment::<Ipv6>(
+                l,
+                r,
+                local_port,
+                remote_port,
+                seq,
+                ack,
+                flags::ACK,
+                window,
+                payload,
+                tcp_options,
+                src_mac,
+                dst_mac,
+                tx_offload,
+                free_frames,
+                tx_return,
+            ),
+            _ => false,
         }
     }
 
@@ -579,7 +563,7 @@ impl SegmentBuilder {
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
+    ) -> bool {
         // Same options construction as build_data
         let mut ts_buf = [0u8; 12];
         let tcp_options: &[u8] = if let Some((tsval, tsecr)) = timestamp {
@@ -592,47 +576,43 @@ impl SegmentBuilder {
         };
 
         match (local_addr, remote_addr) {
-            (IpAddress::V4(l), IpAddress::V4(r)) => {
-                Self::build_data_segment_slices::<Ipv4>(
-                    l,
-                    r,
-                    local_port,
-                    remote_port,
-                    seq,
-                    ack,
-                    tcp_flags,
-                    window,
-                    payload,
-                    tcp_options,
-                    ecn_ect,
-                    src_mac,
-                    dst_mac,
-                    tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            (IpAddress::V6(l), IpAddress::V6(r)) => {
-                Self::build_data_segment_slices::<Ipv6>(
-                    l,
-                    r,
-                    local_port,
-                    remote_port,
-                    seq,
-                    ack,
-                    tcp_flags,
-                    window,
-                    payload,
-                    tcp_options,
-                    ecn_ect,
-                    src_mac,
-                    dst_mac,
-                    tx_offload,
-                    free_frames,
-                    tx_return,
-                );
-            }
-            _ => {}
+            (IpAddress::V4(l), IpAddress::V4(r)) => Self::build_data_segment_slices::<Ipv4>(
+                l,
+                r,
+                local_port,
+                remote_port,
+                seq,
+                ack,
+                tcp_flags,
+                window,
+                payload,
+                tcp_options,
+                ecn_ect,
+                src_mac,
+                dst_mac,
+                tx_offload,
+                free_frames,
+                tx_return,
+            ),
+            (IpAddress::V6(l), IpAddress::V6(r)) => Self::build_data_segment_slices::<Ipv6>(
+                l,
+                r,
+                local_port,
+                remote_port,
+                seq,
+                ack,
+                tcp_flags,
+                window,
+                payload,
+                tcp_options,
+                ecn_ect,
+                src_mac,
+                dst_mac,
+                tx_offload,
+                free_frames,
+                tx_return,
+            ),
+            _ => false,
         }
     }
 
@@ -654,9 +634,9 @@ impl SegmentBuilder {
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
+    ) -> bool {
         let Some(mut frame) = free_frames.pop() else {
-            return;
+            return false;
         };
 
         let opt_padded_len = (tcp_options.len() + 3) & !3;
@@ -666,7 +646,7 @@ impl SegmentBuilder {
 
         if frame.capacity() < frame_len {
             free_frames.push(frame);
-            return;
+            return false;
         }
 
         unsafe { frame.set_len(frame_len) };
@@ -702,6 +682,7 @@ impl SegmentBuilder {
         }
 
         tx_return.push(frame);
+        true
     }
 
     #[inline]
@@ -721,9 +702,9 @@ impl SegmentBuilder {
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
+    ) -> bool {
         let Some(mut frame) = free_frames.pop() else {
-            return;
+            return false;
         };
 
         let opt_padded_len = (tcp_options.len() + 3) & !3;
@@ -733,7 +714,7 @@ impl SegmentBuilder {
 
         if frame.capacity() < frame_len {
             free_frames.push(frame);
-            return;
+            return false;
         }
 
         unsafe { frame.set_len(frame_len) };
@@ -777,6 +758,7 @@ impl SegmentBuilder {
         }
 
         tx_return.push(frame);
+        true
     }
 
     #[inline]
@@ -797,9 +779,9 @@ impl SegmentBuilder {
         tx_offload: bool,
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
+    ) -> bool {
         let Some(mut frame) = free_frames.pop() else {
-            return;
+            return false;
         };
 
         let payload_len = payload.0.len() + payload.1.len();
@@ -810,7 +792,7 @@ impl SegmentBuilder {
 
         if frame.capacity() < frame_len {
             free_frames.push(frame);
-            return;
+            return false;
         }
 
         unsafe { frame.set_len(frame_len) };
@@ -864,6 +846,7 @@ impl SegmentBuilder {
         }
 
         tx_return.push(frame);
+        true
     }
 
     #[inline(always)]

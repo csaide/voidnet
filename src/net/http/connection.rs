@@ -132,14 +132,7 @@ mod tests {
         let wheel = Rc::new(UnsafeCell::new(crate::net::timer_wheel::TimerWheel::new(
             coarsetime::Instant::now(),
         )));
-        let stream = TcpStream::from_accepted_for_test(
-            0,
-            conn_id,
-            event_queue,
-            handler,
-            wheel,
-            coarsetime::Instant::now(),
-        );
+        let stream = TcpStream::from_accepted_for_test(0, conn_id, event_queue, handler, wheel);
         HttpConnection::new(stream, Session::http09())
     }
 
@@ -155,14 +148,7 @@ mod tests {
         let wheel = Rc::new(UnsafeCell::new(crate::net::timer_wheel::TimerWheel::new(
             coarsetime::Instant::now(),
         )));
-        let stream = TcpStream::from_accepted_for_test(
-            0,
-            conn_id,
-            event_queue,
-            handler,
-            wheel,
-            coarsetime::Instant::now(),
-        );
+        let stream = TcpStream::from_accepted_for_test(0, conn_id, event_queue, handler, wheel);
         HttpConnection::new(stream, Session::new(HttpCodec::Http11(Http11Codec::new())))
     }
 

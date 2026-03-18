@@ -27,12 +27,6 @@ pub(super) fn new_wheel() -> TimerWheel {
     TimerWheel::new(coarsetime::Instant::now())
 }
 
-/// Cancel all armed timers for a connection. Call after establish_connection
-/// to ensure test-armed timers don't conflict with handshake-armed ones.
-pub(super) fn clear_timers(handler: &mut TcpHandler, wheel: &mut TimerWheel, key: usize) {
-    handler.timer_handles[key].cancel_all(wheel);
-}
-
 /// Test-only helper: advance the wheel by a short window (1 second past `now`)
 /// and fire all expired timers. This fires timers armed at or before `now + 1s`
 /// without touching timers armed far in the future.
@@ -243,7 +237,7 @@ pub(super) fn leak(data: Vec<u8>) -> &'static mut [u8] {
 }
 
 pub(super) fn alloc_free_frame(addr: u64) -> Frame<'static> {
-    Frame::new(addr, leak(vec![0u8; 256]), 256, false)
+    Frame::new(addr, leak(vec![0u8; 2048]), 2048, false)
 }
 
 /// Build a 12-byte TCP timestamp option (NOP NOP TSopt) for use in test frames.

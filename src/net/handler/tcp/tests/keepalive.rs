@@ -1,4 +1,4 @@
-use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
+use super::super::timer_kinds::TcpTimerKind;
 use super::*;
 
 #[test]
@@ -175,6 +175,14 @@ fn keep_alive_probe_sent_after_idle_timeout() {
         tcb.keep_alive_count = 3;
         tcb.ack_pending = false;
     }
+    // Arm keep-alive timer.
+    let key = handler.first_connection_key();
+    handler.timer_handles[key].arm(
+        TcpTimerKind::KeepAlive,
+        key,
+        coarsetime::Instant::now() + coarsetime::Duration::from_millis(100),
+        &mut wheel,
+    );
 
     // Sleep long enough for the idle timeout to expire.
     std::thread::sleep(std::time::Duration::from_millis(150));
@@ -363,6 +371,14 @@ fn keep_alive_connection_aborted_after_max_probes() {
         tcb.keep_alive_probes_sent = 2; // already at max
         tcb.ack_pending = false;
     }
+    // Arm keep-alive timer.
+    let key = handler.first_connection_key();
+    handler.timer_handles[key].arm(
+        TcpTimerKind::KeepAlive,
+        key,
+        coarsetime::Instant::now() + coarsetime::Duration::from_millis(50),
+        &mut wheel,
+    );
 
     // Sleep past the probe threshold.
     std::thread::sleep(std::time::Duration::from_millis(150));
@@ -753,6 +769,14 @@ fn keep_alive_probe_and_recovery() {
         tcb.keep_alive_count = 3;
         tcb.ack_pending = false;
     }
+    // Arm keep-alive timer.
+    let key = handler.first_connection_key();
+    handler.timer_handles[key].arm(
+        TcpTimerKind::KeepAlive,
+        key,
+        coarsetime::Instant::now() + coarsetime::Duration::from_millis(100),
+        &mut wheel,
+    );
     // Clear delayed ACK timer if armed.
     let key = handler.first_connection_key();
     if let Some(h) = handler.timer_handles[key].get(TcpTimerKind::DelayedAck) {
@@ -907,6 +931,14 @@ fn keep_alive_exhaustion_removes_connection() {
         tcb.keep_alive_interval_ms = 50;
         tcb.ack_pending = false;
     }
+    // Arm keep-alive timer.
+    let key = handler.first_connection_key();
+    handler.timer_handles[key].arm(
+        TcpTimerKind::KeepAlive,
+        key,
+        coarsetime::Instant::now() + coarsetime::Duration::from_millis(50),
+        &mut wheel,
+    );
     // Clear delayed ACK timer if armed.
     {
         let key = handler.first_connection_key();

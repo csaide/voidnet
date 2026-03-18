@@ -1,4 +1,4 @@
-use super::super::timer_kinds::{TcpTimerKind, tcp_timer_id};
+use super::super::timer_kinds::TcpTimerKind;
 use super::*;
 
 #[test]

@@ -194,8 +194,6 @@ pub struct LocalRuntime<'umem> {
     rx_return: SharedFrameBuffer<'umem>,
     // Timer wheel for TCP timers.
     wheel: Rc<UnsafeCell<TimerWheel>>,
-    // Base instant for converting coarsetime to wheel milliseconds.
-    base_instant: coarsetime::Instant,
     // Counter for rate-limiting evict_stale() calls (~every 1024 iterations).
     evict_counter: u32,
     // Whether TX checksum offload is enabled on this interface.
@@ -253,7 +251,6 @@ impl<'umem> LocalRuntime<'umem> {
             tx_return,
             rx_return,
             wheel: Rc::new(UnsafeCell::new(TimerWheel::new(base_instant))),
-            base_instant,
             evict_counter: 0,
             tx_offload,
             neighbor_rx: None,
@@ -301,7 +298,6 @@ impl<'umem> LocalRuntime<'umem> {
             tx_return,
             rx_return,
             wheel: Rc::new(UnsafeCell::new(TimerWheel::new(base_instant))),
-            base_instant,
             evict_counter: 0,
             tx_offload,
             neighbor_rx: Some(neighbor_rx),
@@ -359,7 +355,6 @@ impl<'umem> LocalRuntime<'umem> {
             udp_handler: self.udp_handler.clone(),
             tcp_handler: self.tcp_handler.clone(),
             wheel: self.wheel.clone(),
-            base_instant: self.base_instant,
             tx_offload: self.tx_offload,
             task_queue: UnsafeCell::new(TaskQueue::new()),
             capacity_wakers: UnsafeCell::new(Vec::new()),
@@ -387,11 +382,9 @@ impl<'umem> LocalRuntime<'umem> {
 
         let mut buffer = BasicFrameBuffer::new(self.umem.num_frames());
         let mut now;
-        let base_instant = self.base_instant;
         while !exit.load(Ordering::Relaxed) {
             // Update time every iteration for timer wheel accuracy.
             now = coarsetime::Instant::now();
-            let now_ms = now.duration_since(base_instant).as_millis();
             let wheel = unsafe { &mut *self.wheel.get() };
             // ---- Drain neighbor updates from peer queues ----
             if let Some(ref neighbor_rx) = self.neighbor_rx {

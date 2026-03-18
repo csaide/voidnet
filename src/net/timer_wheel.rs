@@ -1,4 +1,4 @@
-use coarsetime::{Duration, Instant};
+use coarsetime::Instant;
 use slab::Slab;
 use smallvec::SmallVec;
 
@@ -14,6 +14,7 @@ pub struct TimerHandle(usize);
 
 impl TimerHandle {
     /// Construct a handle from a raw slab key. Intended for tests and internal use only.
+    #[cfg(test)]
     pub(crate) fn from_raw(key: usize) -> Self {
         Self(key)
     }

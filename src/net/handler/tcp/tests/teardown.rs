@@ -1212,7 +1212,6 @@ fn full_active_close_lifecycle() {
     while tx.pop().is_some() {}
 
     // 6. TIME-WAIT expires -> connection removed.
-    let future = coarsetime::Instant::now() + coarsetime::Duration::from_secs(120);
     evict_stale(&mut handler, &mut wheel);
     assert_eq!(
         handler.connections.len(),

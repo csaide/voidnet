@@ -32,7 +32,6 @@ pub struct TcpListener {
     accept_queue: LocalQueue<usize>,
     handler: Rc<UnsafeCell<TcpHandler>>,
     wheel: Rc<UnsafeCell<crate::net::timer_wheel::TimerWheel>>,
-    base_instant: coarsetime::Instant,
 }
 
 impl TcpListener {
@@ -58,7 +57,6 @@ impl TcpListener {
                 accept_queue,
                 handler: ctx.tcp_handler.clone(),
                 wheel: ctx.wheel.clone(),
-                base_instant: ctx.base_instant,
             })
         })
     }
@@ -80,7 +78,6 @@ impl TcpListener {
                 accept_queue,
                 handler: ctx.tcp_handler.clone(),
                 wheel: ctx.wheel.clone(),
-                base_instant: ctx.base_instant,
             })
         })
     }
@@ -92,7 +89,6 @@ impl TcpListener {
             accept_queue: &self.accept_queue,
             handler: &self.handler,
             wheel: &self.wheel,
-            base_instant: self.base_instant,
         }
     }
 
@@ -126,7 +122,6 @@ pub struct Accept<'listener> {
     accept_queue: &'listener LocalQueue<usize>,
     handler: &'listener Rc<UnsafeCell<TcpHandler>>,
     wheel: &'listener Rc<UnsafeCell<crate::net::timer_wheel::TimerWheel>>,
-    base_instant: coarsetime::Instant,
 }
 
 impl<'listener> Future for Accept<'listener> {
@@ -148,7 +143,6 @@ impl<'listener> Future for Accept<'listener> {
                         event_queue,
                         this.handler.clone(),
                         this.wheel.clone(),
-                        this.base_instant,
                     ))
                 } else {
                     // Connection was removed (e.g. by RST) before we accepted it.
@@ -176,7 +170,6 @@ pub struct TcpStream {
     event_queue: LocalQueue<TcpEvent>,
     handler: Rc<UnsafeCell<TcpHandler>>,
     wheel: Rc<UnsafeCell<crate::net::timer_wheel::TimerWheel>>,
-    base_instant: coarsetime::Instant,
     closed: bool,
     write_closed: bool,
 }
@@ -237,7 +230,6 @@ impl TcpStream {
                 event_queue,
                 handler: ctx.tcp_handler.clone(),
                 wheel: ctx.wheel.clone(),
-                base_instant: ctx.base_instant,
             })
         })
     }
@@ -299,7 +291,6 @@ impl TcpStream {
                 event_queue,
                 handler: ctx.tcp_handler.clone(),
                 wheel: ctx.wheel.clone(),
-                base_instant: ctx.base_instant,
             })
         })
     }
@@ -311,7 +302,6 @@ impl TcpStream {
         event_queue: LocalQueue<TcpEvent>,
         handler: Rc<UnsafeCell<TcpHandler>>,
         wheel: Rc<UnsafeCell<crate::net::timer_wheel::TimerWheel>>,
-        base_instant: coarsetime::Instant,
     ) -> Self {
         Self {
             conn_key,
@@ -319,7 +309,6 @@ impl TcpStream {
             event_queue,
             handler,
             wheel,
-            base_instant,
             closed: false,
             write_closed: false,
         }
@@ -332,7 +321,6 @@ impl TcpStream {
         event_queue: LocalQueue<TcpEvent>,
         handler: Rc<UnsafeCell<TcpHandler>>,
         wheel: Rc<UnsafeCell<crate::net::timer_wheel::TimerWheel>>,
-        base_instant: coarsetime::Instant,
     ) -> Self {
         Self {
             conn_key,
@@ -340,7 +328,6 @@ impl TcpStream {
             event_queue,
             handler,
             wheel,
-            base_instant,
             closed: false,
             write_closed: false,
         }
@@ -509,7 +496,6 @@ pub struct Connect {
     event_queue: LocalQueue<TcpEvent>,
     handler: Rc<UnsafeCell<TcpHandler>>,
     wheel: Rc<UnsafeCell<crate::net::timer_wheel::TimerWheel>>,
-    base_instant: coarsetime::Instant,
 }
 
 impl Future for Connect {
@@ -524,7 +510,6 @@ impl Future for Connect {
                 event_queue: this.event_queue.clone(),
                 handler: this.handler.clone(),
                 wheel: this.wheel.clone(),
-                base_instant: this.base_instant,
                 closed: false,
                 write_closed: false,
             })),
@@ -775,14 +760,7 @@ mod tests {
         let wheel_rc = Rc::new(UnsafeCell::new(crate::net::timer_wheel::TimerWheel::new(
             coarsetime::Instant::now(),
         )));
-        TcpStream::from_accepted_for_test(
-            key,
-            conn_id,
-            event_queue,
-            handler_rc,
-            wheel_rc,
-            Instant::now(),
-        )
+        TcpStream::from_accepted_for_test(key, conn_id, event_queue, handler_rc, wheel_rc)
     }
 
     #[test]

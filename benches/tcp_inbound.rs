@@ -4,6 +4,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use libvoid::net::NeighborHandler;
 use libvoid::net::checksum::{compute_ipv4_checksum, compute_tcp_checksum_ip};
 use libvoid::net::handler::tcp::TcpHandler;
+use libvoid::net::timer_wheel::TimerWheel;
 use libvoid::net::wire::ethernet::MacAddress;
 use libvoid::net::wire::ip::{IPV4_MIN_HEADER_LEN, IpAddress, IpProtocols, Ipv4, Ipv4Address};
 use libvoid::net::wire::tcp::{TCP_HEADER_LEN, flags};
@@ -166,7 +167,16 @@ fn setup_established(
         flags::SYN,
         65535,
     );
-    handler.process_ipv4(Frame::new(0, syn, syn_len, false), now, nh, free, rx, tx);
+    let mut wheel = TimerWheel::new(coarsetime::Instant::now());
+    handler.process_ipv4(
+        Frame::new(0, syn, syn_len, false),
+        now,
+        &mut wheel,
+        nh,
+        free,
+        rx,
+        tx,
+    );
 
     let syn_ack = tx.pop().unwrap();
     let t = ETH_LEN + IPV4_MIN_HEADER_LEN;
@@ -190,7 +200,16 @@ fn setup_established(
         flags::ACK,
         65535,
     );
-    handler.process_ipv4(Frame::new(0, ack, ack_len, false), now, nh, free, rx, tx);
+    let mut wheel = TimerWheel::new(coarsetime::Instant::now());
+    handler.process_ipv4(
+        Frame::new(0, ack, ack_len, false),
+        now,
+        &mut wheel,
+        nh,
+        free,
+        rx,
+        tx,
+    );
     while let Some(f) = tx.pop() {
         free.push(f);
     }
@@ -224,6 +243,7 @@ fn bench_process_data(c: &mut Criterion) {
             let mut seq = 1001u32;
             // Pool of 128 buffers cycled through — each buffer is reused after its Frame is consumed.
             let mut pool = FramePool::new(128);
+            let mut wheel = TimerWheel::new(coarsetime::Instant::now());
 
             let start = std::time::Instant::now();
             for _ in 0..iters {
@@ -243,6 +263,7 @@ fn bench_process_data(c: &mut Criterion) {
                 handler.process_ipv4(
                     Frame::new(0, buf, len, false),
                     coarsetime::Instant::now(),
+                    &mut wheel,
                     &nh,
                     &mut free,
                     &mut rx,
@@ -279,6 +300,7 @@ fn bench_process_ack(c: &mut Criterion) {
 
             let iss = setup_established(&mut handler, &nh, &mut free, &mut rx, &mut tx);
             let mut pool = FramePool::new(128);
+            let mut wheel = TimerWheel::new(coarsetime::Instant::now());
 
             let start = std::time::Instant::now();
             for _ in 0..iters {
@@ -297,6 +319,7 @@ fn bench_process_ack(c: &mut Criterion) {
                 handler.process_ipv4(
                     Frame::new(0, buf, len, false),
                     coarsetime::Instant::now(),
+                    &mut wheel,
                     &nh,
                     &mut free,
                     &mut rx,

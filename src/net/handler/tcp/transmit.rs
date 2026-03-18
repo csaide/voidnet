@@ -28,7 +28,7 @@ impl TcpHandler {
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
         self.send_tracker.swap();
-        let mut closed: SmallVec<[usize; 4]> = SmallVec::new();
+        let closed: SmallVec<[usize; 4]> = SmallVec::new();
         while let Some(key) = self.send_tracker.pop_active() {
             let Some(tcb) = self.connections.get_mut(key) else {
                 continue; // connection was removed
@@ -42,6 +42,77 @@ impl TcpHandler {
             } else {
                 0
             };
+
+            // SACK recovery: retransmit lost segments before sending new data.
+            // This was previously in poll_timers() but belongs here since SACK
+            // recovery is ACK-feedback-driven, not timer-driven.
+            if tcb.recovery.in_recovery {
+                tcb.recovery.set_pipe(
+                    tcb.snd_una,
+                    tcb.snd_nxt,
+                    &tcb.sack_scoreboard,
+                    tcb.eff_snd_mss,
+                );
+                while tcb.recovery.pipe < tcb.cubic.cwnd {
+                    if let Some(lost_seq) = tcb.recovery.next_lost_segment(
+                        tcb.snd_una,
+                        tcb.snd_nxt,
+                        &tcb.sack_scoreboard,
+                        tcb.eff_snd_mss,
+                    ) {
+                        let offset = lost_seq.wrapping_sub(tcb.snd_una) as usize;
+                        let retransmit_len = tcb
+                            .send_buffer
+                            .available()
+                            .saturating_sub(offset)
+                            .min(tcb.eff_snd_mss as usize);
+                        if retransmit_len == 0 {
+                            break;
+                        }
+
+                        let id = tcb.id;
+                        let Some(dst_mac) = neighbor_handler.lookup_or_resolve(
+                            now,
+                            &id.remote_addr,
+                            &id.local_addr,
+                            free_frames,
+                            rx_return,
+                            tx_return,
+                        ) else {
+                            break;
+                        };
+
+                        let payload = tcb.send_buffer.peek_slices(offset, retransmit_len);
+                        let ts = tcb.ts_option(tsval);
+                        let sent = SegmentBuilder::build_data_from_slices(
+                            id.local_addr,
+                            id.remote_addr,
+                            id.local_port,
+                            id.remote_port,
+                            lost_seq,
+                            tcb.rcv_nxt,
+                            tcb.advertised_window(),
+                            payload,
+                            flags::ACK,
+                            false,
+                            ts,
+                            src_mac,
+                            dst_mac,
+                            self.tx_offload,
+                            free_frames,
+                            tx_return,
+                        );
+                        if !sent {
+                            break;
+                        }
+
+                        tcb.recovery.pipe += tcb.eff_snd_mss as u32;
+                        tcb.prr.on_sent(retransmit_len as u32);
+                    } else {
+                        break;
+                    }
+                }
+            }
 
             // Send as many segments as the window allows.
             loop {
@@ -125,7 +196,7 @@ impl TcpHandler {
                 if tcb.ecn_cwr_sent {
                     data_flags |= flags::CWR;
                 }
-                SegmentBuilder::build_data_from_slices(
+                let sent = SegmentBuilder::build_data_from_slices(
                     tcb.id.local_addr,
                     tcb.id.remote_addr,
                     tcb.id.local_port,
@@ -143,6 +214,10 @@ impl TcpHandler {
                     free_frames,
                     tx_return,
                 );
+
+                if !sent {
+                    break; // No free frames — stop sending, retry next iteration.
+                }
 
                 tcb.snd_nxt = tcb.snd_nxt.wrapping_add(to_send as u32);
                 tcb.last_send_time = Some(now);
@@ -259,7 +334,7 @@ impl TcpHandler {
                     };
 
                     let ts = tcb.ts_option(tsval);
-                    SegmentBuilder::build_fin_ack(
+                    let fin_sent = SegmentBuilder::build_fin_ack(
                         id.local_addr,
                         id.remote_addr,
                         id.local_port,
@@ -275,25 +350,27 @@ impl TcpHandler {
                         tx_return,
                     );
 
-                    tcb.fin_seq = Some(tcb.snd_nxt);
-                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1); // FIN consumes one sequence number
+                    if fin_sent {
+                        tcb.fin_seq = Some(tcb.snd_nxt);
+                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1); // FIN consumes one sequence number
 
-                    tcb.pending_fin = false;
+                        tcb.pending_fin = false;
 
-                    match tcb.state {
-                        TcpState::Established => tcb.state = TcpState::FinWait1,
-                        TcpState::CloseWait => tcb.state = TcpState::LastAck,
-                        _ => {}
-                    }
+                        match tcb.state {
+                            TcpState::Established => tcb.state = TcpState::FinWait1,
+                            TcpState::CloseWait => tcb.state = TcpState::LastAck,
+                            _ => {}
+                        }
 
-                    // Set retransmit timer for FIN.
-                    if !self.timer_handles[key].is_armed(TcpTimerKind::Retransmit) {
-                        self.timer_handles[key].arm(
-                            TcpTimerKind::Retransmit,
-                            key,
-                            now + coarsetime::Duration::from_millis(tcb.rto),
-                            wheel,
-                        );
+                        // Set retransmit timer for FIN.
+                        if !self.timer_handles[key].is_armed(TcpTimerKind::Retransmit) {
+                            self.timer_handles[key].arm(
+                                TcpTimerKind::Retransmit,
+                                key,
+                                now + coarsetime::Duration::from_millis(tcb.rto),
+                                wheel,
+                            );
+                        }
                     }
                 }
             }
