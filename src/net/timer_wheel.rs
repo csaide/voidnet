@@ -122,6 +122,11 @@ impl TimerWheel {
         self.entries.contains(handle.0)
     }
 
+    /// Returns the number of currently armed timers.
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
     /// Advance the wheel to `now_ms`, firing all timers whose deadline has
     /// passed.  Returns the [`TimerId`]s of every fired timer.
     pub fn advance(&mut self, now_ms: u64) -> SmallVec<[TimerId; 16]> {
@@ -480,5 +485,108 @@ mod tests {
         let mut ids: Vec<u64> = fired.iter().map(|t| t.0).collect();
         ids.sort_unstable();
         assert_eq!(ids, vec![1, 2]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 5: entry_count and edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rearm_cancel_then_arm() {
+        let mut wheel = TimerWheel::new(0);
+        let h1 = wheel.arm(TimerId(1), 50);
+        wheel.cancel(h1);
+        // Timer should no longer be armed immediately after cancel.
+        assert!(!wheel.is_armed(h1));
+
+        // Re-arm the same logical timer with a new deadline.  The slab may
+        // reuse the freed key, so h1 and h2 might be equal; what matters is
+        // that only one timer fires at the new deadline and not at the old one.
+        let _h2 = wheel.arm(TimerId(1), 150);
+        assert_eq!(wheel.entry_count(), 1, "exactly one timer should be armed");
+
+        // Nothing fires before the new deadline.
+        let not_fired = wheel.advance(100);
+        assert!(not_fired.is_empty(), "should not fire before new deadline");
+
+        // Fires at the new deadline.
+        let fired = wheel.advance(151);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0], TimerId(1));
+    }
+
+    /// Wheel at 100; arm at 100. Advancing to 101 should fire the timer.
+    #[test]
+    fn arm_at_current_tick_fires_on_next_advance() {
+        let mut wheel = TimerWheel::new(100);
+        // delta = 0, saturating_sub → goes to inner slot (100 & 0xFF == 100).
+        wheel.arm(TimerId(55), 100);
+        let fired = wheel.advance(101);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0], TimerId(55));
+    }
+
+    /// Wheel at 100; arm deadline in the past (50). Delta saturates to 0 →
+    /// goes to inner slot (50 & 0xFF == 50). The wheel must wrap around to
+    /// that slot to fire it.
+    #[test]
+    fn arm_in_past_fires_on_next_advance() {
+        let mut wheel = TimerWheel::new(100);
+        // delta = 0 (saturated), slot = (50 >> 0) & 0xFF = 50.
+        // current_tick_ms starts at 100 so slot 50 is behind us in this
+        // rotation.  The inner wheel wraps at 256, so slot 50 is drained when
+        // current_tick_ms == 306 (306 & 0xFF == 50).  advance(N) processes
+        // ticks up to but not including N, so we need advance(307) to include
+        // tick 306.
+        wheel.arm(TimerId(77), 50);
+
+        let fired = wheel.advance(307);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0], TimerId(77));
+    }
+
+    #[test]
+    fn entry_count_returns_armed_count() {
+        let mut wheel = TimerWheel::new(0);
+        assert_eq!(wheel.entry_count(), 0);
+
+        let h1 = wheel.arm(TimerId(1), 100);
+        let _h2 = wheel.arm(TimerId(2), 200);
+        assert_eq!(wheel.entry_count(), 2);
+
+        wheel.cancel(h1);
+        assert_eq!(wheel.entry_count(), 1);
+    }
+
+    #[test]
+    fn advance_noop_when_time_unchanged() {
+        let mut wheel = TimerWheel::new(100);
+        wheel.arm(TimerId(1), 100);
+        // advance(100) — current_tick_ms is already 100, loop does not execute.
+        let fired = wheel.advance(100);
+        assert!(fired.is_empty());
+    }
+
+    #[test]
+    fn advance_catches_up_burst() {
+        let mut wheel = TimerWheel::new(0);
+        wheel.arm(TimerId(1), 5);
+        wheel.arm(TimerId(2), 50);
+        wheel.arm(TimerId(3), 200);
+
+        let fired = wheel.advance(201);
+        assert_eq!(fired.len(), 3);
+        let mut ids: Vec<u64> = fired.iter().map(|t| t.0).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn advance_fires_nothing_when_no_timers_due() {
+        let mut wheel = TimerWheel::new(0);
+        wheel.arm(TimerId(1), 100);
+        let fired = wheel.advance(50);
+        assert!(fired.is_empty());
+        assert_eq!(wheel.entry_count(), 1, "timer should still be armed");
     }
 }
