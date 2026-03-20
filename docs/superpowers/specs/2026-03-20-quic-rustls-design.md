@@ -400,6 +400,34 @@ pub struct StreamsBlockedFrame {
     max_streams: u64,
     direction: Direction,  // Bidi or Uni
 }
+
+/// Type 0x1c (QUIC-layer) includes frame_type; type 0x1d (application) does not
+pub struct ConnectionCloseFrame<'a> {
+    error_code: u64,
+    frame_type: Option<u64>,      // only for type 0x1c — which frame triggered the error
+    reason: &'a [u8],             // human-readable, borrowed from buffer
+}
+
+pub struct NewConnectionIdFrame<'a> {
+    sequence: u64,
+    retire_prior_to: u64,         // receiver MUST retire CIDs with seq < this
+    connection_id: ConnectionIdRef<'a>,
+    stateless_reset_token: [u8; 16],
+}
+
+/// Tracks what was in a sent packet for frame-level retransmission
+pub enum SentFrame {
+    Crypto { space: u8, offset: u64, len: usize },
+    Stream { id: StreamId, offset: u64, len: usize, fin: bool },
+    Ack { space: u8 },                // regenerate from current state, no retransmit
+    MaxData(u64),
+    MaxStreamData(StreamId, u64),
+    MaxStreams { bidi: u64, uni: u64 },
+    NewConnectionId { sequence: u64 },
+    RetireConnectionId { sequence: u64 },
+    HandshakeDone,
+    // flow control blocked frames, NEW_TOKEN, etc.
+}
 ```
 
 Named `QuicFrame` to avoid collision with XDP `Frame`. All data-carrying variants borrow from the packet buffer — `StreamFrame<'a>` points directly at payload bytes in the XDP frame.
@@ -482,6 +510,34 @@ pub struct SentPacket {
     ack_eliciting: bool,
     in_flight: bool,                     // counted in bytes_in_flight
     frames: SmallVec<[SentFrame; 4]>,    // for frame-level retransmission
+}
+```
+
+#### RTT Estimation (RFC 9002 §5.3)
+
+On receiving ACK for a newly-acked packet:
+
+```
+// Scale ack_delay from ACK frame
+ack_delay_us = ack_frame.ack_delay * (1 << peer_ack_delay_exponent)
+ack_delay = min(ack_delay_us, peer_max_ack_delay)  // cap at max_ack_delay
+
+latest_rtt = now - sent_packets[largest_acked].time_sent
+min_rtt = min(min_rtt, latest_rtt)
+
+if first_rtt_sample.is_none() {
+    first_rtt_sample = Some(now)
+    smoothed_rtt = latest_rtt
+    rttvar = latest_rtt / 2
+} else {
+    // Only incorporate ack_delay if it doesn't push below min_rtt
+    adjusted_rtt = if latest_rtt - min_rtt >= ack_delay {
+        latest_rtt - ack_delay
+    } else {
+        latest_rtt
+    };
+    rttvar = 3/4 * rttvar + 1/4 * |smoothed_rtt - adjusted_rtt|
+    smoothed_rtt = 7/8 * smoothed_rtt + 1/8 * adjusted_rtt
 }
 ```
 
@@ -813,6 +869,23 @@ This ensures v2 can be added by extending the match arm without restructuring th
 - Reserved versions matching pattern `0x?a?a?a?a` used for testing version negotiation
 - Initial implementation targets QUIC v1 (`0x00000001`) only. VN packet generation/handling is required for interop.
 
+## Connection ID Lifecycle (RFC 9000 §5.1)
+
+### CID Retirement Protocol
+
+When a peer sends `NewConnectionId` with `retire_prior_to = N`:
+1. Receiver MUST retire all CIDs with sequence number < N
+2. Receiver sends `RetireConnectionId` frame for each retired CID
+3. Remove retired CIDs from `cid_map`
+4. Invalidate associated stateless reset tokens
+5. The total number of active CIDs (not yet retired) MUST NOT exceed `active_connection_id_limit` transport parameter
+
+**On receiving `RetireConnectionId`:** Remove the CID from our `scid_set`, issue new CID via `NewConnectionId` if needed to maintain the peer's `active_connection_id_limit`.
+
+### Implicit Stream Opening (RFC 9000 §2.1)
+
+When receiving a frame on a stream ID, all lower-numbered streams of the same type that have not been opened are implicitly opened. For example, receiving on client-initiated bidi stream 8 (index 2) implies streams 0 and 4 (indices 0, 1) also exist. The `StreamMap` must allocate entries for all implied streams up to the received ID.
+
 ## Stateless Reset (RFC 9000 §10.3)
 
 - 16-byte stateless reset tokens, issued via NEW_CONNECTION_ID frame or `stateless_reset_token` transport parameter
@@ -1058,7 +1131,7 @@ pub struct ConnectionId {
 
 **Handshake complete:** 1-RTT keys installed → server sends HANDSHAKE_DONE → Established → discard Initial/Handshake keys → notify socket layer via `LocalQueue<QuicEvent>`
 
-**Idle timeout (RFC 9000 §10.1):** Negotiated as `min(local, peer)` from transport parameters. Must be ≥3× current PTO. Reset on receiving any processed packet or sending ack-eliciting packet.
+**Idle timeout (RFC 9000 §10.1):** Negotiated as `min(local, peer)` from transport parameters. A value of 0 means no idle timeout (infinity) — if both are 0, idle timeout is disabled entirely (relevant for long-lived KV store connections). Must be ≥3× current PTO. Reset on receiving any processed packet or sending ack-eliciting packet. Endpoints can defer timeout with periodic PING frames.
 
 **Shutdown:** Send CONNECTION_CLOSE → Closing → timer ≥3× PTO → Closed → return streams to pool → remove CIDs from `cid_map` → release slab slot. If CONNECTION_CLOSE received while Closing → transition to Draining (MUST NOT send).
 
