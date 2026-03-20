@@ -4,5 +4,6 @@ pub mod icmpv4;
 pub mod icmpv6;
 pub mod ip;
 pub mod ndp;
+pub mod quic;
 pub mod tcp;
 pub mod udp;
