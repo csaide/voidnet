@@ -393,25 +393,6 @@ impl<'umem> LocalRuntime<'umem> {
                 }
             }
 
-            // ---- Phase 1: Collect TX Completions (non-blocking) ----
-            // Frames completed by the kernel since last iteration return to
-            // rx_return. Runs BEFORE recv to maximize frame availability.
-            // Note: in_flight_tx correctness depends on the socket/interface
-            // remaining operational. ENETDOWN would leave it permanently
-            // inflated, but that is a fatal condition for the event loop.
-            while let Ok(n) = self.umem.process_completion_queue(&mut self.rx_return) {
-                debug_assert!(
-                    in_flight_tx >= n,
-                    "completion underflow: in_flight={in_flight_tx} completed={n}"
-                );
-                in_flight_tx -= n;
-            }
-
-            // ---- Phase 2: Recycle rx_return → fill queue + free_frames ----
-            // rx_return contains: TX completions from Phase 1, plus
-            // handler-returned frames from the PREVIOUS iteration.
-            self.recycle_rx_return()?;
-
             // ---- Receive & Protocol Dispatch ----
             match self.socket.recv(&mut buffer) {
                 Err(_) => {}
@@ -510,45 +491,38 @@ impl<'umem> LocalRuntime<'umem> {
                 unsafe { &mut *self.pmtu.get() }.evict_stale(now);
             }
 
-            // ---- Transmit (non-blocking) ----
-            // Note: free_before is captured HERE (before transmit/recycle), matching
-            // the current code's placement. Capacity wakes detect frames freed by
-            // the transmit cycle, not by Phase 1+2 completion recycling.
+            // ---- Transmit ----
             let free_before = self.free_frames.num_frames();
 
             while self.tx_return.num_frames() > 0 {
                 match self.socket.send(&mut self.tx_return) {
                     Ok(n) => in_flight_tx += n,
-                    Err(_) => {
-                        // TX ring full — kick kernel and try to free completions.
-                        self.socket.maybe_wake()?;
-                        while let Ok(n) = self.umem.process_completion_queue(&mut self.rx_return) {
-                            debug_assert!(
-                                in_flight_tx >= n,
-                                "completion underflow: in_flight={in_flight_tx} completed={n}"
-                            );
-                            in_flight_tx -= n;
-                        }
-                        self.recycle_rx_return()?;
-                        // Retry once after freeing ring slots.
-                        match self.socket.send(&mut self.tx_return) {
-                            Ok(n) => in_flight_tx += n,
-                            Err(_) => break, // Still full — defer to next iteration.
-                        }
-                    }
+                    Err(_) => break, // TX ring full — will be drained below.
                 }
             }
 
-            // Kick the kernel to process the TX ring. send() only writes
-            // descriptors — the kernel needs a sendto() to start DMA.
-            // Without this, frames sit in the TX ring and never transmit.
-            self.socket.maybe_wake()?;
+            // ---- Drain TX Completions ----
+            // Kick the kernel repeatedly to produce completions (~32 per
+            // sendto on veth) and collect them into rx_return. This keeps
+            // pace with the send rate so free_frames doesn't starve.
+            while in_flight_tx > 0 {
+                self.socket.maybe_wake()?;
+                match self.umem.process_completion_queue(&mut self.rx_return) {
+                    Ok(n) => {
+                        debug_assert!(
+                            in_flight_tx >= n,
+                            "completion underflow: in_flight={in_flight_tx} completed={n}"
+                        );
+                        in_flight_tx -= n;
+                    }
+                    Err(_) => break, // No more completions ready.
+                }
+            }
 
-            // ---- Recycle remaining rx_return ----
-            // Drains whatever is left in rx_return. If all sends above succeeded,
-            // this contains handler-returned RX frames from protocol dispatch.
-            // If the send hit WouldBlock, mid-retry recycle already drained
-            // those, so this is a no-op in that path.
+            // ---- Recycle rx_return → fill queue + free_frames ----
+            // Single recycle pass: handler-returned RX frames and TX
+            // completions all flow through here. Fill queue gets what it
+            // needs (bounded by ring size), remainder goes to free_frames.
             self.recycle_rx_return()?;
 
             // ---- Capacity-Driven Wakes ----
