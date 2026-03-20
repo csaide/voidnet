@@ -141,12 +141,13 @@ pub struct CryptoState {
     crypto_buffers: [CryptoBuffer; 3],  // Initial, Handshake, OneRtt
 }
 
-/// Reassembly buffer for out-of-order CRYPTO frames per packet space
+/// Reassembly buffer for out-of-order CRYPTO frames per packet space.
+/// Fixed-size — no heap growth during handshake. RFC 9000 §7.5 requires ≥4096 bytes.
 pub struct CryptoBuffer {
-    data: Vec<u8>,
-    received: u64,      // contiguous frontier
-    ooo: OooRanges,     // reuse stream OOO tracking
-    max_offset: u64,    // limit buffering to prevent abuse (RFC 9000 §21.7)
+    data: [u8; 16384],  // 16KB fixed, allocated once per space — covers all typical handshakes
+    received: u64,       // contiguous frontier
+    capacity: usize,     // usable portion (may be < 16384 for constrained configs)
+    ooo: OooRanges,      // reuse stream OOO tracking
 }
 
 pub struct PacketKeys {
@@ -231,7 +232,8 @@ Applied after encryption on send, removed before decryption on receive.
 
 - **Initiation:** Use label `"quic ku"` via HKDF-Expand-Label. MUST NOT initiate before handshake confirmed. MUST NOT initiate next update without ACK for packet sent with current key phase.
 - **Detection:** Changed Key Phase bit in received packet header
-- **Timing:** MUST NOT generate new keys during packet processing (timing side-channel). Defer next receive key generation up to PTO after update.
+- **Double-update detection (RFC 9001 §6.2):** Track `lowest_pn_current_phase` — the lowest PN sent with the current key phase. If a second key update is detected before receiving ACK for any packet in current phase, MAY treat as `KEY_UPDATE_ERROR`.
+- **Timing:** MUST NOT generate new keys during packet processing (timing side-channel). Use randomized placeholder keys for invalid Key Phase bits to prevent timing oracle (RFC 9001 §6.3). Defer next receive key generation up to PTO after update.
 - **Header protection keys DO NOT update** — stay same for connection lifetime
 - **Old keys:** Retain old read keys ≤3× PTO after receiving new-key packet. Distinguish previous/current/next using packet numbers.
 
@@ -432,6 +434,24 @@ pub enum SentFrame {
 
 Named `QuicFrame` to avoid collision with XDP `Frame`. All data-carrying variants borrow from the packet buffer — `StreamFrame<'a>` points directly at payload bytes in the XDP frame.
 
+### Frame Type Restrictions by Packet Space (RFC 9000 §12.5)
+
+| Frame | Initial | Handshake | 0-RTT | 1-RTT |
+|-------|---------|-----------|-------|-------|
+| PADDING | Y | Y | Y | Y |
+| PING | Y | Y | Y | Y |
+| ACK | Y | Y | - | Y |
+| CRYPTO | Y | Y | - | Y |
+| CONNECTION_CLOSE (0x1c) | Y | Y | - | Y |
+| CONNECTION_CLOSE (0x1d) | - | - | - | Y |
+| STREAM, flow control, etc. | - | - | Y | Y |
+| NEW_TOKEN | - | - | - | Y |
+| PATH_CHALLENGE/RESPONSE | - | - | Y | Y |
+| NEW/RETIRE_CONNECTION_ID | - | - | - | Y |
+| HANDSHAKE_DONE | - | - | - | Y |
+
+`PacketBuilder` MUST enforce these restrictions — reject attempts to write disallowed frames.
+
 ### ACK Generation (RFC 9000 §13.2)
 
 - Every ack-eliciting packet SHOULD be acknowledged at least once
@@ -450,8 +470,9 @@ QUIC does NOT retransmit lost packets whole. Instead, the *information* in lost 
 - Lost ACK frames → regenerate from current ACK state
 - Lost flow control frames (MAX_DATA, MAX_STREAM_DATA, MAX_STREAMS) → re-send current values
 - Lost NEW_CONNECTION_ID → re-send
+- Lost HANDSHAKE_DONE → re-send (critical: client cannot confirm handshake without it)
 
-`SentPacket::frames` tracks which frames were in each packet so the right information can be re-sent on loss.
+`SentPacket::frame_range` indexes into the per-connection `FrameLog` so the right information can be re-sent on loss.
 
 ### Loss Detection (RFC 9002)
 
@@ -497,11 +518,31 @@ pub struct LossDetector {
 
 pub struct PacketNumberSpace {
     largest_acked: Option<u64>,
-    sent_packets: BTreeMap<u64, SentPacket>,
+    /// In-flight packet ring buffer indexed by (pn - base_pn).
+    /// Replaces BTreeMap — O(1) insert/lookup, no tree allocations, cache-friendly.
+    /// Size 256 covers typical congestion windows. If pn - base exceeds capacity,
+    /// oldest entries are implicitly lost (they've exceeded any reasonable threshold).
+    in_flight: InFlightRing,
     loss_time: Option<Instant>,         // earliest time-threshold loss eligible
     ack_eliciting_in_flight: u32,
     // ECN tracking per space
     ecn_ce_counter: u64,
+}
+
+pub struct InFlightRing {
+    packets: [Option<SentPacket>; 256],
+    base_pn: u64,                        // PN of slot 0
+}
+
+impl InFlightRing {
+    fn get(&self, pn: u64) -> Option<&SentPacket> {
+        let idx = pn.wrapping_sub(self.base_pn) as usize;
+        if idx < 256 { self.packets[idx].as_ref() } else { None }
+    }
+    fn insert(&mut self, pn: u64, pkt: SentPacket) { /* ... */ }
+    fn remove(&mut self, pn: u64) -> Option<SentPacket> { /* ... */ }
+    /// Advance base_pn, implicitly dropping old entries
+    fn advance_base(&mut self, new_base: u64) { /* ... */ }
 }
 
 pub struct SentPacket {
@@ -509,7 +550,9 @@ pub struct SentPacket {
     size: u16,
     ack_eliciting: bool,
     in_flight: bool,                     // counted in bytes_in_flight
-    frames: SmallVec<[SentFrame; 4]>,    // for frame-level retransmission
+    /// Range into per-connection frame log. Avoids SmallVec heap spills
+    /// when >4 frames per packet. Frame log is a circular buffer.
+    frame_range: (u32, u32),             // (start_idx, end_idx) in FrameLog
 }
 ```
 
@@ -581,6 +624,7 @@ Requirements:
 - Both packets must be ack-eliciting
 - None of the packets sent between them may be acknowledged
 - On persistent congestion: `congestion_window = K_MINIMUM_WINDOW`
+- After persistent congestion established: set `min_rtt` to newest RTT sample (RFC 9002 §5.2)
 
 #### Packet Space Discard (RFC 9002 Appendix A.11)
 
@@ -744,13 +788,19 @@ pub struct TransportParams {
 
 ### Address Validation & Anti-Amplification (RFC 9000 §8)
 
-**Anti-amplification (CRITICAL):** Before address is validated, endpoint MUST NOT send more than 3× bytes received from that address. Tracked per-connection during handshake:
+**Anti-amplification (CRITICAL):** Before address is validated, endpoint MUST NOT send more than 3× bytes received from that address. Tracked per-connection during handshake. Counts all payload bytes from datagrams uniquely attributed to the connection:
 
 ```rust
 pub struct AmplificationLimit {
-    bytes_received: usize,
-    bytes_sent: usize,
-    validated: bool,  // address validated → limit removed
+    bytes_received: usize,   // all bytes received from unvalidated address
+    bytes_sent: usize,       // all bytes sent to unvalidated address
+    validated: bool,          // address validated → limit removed
+}
+
+impl AmplificationLimit {
+    fn can_send(&self, bytes: usize) -> bool {
+        self.validated || self.bytes_sent + bytes <= 3 * self.bytes_received
+    }
 }
 ```
 
@@ -771,6 +821,8 @@ pub struct RetryToken {
 
 Token is opaque to client — included in subsequent Initial packet. Server validates token, extracts original DCID for transport parameter authentication.
 
+**Token replay protection (RFC 9000 §8.1.4):** Retry tokens SHOULD only be accepted for a short time (recommended: ≤30 seconds). NEW_TOKEN tokens SHOULD NOT be accepted multiple times — server tracks used tokens or embeds single-use nonces. Token format includes timestamp for expiry enforcement.
+
 ### NEW_TOKEN Tokens (RFC 9000 §8.1.3)
 
 Server issues tokens via NEW_TOKEN frame for future connections (enables 0-RTT address validation). Client stores per server_name, presents in future Initial packets. Tokens expire — server validates timestamp.
@@ -782,13 +834,17 @@ pub struct PathState {
     remote_addr: SocketAddr,
     local_addr: SocketAddr,
     validated: bool,
-    challenge_pending: Option<[u8; 8]>,  // awaiting PATH_RESPONSE
+    mtu_validated: bool,                  // path MTU ≥1200 confirmed (RFC 9000 §8.2.1)
+    challenge_pending: Option<[u8; 8]>,   // awaiting PATH_RESPONSE
     challenge_sent_at: Option<Instant>,
     amplification: AmplificationLimit,
-    // Per-path congestion state (reset on migration, §9.4)
-    // Per-path ECN validation state
+    // Per-path — embedded directly, no pointer chasing
+    congestion: QuicCubic,                // reset on migration (§9.4)
+    ecn: EcnState,                        // re-validate on migration
 }
 ```
+
+**Path MTU two-phase validation (RFC 9000 §8.2.1, §8.2.3):** If PATH_CHALLENGE is sent in a datagram <1200 bytes and PATH_RESPONSE validates the peer address, the address is validated but NOT the MTU. MUST initiate a second path validation with a ≥1200 byte datagram before sending full-sized packets. Track via `mtu_validated` flag.
 
 **Migration response (RFC 9000 §9.3):**
 - On receiving packet from new address: apply anti-amplification limit, initiate path validation
@@ -1015,8 +1071,9 @@ pub struct SendHalf {
 
 ```rust
 pub struct OooRanges {
-    inline: [(u64, usize); 4],  // covers 99% of cases in one cache line
+    inline: [(u64, usize); 8],  // 8 entries covers typical burst reordering
     len: u8,
+    max_entries: u16,            // cap to prevent memory exhaustion attacks
     overflow: Option<Box<BTreeMap<u64, usize>>>,
 }
 ```
@@ -1066,7 +1123,9 @@ pub struct QuicConnectionState {
     path: PathState,
 
     // Connection management
-    scid_set: SmallVec<[ConnectionId; 4]>,
+    /// Fixed array — bounded by active_connection_id_limit (default 2, max 8).
+    /// Eliminates SmallVec branching overhead.
+    scid_set: CidSet,
     dcid_seq: u64,
     state: ConnectionState,
     side: Side,
@@ -1256,6 +1315,8 @@ Returns a send stream immediately if 0-RTT keys are available from a cached sess
 
 ## Performance Constraints
 
+### Core Principles
+
 - **Zero-copy:** Encrypt/decrypt in-place on XDP frame buffers. No intermediate allocations on data path.
 - **No dynamic dispatch** except rustls `Box<dyn PacketKey>` (per-packet, AEAD cost dominates).
 - **No heap allocation** on hot path — stream pooling, inline OOO ranges, fixed-size ConnectionId.
@@ -1263,6 +1324,71 @@ Returns a send stream immediately if 0-RTT keys are available from a cached sess
 - **Direct index** stream lookup via `StreamId >> 2` — no hashing.
 - **Monomorphized** congestion control via generics.
 - **`StreamRingBuffer`** — slim ring buffer without embedded wakers (avoids duplication with socket-layer wakers).
+
+### Hot Path Data Structures
+
+**FrameLog** — per-connection circular buffer for frame-level retransmission metadata:
+
+```rust
+pub struct FrameLog {
+    entries: [SentFrame; 1024],  // fixed circular buffer
+    head: u32,                    // next write index
+}
+```
+
+`SentPacket::frame_range` indexes into this log. No SmallVec heap spills. Old entries naturally overwritten as the log wraps — by then those packets are either ACKed or declared lost.
+
+**CidSet** — fixed array for connection IDs:
+
+```rust
+pub struct CidSet {
+    cids: [ConnectionId; 8],  // bounded by active_connection_id_limit
+    count: u8,
+}
+```
+
+Eliminates SmallVec conditional branching. Transport parameter `active_connection_id_limit` (default 2) guarantees this never overflows.
+
+**AckState** — pre-encoded ACK ranges to avoid re-encoding on every packet:
+
+```rust
+pub struct AckState {
+    ranges_encoded: [u8; 256],   // pre-encoded wire format, updated on packet receipt
+    ranges_len: u16,
+    largest_acked: u64,
+    ack_delay: u64,
+    needs_ack: bool,
+}
+```
+
+`PacketBuilder::write_ack()` copies pre-encoded bytes directly — no encode-from-struct per packet.
+
+### Packet Building — Zero-Copy Boundaries
+
+Single stream frame per packet: **true zero-copy** — `PacketBuilder` writes STREAM frame header, then the AEAD encrypts the payload region in-place on the XDP frame buffer. No data movement.
+
+Multiple stream frames per packet: **unavoidable copy** from each stream's send buffer into the packet frame buffer (scatter-gather not available at the XDP frame level). Minimize by preferring one STREAM frame per packet when possible.
+
+### Pacing — Timer-Driven
+
+Pacing is driven by the timer wheel, not per-packet conditional checks:
+
+1. When data is available to send, compute `next_send_time` from `pacing_rate`
+2. If `next_send_time > now`, set a pacing timer in the `TimerWheel`
+3. When timer fires, send the next batch (up to `K_INITIAL_WINDOW` burst limit)
+4. ACK-only packets bypass pacing entirely
+
+This avoids per-packet `Instant::now()` + comparison on the send path.
+
+### SIMD Assessment
+
+Platform: aarch64 with NEON.
+
+- **Header protection (AES):** Already NEON-accelerated via rustls's crypto backend
+- **Checksums:** Existing NEON implementation in `src/net/checksum/neon.rs` reused for UDP layer
+- **memcpy/memset:** stdlib already NEON-optimized on aarch64
+- **Frame parsing, varint, flow control:** Inherently sequential, SIMD not beneficial
+- **Recommendation:** Scalar-first implementation, profile-driven SIMD if bottlenecks found
 
 ## Testing Strategy
 
