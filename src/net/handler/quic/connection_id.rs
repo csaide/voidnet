@@ -70,7 +70,7 @@ impl fmt::Debug for ConnectionId {
 }
 
 /// Zero-copy borrowed QUIC Connection ID from a packet buffer.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ConnectionIdRef<'a> {
     bytes: &'a [u8],
 }
