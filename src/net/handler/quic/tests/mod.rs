@@ -5,4 +5,5 @@ mod frame_test;
 mod packet_number_test;
 mod params_test;
 mod timer_kinds_test;
+mod tls_test;
 mod varint_test;
