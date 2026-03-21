@@ -6,6 +6,7 @@ pub mod frame;
 pub mod frame_log;
 pub mod frame_writer;
 pub mod loss;
+pub mod pacing;
 pub mod packet_builder;
 pub mod packet_number;
 pub mod params;
