@@ -61,7 +61,7 @@ pub struct VnHeader<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum HeaderParseError {
     BufferTooShort,
-    /// A CID length field exceeded the RFC 9000 maximum of 20 bytes.
+    /// A CID length field exceeded 255 bytes (RFC 8999 invariant).
     InvalidDcidLength(u8),
     /// Version field is not a recognised version.
     UnknownVersion(u32),
@@ -98,7 +98,7 @@ pub fn is_long_header(first_byte: u8) -> bool {
 
 /// Extract the DCID from a long header without full parsing.
 ///
-/// Returns `None` if the buffer is too short or the DCID length exceeds 20.
+/// Returns `None` if the buffer is too short or the DCID length exceeds 255.
 #[inline]
 pub fn peek_dcid(buf: &[u8]) -> Option<ConnectionIdRef<'_>> {
     // Long header layout: [0]=first_byte [1..5]=version [5]=dcid_len [6..]=dcid
@@ -106,7 +106,7 @@ pub fn peek_dcid(buf: &[u8]) -> Option<ConnectionIdRef<'_>> {
         return None;
     }
     let dcid_len = buf[5] as usize;
-    if dcid_len > 20 {
+    if dcid_len > 255 {
         return None;
     }
     let end = 6 + dcid_len;
@@ -131,7 +131,7 @@ fn parse_long_header(
 
     // DCID
     let dcid_len = buf[5] as usize;
-    if dcid_len > 20 {
+    if dcid_len > 255 {
         return Err(HeaderParseError::InvalidDcidLength(buf[5]));
     }
     let dcid_end = 6 + dcid_len;
@@ -143,7 +143,7 @@ fn parse_long_header(
 
     // SCID
     let scid_len = buf[dcid_end] as usize;
-    if scid_len > 20 {
+    if scid_len > 255 {
         return Err(HeaderParseError::InvalidDcidLength(buf[dcid_end]));
     }
     let scid_start = dcid_end + 1;
@@ -381,20 +381,28 @@ mod tests {
         assert!(peek_dcid(&buf).is_none());
     }
 
-    // ── parse_invalid_dcid_length ────────────────────────────────────────────
+    // ── parse_valid_max_dcid_length ────────────────────────────────────────────
 
     #[test]
-    fn parse_invalid_dcid_length() {
-        // dcid_len = 21, which exceeds the RFC 9000 max of 20.
+    fn parse_valid_max_dcid_length() {
+        // dcid_len = 255, which is the maximum per RFC 8999 version-independent parser.
         let first_byte = 0xC0u8;
         let mut buf = vec![first_byte];
         buf.extend_from_slice(&QUIC_VERSION_1.to_be_bytes());
-        buf.push(21u8); // invalid dcid_len
-        // Append 21 bytes for DCID.
-        buf.extend_from_slice(&[0u8; 21]);
+        buf.push(255u8); // maximum valid dcid_len per RFC 8999
+        // Append 255 bytes for DCID.
+        buf.extend_from_slice(&[0u8; 255]);
+        // Append scid_len (minimum 1 byte for the field).
+        buf.push(1u8); // scid_len = 1
+        buf.push(0xAAu8); // 1 byte of SCID
 
-        let err = parse_header(&buf, 0).expect_err("should fail with invalid length");
-        assert_eq!(err, HeaderParseError::InvalidDcidLength(21));
+        let (hdr, _) = parse_header(&buf, 0).expect("parse should succeed with 255-byte DCID");
+        match hdr {
+            PacketHeader::Long(lh) => {
+                assert_eq!(lh.dcid.len(), 255);
+            }
+            other => panic!("expected LongHeader, got {:?}", other),
+        }
     }
 
     // ── parse_buffer_too_short ───────────────────────────────────────────────
