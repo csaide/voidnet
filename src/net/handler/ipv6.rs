@@ -17,7 +17,7 @@ use crate::{
     xdp::frame::{Frame, FrameBuffer},
 };
 
-use super::{icmpv6, tcp::TcpHandler, udp::UdpHandler};
+use super::{icmpv6, quic::QuicHandler, tcp::TcpHandler, udp::UdpHandler};
 
 /// Result of walking IPv6 extension headers.
 pub(crate) enum NextHeaderResult {
@@ -159,6 +159,7 @@ impl Ipv6Handler {
         neighbor_handler: &NeighborHandler,
         udp_handler: &mut UdpHandler<'umem>,
         tcp_handler: &mut TcpHandler,
+        quic_handler: &mut QuicHandler,
         pmtu: &mut PmtuCache,
         now: Instant,
         wheel: &mut TimerWheel,
@@ -218,6 +219,25 @@ impl Ipv6Handler {
                     );
                 }
                 IpProtocols::Udp => {
+                    // Check if this is a QUIC port before falling through to UDP
+                    if frame.len() >= payload_offset + 4 {
+                        let dst_port = u16::from_be_bytes([
+                            frame[payload_offset + 2],
+                            frame[payload_offset + 3],
+                        ]);
+                        if quic_handler.is_quic_port(dst_port) {
+                            quic_handler.process_ipv6(
+                                frame,
+                                now,
+                                wheel,
+                                neighbor_handler,
+                                free_frames,
+                                rx_return,
+                                tx_return,
+                            );
+                            return;
+                        }
+                    }
                     udp_handler.process_ipv6(frame, None, payload_offset, rx_return);
                 }
                 IpProtocols::Tcp => {
@@ -304,6 +324,10 @@ mod tests {
 
     fn new_tcp_handler() -> TcpHandler {
         TcpHandler::new(false, false)
+    }
+
+    fn new_quic_handler() -> QuicHandler {
+        QuicHandler::new(false, false)
     }
 
     /// Builds a valid Ethernet + IPv6 frame with no extension headers.
@@ -537,6 +561,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut tcp = new_tcp_handler();
+        let mut quic = new_quic_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
@@ -548,6 +573,7 @@ mod tests {
             &nh,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut wheel,
@@ -568,6 +594,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut tcp = new_tcp_handler();
+        let mut quic = new_quic_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
@@ -580,6 +607,7 @@ mod tests {
             &nh,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut wheel,
@@ -602,6 +630,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut tcp = new_tcp_handler();
+        let mut quic = new_quic_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
@@ -614,6 +643,7 @@ mod tests {
             &nh,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut wheel,
@@ -634,6 +664,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut tcp = new_tcp_handler();
+        let mut quic = new_quic_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
@@ -646,6 +677,7 @@ mod tests {
             &nh,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut wheel,
@@ -667,6 +699,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut tcp = new_tcp_handler();
+        let mut quic = new_quic_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
@@ -679,6 +712,7 @@ mod tests {
             &nh,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut wheel,
@@ -722,6 +756,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut tcp = new_tcp_handler();
+        let mut quic = new_quic_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
@@ -732,6 +767,7 @@ mod tests {
             &nh,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut wheel,
@@ -754,6 +790,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut tcp = new_tcp_handler();
+        let mut quic = new_quic_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
@@ -765,6 +802,7 @@ mod tests {
             &nh,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut wheel,
@@ -784,6 +822,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut tcp = new_tcp_handler();
+        let mut quic = new_quic_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
@@ -796,6 +835,7 @@ mod tests {
             &nh,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut wheel,
@@ -828,6 +868,7 @@ mod tests {
         let nh = new_neighbor_handler();
         let mut udp = new_udp_handler();
         let mut tcp = new_tcp_handler();
+        let mut quic = new_quic_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
@@ -840,6 +881,7 @@ mod tests {
             &nh,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut wheel,
@@ -881,6 +923,7 @@ mod tests {
         let mut udp = UdpHandler::new(256, false);
         let rx_queue = udp.bind(IpAddress::V6(LOCAL_IP), 0, 256).unwrap();
         let mut tcp = new_tcp_handler();
+        let mut quic = new_quic_handler();
         let mut rx = BasicFrameBuffer::new(4);
         let mut tx = BasicFrameBuffer::new(4);
         let mut wheel = crate::net::timer_wheel::TimerWheel::new(coarsetime::Instant::now());
@@ -891,6 +934,7 @@ mod tests {
             &nh,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &mut PmtuCache::new(),
             Instant::now(),
             &mut wheel,

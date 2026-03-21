@@ -1,7 +1,7 @@
+use coarsetime::Instant;
 use rustc_hash::FxHashMap;
 use slab::Slab;
 use std::sync::Arc;
-use std::time::Instant;
 
 use crate::net::handler::quic::connection::QuicConnectionState;
 use crate::net::handler::quic::connection_id::ConnectionId;

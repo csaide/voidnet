@@ -3,7 +3,10 @@ use coarsetime::Instant;
 use crate::{
     net::{
         NeighborHandler, PmtuCache,
-        handler::{ipv4::Ipv4Handler, ipv6::Ipv6Handler, tcp::TcpHandler, udp::UdpHandler},
+        handler::{
+            ipv4::Ipv4Handler, ipv6::Ipv6Handler, quic::QuicHandler, tcp::TcpHandler,
+            udp::UdpHandler,
+        },
         timer_wheel::TimerWheel,
         wire::ethernet::{EtherTypes, EthernetFrame},
     },
@@ -22,6 +25,7 @@ impl EthernetHandler {
         ipv6_handler: &mut Ipv6Handler,
         udp_handler: &mut UdpHandler<'umem>,
         tcp_handler: &mut TcpHandler,
+        quic_handler: &mut QuicHandler,
         neighbor_handler: &NeighborHandler,
         pmtu: &mut PmtuCache,
         now: Instant,
@@ -37,6 +41,7 @@ impl EthernetHandler {
                     frame,
                     udp_handler,
                     tcp_handler,
+                    quic_handler,
                     neighbor_handler,
                     pmtu,
                     now,
@@ -52,6 +57,7 @@ impl EthernetHandler {
                     neighbor_handler,
                     udp_handler,
                     tcp_handler,
+                    quic_handler,
                     pmtu,
                     now,
                     wheel,
@@ -77,7 +83,7 @@ mod tests {
     use crate::{
         net::{
             checksum::{compute_ipv4_checksum, compute_udp_checksum},
-            handler::{tcp::TcpHandler, udp::UdpHandler},
+            handler::{quic::QuicHandler, tcp::TcpHandler, udp::UdpHandler},
             wire::{
                 ethernet::{EtherType, MacAddress, write_ethernet_header},
                 ip::{IPV4_MIN_HEADER_LEN, Ipv4Address},
@@ -99,6 +105,7 @@ mod tests {
         Ipv6Handler,
         UdpHandler<'umem>,
         TcpHandler,
+        QuicHandler,
         NeighborHandler,
         PmtuCache,
     ) {
@@ -107,9 +114,10 @@ mod tests {
         let ipv6 = Ipv6Handler::new(false, false);
         let udp = UdpHandler::new(256, false);
         let tcp = TcpHandler::new(false, false);
+        let quic = QuicHandler::new(false, false);
         let neighbor = NeighborHandler::new("test0", Duration::from_secs(60)).unwrap();
         let pmtu = PmtuCache::new();
-        (eth, ipv4, ipv6, udp, tcp, neighbor, pmtu)
+        (eth, ipv4, ipv6, udp, tcp, quic, neighbor, pmtu)
     }
 
     fn new_buffers<'umem>() -> (BasicFrameBuffer<'umem>, BasicFrameBuffer<'umem>) {
@@ -171,7 +179,8 @@ mod tests {
 
     #[test]
     fn unknown_ether_type_returns_frame_to_rx() {
-        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, mut quic, neighbor, mut pmtu) =
+            new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -189,6 +198,7 @@ mod tests {
             &mut ipv6,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &neighbor,
             &mut pmtu,
             now,
@@ -204,7 +214,8 @@ mod tests {
 
     #[test]
     fn ipv4_frame_dispatches_to_ipv4_handler() {
-        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, mut quic, neighbor, mut pmtu) =
+            new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -219,6 +230,7 @@ mod tests {
             &mut ipv6,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &neighbor,
             &mut pmtu,
             now,
@@ -236,7 +248,8 @@ mod tests {
 
     #[test]
     fn ipv4_short_frame_dispatches_to_ipv4_handler() {
-        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, mut quic, neighbor, mut pmtu) =
+            new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -252,6 +265,7 @@ mod tests {
             &mut ipv6,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &neighbor,
             &mut pmtu,
             now,
@@ -268,7 +282,8 @@ mod tests {
 
     #[test]
     fn ipv6_short_frame_dispatches_to_ipv6_handler() {
-        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, mut quic, neighbor, mut pmtu) =
+            new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -285,6 +300,7 @@ mod tests {
             &mut ipv6,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &neighbor,
             &mut pmtu,
             now,
@@ -301,7 +317,8 @@ mod tests {
 
     #[test]
     fn arp_frame_dispatches_to_neighbor_handler() {
-        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) = new_handlers();
+        let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, mut quic, neighbor, mut pmtu) =
+            new_handlers();
         let (mut rx, mut tx) = new_buffers();
         let now = Instant::now();
 
@@ -316,6 +333,7 @@ mod tests {
             &mut ipv6,
             &mut udp,
             &mut tcp,
+            &mut quic,
             &neighbor,
             &mut pmtu,
             now,
@@ -346,7 +364,7 @@ mod tests {
         ];
 
         for etype in types {
-            let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, neighbor, mut pmtu) =
+            let (mut eth, mut ipv4, mut ipv6, mut udp, mut tcp, mut quic, neighbor, mut pmtu) =
                 new_handlers();
             let (mut rx, mut tx) = new_buffers();
             let mut data = build_eth_frame(etype);
@@ -360,6 +378,7 @@ mod tests {
                 &mut ipv6,
                 &mut udp,
                 &mut tcp,
+                &mut quic,
                 &neighbor,
                 &mut pmtu,
                 now,

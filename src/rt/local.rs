@@ -16,8 +16,8 @@ use crate::{
     net::{
         NeighborHandler, NeighborUpdate, PmtuCache,
         handler::{
-            ethernet::EthernetHandler, ipv4::Ipv4Handler, ipv6::Ipv6Handler, tcp::TcpHandler,
-            udp::UdpHandler,
+            ethernet::EthernetHandler, ipv4::Ipv4Handler, ipv6::Ipv6Handler, quic::QuicHandler,
+            tcp::TcpHandler, udp::UdpHandler,
         },
         timer_wheel::TimerWheel,
     },
@@ -186,6 +186,8 @@ pub struct LocalRuntime<'umem> {
     udp_handler: Rc<UnsafeCell<UdpHandler<'umem>>>,
     // TCP handler manages TCP connections and the TCP state machine.
     tcp_handler: Rc<UnsafeCell<TcpHandler>>,
+    // QUIC handler manages QUIC connections and protocol state.
+    quic_handler: QuicHandler,
     // Set of empty ready to go frame structs that can be used for building outbound packets.
     free_frames: SharedFrameBuffer<'umem>,
     // Frames that are filled and ready to be sent to the network.
@@ -247,6 +249,7 @@ impl<'umem> LocalRuntime<'umem> {
             ipv6_handler: Ipv6Handler::new(rx_offload, tx_offload),
             udp_handler: Rc::new(UnsafeCell::new(UdpHandler::new(256, rx_offload))),
             tcp_handler: Rc::new(UnsafeCell::new(TcpHandler::new(rx_offload, tx_offload))),
+            quic_handler: QuicHandler::new(rx_offload, tx_offload),
             free_frames,
             tx_return,
             rx_return,
@@ -294,6 +297,7 @@ impl<'umem> LocalRuntime<'umem> {
             ipv6_handler: Ipv6Handler::new(rx_offload, tx_offload),
             udp_handler: Rc::new(UnsafeCell::new(UdpHandler::new(256, rx_offload))),
             tcp_handler: Rc::new(UnsafeCell::new(TcpHandler::new(rx_offload, tx_offload))),
+            quic_handler: QuicHandler::new(rx_offload, tx_offload),
             free_frames,
             tx_return,
             rx_return,
@@ -416,6 +420,7 @@ impl<'umem> LocalRuntime<'umem> {
                             ipv6_handler,
                             udp_handler,
                             tcp_handler,
+                            &mut self.quic_handler,
                             neighbor_handler,
                             pmtu,
                             now,
@@ -477,6 +482,13 @@ impl<'umem> LocalRuntime<'umem> {
                 &mut self.tx_return,
             );
 
+            // ---- QUIC Send ----
+            {
+                let wheel = unsafe { &mut *self.wheel.get() };
+                self.quic_handler
+                    .poll_send(now, wheel, &mut self.free_frames, &mut self.tx_return);
+            }
+
             self.evict_counter = self.evict_counter.wrapping_add(1);
             if self.evict_counter & 65535 == 0 {
                 // SAFETY: single-threaded, no reentrant handler calls.
@@ -487,6 +499,7 @@ impl<'umem> LocalRuntime<'umem> {
                 );
 
                 self.neighbor_handler.evict_stale(now);
+                self.quic_handler.evict_stale(now);
                 // SAFETY: single-threaded, no reentrant access.
                 unsafe { &mut *self.pmtu.get() }.evict_stale(now);
             }
