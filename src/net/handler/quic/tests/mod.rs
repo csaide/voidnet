@@ -1,7 +1,9 @@
+mod ack_test;
 mod congestion_test;
 mod connection_id_test;
 mod crypto_test;
 mod error_test;
+mod flow_control_test;
 mod frame_test;
 mod loss_test;
 mod packet_number_test;
