@@ -22,7 +22,6 @@ pub struct QuicCubic {
 
     // Recovery
     congestion_recovery_start_time: Option<Instant>,
-    in_congestion_recovery: bool,
 
     // App-limited
     app_limited: bool,
@@ -40,7 +39,6 @@ impl QuicCubic {
             k: 0.0,
             epoch_start: None,
             congestion_recovery_start_time: None,
-            in_congestion_recovery: false,
             app_limited: false,
         }
     }
@@ -79,16 +77,29 @@ impl CongestionController for QuicCubic {
         self.bytes_in_flight += bytes;
     }
 
-    fn on_ack(&mut self, acked_bytes: usize, _rtt: Duration, _min_rtt: Duration, now: Instant) {
+    fn on_ack(
+        &mut self,
+        acked_bytes: usize,
+        _rtt: Duration,
+        _min_rtt: Duration,
+        _now: Instant,
+        in_flight: bool,
+        sent_time: Instant,
+    ) {
         self.bytes_in_flight = self.bytes_in_flight.saturating_sub(acked_bytes);
 
-        // Exit recovery when we get an ACK after recovery started
-        if self.in_congestion_recovery {
-            if let Some(start) = self.congestion_recovery_start_time {
-                if now > start {
-                    self.in_congestion_recovery = false;
-                }
+        // Only grow window for in-flight packets (RFC 9002 §7.3.2)
+        if !in_flight {
+            return;
+        }
+
+        // During recovery, only grow window for packets sent after recovery started
+        if let Some(start) = self.congestion_recovery_start_time {
+            if sent_time <= start {
+                return; // still in recovery for this packet
             }
+            // Packet sent after recovery start: recovery is over
+            self.congestion_recovery_start_time = None;
         }
 
         if self.app_limited {
@@ -104,15 +115,16 @@ impl CongestionController for QuicCubic {
         }
     }
 
-    fn on_congestion_event(&mut self, lost_bytes: usize, now: Instant) {
-        self.bytes_in_flight = self.bytes_in_flight.saturating_sub(lost_bytes);
-
-        // Only one congestion response per recovery period
-        if self.in_congestion_recovery {
-            return;
+    fn on_congestion_event(&mut self, lost_bytes: usize, now: Instant, sent_time: Instant) {
+        // Only one congestion response per recovery period (RFC 9002 §7.3.2)
+        if let Some(start) = self.congestion_recovery_start_time {
+            if sent_time <= start {
+                self.bytes_in_flight = self.bytes_in_flight.saturating_sub(lost_bytes);
+                return;
+            }
         }
 
-        self.in_congestion_recovery = true;
+        self.bytes_in_flight = self.bytes_in_flight.saturating_sub(lost_bytes);
         self.congestion_recovery_start_time = Some(now);
         self.w_max = self.cwnd as f64;
         self.ssthresh =
@@ -122,8 +134,8 @@ impl CongestionController for QuicCubic {
     }
 
     fn on_ecn_ce(&mut self, now: Instant) {
-        // Same as congestion event
-        self.on_congestion_event(0, now);
+        // Same as congestion event; ECN CE marks are considered current
+        self.on_congestion_event(0, now, now);
     }
 
     fn window(&self) -> usize {

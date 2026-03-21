@@ -27,6 +27,8 @@ fn slow_start_growth() {
         Duration::from_millis(50),
         Duration::from_millis(50),
         now,
+        true,
+        now,
     );
     assert_eq!(cc.window(), 12000 + 1200); // slow start adds acked_bytes
 }
@@ -44,6 +46,8 @@ fn congestion_avoidance_growth() {
         Duration::from_millis(50),
         Duration::from_millis(50),
         now,
+        true,
+        now,
     );
     assert_eq!(cc.window(), 12120);
 }
@@ -53,7 +57,7 @@ fn loss_reduces_window() {
     let mut cc = QuicCubic::new(1200);
     cc.cwnd = 24000;
     let now = Instant::now();
-    cc.on_congestion_event(1200, now);
+    cc.on_congestion_event(1200, now, now);
     // ssthresh = cwnd * 0.5 = 12000, cwnd = ssthresh = 12000
     assert_eq!(cc.window(), 12000);
 }
@@ -63,7 +67,7 @@ fn minimum_window_enforced() {
     let mut cc = QuicCubic::new(1200);
     cc.cwnd = 2400; // minimum_window = 2 * 1200 = 2400
     let now = Instant::now();
-    cc.on_congestion_event(1200, now);
+    cc.on_congestion_event(1200, now, now);
     // 0.5 * 2400 = 1200, but minimum is 2400
     assert_eq!(cc.window(), 2400);
 }
@@ -88,6 +92,8 @@ fn app_limited_prevents_growth() {
         Duration::from_millis(50),
         Duration::from_millis(50),
         now,
+        true,
+        now,
     );
     assert_eq!(cc.window(), initial); // no growth
 }
@@ -110,4 +116,66 @@ fn reset_restores_initial_state() {
     cc.reset();
     assert_eq!(cc.window(), 12000); // initial window
     assert_eq!(cc.bytes_in_flight(), 0);
+}
+
+/// RFC 9002 §7.3.2: a congestion event for a packet sent before the recovery
+/// period start time must not trigger a second window reduction.
+#[test]
+fn test_recovery_ignores_old_losses() {
+    let mut cc = QuicCubic::new(1200);
+    cc.cwnd = 24000;
+    let t0 = Instant::now();
+    // Trigger recovery now with a packet sent at t0
+    cc.on_congestion_event(0, t0, t0);
+    let window_after_first = cc.window();
+    assert_eq!(window_after_first, 12000);
+
+    // A second congestion event for a packet sent at or before t0 must be ignored
+    cc.on_congestion_event(0, t0, t0);
+    assert_eq!(cc.window(), window_after_first); // no further reduction
+}
+
+/// RFC 9002 §7.3.2: an ACK for a packet sent after the recovery start allows
+/// the window to grow again.
+#[test]
+fn test_recovery_exits_on_new_ack() {
+    let mut cc = QuicCubic::new(1200);
+    cc.cwnd = 24000;
+    let t0 = Instant::now();
+
+    // Enter recovery
+    cc.on_congestion_event(0, t0, t0);
+    let window_in_recovery = cc.window();
+
+    // Simulate a packet sent after recovery start being acknowledged
+    let t1 = t0 + Duration::from_millis(100);
+    cc.on_ack(
+        1200,
+        Duration::from_millis(50),
+        Duration::from_millis(50),
+        t1,
+        true,
+        t1, // sent_time after recovery start
+    );
+    // Window should grow (recovery is over for this packet)
+    assert!(cc.window() > window_in_recovery);
+}
+
+/// RFC 9002 §7.3.2: on_ack for a packet that was not in-flight must not
+/// cause window growth.
+#[test]
+fn test_non_in_flight_no_growth() {
+    let mut cc = QuicCubic::new(1200);
+    let now = Instant::now();
+    let initial = cc.window();
+    cc.on_packets_sent(1200, now);
+    cc.on_ack(
+        1200,
+        Duration::from_millis(50),
+        Duration::from_millis(50),
+        now,
+        false, // not in-flight
+        now,
+    );
+    assert_eq!(cc.window(), initial); // no growth
 }
