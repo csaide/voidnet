@@ -118,6 +118,7 @@ pub enum FrameParseError {
 }
 
 /// Parse one frame from buffer. Returns (frame, bytes_consumed) or error.
+#[inline]
 pub fn parse_frame(buf: &[u8]) -> Result<(QuicFrame<'_>, usize), FrameParseError> {
     if buf.is_empty() {
         return Err(FrameParseError::BufferTooShort);

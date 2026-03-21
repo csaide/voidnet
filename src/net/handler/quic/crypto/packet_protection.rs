@@ -48,36 +48,25 @@ pub fn protect_packet(
     // payload slice: from payload_start to end (includes tag space).
     let header_end = payload_start;
 
-    // rustls encrypt_in_place takes header (everything before the payload,
-    // i.e. up to but NOT including the payload — which starts after the PN)
-    // and the payload mutable slice. The tag is appended to payload in-place.
-    // We need to split the packet buffer to get both references.
+    // rustls encrypt_in_place operates on a &mut [u8] slice directly and
+    // returns the Tag separately. We split the packet buffer so the AEAD
+    // header (AAD) and payload are disjoint borrows, then encrypt in-place
+    // with zero copies.
     let (header_bytes, payload_and_tag) = packet.split_at_mut(header_end);
 
     // payload_and_tag currently holds plaintext + zeroed tag area.
-    // The actual plaintext is payload_and_tag[..plaintext_len] where
-    // plaintext_len = total_len - payload_start - tag_len.
     let plaintext_len = total_len - payload_start - tag_len;
 
-    // encrypt_in_place works on a Vec-like buffer and appends the tag.
-    // rustls's API takes &mut Vec<u8> or a similar type. Since we are working
-    // with a fixed-size slice, we encrypt only the plaintext portion and then
-    // write the tag into the tag region.
-    //
-    // The signature is:
-    //   encrypt_in_place(&self, pn: u64, header: &[u8], payload: &mut Vec<u8>)
-    //     where payload is a Vec that gets the tag appended.
-    //
-    // Since we have a pre-allocated fixed buffer, we use a temporary Vec for
-    // the plaintext, encrypt into it (which appends the tag), then copy back.
-    let mut payload_vec = payload_and_tag[..plaintext_len].to_vec();
+    // Encrypt the plaintext portion in-place. The tag is returned separately.
     let tag = key
         .packet_key
-        .encrypt_in_place(packet_number, header_bytes, &mut payload_vec)
+        .encrypt_in_place(
+            packet_number,
+            header_bytes,
+            &mut payload_and_tag[..plaintext_len],
+        )
         .map_err(|_| ProtectError::EncryptFailed)?;
-    // Copy ciphertext back.
-    payload_and_tag[..plaintext_len].copy_from_slice(&payload_vec);
-    // Copy tag after ciphertext.
+    // Write tag after ciphertext.
     let tag_bytes = tag.as_ref();
     payload_and_tag[plaintext_len..plaintext_len + tag_len].copy_from_slice(tag_bytes);
 
@@ -89,9 +78,10 @@ pub fn protect_packet(
         return Err(ProtectError::BufferTooShort);
     }
 
-    // To satisfy borrow checker we read the sample into a fixed array.
-    let mut sample = vec![0u8; sample_len];
-    sample.copy_from_slice(&packet[sample_offset..sample_offset + sample_len]);
+    // To satisfy borrow checker we read the sample into a stack-allocated array.
+    // QUIC header protection sample is always 16 bytes (AES-128/ChaCha20).
+    let mut sample = [0u8; 16];
+    sample[..sample_len].copy_from_slice(&packet[sample_offset..sample_offset + sample_len]);
 
     // Apply header protection in-place.
     // first byte and PN bytes are modified by the mask.
@@ -99,7 +89,7 @@ pub fn protect_packet(
     let pn_slice = &mut rest[pn_offset - 1..pn_offset - 1 + pn_length];
 
     key.header_key
-        .encrypt_in_place(&sample, &mut first_byte_slice[0], pn_slice)
+        .encrypt_in_place(&sample[..sample_len], &mut first_byte_slice[0], pn_slice)
         .map_err(|_| ProtectError::HeaderProtectFailed)?;
 
     Ok(total_len)
@@ -130,9 +120,10 @@ pub fn unprotect_header(
         return Err(ProtectError::BufferTooShort);
     }
 
-    // Copy sample (before mutation).
-    let mut sample = vec![0u8; sample_len];
-    sample.copy_from_slice(&packet[sample_offset..sample_offset + sample_len]);
+    // Copy sample into stack-allocated array (before mutation).
+    // QUIC header protection sample is always 16 bytes.
+    let mut sample = [0u8; 16];
+    sample[..sample_len].copy_from_slice(&packet[sample_offset..sample_offset + sample_len]);
 
     // We need to pass a mutable reference to first byte and to the PN bytes.
     // We don't know pn_length yet — it's encoded in the first byte after
@@ -147,7 +138,7 @@ pub fn unprotect_header(
         let (first_slice, rest) = packet.split_at_mut(1);
         let pn_field = &mut rest[pn_offset - 1..pn_offset - 1 + 4];
         key.header_key
-            .decrypt_in_place(&sample, &mut first_slice[0], pn_field)
+            .decrypt_in_place(&sample[..sample_len], &mut first_slice[0], pn_field)
             .map_err(|_| ProtectError::HeaderProtectFailed)?;
     }
 

@@ -9,6 +9,7 @@
 /// Decode a QUIC variable-length integer from `buf`.
 ///
 /// Returns `(value, bytes_consumed)` or `None` if the buffer is too short.
+#[inline]
 pub fn decode_varint(buf: &[u8]) -> Option<(u64, usize)> {
     if buf.is_empty() {
         return None;
@@ -65,6 +66,7 @@ pub fn decode_varint(buf: &[u8]) -> Option<(u64, usize)> {
 /// # Panics
 /// Panics if `buf` is too small to hold the encoded value, or if `val` exceeds
 /// the 62-bit maximum (4611686018427387903).
+#[inline]
 pub fn encode_varint(val: u64, buf: &mut [u8]) -> usize {
     if val <= 63 {
         assert!(buf.len() >= 1, "buffer too small for 1-byte varint");
@@ -109,6 +111,7 @@ pub fn encode_varint(val: u64, buf: &mut [u8]) -> usize {
 ///
 /// # Panics
 /// Panics if `val` exceeds the 62-bit maximum.
+#[inline]
 pub fn varint_len(val: u64) -> usize {
     if val <= 63 {
         1

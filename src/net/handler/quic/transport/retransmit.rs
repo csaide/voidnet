@@ -1,30 +1,48 @@
 use super::frame::StreamId;
 use super::frame_log::{FrameLog, SentFrame};
+use smallvec::SmallVec;
 
 /// Information that needs to be retransmitted after packet loss.
 /// QUIC retransmits *information*, not packets (RFC 9000 §13.3).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RetransmitQueue {
     /// CRYPTO data ranges to re-send: (space, offset, len)
-    pub crypto: Vec<(u8, u64, usize)>,
+    pub crypto: SmallVec<[(u8, u64, usize); 4]>,
     /// Stream data to re-send: (stream_id, offset, len, fin)
-    pub streams: Vec<(StreamId, u64, usize, bool)>,
+    pub streams: SmallVec<[(StreamId, u64, usize, bool); 8]>,
     /// Whether to re-send MAX_DATA with current value
     pub max_data: bool,
     /// Stream IDs needing MAX_STREAM_DATA re-send
-    pub max_stream_data: Vec<StreamId>,
+    pub max_stream_data: SmallVec<[StreamId; 4]>,
     /// Whether to re-send MAX_STREAMS
     pub max_streams: bool,
     /// CID sequences to re-send via NEW_CONNECTION_ID
-    pub new_connection_ids: Vec<u64>,
+    pub new_connection_ids: SmallVec<[u64; 4]>,
     /// CID sequences to re-send via RETIRE_CONNECTION_ID
-    pub retire_connection_ids: Vec<u64>,
+    pub retire_connection_ids: SmallVec<[u64; 4]>,
     /// Whether to re-send HANDSHAKE_DONE
     pub handshake_done: bool,
     /// Streams needing RESET_STREAM re-send
-    pub reset_streams: Vec<(StreamId, u64, u64)>,
+    pub reset_streams: SmallVec<[(StreamId, u64, u64); 4]>,
     /// Streams needing STOP_SENDING re-send
-    pub stop_sending: Vec<(StreamId, u64)>,
+    pub stop_sending: SmallVec<[(StreamId, u64); 4]>,
+}
+
+impl Default for RetransmitQueue {
+    fn default() -> Self {
+        Self {
+            crypto: SmallVec::new(),
+            streams: SmallVec::new(),
+            max_data: false,
+            max_stream_data: SmallVec::new(),
+            max_streams: false,
+            new_connection_ids: SmallVec::new(),
+            retire_connection_ids: SmallVec::new(),
+            handshake_done: false,
+            reset_streams: SmallVec::new(),
+            stop_sending: SmallVec::new(),
+        }
+    }
 }
 
 impl RetransmitQueue {

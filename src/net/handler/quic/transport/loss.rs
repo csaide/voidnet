@@ -4,6 +4,7 @@
 //! detection (§6.1), and probe timeout (§6.2).
 
 use coarsetime::{Duration, Instant};
+use smallvec::SmallVec;
 
 // --- RFC 9002 constants ---
 
@@ -56,16 +57,23 @@ impl InFlightRing {
         }
     }
 
+    /// Map a packet number to a ring index using modular arithmetic.
+    /// The index depends only on the PN itself, not on base_pn, so
+    /// advance_base can update base_pn without moving any data.
     #[inline]
     fn index_of(&self, pn: u64) -> Option<usize> {
-        let idx = pn.wrapping_sub(self.base_pn) as usize;
-        if idx < RING_SIZE { Some(idx) } else { None }
+        if pn < self.base_pn || pn >= self.base_pn + RING_SIZE as u64 {
+            return None;
+        }
+        Some((pn as usize) & (RING_SIZE - 1))
     }
 
+    #[inline]
     pub fn get(&self, pn: u64) -> Option<&SentPacket> {
         self.index_of(pn).and_then(|idx| self.packets[idx].as_ref())
     }
 
+    #[inline]
     pub fn insert(&mut self, pn: u64, pkt: SentPacket) {
         if let Some(idx) = self.index_of(pn) {
             self.packets[idx] = Some(pkt);
@@ -73,11 +81,14 @@ impl InFlightRing {
         // If pn is beyond the window, caller should advance_base first.
     }
 
+    #[inline]
     pub fn remove(&mut self, pn: u64) -> Option<SentPacket> {
         self.index_of(pn).and_then(|idx| self.packets[idx].take())
     }
 
     /// Advance the base packet number, clearing any slots that fall behind.
+    /// Uses modular indexing so no data needs to be moved — only old slots
+    /// are cleared and base_pn is updated.
     pub fn advance_base(&mut self, new_base: u64) {
         if new_base <= self.base_pn {
             return;
@@ -91,14 +102,12 @@ impl InFlightRing {
                 *slot = None;
             }
         } else {
-            // Shift entries: move [shift..] to [0..] and clear the tail.
-            // We use a temporary rotation approach.
-            // Clear slots [0..shift) (old entries being discarded).
+            // Clear old slots that are now before the new base.
             for i in 0..shift {
-                self.packets[i] = None;
+                let pn = self.base_pn + i as u64;
+                let idx = (pn as usize) & (RING_SIZE - 1);
+                self.packets[idx] = None;
             }
-            // Now rotate left by `shift`.
-            self.packets.rotate_left(shift);
         }
 
         self.base_pn = new_base;
@@ -106,10 +115,11 @@ impl InFlightRing {
 
     /// Iterate all present packets with their packet numbers.
     pub fn iter(&self) -> impl Iterator<Item = (u64, &SentPacket)> + '_ {
-        self.packets
-            .iter()
-            .enumerate()
-            .filter_map(move |(i, slot)| slot.as_ref().map(|pkt| (self.base_pn + i as u64, pkt)))
+        (0..RING_SIZE as u64).filter_map(move |offset| {
+            let pn = self.base_pn + offset;
+            let idx = (pn as usize) & (RING_SIZE - 1);
+            self.packets[idx].as_ref().map(|pkt| (pn, pkt))
+        })
     }
 }
 
@@ -141,7 +151,7 @@ impl PacketNumberSpace {
 /// Result of processing a loss detection timeout.
 pub enum LossDetectionResult {
     /// Lost packets detected.
-    LostPackets(Vec<(u64, SentPacket)>),
+    LostPackets(SmallVec<[(u64, SentPacket); 8]>),
     /// PTO expired, need to send probe in the given space.
     SendProbe { space: usize },
     /// Nothing to do.
@@ -229,7 +239,7 @@ impl LossDetector {
         acked_ranges: &[(u64, u64)], // (start, end) inclusive
         max_ack_delay: Duration,
         now: Instant,
-    ) -> (Vec<SentPacket>, Vec<(u64, SentPacket)>) {
+    ) -> (SmallVec<[SentPacket; 16]>, SmallVec<[(u64, SentPacket); 8]>) {
         let newly_acked_largest = self.spaces[space]
             .largest_acked
             .map_or(true, |la| largest_acked > la);
@@ -245,7 +255,7 @@ impl LossDetector {
             .map(|p| p.time_sent);
 
         // Remove acked packets from in-flight tracking.
-        let mut acked = Vec::new();
+        let mut acked = SmallVec::<[SentPacket; 16]>::new();
         for &(start, end) in acked_ranges {
             for pn in start..=end {
                 if let Some(pkt) = self.spaces[space].in_flight.remove(pn) {
@@ -321,10 +331,14 @@ impl LossDetector {
     }
 
     /// Detect lost packets in a space (RFC 9002 §6.1).
-    fn detect_lost_packets(&mut self, space: usize, now: Instant) -> Vec<(u64, SentPacket)> {
+    fn detect_lost_packets(
+        &mut self,
+        space: usize,
+        now: Instant,
+    ) -> SmallVec<[(u64, SentPacket); 8]> {
         let largest_acked = match self.spaces[space].largest_acked {
             Some(la) => la,
-            None => return vec![],
+            None => return SmallVec::new(),
         };
 
         let max_rtt = if self.latest_rtt > self.smoothed_rtt {
@@ -347,15 +361,16 @@ impl LossDetector {
 
         self.spaces[space].loss_time = None;
 
-        // Collect packet numbers to check (can't borrow mutably while iterating).
-        let candidates: Vec<(u64, Instant)> = self.spaces[space]
-            .in_flight
-            .iter()
-            .filter(|&(pn, _)| pn <= largest_acked)
-            .map(|(pn, pkt)| (pn, pkt.time_sent))
-            .collect();
+        // Collect candidate packet numbers + send times into a stack-allocated buffer
+        // to avoid borrowing self.spaces mutably while iterating.
+        let mut candidates: SmallVec<[(u64, Instant); 32]> = SmallVec::new();
+        for (pn, pkt) in self.spaces[space].in_flight.iter() {
+            if pn <= largest_acked {
+                candidates.push((pn, pkt.time_sent));
+            }
+        }
 
-        let mut lost = Vec::new();
+        let mut lost = SmallVec::<[(u64, SentPacket); 8]>::new();
 
         for (pn, time_sent) in candidates {
             let lost_by_packet = largest_acked >= pn + K_PACKET_THRESHOLD as u64;

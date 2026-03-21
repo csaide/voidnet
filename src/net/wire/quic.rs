@@ -75,6 +75,7 @@ pub enum HeaderParseError {
 /// not encoded on the wire — it is known from the connection context.
 ///
 /// Returns `(header, bytes_consumed)`.
+#[inline]
 pub fn parse_header(
     buf: &[u8],
     short_dcid_len: usize,
@@ -100,6 +101,7 @@ pub fn is_long_header(first_byte: u8) -> bool {
 /// Extract the DCID from a long header without full parsing.
 ///
 /// Returns `None` if the buffer is too short or the DCID length exceeds 20.
+#[inline]
 pub fn peek_dcid(buf: &[u8]) -> Option<ConnectionIdRef<'_>> {
     // Long header layout: [0]=first_byte [1..5]=version [5]=dcid_len [6..]=dcid
     if buf.len() < 6 {

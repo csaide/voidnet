@@ -32,6 +32,7 @@ impl ConnectionId {
         }
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.len as usize
     }
@@ -40,6 +41,7 @@ impl ConnectionId {
         self.len == 0
     }
 
+    #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.len as usize]
     }
@@ -80,10 +82,12 @@ impl<'a> ConnectionIdRef<'a> {
         Self { bytes }
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
 
+    #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         self.bytes
     }

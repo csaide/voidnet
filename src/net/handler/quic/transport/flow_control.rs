@@ -40,11 +40,13 @@ impl FlowControl {
 
     /// Returns true if we may send `bytes` more data without violating the
     /// peer's MAX_DATA limit.
+    #[inline]
     pub fn can_send(&self, bytes: u64) -> bool {
         self.data_sent + bytes <= self.max_data_send
     }
 
     /// Account for `bytes` having been sent.
+    #[inline]
     pub fn on_data_sent(&mut self, bytes: u64) {
         self.data_sent += bytes;
     }
@@ -76,6 +78,7 @@ impl FlowControl {
     ///
     /// Returns `Err(())` if the cumulative received data exceeds our advertised
     /// limit, which should be treated as a `FLOW_CONTROL_ERROR`.
+    #[inline]
     pub fn on_data_received(&mut self, bytes: u64) -> Result<(), ()> {
         self.data_received += bytes;
         if self.data_received > self.max_data_recv {

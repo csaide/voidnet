@@ -5,6 +5,7 @@
 //! re-encoding on every send.
 
 use super::varint::{decode_varint, encode_varint};
+use smallvec::SmallVec;
 
 /// Tracks received packet numbers and generates ACK frames efficiently.
 ///
@@ -44,6 +45,7 @@ impl AckState {
     }
 
     /// Record receipt of a packet number.
+    #[inline]
     pub fn on_packet_received(&mut self, pn: u64, now: coarsetime::Instant) {
         let is_new_largest = self.largest_received.map_or(true, |l| pn > l);
         if is_new_largest {
@@ -55,6 +57,7 @@ impl AckState {
     }
 
     /// Whether we need to send an ACK.
+    #[inline]
     pub fn needs_ack(&self) -> bool {
         self.ack_eliciting_received
     }
@@ -69,6 +72,7 @@ impl AckState {
         self.ack_eliciting_received = true;
     }
 
+    #[inline]
     pub fn largest_received(&self) -> Option<u64> {
         self.largest_received
     }
@@ -107,8 +111,8 @@ impl AckState {
         first_ack_range: u64,
         range_count: u64,
         ranges_data: &[u8],
-    ) -> Vec<(u64, u64)> {
-        let mut result = Vec::with_capacity(range_count as usize + 1);
+    ) -> SmallVec<[(u64, u64); 32]> {
+        let mut result = SmallVec::new();
 
         // First range
         let first_end = largest_acked;

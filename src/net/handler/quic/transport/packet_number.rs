@@ -12,6 +12,7 @@
 /// - `nbits`: the number of bits in the truncated representation (8, 16, 24, or 32).
 ///
 /// This implements the algorithm from RFC 9000 Appendix A.
+#[inline]
 pub fn decode_pn(largest_pn: u64, truncated: u64, nbits: u32) -> u64 {
     let expected_pn = largest_pn.wrapping_add(1);
     let pn_win: u64 = 1u64 << nbits;
@@ -50,6 +51,7 @@ pub fn decode_pn(largest_pn: u64, truncated: u64, nbits: u32) -> u64 {
 /// - 2 bytes if `full_pn - largest_acked < 2^15`
 /// - 3 bytes if `full_pn - largest_acked < 2^23`
 /// - 4 bytes otherwise
+#[inline]
 pub fn encode_pn(full_pn: u64, largest_acked: u64) -> (u64, u8) {
     // Number of unacknowledged packets that the receiver must be able to
     // distinguish. We need at least twice the range.

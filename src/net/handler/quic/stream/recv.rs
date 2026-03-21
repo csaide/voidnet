@@ -19,6 +19,7 @@ impl StreamRingBuffer {
         }
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.tail.wrapping_sub(self.head) & self.mask
     }
@@ -27,32 +28,50 @@ impl StreamRingBuffer {
         self.mask
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.head == self.tail
     }
 
+    #[inline]
     pub fn available(&self) -> usize {
         self.capacity() - self.len()
     }
 
+    #[inline]
     pub fn write(&mut self, data: &[u8]) -> usize {
         let avail = self.available();
-        let n = data.len().min(avail);
-        for i in 0..n {
-            self.buf[(self.tail + i) & self.mask] = data[i];
+        let to_write = data.len().min(avail);
+        if to_write == 0 {
+            return 0;
         }
-        self.tail = (self.tail + n) & self.mask;
-        n
+
+        let tail_pos = self.tail & self.mask;
+        let first = (self.mask + 1 - tail_pos).min(to_write); // bytes until wrap
+        self.buf[tail_pos..tail_pos + first].copy_from_slice(&data[..first]);
+        if first < to_write {
+            self.buf[..to_write - first].copy_from_slice(&data[first..to_write]);
+        }
+        self.tail = (self.tail + to_write) & self.mask;
+        to_write
     }
 
+    #[inline]
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
         let avail = self.len();
-        let n = buf.len().min(avail);
-        for i in 0..n {
-            buf[i] = self.buf[(self.head + i) & self.mask];
+        let to_read = buf.len().min(avail);
+        if to_read == 0 {
+            return 0;
         }
-        self.head = (self.head + n) & self.mask;
-        n
+
+        let head_pos = self.head & self.mask;
+        let first = (self.mask + 1 - head_pos).min(to_read); // bytes until wrap
+        buf[..first].copy_from_slice(&self.buf[head_pos..head_pos + first]);
+        if first < to_read {
+            buf[first..to_read].copy_from_slice(&self.buf[..to_read - first]);
+        }
+        self.head = (self.head + to_read) & self.mask;
+        to_read
     }
 
     pub fn clear(&mut self) {
