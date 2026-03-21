@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use coarsetime::{Duration, Instant};
 
 /// Timer-driven pacing (RFC 9002 §7.7)
 pub struct Pacer {
@@ -25,12 +25,13 @@ impl Pacer {
     /// Update pacing rate from congestion window and RTT.
     /// rate = N * cwnd / srtt (N = 1.25 recommended)
     pub fn update_rate(&mut self, cwnd: usize, smoothed_rtt: Duration) {
-        if smoothed_rtt.is_zero() {
+        let rtt_ms = smoothed_rtt.as_millis();
+        if rtt_ms == 0 {
             self.rate = 0;
             return;
         }
-        let rtt_secs = smoothed_rtt.as_secs_f64();
-        self.rate = (1.25 * cwnd as f64 / rtt_secs) as u64;
+        // rate = 1.25 * cwnd / (rtt_ms / 1000) = 1250 * cwnd / rtt_ms
+        self.rate = (1250 * cwnd as u64) / rtt_ms;
     }
 
     /// Check if a packet of given size can be sent now.
@@ -56,9 +57,11 @@ impl Pacer {
         }
         self.burst_allowance = 0;
 
-        // Calculate inter-packet interval
+        // Calculate inter-packet interval in nanoseconds, then convert to Duration.
         let interval_ns = (size as u128 * 1_000_000_000) / self.rate as u128;
-        let interval = Duration::from_nanos(interval_ns as u64);
+        let interval_secs = (interval_ns / 1_000_000_000) as u64;
+        let interval_nanos = (interval_ns % 1_000_000_000) as u32;
+        let interval = Duration::new(interval_secs, interval_nanos);
 
         self.next_send_time = Some(
             self.next_send_time

@@ -4,7 +4,8 @@ use crate::net::handler::quic::crypto::retry::{
 };
 use crate::net::handler::quic::token::RetryToken;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::Instant;
+
+use coarsetime::{Duration, Instant};
 
 #[test]
 fn retry_tag_deterministic() {
@@ -59,8 +60,8 @@ fn retry_token_expiry() {
     let cid = ConnectionId::from_slice(&[1, 2, 3, 4]);
     let now = Instant::now();
     let token = RetryToken::new(cid, addr, now);
-    assert!(!token.is_expired(now, std::time::Duration::from_secs(30)));
+    assert!(!token.is_expired(now, Duration::from_secs(30)));
     // Can't easily test expiry without sleeping, so just verify the logic
-    let future = now + std::time::Duration::from_secs(31);
-    assert!(token.is_expired(future, std::time::Duration::from_secs(30)));
+    let future = now + Duration::from_secs(31);
+    assert!(token.is_expired(future, Duration::from_secs(30)));
 }

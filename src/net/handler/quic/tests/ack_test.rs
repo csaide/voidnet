@@ -1,4 +1,4 @@
-use std::time::Instant;
+use coarsetime::Instant;
 
 use crate::net::handler::quic::transport::ack::AckState;
 

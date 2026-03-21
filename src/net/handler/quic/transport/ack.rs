@@ -24,7 +24,7 @@ pub struct AckState {
     /// Largest received PN.
     largest_received: Option<u64>,
     /// Instant when `largest_received` was first received.
-    largest_received_time: Option<std::time::Instant>,
+    largest_received_time: Option<coarsetime::Instant>,
 
     /// Whether an ack-eliciting packet has been received since the last ACK.
     ack_eliciting_received: bool,
@@ -44,7 +44,7 @@ impl AckState {
     }
 
     /// Record receipt of a packet number.
-    pub fn on_packet_received(&mut self, pn: u64, now: std::time::Instant) {
+    pub fn on_packet_received(&mut self, pn: u64, now: coarsetime::Instant) {
         let is_new_largest = self.largest_received.map_or(true, |l| pn > l);
         if is_new_largest {
             self.largest_received = Some(pn);
@@ -73,7 +73,7 @@ impl AckState {
         self.largest_received
     }
 
-    pub fn largest_received_time(&self) -> Option<std::time::Instant> {
+    pub fn largest_received_time(&self) -> Option<coarsetime::Instant> {
         self.largest_received_time
     }
 

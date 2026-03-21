@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use coarsetime::{Duration, Instant};
 
 use super::connection_id::{CidSet, ConnectionId};
 use super::crypto::keys::PacketKeys;

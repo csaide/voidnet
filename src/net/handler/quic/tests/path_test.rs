@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::{Duration, Instant};
+
+use coarsetime::{Duration, Instant};
 
 use crate::net::handler::quic::path::{AmplificationLimit, PathState};
 

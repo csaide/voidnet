@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use coarsetime::{Duration, Instant};
 
 use crate::net::congestion::CongestionController;
 

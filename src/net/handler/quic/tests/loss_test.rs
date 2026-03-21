@@ -1,5 +1,5 @@
 use crate::net::handler::quic::transport::loss::*;
-use std::time::{Duration, Instant};
+use coarsetime::{Duration, Instant};
 
 fn make_sent_packet(size: u16, ack_eliciting: bool) -> SentPacket {
     SentPacket {
@@ -105,7 +105,7 @@ fn rtt_first_sample() {
     let rtt = Duration::from_millis(100);
     ld.update_rtt(
         rtt,
-        Duration::ZERO,
+        Duration::from_millis(0),
         Duration::from_millis(25),
         Instant::now(),
     );
@@ -124,7 +124,7 @@ fn rtt_subsequent_samples() {
     // First sample
     ld.update_rtt(
         Duration::from_millis(100),
-        Duration::ZERO,
+        Duration::from_millis(0),
         Duration::from_millis(25),
         now,
     );
@@ -135,7 +135,7 @@ fn rtt_subsequent_samples() {
     // Second sample: 120ms
     ld.update_rtt(
         Duration::from_millis(120),
-        Duration::ZERO,
+        Duration::from_millis(0),
         Duration::from_millis(25),
         now,
     );
@@ -158,7 +158,7 @@ fn rtt_ack_delay_capped() {
     // First sample
     ld.update_rtt(
         Duration::from_millis(50),
-        Duration::ZERO,
+        Duration::from_millis(0),
         Duration::from_millis(25),
         now,
     );
@@ -186,7 +186,7 @@ fn rtt_ack_delay_not_applied_below_min() {
     // First sample: 50ms
     ld.update_rtt(
         Duration::from_millis(50),
-        Duration::ZERO,
+        Duration::from_millis(0),
         Duration::from_millis(25),
         now,
     );
@@ -214,7 +214,7 @@ fn pto_computation() {
     let now = Instant::now();
     ld.update_rtt(
         Duration::from_millis(100),
-        Duration::ZERO,
+        Duration::from_millis(0),
         Duration::from_millis(25),
         now,
     );
@@ -241,9 +241,14 @@ fn pto_initial_value() {
     // Initial: smoothed_rtt = 333ms, rttvar = 333/2 = 166.5ms
     // PTO app = 333 + max(4*166.5, 1) + 25 = 333 + 666 + 25 = 1024ms
     let pto = ld.pto(2, max_ack_delay);
-    let expected = ld.smoothed_rtt
-        + (ld.rttvar * 4).max(Duration::from_millis(K_GRANULARITY_MS))
-        + max_ack_delay;
+    let rttvar4 = ld.rttvar * 4;
+    let granularity = Duration::from_millis(K_GRANULARITY_MS);
+    let var_component = if rttvar4 > granularity {
+        rttvar4
+    } else {
+        granularity
+    };
+    let expected = ld.smoothed_rtt + var_component + max_ack_delay;
     assert_eq!(pto, expected);
 }
 
@@ -258,7 +263,7 @@ fn loss_by_packet_threshold() {
     // Set up RTT
     ld.update_rtt(
         Duration::from_millis(10),
-        Duration::ZERO,
+        Duration::from_millis(0),
         Duration::from_millis(25),
         now,
     );
@@ -273,7 +278,7 @@ fn loss_by_packet_threshold() {
     let (acked, lost) = ld.on_ack_received(
         space,
         4,
-        Duration::ZERO,
+        Duration::from_millis(0),
         &[(4, 4)],
         Duration::from_millis(25),
         now + Duration::from_millis(20),
@@ -297,7 +302,7 @@ fn loss_by_time_threshold() {
     // Set up RTT = 10ms
     ld.update_rtt(
         Duration::from_millis(10),
-        Duration::ZERO,
+        Duration::from_millis(0),
         Duration::from_millis(25),
         now,
     );
@@ -319,7 +324,7 @@ fn loss_by_time_threshold() {
     let (acked, lost) = ld.on_ack_received(
         space,
         1,
-        Duration::ZERO,
+        Duration::from_millis(0),
         &[(1, 1)],
         Duration::from_millis(25),
         ack_time,

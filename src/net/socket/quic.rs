@@ -120,9 +120,9 @@ impl QuicConnection {
     }
 
     /// Get the current RTT estimate.
-    pub fn rtt(&self) -> std::time::Duration {
+    pub fn rtt(&self) -> coarsetime::Duration {
         // TODO: read from connection state
-        std::time::Duration::from_millis(0)
+        coarsetime::Duration::from_millis(0)
     }
 
     /// Close the connection with an error code and optional reason.

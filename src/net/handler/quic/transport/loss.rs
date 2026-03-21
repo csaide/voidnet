@@ -3,7 +3,7 @@
 //! Implements RTT estimation (§5.3), packet-threshold and time-threshold loss
 //! detection (§6.1), and probe timeout (§6.2).
 
-use std::time::{Duration, Instant};
+use coarsetime::{Duration, Instant};
 
 // --- RFC 9002 constants ---
 
@@ -174,6 +174,10 @@ pub struct LossDetector {
     pub bytes_in_flight: usize,
 }
 
+/// A very large Duration used as the initial min_rtt sentinel.
+/// Equivalent to std::time::Duration::MAX in purpose.
+const MAX_DURATION: Duration = Duration::from_secs(86400 * 365); // ~1 year
+
 impl LossDetector {
     pub fn new() -> Self {
         let initial_rtt = Duration::from_millis(K_INITIAL_RTT_MS);
@@ -187,7 +191,7 @@ impl LossDetector {
             latest_rtt: initial_rtt,
             smoothed_rtt: initial_rtt,
             rttvar: initial_rtt / 2,
-            min_rtt: Duration::MAX,
+            min_rtt: MAX_DURATION,
             first_rtt_sample: None,
             pto_count: 0,
             time_of_last_ack_eliciting_pkt: [None; 3],
@@ -283,7 +287,11 @@ impl LossDetector {
         now: Instant,
     ) {
         self.latest_rtt = latest_rtt;
-        self.min_rtt = self.min_rtt.min(latest_rtt);
+        self.min_rtt = if latest_rtt < self.min_rtt {
+            latest_rtt
+        } else {
+            self.min_rtt
+        };
 
         if self.first_rtt_sample.is_none() {
             self.first_rtt_sample = Some(now);
@@ -292,7 +300,11 @@ impl LossDetector {
             return;
         }
 
-        let ack_delay = ack_delay.min(max_ack_delay);
+        let ack_delay = if ack_delay < max_ack_delay {
+            ack_delay
+        } else {
+            max_ack_delay
+        };
         let adjusted_rtt = if latest_rtt > self.min_rtt + ack_delay {
             latest_rtt - ack_delay
         } else {
@@ -315,11 +327,21 @@ impl LossDetector {
             None => return vec![],
         };
 
-        let max_rtt = self.latest_rtt.max(self.smoothed_rtt);
+        let max_rtt = if self.latest_rtt > self.smoothed_rtt {
+            self.latest_rtt
+        } else {
+            self.smoothed_rtt
+        };
+        // Compute loss_delay in microseconds to maintain precision.
         let loss_delay_us =
-            (K_TIME_THRESHOLD_NUM as u128 * max_rtt.as_micros()) / K_TIME_THRESHOLD_DEN as u128;
-        let loss_delay = Duration::from_micros(loss_delay_us as u64)
-            .max(Duration::from_millis(K_GRANULARITY_MS));
+            (K_TIME_THRESHOLD_NUM as u64 * max_rtt.as_micros()) / K_TIME_THRESHOLD_DEN as u64;
+        let loss_delay_ms = loss_delay_us / 1000;
+        let loss_delay_ms = if loss_delay_ms < K_GRANULARITY_MS {
+            K_GRANULARITY_MS
+        } else {
+            loss_delay_ms
+        };
+        let loss_delay = Duration::from_millis(loss_delay_ms);
 
         let lost_send_time = now.checked_sub(loss_delay);
 
@@ -356,7 +378,7 @@ impl LossDetector {
                 self.spaces[space].loss_time = Some(
                     self.spaces[space]
                         .loss_time
-                        .map_or(loss_time, |t| t.min(loss_time)),
+                        .map_or(loss_time, |t| if t < loss_time { t } else { loss_time }),
                 );
             }
         }
@@ -369,11 +391,16 @@ impl LossDetector {
         let ack_delay = if space == 2 {
             max_ack_delay
         } else {
-            Duration::ZERO
+            Duration::from_millis(0)
         };
-        self.smoothed_rtt
-            + (self.rttvar * 4).max(Duration::from_millis(K_GRANULARITY_MS))
-            + ack_delay
+        let rttvar4 = self.rttvar * 4;
+        let granularity = Duration::from_millis(K_GRANULARITY_MS);
+        let var_component = if rttvar4 > granularity {
+            rttvar4
+        } else {
+            granularity
+        };
+        self.smoothed_rtt + var_component + ack_delay
     }
 
     /// Get the loss detection timer deadline.
@@ -407,7 +434,11 @@ impl LossDetector {
                 let pto_duration = self.pto(space, max_ack_delay);
                 let backoff = 1u32 << self.pto_count;
                 let deadline = last_sent + pto_duration * backoff;
-                earliest_pto = Some(earliest_pto.map_or(deadline, |t: Instant| t.min(deadline)));
+                earliest_pto =
+                    Some(earliest_pto.map_or(
+                        deadline,
+                        |t: Instant| if t < deadline { t } else { deadline },
+                    ));
             }
         }
 

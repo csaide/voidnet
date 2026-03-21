@@ -2,7 +2,8 @@
 
 use super::connection_id::ConnectionId;
 use std::net::SocketAddr;
-use std::time::Instant;
+
+use coarsetime::{Duration, Instant};
 
 /// Retry token for address validation (RFC 9000 §8.1.2)
 pub struct RetryToken {
@@ -21,7 +22,7 @@ impl RetryToken {
     }
 
     /// Check if token has expired (recommended: 30 seconds)
-    pub fn is_expired(&self, now: Instant, max_age: std::time::Duration) -> bool {
+    pub fn is_expired(&self, now: Instant, max_age: Duration) -> bool {
         now.duration_since(self.timestamp) > max_age
     }
 }

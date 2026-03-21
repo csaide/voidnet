@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
-use std::time::Instant;
+
+use coarsetime::{Duration, Instant};
 
 /// Anti-amplification limit (RFC 9000 §8.1).
 ///
@@ -94,7 +95,7 @@ impl PathState {
     }
 
     /// Check if path validation has timed out
-    pub fn validation_timed_out(&self, now: Instant, timeout: std::time::Duration) -> bool {
+    pub fn validation_timed_out(&self, now: Instant, timeout: Duration) -> bool {
         if let Some(sent_at) = self.challenge_sent_at {
             now.duration_since(sent_at) > timeout
         } else {

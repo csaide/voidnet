@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use coarsetime::{Duration, Instant};
 
 /// Pluggable congestion control interface. Monomorphized via generics.
 pub trait CongestionController {

@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use coarsetime::{Duration, Instant};
 
 use crate::net::handler::quic::transport::pacing::Pacer;
 
@@ -14,9 +14,15 @@ fn pacer_initial_can_send() {
 #[test]
 fn pacer_update_rate() {
     let mut pacer = Pacer::new(12000);
-    // cwnd=12000, rtt=100ms → rate = 1.25 * 12000 / 0.1 = 150000 bytes/sec
+    // cwnd=12000, rtt=100ms → rate ≈ 1.25 * 12000 / 0.1 = 150000 bytes/sec
+    // coarsetime has ~3% precision for sub-second durations, so allow tolerance.
     pacer.update_rate(12000, Duration::from_millis(100));
-    assert_eq!(pacer.rate(), 150_000);
+    let rate = pacer.rate();
+    assert!(
+        rate >= 145_000 && rate <= 160_000,
+        "expected rate near 150000, got {}",
+        rate
+    );
 }
 
 #[test]
@@ -45,7 +51,7 @@ fn pacer_throttles_after_burst() {
     // At 'now', next_send_time is in the future, burst_allowance=0 → cannot send
     assert!(!pacer.can_send(now, 1200));
     // After the scheduled time, we can send again
-    let after = next.unwrap() + Duration::from_nanos(1);
+    let after = next.unwrap() + Duration::new(0, 1);
     assert!(pacer.can_send(after, 1200));
 }
 
