@@ -1,0 +1,47 @@
+/// Fixed key for Retry integrity tag computation (RFC 9001 §5.8, QUIC v1)
+const RETRY_KEY_V1: [u8; 16] = [
+    0xbe, 0x0c, 0x69, 0x0b, 0x9f, 0x66, 0x57, 0x5a, 0x1d, 0x76, 0x6b, 0x54, 0xe3, 0x68, 0xc8, 0x4e,
+];
+
+/// Fixed nonce for Retry integrity tag computation (RFC 9001 §5.8, QUIC v1)
+const RETRY_NONCE_V1: [u8; 12] = [
+    0x46, 0x15, 0x99, 0xd3, 0x5d, 0x63, 0x2b, 0xf2, 0x23, 0x98, 0x25, 0xbb,
+];
+
+/// Compute Retry integrity tag.
+/// `odcid` = Original Destination Connection ID
+/// `retry_packet` = the Retry packet bytes WITHOUT the tag (header + token)
+pub fn compute_retry_integrity_tag(odcid: &[u8], retry_packet: &[u8]) -> [u8; 16] {
+    use ring::aead;
+
+    // Build AAD: ODCID_len(1) + ODCID + retry_packet
+    let mut aad = Vec::with_capacity(1 + odcid.len() + retry_packet.len());
+    aad.push(odcid.len() as u8);
+    aad.extend_from_slice(odcid);
+    aad.extend_from_slice(retry_packet);
+
+    // AES-128-GCM encrypt with empty plaintext → tag is the output
+    let key = aead::UnboundKey::new(&aead::AES_128_GCM, &RETRY_KEY_V1).unwrap();
+    let nonce = aead::Nonce::assume_unique_for_key(RETRY_NONCE_V1);
+    let key = aead::LessSafeKey::new(key);
+
+    let mut in_out = Vec::new(); // empty plaintext
+    let tag = key
+        .seal_in_place_separate_tag(nonce, aead::Aad::from(&aad), &mut in_out)
+        .unwrap();
+
+    let mut result = [0u8; 16];
+    result.copy_from_slice(tag.as_ref());
+    result
+}
+
+/// Verify a Retry integrity tag.
+pub fn verify_retry_integrity_tag(odcid: &[u8], retry_packet_with_tag: &[u8]) -> bool {
+    if retry_packet_with_tag.len() < 16 {
+        return false;
+    }
+    let (packet, tag) = retry_packet_with_tag.split_at(retry_packet_with_tag.len() - 16);
+    let expected = compute_retry_integrity_tag(odcid, packet);
+    // Constant-time comparison
+    ring::constant_time::verify_slices_are_equal(&expected, tag).is_ok()
+}
