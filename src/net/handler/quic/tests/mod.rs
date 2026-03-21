@@ -8,6 +8,7 @@ mod frame_test;
 mod loss_test;
 mod packet_number_test;
 mod params_test;
+mod stream_map_test;
 mod stream_state_test;
 mod timer_kinds_test;
 mod tls_test;
