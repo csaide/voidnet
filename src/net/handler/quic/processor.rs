@@ -29,6 +29,92 @@ pub enum ProcessResult {
     StatelessReset,
 }
 
+/// Result returned by `handle_timeout`.
+pub enum TimerResult {
+    /// Connection should continue.
+    Ok,
+    /// Handler should remove the connection.
+    Close,
+}
+
+/// Handle a timer expiry. Marks pending state — does NOT generate packets directly.
+/// Packet generation happens in poll_send → generate_packets.
+pub fn handle_timeout(
+    conn: &mut QuicConnectionState,
+    kind: QuicTimerKind,
+    now: Instant,
+) -> TimerResult {
+    match kind {
+        QuicTimerKind::LossDetection => {
+            let max_ack_delay = conn
+                .peer_params
+                .as_ref()
+                .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
+                .unwrap_or(coarsetime::Duration::from_millis(25));
+            let result = conn.loss.on_loss_detection_timeout(now, max_ack_delay);
+            match result {
+                crate::net::handler::quic::transport::loss::LossDetectionResult::LostPackets(
+                    lost,
+                ) => {
+                    let frame_ranges: smallvec::SmallVec<[(u32, u32); 8]> =
+                        lost.iter().map(|(_, pkt)| pkt.frame_range).collect();
+                    for (_, pkt) in &lost {
+                        conn.congestion
+                            .on_congestion_event(pkt.size as usize, now, pkt.time_sent);
+                    }
+                    let retransmit = build_retransmit_queue(&conn.frame_log, &frame_ranges);
+                    conn.retransmit
+                        .crypto
+                        .extend(retransmit.crypto.iter().cloned());
+                    conn.retransmit
+                        .streams
+                        .extend(retransmit.streams.iter().cloned());
+                    if retransmit.handshake_done {
+                        conn.retransmit.handshake_done = true;
+                    }
+                    if retransmit.max_data {
+                        conn.retransmit.max_data = true;
+                    }
+                }
+                crate::net::handler::quic::transport::loss::LossDetectionResult::SendProbe {
+                    space: _,
+                } => {
+                    conn.needs_probe = true;
+                }
+                crate::net::handler::quic::transport::loss::LossDetectionResult::None => {}
+            }
+            TimerResult::Ok
+        }
+        QuicTimerKind::Idle => TimerResult::Close,
+        QuicTimerKind::Ack => {
+            // Force ACK in next poll_send
+            for ack in &mut conn.ack {
+                if ack.needs_ack() {
+                    ack.set_ack_eliciting();
+                }
+            }
+            TimerResult::Ok
+        }
+        QuicTimerKind::Draining => TimerResult::Close,
+        QuicTimerKind::KeyDiscard => {
+            // TODO: drop prev_remote_key
+            TimerResult::Ok
+        }
+        QuicTimerKind::PathValidation => {
+            // TODO: revert to previous path
+            TimerResult::Ok
+        }
+        QuicTimerKind::Handshake => {
+            if conn.state == ConnectionState::Handshaking {
+                conn.state = ConnectionState::Closed;
+                return TimerResult::Close;
+            }
+            TimerResult::Ok
+        }
+        QuicTimerKind::PmtuProbe => TimerResult::Ok,
+    }
+}
+
 /// Process one QUIC packet (from a UDP datagram).
 /// `quic_payload` is the raw QUIC bytes AFTER the UDP header. MUTABLE for in-place decrypt.
 /// `datagram_len` is the total UDP datagram size (for amplification tracking).
@@ -467,6 +553,11 @@ fn handle_stream_frame(
 // ---------------------------------------------------------------------------
 
 const ETH_LEN: usize = std::mem::size_of::<EthernetFrame>();
+
+/// Check if any packet-number space has anything to send.
+pub fn has_pending_data_any(conn: &QuicConnectionState) -> bool {
+    (0..3u8).any(|s| has_pending_data(conn, s))
+}
 
 /// Check if a packet-number space has anything to send.
 fn has_pending_data(conn: &QuicConnectionState, space: u8) -> bool {

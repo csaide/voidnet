@@ -7,8 +7,11 @@ use crate::net::handler::quic::connection::QuicConnectionState;
 use crate::net::handler::quic::connection_id::ConnectionId;
 use crate::net::handler::quic::timer_kinds::*;
 use crate::net::handler::quic::transport::params::TransportParams;
+use crate::net::handler::quic::{processor, processor::TimerResult};
 use crate::net::neighbor::NeighborHandler;
 use crate::net::timer_wheel::TimerWheel;
+use crate::net::wire::ethernet::MacAddress;
+use crate::net::wire::ip::IpAddress;
 use crate::xdp::frame::{Frame, FrameBuffer};
 
 pub struct ListenerState {
@@ -65,60 +68,245 @@ impl QuicHandler {
     pub fn process_ipv4<'umem>(
         &mut self,
         frame: Frame<'umem>,
-        _now: Instant,
-        _wheel: &mut TimerWheel,
+        now: Instant,
+        wheel: &mut TimerWheel,
         _neighbor_handler: &NeighborHandler,
-        _free_frames: &mut impl FrameBuffer<'umem>,
+        free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
-        _tx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        // TODO: Parse IP + UDP headers, extract QUIC packet
-        // For now, just return the frame to rx_return
-        rx_return.push(frame);
+        use crate::net::wire::ethernet::EthernetFrame;
+        use crate::net::wire::ip::{IPV4_MIN_HEADER_LEN, IpAddress, Ipv4Header};
+        use crate::net::wire::quic as wire_quic;
+        use crate::net::wire::udp::UdpHeader;
+
+        let eth_len = std::mem::size_of::<EthernetFrame>();
+        let ip_offset = eth_len;
+
+        // Need at least Ethernet + IPv4 + UDP headers
+        if frame.len() < eth_len + IPV4_MIN_HEADER_LEN + 8 {
+            rx_return.push(frame);
+            return;
+        }
+
+        let ip = Ipv4Header::from_bytes(&frame);
+        let actual_ip_hdr_len = ip.header_len();
+        let udp_offset = ip_offset + actual_ip_hdr_len;
+
+        if frame.len() < udp_offset + 8 {
+            rx_return.push(frame);
+            return;
+        }
+
+        let udp = unsafe { UdpHeader::from_bytes_at(&frame, udp_offset) };
+        let src_port = udp.src_port();
+        let dst_port = udp.dst_port();
+        let quic_offset = udp_offset + 8; // UDP_HEADER_LEN = 8
+
+        // datagram_len = IP payload size = IP total length - IP header length
+        let datagram_len = ip.total_length() as usize - actual_ip_hdr_len;
+
+        let src_addr = IpAddress::V4(ip.src_addr);
+        let dst_addr = IpAddress::V4(ip.dst_addr);
+
+        let eth_frame = EthernetFrame::from_bytes(&frame);
+        let src_mac = eth_frame.src_mac;
+        let dst_mac = eth_frame.dst_mac;
+
+        if frame.len() <= quic_offset {
+            rx_return.push(frame);
+            return;
+        }
+
+        // Peek DCID for connection lookup
+        let quic_data = &frame[quic_offset..];
+        let dcid = match wire_quic::peek_dcid(quic_data) {
+            Some(cid) => cid.to_owned(),
+            None => {
+                rx_return.push(frame);
+                return;
+            }
+        };
+
+        // Look up existing connection
+        if let Some(&key) = self.cid_map.get(&dcid) {
+            let mut frame_data = frame;
+            let quic_payload = &mut frame_data[quic_offset..];
+            let conn = &mut self.connections[key];
+            processor::process_packet(conn, quic_payload, datagram_len, now);
+            processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+            rx_return.push(frame_data);
+        } else if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
+            // Potential new connection — check if Initial + listener exists
+            if self.listeners.contains_key(&dst_port) && datagram_len >= 1200 {
+                if let Some(key) = self.create_server_connection(
+                    &dcid, dst_addr, src_addr, dst_port, src_port, src_mac, dst_mac, now,
+                ) {
+                    let conn = &mut self.connections[key];
+                    let mut frame_data = frame;
+                    let quic_payload = &mut frame_data[quic_offset..];
+                    processor::process_packet(conn, quic_payload, datagram_len, now);
+                    processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+                    rx_return.push(frame_data);
+                } else {
+                    rx_return.push(frame);
+                }
+            } else {
+                rx_return.push(frame);
+            }
+        } else {
+            rx_return.push(frame);
+        }
     }
 
     /// Process an incoming IPv6 UDP packet destined for a QUIC port.
     pub fn process_ipv6<'umem>(
         &mut self,
         frame: Frame<'umem>,
-        _now: Instant,
-        _wheel: &mut TimerWheel,
+        now: Instant,
+        wheel: &mut TimerWheel,
         _neighbor_handler: &NeighborHandler,
-        _free_frames: &mut impl FrameBuffer<'umem>,
+        free_frames: &mut impl FrameBuffer<'umem>,
         rx_return: &mut impl FrameBuffer<'umem>,
-        _tx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        rx_return.push(frame);
+        use crate::net::wire::ethernet::EthernetFrame;
+        use crate::net::wire::ip::{IPV6_HEADER_LEN, IpAddress, Ipv6Header};
+        use crate::net::wire::quic as wire_quic;
+        use crate::net::wire::udp::UdpHeader;
+
+        let eth_len = std::mem::size_of::<EthernetFrame>();
+        let udp_offset = eth_len + IPV6_HEADER_LEN;
+
+        // Need at least Ethernet + IPv6 + UDP headers
+        if frame.len() < udp_offset + 8 {
+            rx_return.push(frame);
+            return;
+        }
+
+        let ip = Ipv6Header::from_bytes(&frame);
+        let udp = unsafe { UdpHeader::from_bytes_at(&frame, udp_offset) };
+        let src_port = udp.src_port();
+        let dst_port = udp.dst_port();
+        let quic_offset = udp_offset + 8; // UDP_HEADER_LEN = 8
+
+        // datagram_len = IPv6 payload length (does not include the 40-byte IPv6 header)
+        let datagram_len = ip.payload_length() as usize;
+
+        let src_addr = IpAddress::V6(ip.src_addr);
+        let dst_addr = IpAddress::V6(ip.dst_addr);
+
+        let eth_frame = EthernetFrame::from_bytes(&frame);
+        let src_mac = eth_frame.src_mac;
+        let dst_mac = eth_frame.dst_mac;
+
+        if frame.len() <= quic_offset {
+            rx_return.push(frame);
+            return;
+        }
+
+        // Peek DCID for connection lookup
+        let quic_data = &frame[quic_offset..];
+        let dcid = match wire_quic::peek_dcid(quic_data) {
+            Some(cid) => cid.to_owned(),
+            None => {
+                rx_return.push(frame);
+                return;
+            }
+        };
+
+        // Look up existing connection
+        if let Some(&key) = self.cid_map.get(&dcid) {
+            let mut frame_data = frame;
+            let quic_payload = &mut frame_data[quic_offset..];
+            let conn = &mut self.connections[key];
+            processor::process_packet(conn, quic_payload, datagram_len, now);
+            processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+            rx_return.push(frame_data);
+        } else if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
+            // Potential new connection — check if Initial + listener exists
+            if self.listeners.contains_key(&dst_port) && datagram_len >= 1200 {
+                if let Some(key) = self.create_server_connection(
+                    &dcid, dst_addr, src_addr, dst_port, src_port, src_mac, dst_mac, now,
+                ) {
+                    let conn = &mut self.connections[key];
+                    let mut frame_data = frame;
+                    let quic_payload = &mut frame_data[quic_offset..];
+                    processor::process_packet(conn, quic_payload, datagram_len, now);
+                    processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+                    rx_return.push(frame_data);
+                } else {
+                    rx_return.push(frame);
+                }
+            } else {
+                rx_return.push(frame);
+            }
+        } else {
+            rx_return.push(frame);
+        }
     }
 
     /// Handle a fired QUIC timer.
     pub fn handle_timer<'umem>(
         &mut self,
-        _key: usize,
-        _kind: QuicTimerKind,
-        _now: Instant,
-        _wheel: &mut TimerWheel,
-        _free_frames: &mut impl FrameBuffer<'umem>,
+        key: usize,
+        kind: QuicTimerKind,
+        now: Instant,
+        wheel: &mut TimerWheel,
+        free_frames: &mut impl FrameBuffer<'umem>,
         _rx_return: &mut impl FrameBuffer<'umem>,
-        _tx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        // TODO: dispatch to connection's timer handler
+        if let Some(conn) = self.connections.get_mut(key) {
+            let result = processor::handle_timeout(conn, kind, now);
+            match result {
+                TimerResult::Close => {
+                    self.remove_connection_by_key(key);
+                }
+                TimerResult::Ok => {
+                    // Generate any packets triggered by the timeout
+                    // (loss retransmit, probe, etc.)
+                    if let Some(conn) = self.connections.get_mut(key) {
+                        processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+                    }
+                }
+            }
+        }
     }
 
     /// Poll connections for outgoing data.
     pub fn poll_send<'umem>(
         &mut self,
-        _now: Instant,
-        _wheel: &mut TimerWheel,
-        _free_frames: &mut impl FrameBuffer<'umem>,
-        _tx_return: &mut impl FrameBuffer<'umem>,
+        now: Instant,
+        wheel: &mut TimerWheel,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        // TODO: iterate connections with pending data
+        let keys: smallvec::SmallVec<[usize; 16]> =
+            self.connections.iter().map(|(key, _)| key).collect();
+        for key in keys {
+            if let Some(conn) = self.connections.get_mut(key) {
+                if processor::has_pending_data_any(conn) {
+                    processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+                }
+            }
+        }
     }
 
     /// Evict stale connections (called periodically).
-    pub fn evict_stale(&mut self, _now: Instant) {
-        // TODO: check idle timeouts
+    pub fn evict_stale(&mut self, now: Instant) {
+        let stale_keys: smallvec::SmallVec<[usize; 8]> = self
+            .connections
+            .iter()
+            .filter(|(_, conn)| {
+                let elapsed = now.duration_since(conn.created_at);
+                elapsed > conn.idle_timeout
+            })
+            .map(|(key, _)| key)
+            .collect();
+        for key in stale_keys {
+            self.remove_connection_by_key(key);
+        }
     }
 
     /// Look up a connection by CID.
@@ -160,5 +348,74 @@ impl QuicHandler {
         } else {
             None
         }
+    }
+
+    /// Create a new server-side connection from an incoming Initial packet.
+    ///
+    /// `client_dcid` is the DCID the client used (becomes our remote CID).
+    /// Returns the slab key on success.
+    fn create_server_connection(
+        &mut self,
+        client_dcid: &ConnectionId,
+        local_addr: IpAddress,
+        remote_addr: IpAddress,
+        local_port: u16,
+        remote_port: u16,
+        remote_mac: MacAddress,
+        local_mac: MacAddress,
+        now: Instant,
+    ) -> Option<usize> {
+        use crate::net::handler::quic::connection::Side;
+        use crate::net::handler::quic::crypto::initial_keys::derive_initial_keys;
+        use crate::net::handler::quic::crypto::keys::{DirectionalKey, KeyPair};
+        use crate::net::handler::quic::crypto::tls::CryptoState;
+        use ring::rand::SecureRandom;
+
+        let listener = self.listeners.get(&local_port)?;
+
+        // Derive initial keys (server side)
+        let (local_dk, remote_dk) =
+            derive_initial_keys(client_dcid.as_bytes(), rustls::Side::Server);
+        let initial_keys = KeyPair {
+            local: DirectionalKey::from_rustls(local_dk),
+            remote: DirectionalKey::from_rustls(remote_dk),
+        };
+
+        // Generate server SCID (8 random bytes)
+        let mut scid_bytes = [0u8; 8];
+        ring::rand::SystemRandom::new().fill(&mut scid_bytes).ok()?;
+        let scid = ConnectionId::from_slice(&scid_bytes);
+
+        // Encode local transport params
+        let mut params_buf = [0u8; 512];
+        let params_len = listener.transport_params.encode(&mut params_buf);
+
+        // Create CryptoState
+        let crypto =
+            CryptoState::new_server(listener.tls_config.clone(), &params_buf[..params_len]).ok()?;
+
+        // Clone params before borrowing listener is released
+        let transport_params = listener.transport_params.clone();
+
+        // Create connection state
+        let mut conn = QuicConnectionState::new(
+            *client_dcid,
+            Side::Server,
+            transport_params,
+            1200, // max_datagram_size
+            now,
+        );
+        conn.keys.initial = Some(initial_keys);
+        conn.crypto = Some(crypto);
+        conn.scid = scid;
+        conn.scid_set.push(scid);
+        conn.local_addr = local_addr;
+        conn.remote_addr = remote_addr;
+        conn.local_port = local_port;
+        conn.remote_port = remote_port;
+        conn.local_mac = local_mac;
+        conn.remote_mac = remote_mac;
+
+        Some(self.insert_connection(conn))
     }
 }
