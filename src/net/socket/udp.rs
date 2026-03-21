@@ -511,6 +511,9 @@ mod tests {
             neighbor_handler,
             udp_handler,
             tcp_handler,
+            quic_handler: Rc::new(UnsafeCell::new(
+                crate::net::handler::quic::QuicHandler::new(false, false),
+            )),
             wheel: Rc::new(UnsafeCell::new(crate::net::timer_wheel::TimerWheel::new(
                 coarsetime::Instant::now(),
             ))),

@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     net::{
-        handler::{tcp::TcpHandler, udp::UdpHandler},
+        handler::{quic::QuicHandler, tcp::TcpHandler, udp::UdpHandler},
         timer_wheel::TimerWheel,
         {NeighborHandler, PmtuCache},
     },
@@ -59,7 +59,9 @@ pub(crate) struct RuntimeContext<'umem> {
     pub udp_handler: Rc<UnsafeCell<UdpHandler<'umem>>>,
     /// TCP handler manages TCP connections and the TCP state machine.
     pub tcp_handler: Rc<UnsafeCell<TcpHandler>>,
-    /// Timer wheel for TCP timers.
+    /// QUIC handler manages QUIC connections and protocol state.
+    pub quic_handler: Rc<UnsafeCell<QuicHandler>>,
+    /// Timer wheel for protocol timers.
     pub wheel: Rc<UnsafeCell<TimerWheel>>,
     /// TX checksum offload.
     pub tx_offload: bool,
@@ -112,7 +114,7 @@ mod tests {
     use crate::{
         net::{
             NeighborHandler, PmtuCache,
-            handler::{tcp::TcpHandler, udp::UdpHandler},
+            handler::{quic::QuicHandler, tcp::TcpHandler, udp::UdpHandler},
             timer_wheel::TimerWheel,
         },
         rt::task::TaskQueue,
@@ -136,6 +138,7 @@ mod tests {
             ),
             udp_handler: Rc::new(UnsafeCell::new(UdpHandler::new(256, false))),
             tcp_handler: Rc::new(UnsafeCell::new(TcpHandler::new(false, false))),
+            quic_handler: Rc::new(UnsafeCell::new(QuicHandler::new(false, false))),
             wheel: Rc::new(UnsafeCell::new(TimerWheel::new(coarsetime::Instant::now()))),
             tx_offload: false,
             task_queue: UnsafeCell::new(TaskQueue::new()),

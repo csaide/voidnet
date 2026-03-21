@@ -32,16 +32,23 @@ impl From<u8> for QuicTimerKind {
 
 /// Pack a connection key and timer kind into a [`TimerId`].
 ///
-/// The low 8 bits hold the `kind` discriminant; bits 8 and above hold `key`.
+/// The low 8 bits hold the `kind` discriminant; bits 8..62 hold `key`;
+/// bit 63 is set to distinguish QUIC timers from TCP timers in the
+/// shared [`TimerWheel`].
 pub fn quic_timer_id(key: usize, kind: QuicTimerKind) -> TimerId {
-    TimerId((key as u64) << 8 | kind as u64)
+    TimerId((1u64 << 63) | (key as u64) << 8 | kind as u64)
 }
 
 /// Unpack a [`TimerId`] previously created by [`quic_timer_id`].
 pub fn unpack_quic_timer_id(id: TimerId) -> (usize, QuicTimerKind) {
-    let kind = QuicTimerKind::from(id.0 as u8);
-    let key = (id.0 >> 8) as usize;
+    let kind = QuicTimerKind::from((id.0 & 0xFF) as u8);
+    let key = ((id.0 & !(1u64 << 63)) >> 8) as usize;
     (key, kind)
+}
+
+/// Returns `true` if `id` was created by [`quic_timer_id`] (bit 63 set).
+pub fn is_quic_timer(id: TimerId) -> bool {
+    id.0 & (1u64 << 63) != 0
 }
 
 /// Stores one optional [`TimerHandle`] per [`QuicTimerKind`].

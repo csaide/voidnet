@@ -1,15 +1,15 @@
-pub mod cid_lifecycle;
-pub mod connection;
-pub mod connection_id;
-pub mod crypto;
-pub mod error;
-pub mod event;
-pub mod handler;
-pub mod path;
-pub mod stream;
-pub mod timer_kinds;
-pub mod token;
-pub mod transport;
+pub(crate) mod cid_lifecycle;
+pub(crate) mod connection;
+pub(crate) mod connection_id;
+pub(crate) mod crypto;
+pub(crate) mod error;
+pub(crate) mod event;
+pub(crate) mod handler;
+pub(crate) mod path;
+pub(crate) mod stream;
+pub(crate) mod timer_kinds;
+pub(crate) mod token;
+pub(crate) mod transport;
 
 pub use handler::QuicHandler;
 

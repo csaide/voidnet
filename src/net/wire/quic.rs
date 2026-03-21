@@ -2,9 +2,7 @@
 ///
 /// Zero-copy: `ConnectionIdRef` borrows directly from the input buffer.
 use crate::net::handler::quic::connection_id::ConnectionIdRef;
-
-/// QUIC version 1 (RFC 9000).
-pub const QUIC_VERSION_1: u32 = 0x00000001;
+use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
 
 /// QUIC packet type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
