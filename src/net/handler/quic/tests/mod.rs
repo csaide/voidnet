@@ -1,4 +1,5 @@
 mod connection_id_test;
+mod crypto_test;
 mod error_test;
 mod frame_test;
 mod packet_number_test;
