@@ -1,3 +1,4 @@
+pub mod cid_lifecycle;
 pub mod connection;
 pub mod connection_id;
 pub mod crypto;
