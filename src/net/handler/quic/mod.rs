@@ -5,6 +5,7 @@ pub(crate) mod crypto;
 pub(crate) mod error;
 pub(crate) mod event;
 pub(crate) mod handler;
+pub(crate) mod packet_parser;
 pub(crate) mod path;
 pub(crate) mod stream;
 pub(crate) mod timer_kinds;

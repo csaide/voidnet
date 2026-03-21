@@ -13,6 +13,7 @@ mod loss_test;
 mod pacing_test;
 mod packet_builder_test;
 mod packet_number_test;
+mod packet_parser_test;
 mod params_test;
 mod path_test;
 mod retransmit_test;
