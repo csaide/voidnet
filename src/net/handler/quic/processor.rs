@@ -2,13 +2,25 @@ use coarsetime::Instant;
 
 use crate::net::congestion::CongestionController;
 use crate::net::handler::quic::connection::{ConnectionState, QuicConnectionState, Side};
-use crate::net::handler::quic::crypto::packet_protection::{decrypt_payload, unprotect_header};
+use crate::net::handler::quic::crypto::packet_protection::{
+    decrypt_payload, protect_packet, unprotect_header,
+};
 use crate::net::handler::quic::packet_parser::{self, packet_space};
+use crate::net::handler::quic::timer_kinds::QuicTimerKind;
 use crate::net::handler::quic::transport::ack::AckState;
 use crate::net::handler::quic::transport::frame::{self, QuicFrame, StreamId};
+use crate::net::handler::quic::transport::loss::SentPacket;
+use crate::net::handler::quic::transport::packet_builder::PacketBuilder;
 use crate::net::handler::quic::transport::packet_number::decode_pn;
 use crate::net::handler::quic::transport::retransmit::build_retransmit_queue;
+use crate::net::timer_wheel::TimerWheel;
+use crate::net::wire::ethernet::{EtherTypes, EthernetFrame, write_ethernet_header};
+use crate::net::wire::ip::{
+    IPV4_MIN_HEADER_LEN, IPV6_HEADER_LEN, IpAddress, IpProtocols, Ipv4Header,
+};
 use crate::net::wire::quic::{self as wire_quic, PacketHeader, PacketType};
+use crate::net::wire::udp::{UDP_HEADER_LEN, UdpHeader};
+use crate::xdp::frame::{Frame, FrameBuffer};
 
 pub enum ProcessResult {
     Ok,
@@ -448,4 +460,333 @@ fn handle_stream_frame(
         }
         let _ = recv.receive(offset, data, fin);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Outbound packet generation
+// ---------------------------------------------------------------------------
+
+const ETH_LEN: usize = std::mem::size_of::<EthernetFrame>();
+
+/// Check if a packet-number space has anything to send.
+fn has_pending_data(conn: &QuicConnectionState, space: u8) -> bool {
+    !conn.pending_crypto[space as usize].is_empty()
+        || conn.ack[space as usize].needs_ack()
+        || (space == 2 && conn.send_handshake_done)
+        || conn.pending_path_response.is_some()
+        || conn.needs_probe
+}
+
+/// Generate outbound QUIC packets from pending connection state.
+///
+/// Iterates over each packet-number space (Initial, Handshake, 1-RTT),
+/// builds the QUIC payload using `PacketBuilder`, encrypts it via
+/// `protect_packet`, wraps it in Ethernet+IP+UDP headers, and pushes
+/// the resulting frame to `tx_return`.
+pub fn generate_packets<'umem>(
+    conn: &mut QuicConnectionState,
+    conn_key: usize,
+    now: Instant,
+    wheel: &mut TimerWheel,
+    free_frames: &mut impl FrameBuffer<'umem>,
+    tx_return: &mut impl FrameBuffer<'umem>,
+) {
+    // Don't send in Draining or Closed state
+    if matches!(
+        conn.state,
+        ConnectionState::Draining | ConnectionState::Closed
+    ) {
+        return;
+    }
+
+    // Build packets for each space that has pending data
+    for space in 0..3u8 {
+        if !has_pending_data(conn, space) {
+            continue;
+        }
+
+        // Gate: amplification limit check
+        let estimated_size = 1200;
+        if !conn.path.amplification.can_send(estimated_size) {
+            continue;
+        }
+
+        // Gate: must have encrypt key for this space
+        let has_key = match space {
+            0 => conn.keys.initial.is_some(),
+            1 => conn.keys.handshake.is_some(),
+            2 => conn.keys.one_rtt.is_some(),
+            _ => false,
+        };
+        if !has_key {
+            continue;
+        }
+
+        // Pop a frame from free_frames
+        let Some(mut frame) = free_frames.pop() else {
+            return;
+        };
+
+        // Build the packet into the frame buffer
+        let total_len = build_packet_in_frame(conn, space, now, &mut frame);
+
+        if total_len > 0 {
+            unsafe { frame.set_len(total_len) };
+            conn.path.amplification.on_bytes_sent(total_len);
+            tx_return.push(frame);
+        } else {
+            free_frames.push(frame); // return unused frame
+        }
+    }
+
+    // Arm loss detection timer
+    let max_ack_delay = conn
+        .peer_params
+        .as_ref()
+        .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
+        .unwrap_or(coarsetime::Duration::from_millis(25));
+    if let Some(deadline) = conn.loss.loss_detection_timer(max_ack_delay) {
+        conn.timers
+            .arm(QuicTimerKind::LossDetection, conn_key, deadline, wheel);
+    }
+}
+
+/// Build a complete Ethernet+IP+UDP+QUIC packet into a frame buffer.
+///
+/// Returns the total frame length (including all headers), or 0 if the
+/// packet could not be built (e.g. buffer too small, no keys).
+fn build_packet_in_frame(
+    conn: &mut QuicConnectionState,
+    space: u8,
+    now: Instant,
+    frame: &mut Frame<'_>,
+) -> usize {
+    let ip_len = match conn.local_addr {
+        IpAddress::V4(_) => IPV4_MIN_HEADER_LEN,
+        IpAddress::V6(_) => IPV6_HEADER_LEN,
+    };
+    let udp_offset = ETH_LEN + ip_len;
+    let quic_offset = udp_offset + UDP_HEADER_LEN;
+
+    // Set frame length to capacity so we can write into the full buffer
+    let capacity = frame.capacity();
+    if capacity < quic_offset + 64 {
+        return 0; // buffer too small for even minimal packet
+    }
+    unsafe { frame.set_len(capacity) };
+
+    // Build QUIC payload starting at quic_offset
+    let pn = conn.loss.next_pn(space as usize);
+    let largest_acked = conn.ack[space as usize].largest_received().unwrap_or(0);
+
+    // Choose packet builder type
+    let mut builder = if space <= 1 {
+        // Long header (Initial=0x00 or Handshake=0x02)
+        let packet_type_bits = if space == 0 { 0x00 } else { 0x02 };
+        match PacketBuilder::begin_long(
+            &mut frame[quic_offset..],
+            packet_type_bits,
+            0x00000001, // QUIC v1
+            conn.dcid.as_bytes(),
+            conn.scid.as_bytes(),
+            pn,
+            largest_acked,
+            &conn.frame_log,
+        ) {
+            Some(b) => b,
+            None => return 0,
+        }
+    } else {
+        // Short header (1-RTT)
+        match PacketBuilder::begin_short(
+            &mut frame[quic_offset..],
+            conn.dcid.as_bytes(),
+            pn,
+            largest_acked,
+            false, // key_phase
+            &conn.frame_log,
+        ) {
+            Some(b) => b,
+            None => return 0,
+        }
+    };
+
+    let mut wrote_ack_eliciting = false;
+
+    // Write frames in priority order:
+
+    // 1. CRYPTO data
+    if !conn.pending_crypto[space as usize].is_empty() {
+        let offset_val = conn.crypto_offset[space as usize];
+        let data = &conn.pending_crypto[space as usize];
+        let written = builder.write_crypto(offset_val, data, space, &mut conn.frame_log);
+        if written > 0 {
+            conn.crypto_offset[space as usize] += written as u64;
+            wrote_ack_eliciting = true;
+        }
+    }
+
+    // 2. ACK
+    if conn.ack[space as usize].needs_ack() {
+        if let Some(largest) = conn.ack[space as usize].largest_received() {
+            let ack_delay = 0u64; // simplified; proper delay computed from largest_received_time
+            let first_ack_range = conn.ack[space as usize].first_ack_range();
+            let ack_range_count = conn.ack[space as usize].ack_range_count();
+            let encoded_ranges = conn.ack[space as usize].encoded_ranges().to_vec();
+            builder.write_ack(
+                largest,
+                ack_delay,
+                first_ack_range,
+                ack_range_count,
+                &encoded_ranges,
+                &mut conn.frame_log,
+                space,
+            );
+            conn.ack[space as usize].ack_sent();
+        }
+    }
+
+    // 3. HANDSHAKE_DONE (server, 1-RTT space only)
+    if space == 2 && conn.send_handshake_done && conn.side == Side::Server {
+        if builder.write_handshake_done(&mut conn.frame_log) {
+            conn.send_handshake_done = false;
+            wrote_ack_eliciting = true;
+        }
+    }
+
+    // 4. PATH_RESPONSE
+    if space == 2 {
+        if let Some(data) = conn.pending_path_response.take() {
+            if builder.write_path_response(data) {
+                wrote_ack_eliciting = true;
+            } else {
+                // Couldn't fit; put it back
+                conn.pending_path_response = Some(data);
+            }
+        }
+    }
+
+    // 5. Probe: if we need a probe but haven't written anything ack-eliciting, add PING
+    if conn.needs_probe && !wrote_ack_eliciting {
+        builder.write_ping(&mut conn.frame_log);
+        wrote_ack_eliciting = true;
+        conn.needs_probe = false;
+    }
+
+    // 6. Initial padding — Initial packets must be at least 1200 bytes total
+    if space == 0 {
+        // Minimum QUIC payload size to reach 1200 byte UDP datagram
+        let min_quic_size = 1200usize.saturating_sub(ip_len + UDP_HEADER_LEN);
+        builder.pad_to(min_quic_size);
+    }
+
+    // Finalize: get metadata before consuming builder
+    let pn_offset = builder.pn_offset();
+    let pn_length = builder.pn_length();
+    let frame_range = builder.frame_range(&conn.frame_log);
+    let quic_len = builder.finish(); // returns total including AEAD tag space
+
+    // Encrypt the QUIC packet
+    let local_key = match space {
+        0 => conn.keys.initial.as_ref().map(|kp| &kp.local),
+        1 => conn.keys.handshake.as_ref().map(|kp| &kp.local),
+        2 => conn.keys.one_rtt.as_ref().map(|kp| &kp.local),
+        _ => None,
+    };
+    let local_key = match local_key {
+        Some(k) => k,
+        None => return 0,
+    };
+
+    let quic_buf = &mut frame[quic_offset..quic_offset + quic_len];
+    match protect_packet(local_key, quic_buf, pn_offset, pn_length, pn) {
+        Ok(protected_len) => {
+            // Record sent packet for loss detection
+            conn.loss.on_packet_sent(
+                space as usize,
+                pn,
+                SentPacket {
+                    time_sent: now,
+                    size: protected_len as u16,
+                    ack_eliciting: wrote_ack_eliciting,
+                    in_flight: wrote_ack_eliciting,
+                    frame_range,
+                },
+            );
+            conn.packets_encrypted += 1;
+
+            // Build Ethernet + IP + UDP headers
+            write_transport_headers(conn, frame, quic_offset, protected_len)
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Write Ethernet + IP + UDP headers into the frame, returning the total
+/// frame length. The QUIC payload is already in place at `quic_offset`.
+fn write_transport_headers(
+    conn: &QuicConnectionState,
+    frame: &mut Frame<'_>,
+    quic_offset: usize,
+    quic_len: usize,
+) -> usize {
+    let udp_len = UDP_HEADER_LEN + quic_len;
+    let total_frame_len = quic_offset + quic_len;
+
+    // Ethernet header
+    match conn.local_addr {
+        IpAddress::V4(_) => {
+            write_ethernet_header(frame, conn.remote_mac, conn.local_mac, EtherTypes::IPv4);
+        }
+        IpAddress::V6(_) => {
+            write_ethernet_header(frame, conn.remote_mac, conn.local_mac, EtherTypes::IPv6);
+        }
+    }
+
+    // IP header — must write manually because IpVersion::write_ip_header hardcodes TCP
+    match (conn.local_addr, conn.remote_addr) {
+        (IpAddress::V4(src), IpAddress::V4(dst)) => {
+            let ip = &mut frame[ETH_LEN..ETH_LEN + IPV4_MIN_HEADER_LEN];
+            ip.fill(0);
+            ip[0] = 0x45; // version=4, IHL=5
+            let total_ip_len = (IPV4_MIN_HEADER_LEN + udp_len) as u16;
+            ip[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
+            ip[6] = 0x40; // Don't Fragment
+            ip[8] = 64; // TTL
+            ip[9] = IpProtocols::Udp; // Protocol = UDP
+            let src_bytes: [u8; 4] = src.into();
+            ip[12..16].copy_from_slice(&src_bytes);
+            let dst_bytes: [u8; 4] = dst.into();
+            ip[16..20].copy_from_slice(&dst_bytes);
+            // Compute IPv4 header checksum
+            let ip_header = Ipv4Header::from_bytes_mut(frame);
+            ip_header.fill_checksum();
+        }
+        (IpAddress::V6(src), IpAddress::V6(dst)) => {
+            let ip = &mut frame[ETH_LEN..ETH_LEN + IPV6_HEADER_LEN];
+            ip.fill(0);
+            ip[0] = 0x60; // version=6
+            let payload_len = udp_len as u16;
+            ip[4..6].copy_from_slice(&payload_len.to_be_bytes());
+            ip[6] = IpProtocols::Udp; // Next Header = UDP
+            ip[7] = 64; // Hop Limit
+            let src_bytes: [u8; 16] = src.into();
+            ip[8..24].copy_from_slice(&src_bytes);
+            let dst_bytes: [u8; 16] = dst.into();
+            ip[24..40].copy_from_slice(&dst_bytes);
+        }
+        _ => return 0, // mismatched address families
+    }
+
+    // UDP header
+    let udp_offset = quic_offset - UDP_HEADER_LEN;
+    let udp = unsafe { UdpHeader::from_bytes_at_mut(frame, udp_offset) };
+    *udp = UdpHeader::new(
+        conn.local_port,
+        conn.remote_port,
+        udp_len as u16,
+        [0, 0], // checksum = 0 (optional for IPv4 over UDP, can be added later)
+    );
+
+    total_frame_len
 }

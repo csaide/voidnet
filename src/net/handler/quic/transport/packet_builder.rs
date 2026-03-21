@@ -2,7 +2,7 @@ use super::frame::StreamId;
 use super::frame_log::{FrameLog, SentFrame};
 use super::frame_writer;
 use super::packet_number::encode_pn;
-use super::varint::varint_len;
+use super::varint::{encode_varint, varint_len};
 
 /// Builds a QUIC packet in a byte buffer.
 pub struct PacketBuilder<'a> {
@@ -217,6 +217,72 @@ impl<'a> PacketBuilder<'a> {
             self.buf[self.offset] = 0; // PADDING frame = 0x00
             self.offset += 1;
         }
+    }
+
+    /// Write an ACK frame using the AckState's pre-encoded data.
+    pub fn write_ack(
+        &mut self,
+        largest_acked: u64,
+        ack_delay: u64,
+        first_ack_range: u64,
+        ack_range_count: u64,
+        encoded_ranges: &[u8],
+        frame_log: &mut FrameLog,
+        space: u8,
+    ) -> bool {
+        // Type byte (0x02 for ACK without ECN)
+        // + largest_acked varint + ack_delay varint + ack_range_count varint
+        // + first_ack_range varint + encoded_ranges bytes
+        let overhead = 1
+            + varint_len(largest_acked)
+            + varint_len(ack_delay)
+            + varint_len(ack_range_count)
+            + varint_len(first_ack_range)
+            + encoded_ranges.len();
+        if self.remaining() < overhead {
+            return false;
+        }
+
+        // Write type
+        self.buf[self.offset] = 0x02;
+        self.offset += 1;
+        // Write fields using encode_varint
+        self.offset += encode_varint(largest_acked, &mut self.buf[self.offset..]);
+        self.offset += encode_varint(ack_delay, &mut self.buf[self.offset..]);
+        self.offset += encode_varint(ack_range_count, &mut self.buf[self.offset..]);
+        self.offset += encode_varint(first_ack_range, &mut self.buf[self.offset..]);
+        // Write pre-encoded ranges
+        if !encoded_ranges.is_empty() {
+            self.buf[self.offset..self.offset + encoded_ranges.len()]
+                .copy_from_slice(encoded_ranges);
+            self.offset += encoded_ranges.len();
+        }
+
+        frame_log.push(SentFrame::Ack { space });
+        true
+    }
+
+    /// Write a HANDSHAKE_DONE frame (0x1e). Returns true if written.
+    pub fn write_handshake_done(&mut self, frame_log: &mut FrameLog) -> bool {
+        if self.remaining() < 1 {
+            return false;
+        }
+        self.buf[self.offset] = 0x1e;
+        self.offset += 1;
+        frame_log.push(SentFrame::HandshakeDone);
+        true
+    }
+
+    /// Write a PATH_RESPONSE frame (0x1b + 8 bytes data). Returns true if written.
+    pub fn write_path_response(&mut self, data: [u8; 8]) -> bool {
+        if self.remaining() < 9 {
+            return false;
+        }
+        self.buf[self.offset] = 0x1b;
+        self.offset += 1;
+        self.buf[self.offset..self.offset + 8].copy_from_slice(&data);
+        self.offset += 8;
+        true
     }
 
     /// Write a PING frame.
