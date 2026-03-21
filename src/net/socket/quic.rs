@@ -13,18 +13,7 @@ use crate::net::handler::quic::transport::frame::StreamId;
 use crate::net::socket::LocalQueue;
 use crate::net::wire::ip::IpAddress;
 
-/// Events from the QUIC handler to the socket layer.
-#[derive(Debug)]
-pub enum QuicEvent {
-    HandshakeComplete,
-    NewStream(StreamId),
-    StreamReadable(StreamId),
-    StreamWritable(StreamId),
-    StreamFinished(StreamId),
-    StreamReset(StreamId, u64),
-    ConnectionError(TransportError),
-    ConnectionClosed(u64),
-}
+pub use crate::net::handler::quic::event::QuicEvent;
 
 /// Error returned by QUIC socket operations.
 #[derive(Debug)]

@@ -9,6 +9,7 @@ mod loss_test;
 mod packet_builder_test;
 mod packet_number_test;
 mod params_test;
+mod retransmit_test;
 mod stream_map_test;
 mod stream_state_test;
 mod timer_kinds_test;
