@@ -371,3 +371,172 @@ fn full_handshake_through_handler() {
         "cid_map should have entries for the new connection"
     );
 }
+
+#[test]
+fn stream_data_after_handshake() {
+    use crate::net::handler::quic::connection::{ConnectionState, QuicConnectionState, Side};
+    use crate::net::handler::quic::crypto::keys::KeyPair;
+    use crate::net::handler::quic::crypto::packet_protection::protect_packet;
+    use crate::net::handler::quic::processor;
+    use crate::net::handler::quic::transport::frame::StreamId;
+
+    let now = Instant::now();
+
+    // ── Step 1: Complete the TLS handshake at CryptoState level ──────
+    let client_config = make_client_config();
+    let server_config = make_server_config();
+    let client_params_bytes = encode_test_transport_params();
+    let server_params_bytes = encode_test_transport_params();
+
+    let (mut client_crypto, client_hello) =
+        CryptoState::new_client(client_config, "localhost", &client_params_bytes).unwrap();
+    let mut server_crypto = CryptoState::new_server(server_config, &server_params_bytes).unwrap();
+
+    // Round 1: ClientHello → Server
+    let server_out = server_crypto.process_crypto_data(&client_hello).unwrap();
+    let mut server_one_rtt: Option<KeyPair> = server_out.one_rtt_keys;
+    let server_hs_keys = server_out.handshake_keys;
+
+    // Round 2: Server response → Client
+    let client_out = client_crypto
+        .process_crypto_data(&server_out.crypto_data)
+        .unwrap();
+    let client_one_rtt: Option<KeyPair> = client_out.one_rtt_keys;
+
+    // If client has more data (Finished), feed it to server
+    if !client_out.crypto_data.is_empty() {
+        let server_out2 = server_crypto
+            .process_crypto_data(&client_out.crypto_data)
+            .unwrap();
+        if server_one_rtt.is_none() {
+            server_one_rtt = server_out2.one_rtt_keys;
+        }
+    }
+
+    // Both sides must have 1-RTT keys
+    let client_keys = client_one_rtt.expect("client must have 1-RTT keys");
+    let server_keys = server_one_rtt.expect("server must have 1-RTT keys");
+
+    // ── Step 2: Set up a QuicConnectionState with server-side keys ───
+    let server_dcid_bytes = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+    let server_dcid = ConnectionId::from_slice(&server_dcid_bytes);
+
+    let params = TransportParams {
+        initial_max_data: 1_000_000,
+        initial_max_stream_data_bidi_local: 100_000,
+        initial_max_stream_data_bidi_remote: 100_000,
+        initial_max_streams_bidi: 100,
+        ..Default::default()
+    };
+
+    let mut conn = QuicConnectionState::new(server_dcid.clone(), Side::Server, params, 1200, now);
+
+    // Install server-side 1-RTT keys.
+    // Server's "local" encrypts outgoing, server's "remote" decrypts incoming.
+    // The client's "local" key encrypts what the server's "remote" decrypts.
+    conn.keys.one_rtt = Some(server_keys);
+    if let Some(hs) = server_hs_keys {
+        conn.keys.handshake = Some(hs);
+    }
+    conn.state = ConnectionState::Established;
+
+    // Set stream limits so the server accepts client-initiated bidi streams
+    conn.streams.local_max_bidi = 100;
+    conn.streams.local_max_uni = 100;
+
+    // Set flow control to allow data
+    conn.flow = crate::net::handler::quic::transport::flow_control::FlowControl::new(
+        1_000_000, // send
+        1_000_000, // recv
+    );
+
+    // ── Step 3: Build a 1-RTT (short header) packet with STREAM frame ─
+    let stream_data = b"hello quic";
+    let stream_id = StreamId(0x00); // client-initiated bidi stream 0
+
+    // Short header format:
+    // first_byte: 0b0100_0000 = 0x40 (form=0, fixed=1, spin=0, reserved=00, key_phase=0, pn_len=00 → 1-byte PN)
+    let first_byte = 0x40u8;
+    let pn: u64 = 0;
+
+    let tag_len = client_keys.local.packet_key.tag_len();
+
+    // Build header: first_byte + DCID + PN(1 byte)
+    let mut header = Vec::new();
+    header.push(first_byte);
+    header.extend_from_slice(&server_dcid_bytes); // DCID = server's DCID
+    let pn_offset = header.len();
+    header.push(0x00); // PN = 0 (1 byte)
+    let payload_start = header.len();
+
+    // Build STREAM frame: type=0x0a (OFF=0, LEN=1, FIN=0)
+    // Bit layout: 0x08 base | 0x02 (LEN) = 0x0a. OFF bit (0x04) not set since offset=0.
+    let mut stream_frame = Vec::new();
+    stream_frame.push(0x0a); // STREAM type: LEN=1, OFF=0, FIN=0
+    let mut varint_buf = [0u8; 8];
+    // stream_id = 0
+    let n = encode_varint(stream_id.0, &mut varint_buf);
+    stream_frame.extend_from_slice(&varint_buf[..n]);
+    // length = stream_data.len() (no offset field since OFF=0)
+    let n = encode_varint(stream_data.len() as u64, &mut varint_buf);
+    stream_frame.extend_from_slice(&varint_buf[..n]);
+    // data
+    stream_frame.extend_from_slice(stream_data);
+
+    // Assemble the full packet: header + stream_frame + tag space
+    let total_len = payload_start + stream_frame.len() + tag_len;
+    let mut packet = vec![0u8; total_len];
+    packet[..header.len()].copy_from_slice(&header);
+    packet[payload_start..payload_start + stream_frame.len()].copy_from_slice(&stream_frame);
+
+    // Encrypt with client's 1-RTT local key (what server decrypts with its remote key)
+    protect_packet(&client_keys.local, &mut packet, pn_offset, 1, pn)
+        .expect("protect_packet should succeed");
+
+    // ── Step 4: Feed to processor::process_packet ────────────────────
+    let datagram_len = packet.len();
+    let result = processor::process_packet(&mut conn, &mut packet, datagram_len, now);
+    assert!(
+        matches!(result, processor::ProcessResult::Ok),
+        "process_packet should return Ok"
+    );
+
+    // ── Step 5: Verify ──────────────────────────────────────────────
+
+    // 5a. Stream 0 should exist and have data
+    let entry = conn
+        .streams
+        .get(stream_id)
+        .expect("stream 0 should exist in StreamMap");
+    let recv = entry.recv.as_ref().expect("stream 0 should have RecvHalf");
+    assert_eq!(
+        recv.received,
+        stream_data.len() as u64,
+        "RecvHalf.received should equal stream data length"
+    );
+
+    // Read the data out and verify
+    let entry_mut = conn.streams.get_mut(stream_id).unwrap();
+    let recv_mut = entry_mut.recv.as_mut().unwrap();
+    let mut read_buf = [0u8; 64];
+    let n = recv_mut.read(&mut read_buf);
+    assert_eq!(n, stream_data.len());
+    assert_eq!(
+        &read_buf[..n],
+        stream_data,
+        "stream data should be 'hello quic'"
+    );
+
+    // 5b. ACK should be pending in 1-RTT space (space index 2)
+    assert!(
+        conn.ack[2].needs_ack(),
+        "1-RTT ACK space should need to send an ACK after receiving STREAM frame"
+    );
+
+    // 5c. Connection should still be Established
+    assert_eq!(
+        conn.state,
+        ConnectionState::Established,
+        "connection should remain in Established state"
+    );
+}
