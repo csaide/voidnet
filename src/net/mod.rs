@@ -1,5 +1,6 @@
 #[doc(hidden)]
 pub mod checksum;
+pub mod congestion;
 mod fragment;
 mod neighbor;
 mod pmtu;
