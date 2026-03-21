@@ -1,0 +1,243 @@
+use super::frame::StreamId;
+use super::frame_log::{FrameLog, SentFrame};
+use super::frame_writer;
+use super::packet_number::encode_pn;
+
+/// Builds a QUIC packet in a byte buffer.
+pub struct PacketBuilder<'a> {
+    buf: &'a mut [u8],
+    /// Offset where packet number starts (needed for encryption)
+    pn_offset: usize,
+    pn_length: usize,
+    /// Current write position (after PN)
+    offset: usize,
+    /// Packet number for this packet
+    packet_number: u64,
+    /// Whether this is a long header packet
+    is_long_header: bool,
+    /// Frame log start index for tracking sent frames
+    frame_start: u32,
+}
+
+impl<'a> PacketBuilder<'a> {
+    /// Begin building a long header packet (Initial, Handshake, 0-RTT).
+    /// Writes the header up to and including the packet number.
+    /// Returns None if buffer is too small.
+    pub fn begin_long(
+        buf: &'a mut [u8],
+        packet_type_bits: u8, // 0x00=Initial, 0x01=0-RTT, 0x02=Handshake, 0x03=Retry
+        version: u32,
+        dcid: &[u8],
+        scid: &[u8],
+        packet_number: u64,
+        largest_acked: u64,
+        frame_log: &FrameLog,
+    ) -> Option<Self> {
+        let (truncated_pn, pn_len) = encode_pn(packet_number, largest_acked);
+
+        // Calculate header size: 1 + 4(version) + 1(dcid_len) + dcid + 1(scid_len) + scid
+        let header_len = 1 + 4 + 1 + dcid.len() + 1 + scid.len();
+        // For Initial: + token_length(varint) + length(varint) + pn
+        // Simplified: we'll add token and length fields as part of frame writing
+
+        if buf.len() < header_len + 2 + pn_len as usize + 16 {
+            return None; // too small
+        }
+
+        let mut offset = 0;
+
+        // First byte: 1(long) 1(fixed) TT(type) PP(pn_len-1)
+        buf[offset] = 0xC0 | (packet_type_bits << 4) | ((pn_len - 1) as u8);
+        offset += 1;
+
+        // Version
+        buf[offset..offset + 4].copy_from_slice(&version.to_be_bytes());
+        offset += 4;
+
+        // DCID
+        buf[offset] = dcid.len() as u8;
+        offset += 1;
+        buf[offset..offset + dcid.len()].copy_from_slice(dcid);
+        offset += dcid.len();
+
+        // SCID
+        buf[offset] = scid.len() as u8;
+        offset += 1;
+        buf[offset..offset + scid.len()].copy_from_slice(scid);
+        offset += scid.len();
+
+        // For Initial packets: token length = 0 (no token for now)
+        if packet_type_bits == 0x00 {
+            buf[offset] = 0; // token length varint = 0
+            offset += 1;
+        }
+
+        // Length field placeholder (2-byte varint, filled in finish())
+        let _length_offset = offset;
+        offset += 2; // reserve 2 bytes for length
+
+        // Packet number
+        let pn_offset = offset;
+        for i in 0..pn_len as usize {
+            buf[pn_offset + i] = (truncated_pn >> (8 * (pn_len as usize - 1 - i))) as u8;
+        }
+        offset += pn_len as usize;
+
+        Some(PacketBuilder {
+            buf,
+            pn_offset,
+            pn_length: pn_len as usize,
+            offset,
+            packet_number,
+            is_long_header: true,
+            frame_start: frame_log.head(),
+        })
+    }
+
+    /// Begin building a short header (1-RTT) packet.
+    pub fn begin_short(
+        buf: &'a mut [u8],
+        dcid: &[u8],
+        packet_number: u64,
+        largest_acked: u64,
+        key_phase: bool,
+        frame_log: &FrameLog,
+    ) -> Option<Self> {
+        let (truncated_pn, pn_len) = encode_pn(packet_number, largest_acked);
+
+        let header_len = 1 + dcid.len() + pn_len as usize;
+        if buf.len() < header_len + 16 {
+            return None;
+        }
+
+        let mut offset = 0;
+
+        // First byte: 0(short) 1(fixed) S(spin=0) 00(reserved) K(key_phase) PP(pn_len-1)
+        buf[offset] = 0x40 | if key_phase { 0x04 } else { 0 } | ((pn_len - 1) as u8);
+        offset += 1;
+
+        buf[offset..offset + dcid.len()].copy_from_slice(dcid);
+        offset += dcid.len();
+
+        let pn_offset = offset;
+        for i in 0..pn_len as usize {
+            buf[pn_offset + i] = (truncated_pn >> (8 * (pn_len as usize - 1 - i))) as u8;
+        }
+        offset += pn_len as usize;
+
+        Some(PacketBuilder {
+            buf,
+            pn_offset,
+            pn_length: pn_len as usize,
+            offset,
+            packet_number,
+            is_long_header: false,
+            frame_start: frame_log.head(),
+        })
+    }
+
+    /// Remaining space for payload (before AEAD tag).
+    pub fn remaining(&self) -> usize {
+        self.buf.len().saturating_sub(self.offset + 16) // 16 for AEAD tag
+    }
+
+    /// Write a CRYPTO frame. Returns bytes of crypto data written.
+    pub fn write_crypto(
+        &mut self,
+        offset_val: u64,
+        data: &[u8],
+        frame_log: &mut FrameLog,
+    ) -> usize {
+        let max_data = self.remaining().min(data.len());
+        if max_data == 0 {
+            return 0;
+        }
+        let data = &data[..max_data];
+        let written = frame_writer::write_crypto(&mut self.buf[self.offset..], offset_val, data);
+        if written > 0 {
+            self.offset += written;
+            frame_log.push(SentFrame::Crypto {
+                space: 0,
+                offset: offset_val,
+                len: data.len(),
+            });
+        }
+        data.len()
+    }
+
+    /// Write a STREAM frame. Returns bytes of stream data written.
+    pub fn write_stream(
+        &mut self,
+        id: StreamId,
+        offset_val: u64,
+        data: &[u8],
+        fin: bool,
+        frame_log: &mut FrameLog,
+    ) -> usize {
+        let max_data = self.remaining().min(data.len());
+        if max_data == 0 && !fin {
+            return 0;
+        }
+        let data = &data[..max_data];
+        let written =
+            frame_writer::write_stream(&mut self.buf[self.offset..], id, offset_val, data, fin);
+        if written > 0 {
+            self.offset += written;
+            frame_log.push(SentFrame::Stream {
+                id,
+                offset: offset_val,
+                len: data.len(),
+                fin,
+            });
+        }
+        data.len()
+    }
+
+    /// Write PADDING to reach minimum size.
+    pub fn pad_to(&mut self, min_size: usize) {
+        while self.offset + 16 < min_size && self.offset < self.buf.len() - 16 {
+            self.buf[self.offset] = 0; // PADDING frame = 0x00
+            self.offset += 1;
+        }
+    }
+
+    /// Write a PING frame.
+    pub fn write_ping(&mut self, frame_log: &mut FrameLog) {
+        if self.remaining() > 0 {
+            self.buf[self.offset] = 0x01;
+            self.offset += 1;
+            frame_log.push(SentFrame::Ping);
+        }
+    }
+
+    /// Get the packet number.
+    pub fn packet_number(&self) -> u64 {
+        self.packet_number
+    }
+
+    /// Get pn_offset (needed for encryption).
+    pub fn pn_offset(&self) -> usize {
+        self.pn_offset
+    }
+
+    /// Get pn_length.
+    pub fn pn_length(&self) -> usize {
+        self.pn_length
+    }
+
+    /// Get frame range in the FrameLog.
+    pub fn frame_range(&self, frame_log: &FrameLog) -> (u32, u32) {
+        (self.frame_start, frame_log.head())
+    }
+
+    /// Total bytes written so far (header + payload, before AEAD tag).
+    pub fn written(&self) -> usize {
+        self.offset
+    }
+
+    /// Finalize: returns the total packet length including space for AEAD tag.
+    /// Caller must then call protect_packet() to encrypt.
+    pub fn finish(self) -> usize {
+        self.offset + 16 // +16 for AEAD tag
+    }
+}

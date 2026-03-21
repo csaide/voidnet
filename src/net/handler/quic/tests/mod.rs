@@ -6,6 +6,7 @@ mod error_test;
 mod flow_control_test;
 mod frame_test;
 mod loss_test;
+mod packet_builder_test;
 mod packet_number_test;
 mod params_test;
 mod stream_map_test;
