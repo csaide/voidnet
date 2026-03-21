@@ -42,6 +42,10 @@ pub fn verify_retry_integrity_tag(odcid: &[u8], retry_packet_with_tag: &[u8]) ->
     }
     let (packet, tag) = retry_packet_with_tag.split_at(retry_packet_with_tag.len() - 16);
     let expected = compute_retry_integrity_tag(odcid, packet);
-    // Constant-time comparison
-    ring::constant_time::verify_slices_are_equal(&expected, tag).is_ok()
+    // Constant-time comparison (fixed-length, safe to compare byte-by-byte with XOR)
+    let mut diff = 0u8;
+    for (a, b) in expected.iter().zip(tag.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
 }
