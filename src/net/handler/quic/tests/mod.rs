@@ -8,6 +8,7 @@ mod ecn_test;
 mod error_test;
 mod flow_control_test;
 mod frame_test;
+mod handshake_integration_test;
 mod key_update_test;
 mod loss_test;
 mod pacing_test;
