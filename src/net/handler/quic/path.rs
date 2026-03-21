@@ -1,6 +1,6 @@
-use std::net::SocketAddr;
-
 use coarsetime::{Duration, Instant};
+
+use crate::net::wire::ip::IpAddress;
 
 /// Anti-amplification limit (RFC 9000 §8.1).
 ///
@@ -41,8 +41,6 @@ impl AmplificationLimit {
 
 /// State for a network path (RFC 9000 §9).
 pub struct PathState {
-    pub remote_addr: Option<SocketAddr>,
-    pub local_addr: Option<SocketAddr>,
     pub validated: bool,
     pub mtu_validated: bool,
     pub challenge_pending: Option<[u8; 8]>,
@@ -62,8 +60,6 @@ pub fn generate_challenge() -> [u8; 8] {
 impl PathState {
     pub fn new() -> Self {
         Self {
-            remote_addr: None,
-            local_addr: None,
             validated: false,
             mtu_validated: false,
             challenge_pending: None,
@@ -103,10 +99,16 @@ impl PathState {
         }
     }
 
-    /// Handle detecting a new peer address (potential migration)
-    pub fn on_peer_address_change(&mut self, new_addr: std::net::SocketAddr) {
-        if self.remote_addr.as_ref() != Some(&new_addr) {
-            self.remote_addr = Some(new_addr);
+    /// Handle detecting a new peer address (potential migration).
+    /// Compares new_remote/new_port against current_remote/current_port.
+    pub fn on_peer_address_change(
+        &mut self,
+        new_remote: &IpAddress,
+        new_port: u16,
+        current_remote: &IpAddress,
+        current_port: u16,
+    ) {
+        if new_remote != current_remote || new_port != current_port {
             self.validated = false;
             self.mtu_validated = false;
             // Anti-amplification re-applied
@@ -117,6 +119,6 @@ impl PathState {
     /// Whether this path needs a CID rotation (linkability prevention)
     pub fn needs_cid_rotation(&self) -> bool {
         // On migration to a new path, must use different CID
-        !self.validated && self.remote_addr.is_some()
+        !self.validated
     }
 }

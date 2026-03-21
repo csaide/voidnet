@@ -1,11 +1,10 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
 use coarsetime::{Duration, Instant};
 
 use crate::net::handler::quic::path::{AmplificationLimit, PathState};
+use crate::net::wire::ip::{IpAddress, Ipv4Address};
 
-fn make_addr(port: u16) -> SocketAddr {
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port)
+fn make_ip(last_octet: u8) -> IpAddress {
+    IpAddress::V4(Ipv4Address::new([127, 0, 0, last_octet]))
 }
 
 #[test]
@@ -52,18 +51,36 @@ fn path_validation_timeout() {
 fn peer_address_change_resets_validation() {
     let mut path = PathState::new();
     let now = Instant::now();
-    let addr1 = make_addr(4433);
-    path.remote_addr = Some(addr1);
     let challenge = path.initiate_validation(now);
     path.on_path_response(&challenge);
     assert!(path.validated);
+
+    let current_addr = make_ip(1);
+    let current_port = 4433u16;
+
     // New address triggers reset of validation state
-    let addr2 = make_addr(4434);
-    path.on_peer_address_change(addr2);
+    let new_addr = make_ip(2);
+    let new_port = 4434u16;
+    path.on_peer_address_change(&new_addr, new_port, &current_addr, current_port);
     assert!(!path.validated);
     assert!(!path.mtu_validated);
     assert!(!path.amplification.validated);
-    assert_eq!(path.remote_addr, Some(addr2));
+}
+
+#[test]
+fn peer_address_same_no_reset() {
+    let mut path = PathState::new();
+    let now = Instant::now();
+    let challenge = path.initiate_validation(now);
+    path.on_path_response(&challenge);
+    assert!(path.validated);
+
+    let addr = make_ip(1);
+    let port = 4433u16;
+
+    // Same address does NOT reset validation
+    path.on_peer_address_change(&addr, port, &addr, port);
+    assert!(path.validated);
 }
 
 #[test]

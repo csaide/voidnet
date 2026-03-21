@@ -151,6 +151,7 @@ impl<'a> PacketBuilder<'a> {
         &mut self,
         offset_val: u64,
         data: &[u8],
+        space: u8,
         frame_log: &mut FrameLog,
     ) -> usize {
         // Overhead: 1 (type) + varint(offset) + varint(length)
@@ -166,7 +167,7 @@ impl<'a> PacketBuilder<'a> {
         if written > 0 {
             self.offset += written;
             frame_log.push(SentFrame::Crypto {
-                space: 0,
+                space,
                 offset: offset_val,
                 len: data.len(),
             });

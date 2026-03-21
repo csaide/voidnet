@@ -67,7 +67,7 @@ fn packet_builder_write_crypto_and_finish() {
         PacketBuilder::begin_long(&mut buf, 0x00, 0x00000001, &dcid, &scid, 0, 0, &log).unwrap();
 
     let crypto_data = b"ClientHello data here";
-    let written = builder.write_crypto(0, crypto_data, &mut log);
+    let written = builder.write_crypto(0, crypto_data, 0, &mut log);
     assert_eq!(written, crypto_data.len());
 
     let (start, end) = builder.frame_range(&log);
@@ -86,7 +86,7 @@ fn packet_builder_pad_to_1200() {
     let mut builder =
         PacketBuilder::begin_long(&mut buf, 0x00, 0x00000001, &dcid, &[], 0, 0, &log).unwrap();
 
-    builder.write_crypto(0, b"hello", &mut log);
+    builder.write_crypto(0, b"hello", 0, &mut log);
     builder.pad_to(1200);
     let total = builder.finish();
     assert!(total >= 1200);

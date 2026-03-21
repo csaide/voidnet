@@ -3,6 +3,7 @@ use coarsetime::{Duration, Instant};
 use super::connection_id::{CidSet, ConnectionId};
 use super::crypto::keys::PacketKeys;
 use super::crypto::tls::CryptoState;
+use super::packet_parser::{CryptoRecvBuffer, PnBitset};
 use super::path::PathState;
 use super::stream::map::StreamMap;
 use super::stream::pool::StreamPool;
@@ -10,8 +11,13 @@ use super::timer_kinds::QuicTimerHandles;
 use super::transport::ack::AckState;
 use super::transport::congestion::QuicCubic;
 use super::transport::flow_control::FlowControl;
+use super::transport::frame_log::FrameLog;
 use super::transport::loss::LossDetector;
+use super::transport::pacing::Pacer;
 use super::transport::params::TransportParams;
+use super::transport::retransmit::RetransmitQueue;
+use crate::net::wire::ethernet::MacAddress;
+use crate::net::wire::ip::{IpAddress, Ipv4Address};
 
 /// High-level connection state (RFC 9000 §17.2.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +80,38 @@ pub struct QuicConnectionState {
 
     // Created time
     pub created_at: Instant,
+
+    // Handshake CRYPTO buffering
+    pub crypto_recv: [CryptoRecvBuffer; 3],
+    pub pending_crypto: [Vec<u8>; 3],
+    pub crypto_offset: [u64; 3],
+    pub crypto_acked: [u64; 3],
+
+    // Transport
+    pub pacing: Pacer,
+    pub retransmit: RetransmitQueue,
+
+    // Control frames
+    pub pending_path_response: Option<[u8; 8]>,
+    pub send_handshake_done: bool,
+    pub needs_probe: bool,
+
+    // Frame log
+    pub frame_log: FrameLog,
+
+    // Duplicate PN detection
+    pub recv_pn_seen: [PnBitset; 3],
+
+    // Primary SCID (used in outgoing packet headers)
+    pub scid: ConnectionId,
+
+    // Network addressing
+    pub local_addr: IpAddress,
+    pub remote_addr: IpAddress,
+    pub local_port: u16,
+    pub remote_port: u16,
+    pub local_mac: MacAddress,
+    pub remote_mac: MacAddress,
 }
 
 impl QuicConnectionState {
@@ -85,6 +123,8 @@ impl QuicConnectionState {
         now: Instant,
     ) -> Self {
         let is_client = side == Side::Client;
+        let congestion = QuicCubic::new(max_datagram_size);
+        let initial_window = congestion.cwnd;
         Self {
             dcid,
             scid_set: CidSet::new(),
@@ -93,7 +133,7 @@ impl QuicConnectionState {
             keys: PacketKeys::new(),
             crypto: None,
             loss: LossDetector::new(),
-            congestion: QuicCubic::new(max_datagram_size),
+            congestion,
             flow: FlowControl::new(0, local_params.initial_max_data),
             ack: [AckState::new(), AckState::new(), AckState::new()],
             streams: StreamMap::new(is_client),
@@ -107,6 +147,28 @@ impl QuicConnectionState {
             idle_timeout: Duration::from_secs(30),
             max_udp_payload: 1200,
             created_at: now,
+            crypto_recv: [
+                CryptoRecvBuffer::new(),
+                CryptoRecvBuffer::new(),
+                CryptoRecvBuffer::new(),
+            ],
+            pending_crypto: [Vec::new(), Vec::new(), Vec::new()],
+            crypto_offset: [0; 3],
+            crypto_acked: [0; 3],
+            pacing: Pacer::new(initial_window),
+            retransmit: RetransmitQueue::new(),
+            pending_path_response: None,
+            send_handshake_done: false,
+            needs_probe: false,
+            frame_log: FrameLog::new(1024),
+            recv_pn_seen: [PnBitset::new(), PnBitset::new(), PnBitset::new()],
+            scid: ConnectionId::empty(),
+            local_addr: IpAddress::V4(Ipv4Address::new([0, 0, 0, 0])),
+            remote_addr: IpAddress::V4(Ipv4Address::new([0, 0, 0, 0])),
+            local_port: 0,
+            remote_port: 0,
+            local_mac: MacAddress::zero(),
+            remote_mac: MacAddress::zero(),
         }
     }
 }
