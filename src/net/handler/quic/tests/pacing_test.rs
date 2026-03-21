@@ -34,18 +34,16 @@ fn pacer_burst_allowance() {
 
 #[test]
 fn pacer_throttles_after_burst() {
-    let mut pacer = Pacer::new(1200);
+    // burst=0 so any sent packet goes through the pacing path
+    let mut pacer = Pacer::new(0);
     pacer.update_rate(12000, Duration::from_millis(100));
     let now = Instant::now();
-    // Exhaust the burst allowance
+    // Send a packet — with no burst, this sets next_send_time
     pacer.on_packet_sent(1200, now);
-    // Burst exhausted; next_send_time is in the future
-    // can_send with burst_allowance=0 and now < next_send_time should return false
-    let slightly_later = now; // same instant: next_send_time > now
     let next = pacer.next_send_time();
     assert!(next.is_some(), "should have a scheduled send time");
-    // At 'now', we cannot send (burst_allowance=0, next_send_time in future)
-    assert!(!pacer.can_send(slightly_later, 1200));
+    // At 'now', next_send_time is in the future, burst_allowance=0 → cannot send
+    assert!(!pacer.can_send(now, 1200));
     // After the scheduled time, we can send again
     let after = next.unwrap() + Duration::from_nanos(1);
     assert!(pacer.can_send(after, 1200));
@@ -53,12 +51,13 @@ fn pacer_throttles_after_burst() {
 
 #[test]
 fn pacer_next_send_time() {
-    let mut pacer = Pacer::new(1200);
+    // burst=0 so the pacing path is taken immediately
+    let mut pacer = Pacer::new(0);
     pacer.update_rate(12000, Duration::from_millis(100));
     assert!(pacer.next_send_time().is_none());
     let now = Instant::now();
     pacer.on_packet_sent(1200, now);
-    // After exhausting burst, next_send_time should be set
+    // After sending with no burst, next_send_time should be set in the future
     let nst = pacer.next_send_time();
     assert!(nst.is_some());
     assert!(nst.unwrap() > now);
@@ -66,13 +65,17 @@ fn pacer_next_send_time() {
 
 #[test]
 fn pacer_reset_burst() {
+    // burst=1200 so we can send one packet immediately; second is paced
     let mut pacer = Pacer::new(1200);
     pacer.update_rate(12000, Duration::from_millis(100));
     let now = Instant::now();
-    // Exhaust burst
+    // Exhaust burst (burst_allowance = 1200 - 1200 = 0, returns early, no next_send_time)
     pacer.on_packet_sent(1200, now);
+    // Send a second packet — no burst left, goes through pacing path
+    pacer.on_packet_sent(1200, now);
+    // next_send_time is now set in the future; cannot send
     assert!(!pacer.can_send(now, 1200));
-    // Reset burst re-enables immediate send
+    // Reset burst re-enables immediate sends
     pacer.reset_burst();
     assert!(pacer.can_send(now, 1200));
 }

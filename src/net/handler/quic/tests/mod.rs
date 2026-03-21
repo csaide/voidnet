@@ -14,6 +14,7 @@ mod pacing_test;
 mod packet_builder_test;
 mod packet_number_test;
 mod params_test;
+mod path_test;
 mod retransmit_test;
 mod retry_test;
 mod stateless_reset_test;

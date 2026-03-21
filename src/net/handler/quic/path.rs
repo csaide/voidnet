@@ -49,6 +49,15 @@ pub struct PathState {
     pub amplification: AmplificationLimit,
 }
 
+/// Generate random PATH_CHALLENGE data
+pub fn generate_challenge() -> [u8; 8] {
+    use ring::rand::SecureRandom;
+    let mut data = [0u8; 8];
+    // Use ring's random for cryptographic randomness
+    ring::rand::SystemRandom::new().fill(&mut data).unwrap();
+    data
+}
+
 impl PathState {
     pub fn new() -> Self {
         Self {
@@ -60,5 +69,53 @@ impl PathState {
             challenge_sent_at: None,
             amplification: AmplificationLimit::new(),
         }
+    }
+
+    /// Initiate path validation by sending PATH_CHALLENGE
+    pub fn initiate_validation(&mut self, now: Instant) -> [u8; 8] {
+        let challenge = generate_challenge();
+        self.challenge_pending = Some(challenge);
+        self.challenge_sent_at = Some(now);
+        challenge
+    }
+
+    /// Process a PATH_RESPONSE and check if it matches our challenge
+    pub fn on_path_response(&mut self, data: &[u8; 8]) -> bool {
+        if let Some(pending) = &self.challenge_pending {
+            if pending == data {
+                self.validated = true;
+                self.challenge_pending = None;
+                self.challenge_sent_at = None;
+                self.amplification.set_validated();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if path validation has timed out
+    pub fn validation_timed_out(&self, now: Instant, timeout: std::time::Duration) -> bool {
+        if let Some(sent_at) = self.challenge_sent_at {
+            now.duration_since(sent_at) > timeout
+        } else {
+            false
+        }
+    }
+
+    /// Handle detecting a new peer address (potential migration)
+    pub fn on_peer_address_change(&mut self, new_addr: std::net::SocketAddr) {
+        if self.remote_addr.as_ref() != Some(&new_addr) {
+            self.remote_addr = Some(new_addr);
+            self.validated = false;
+            self.mtu_validated = false;
+            // Anti-amplification re-applied
+            self.amplification = AmplificationLimit::new();
+        }
+    }
+
+    /// Whether this path needs a CID rotation (linkability prevention)
+    pub fn needs_cid_rotation(&self) -> bool {
+        // On migration to a new path, must use different CID
+        !self.validated && self.remote_addr.is_some()
     }
 }
