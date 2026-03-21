@@ -9,6 +9,7 @@ use crate::net::handler::quic::timer_kinds::*;
 use crate::net::handler::quic::transport::params::TransportParams;
 use crate::net::handler::quic::{processor, processor::TimerResult};
 use crate::net::neighbor::NeighborHandler;
+use crate::net::socket::LocalQueue;
 use crate::net::timer_wheel::TimerWheel;
 use crate::net::wire::ethernet::MacAddress;
 use crate::net::wire::ip::IpAddress;
@@ -17,7 +18,7 @@ use crate::xdp::frame::{Frame, FrameBuffer};
 pub struct ListenerState {
     pub tls_config: Arc<rustls::ServerConfig>,
     pub transport_params: TransportParams,
-    // accept_queue will be added in Task 20 (socket API)
+    pub accept_queue: Option<LocalQueue<usize>>,
 }
 
 /// QUIC protocol handler.
@@ -60,8 +61,33 @@ impl QuicHandler {
             ListenerState {
                 tls_config,
                 transport_params: params,
+                accept_queue: None,
             },
         );
+    }
+
+    /// Register a QUIC listener on a port with an external accept queue.
+    /// The accept queue receives connection slab keys when handshakes complete.
+    pub fn listen_with_queue(
+        &mut self,
+        port: u16,
+        tls_config: Arc<rustls::ServerConfig>,
+        params: TransportParams,
+        accept_queue: LocalQueue<usize>,
+    ) {
+        self.listeners.insert(
+            port,
+            ListenerState {
+                tls_config,
+                transport_params: params,
+                accept_queue: Some(accept_queue),
+            },
+        );
+    }
+
+    /// Remove a QUIC listener from a port.
+    pub fn unlisten(&mut self, port: u16) {
+        self.listeners.remove(&port);
     }
 
     /// Process an incoming IPv4 UDP packet destined for a QUIC port.
@@ -394,8 +420,9 @@ impl QuicHandler {
         let crypto =
             CryptoState::new_server(listener.tls_config.clone(), &params_buf[..params_len]).ok()?;
 
-        // Clone params before borrowing listener is released
+        // Clone params and accept queue before borrowing listener is released
         let transport_params = listener.transport_params.clone();
+        let accept_queue = listener.accept_queue.clone();
 
         // Create connection state
         let mut conn = QuicConnectionState::new(
@@ -415,6 +442,7 @@ impl QuicHandler {
         conn.remote_port = remote_port;
         conn.local_mac = local_mac;
         conn.remote_mac = remote_mac;
+        conn.accept_queue = accept_queue;
 
         Some(self.insert_connection(conn))
     }

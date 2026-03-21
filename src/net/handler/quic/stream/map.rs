@@ -170,6 +170,48 @@ impl StreamMap {
         vec.get_mut(idx)?.take()
     }
 
+    /// Check if any stream has data pending to send.
+    pub fn has_pending_send(&self) -> bool {
+        for vec in [
+            &self.client_bidi,
+            &self.server_bidi,
+            &self.client_uni,
+            &self.server_uni,
+        ] {
+            for entry in vec.iter().flatten() {
+                if let Some(ref send) = entry.send {
+                    if send.buffer.len() > 0 || (send.fin_sent && send.sent == send.acked) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Iterate over all streams that have send data pending.
+    /// Yields (StreamId, &mut StreamEntry) for each stream with data in SendHalf.
+    pub fn iter_send_mut(&mut self) -> impl Iterator<Item = (StreamId, &mut StreamEntry)> {
+        let type_bits_and_vecs: [(u64, &mut Vec<Option<StreamEntry>>); 4] = [
+            (0, &mut self.client_bidi),
+            (1, &mut self.server_bidi),
+            (2, &mut self.client_uni),
+            (3, &mut self.server_uni),
+        ];
+        type_bits_and_vecs.into_iter().flat_map(|(type_bits, vec)| {
+            vec.iter_mut().enumerate().filter_map(move |(idx, slot)| {
+                let entry = slot.as_mut()?;
+                if let Some(ref send) = entry.send {
+                    if send.buffer.len() > 0 || send.fin_sent {
+                        let stream_id = StreamId((idx as u64) << 2 | type_bits);
+                        return Some((stream_id, entry));
+                    }
+                }
+                None
+            })
+        })
+    }
+
     pub fn stream_count(&self) -> usize {
         self.client_bidi.iter().filter(|s| s.is_some()).count()
             + self.server_bidi.iter().filter(|s| s.is_some()).count()

@@ -400,11 +400,15 @@ fn handle_crypto_frame(
         if conn.side == Side::Server {
             conn.state = ConnectionState::Established;
             conn.send_handshake_done = true;
+            conn.notify_established = true;
             conn.path.amplification.set_validated();
             // Discard handshake keys after installing 1-RTT
             conn.keys.handshake = None;
             conn.loss.discard_space(1);
         }
+        // Notify socket layer: handshake complete
+        conn.event_queue
+            .push(crate::net::handler::quic::event::QuicEvent::HandshakeComplete);
     }
 
     // Queue response CRYPTO data
@@ -527,11 +531,8 @@ fn handle_stream_frame(
     data: &[u8],
     fin: bool,
 ) {
-    // For received STREAM frames, the stream is peer-initiated (not local)
-    let _is_local = match conn.side {
-        Side::Server => !stream_id.initiator_is_client(), // server-initiated = local
-        Side::Client => stream_id.initiator_is_client(),  // client-initiated = local
-    };
+    // Check if this is a new stream (not yet in the map)
+    let is_new = conn.streams.get(stream_id).is_none();
 
     let entry = match conn.streams.get_or_create(stream_id) {
         Ok(e) => e,
@@ -546,6 +547,15 @@ fn handle_stream_frame(
         }
         let _ = recv.receive(offset, data, fin);
     }
+
+    // Notify socket layer
+    if is_new {
+        conn.stream_accept_queue.push(stream_id);
+    }
+    conn.event_queue
+        .push(crate::net::handler::quic::event::QuicEvent::StreamReadable(
+            stream_id,
+        ));
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +576,7 @@ fn has_pending_data(conn: &QuicConnectionState, space: u8) -> bool {
         || (space == 2 && conn.send_handshake_done)
         || conn.pending_path_response.is_some()
         || conn.needs_probe
+        || (space == 2 && conn.streams.has_pending_send())
 }
 
 /// Generate outbound QUIC packets from pending connection state.
@@ -627,6 +638,14 @@ pub fn generate_packets<'umem>(
             tx_return.push(frame);
         } else {
             free_frames.push(frame); // return unused frame
+        }
+    }
+
+    // Notify the accept queue if this connection just completed handshake
+    if conn.notify_established {
+        conn.notify_established = false;
+        if let Some(ref accept_queue) = conn.accept_queue {
+            accept_queue.push(conn_key);
         }
     }
 
@@ -764,7 +783,43 @@ fn build_packet_in_frame(
         conn.needs_probe = false;
     }
 
-    // 6. Initial padding — Initial packets must be at least 1200 bytes total
+    // 6. Stream data (1-RTT space only)
+    if space == 2 {
+        // Collect stream IDs with pending data first to avoid borrow conflicts
+        let pending_streams: smallvec::SmallVec<[StreamId; 16]> =
+            conn.streams.iter_send_mut().map(|(id, _)| id).collect();
+        for stream_id in pending_streams {
+            if builder.remaining() < 20 {
+                break; // not enough space for a meaningful STREAM frame
+            }
+            if let Some(entry) = conn.streams.get_mut(stream_id) {
+                if let Some(ref mut send) = entry.send {
+                    let data_len = send
+                        .buffer
+                        .len()
+                        .min(builder.remaining().saturating_sub(20));
+                    let mut temp = vec![0u8; data_len];
+                    let read = send.buffer.read(&mut temp);
+                    let fin = send.fin_sent && send.buffer.is_empty();
+                    if read > 0 || fin {
+                        let written = builder.write_stream(
+                            stream_id,
+                            send.sent,
+                            &temp[..read],
+                            fin,
+                            &mut conn.frame_log,
+                        );
+                        send.sent += written as u64;
+                        if written > 0 || fin {
+                            wrote_ack_eliciting = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 7. Initial padding — Initial packets must be at least 1200 bytes total
     if space == 0 {
         // Minimum QUIC payload size to reach 1200 byte UDP datagram
         let min_quic_size = 1200usize.saturating_sub(ip_len + UDP_HEADER_LEN);

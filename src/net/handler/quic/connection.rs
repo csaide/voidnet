@@ -11,11 +11,14 @@ use super::timer_kinds::QuicTimerHandles;
 use super::transport::ack::AckState;
 use super::transport::congestion::QuicCubic;
 use super::transport::flow_control::FlowControl;
+use super::transport::frame::StreamId;
 use super::transport::frame_log::FrameLog;
 use super::transport::loss::LossDetector;
 use super::transport::pacing::Pacer;
 use super::transport::params::TransportParams;
 use super::transport::retransmit::RetransmitQueue;
+use crate::net::handler::quic::event::QuicEvent;
+use crate::net::socket::LocalQueue;
 use crate::net::wire::ethernet::MacAddress;
 use crate::net::wire::ip::{IpAddress, Ipv4Address};
 
@@ -95,6 +98,8 @@ pub struct QuicConnectionState {
     pub pending_path_response: Option<[u8; 8]>,
     pub send_handshake_done: bool,
     pub needs_probe: bool,
+    /// Set when the connection transitions to Established; cleared after accept_queue push.
+    pub notify_established: bool,
 
     // Frame log
     pub frame_log: FrameLog,
@@ -112,6 +117,14 @@ pub struct QuicConnectionState {
     pub remote_port: u16,
     pub local_mac: MacAddress,
     pub remote_mac: MacAddress,
+
+    // Socket API queues
+    /// Accept queue from the listener — pushed when handshake completes (server side).
+    pub accept_queue: Option<LocalQueue<usize>>,
+    /// Per-stream accept queue — new peer-initiated stream IDs are pushed here.
+    pub stream_accept_queue: LocalQueue<StreamId>,
+    /// Per-connection event queue for waking socket futures.
+    pub event_queue: LocalQueue<QuicEvent>,
 }
 
 impl QuicConnectionState {
@@ -160,6 +173,7 @@ impl QuicConnectionState {
             pending_path_response: None,
             send_handshake_done: false,
             needs_probe: false,
+            notify_established: false,
             frame_log: FrameLog::new(1024),
             recv_pn_seen: [PnBitset::new(), PnBitset::new(), PnBitset::new()],
             scid: ConnectionId::empty(),
@@ -169,6 +183,9 @@ impl QuicConnectionState {
             remote_port: 0,
             local_mac: MacAddress::zero(),
             remote_mac: MacAddress::zero(),
+            accept_queue: None,
+            stream_accept_queue: LocalQueue::new(64),
+            event_queue: LocalQueue::new(64),
         }
     }
 }

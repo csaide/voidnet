@@ -8,10 +8,13 @@ use std::task::{Context, Poll};
 use rustls::{ClientConfig, ServerConfig};
 
 use crate::net::handler::quic::QuicHandler;
+use crate::net::handler::quic::connection::ConnectionState;
 use crate::net::handler::quic::error::TransportError;
 use crate::net::handler::quic::transport::frame::StreamId;
+use crate::net::handler::quic::transport::params::TransportParams;
 use crate::net::socket::LocalQueue;
 use crate::net::wire::ip::IpAddress;
+use crate::rt::context::with_runtime_context;
 
 pub use crate::net::handler::quic::event::QuicEvent;
 
@@ -42,11 +45,24 @@ impl QuicListener {
     /// The TLS config must include server certificates.
     pub fn listen(
         _addr: IpAddress,
-        _port: u16,
-        _tls_config: Arc<ServerConfig>,
+        port: u16,
+        tls_config: Arc<ServerConfig>,
     ) -> Result<Self, QuicError> {
-        // TODO: register with QuicHandler via RuntimeContext
-        todo!("QuicListener::listen -- requires RuntimeContext wiring")
+        with_runtime_context(|ctx| {
+            let handler = unsafe { &mut *ctx.quic_handler.get() };
+            let accept_queue = LocalQueue::new(128);
+            handler.listen_with_queue(
+                port,
+                tls_config,
+                TransportParams::default(),
+                accept_queue.clone(),
+            );
+            Ok(QuicListener {
+                port,
+                accept_queue,
+                handler: ctx.quic_handler.clone(),
+            })
+        })
     }
 
     /// Accept the next incoming QUIC connection.
@@ -57,6 +73,18 @@ impl QuicListener {
     /// Returns the port this listener is bound to.
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Close this listener, removing it from the handler.
+    pub fn close(&mut self) {
+        let handler = unsafe { &mut *self.handler.get() };
+        handler.unlisten(self.port);
+    }
+}
+
+impl Drop for QuicListener {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
@@ -70,10 +98,18 @@ impl<'a> Future for Accept<'a> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let queue = &self.listener.accept_queue;
         if let Some(conn_key) = queue.pop() {
-            Poll::Ready(QuicConnection {
-                conn_key,
-                handler: self.listener.handler.clone(),
-            })
+            // Verify the connection still exists
+            let handler = unsafe { &*self.listener.handler.get() };
+            if handler.connections.contains(conn_key) {
+                Poll::Ready(QuicConnection {
+                    conn_key,
+                    handler: self.listener.handler.clone(),
+                })
+            } else {
+                // Connection was removed before we accepted it; keep waiting.
+                queue.register_waker(cx.waker());
+                Poll::Pending
+            }
         } else {
             queue.register_waker(cx.waker());
             Poll::Pending
@@ -100,18 +136,60 @@ impl QuicConnection {
         _server_name: &str,
         _tls_config: Arc<ClientConfig>,
     ) -> Connect {
+        // Client connect is deferred to a future milestone.
         Connect { _private: () }
     }
 
     /// Open a new bidirectional stream.
     pub fn open_bidi_stream(&self) -> Result<QuicStream, QuicError> {
-        // TODO: allocate stream ID, create stream entry
-        todo!("open_bidi_stream")
+        let handler = unsafe { &mut *self.handler.get() };
+        let conn = handler
+            .connections
+            .get_mut(self.conn_key)
+            .ok_or(QuicError::NotConnected)?;
+
+        // Allocate next bidi stream ID.
+        // Server-initiated bidi: type bits = 0x01 (odd). Client-initiated: 0x00.
+        let type_bits: u64 = if conn.streams.is_client { 0 } else { 1 };
+        let idx = conn.streams.local_opened_bidi;
+        let stream_id = StreamId(idx * 4 + type_bits);
+
+        // This will increment local_opened_bidi and create the entry
+        let _ = conn
+            .streams
+            .get_or_create(stream_id)
+            .map_err(|_| QuicError::WouldBlock)?;
+
+        Ok(QuicStream {
+            conn_key: self.conn_key,
+            stream_id,
+            handler: self.handler.clone(),
+        })
     }
 
     /// Open a new unidirectional (send-only) stream.
     pub fn open_uni_stream(&self) -> Result<QuicSendStream, QuicError> {
-        todo!("open_uni_stream")
+        let handler = unsafe { &mut *self.handler.get() };
+        let conn = handler
+            .connections
+            .get_mut(self.conn_key)
+            .ok_or(QuicError::NotConnected)?;
+
+        // Server-initiated uni: type bits = 0x03. Client-initiated: 0x02.
+        let type_bits: u64 = if conn.streams.is_client { 2 } else { 3 };
+        let idx = conn.streams.local_opened_uni;
+        let stream_id = StreamId(idx * 4 + type_bits);
+
+        let _ = conn
+            .streams
+            .get_or_create(stream_id)
+            .map_err(|_| QuicError::WouldBlock)?;
+
+        Ok(QuicSendStream {
+            conn_key: self.conn_key,
+            stream_id,
+            handler: self.handler.clone(),
+        })
     }
 
     /// Accept a peer-initiated stream.
@@ -121,13 +199,25 @@ impl QuicConnection {
 
     /// Get the current RTT estimate.
     pub fn rtt(&self) -> coarsetime::Duration {
-        // TODO: read from connection state
-        coarsetime::Duration::from_millis(0)
+        let handler = unsafe { &*self.handler.get() };
+        handler
+            .connections
+            .get(self.conn_key)
+            .map(|c| c.loss.smoothed_rtt)
+            .unwrap_or(coarsetime::Duration::from_millis(0))
     }
 
     /// Close the connection with an error code and optional reason.
     pub fn close(&self, _error_code: u64, _reason: &[u8]) {
-        // TODO: send CONNECTION_CLOSE
+        let handler = unsafe { &mut *self.handler.get() };
+        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
+            if !matches!(
+                conn.state,
+                ConnectionState::Closing | ConnectionState::Closed | ConnectionState::Draining
+            ) {
+                conn.state = ConnectionState::Closing;
+            }
+        }
     }
 
     /// Returns the internal connection slab key.
@@ -144,7 +234,7 @@ impl Future for Connect {
     type Output = Result<QuicConnection, QuicError>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // TODO: drive handshake
+        // Client-side connect is deferred to a future milestone.
         Poll::Pending
     }
 }
@@ -156,10 +246,26 @@ pub struct AcceptStream<'a> {
 impl<'a> Future for AcceptStream<'a> {
     type Output = QuicStream;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let _conn = self.conn;
-        // TODO: poll for new peer-initiated streams
-        Poll::Pending
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let handler = unsafe { &*self.conn.handler.get() };
+        let conn = match handler.connections.get(self.conn.conn_key) {
+            Some(c) => c,
+            None => {
+                // Connection gone; park forever (caller should handle connection lifetime).
+                return Poll::Pending;
+            }
+        };
+
+        if let Some(stream_id) = conn.stream_accept_queue.pop() {
+            Poll::Ready(QuicStream {
+                conn_key: self.conn.conn_key,
+                stream_id,
+                handler: self.conn.handler.clone(),
+            })
+        } else {
+            conn.stream_accept_queue.register_waker(cx.waker());
+            Poll::Pending
+        }
     }
 }
 
@@ -186,12 +292,19 @@ impl QuicStream {
 
     /// Signal that no more data will be sent (send FIN).
     pub fn finish(&self) {
-        // TODO: transition send state to DataSent
+        let handler = unsafe { &mut *self.handler.get() };
+        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
+            if let Some(entry) = conn.streams.get_mut(self.stream_id) {
+                if let Some(ref mut send) = entry.send {
+                    send.fin_sent = true;
+                }
+            }
+        }
     }
 
     /// Reset the stream with an error code.
     pub fn reset(&self, _error_code: u64) {
-        // TODO: send RESET_STREAM
+        // TODO: queue RESET_STREAM frame
     }
 
     /// Returns the stream identifier.
@@ -223,10 +336,31 @@ pub struct StreamRead<'a> {
 impl<'a> Future for StreamRead<'a> {
     type Output = Result<usize, QuicError>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let _stream = self.stream;
-        let _buf = &self.get_mut().buf;
-        // TODO: read from RecvHalf buffer
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let handler = unsafe { &mut *this.stream.handler.get() };
+        let conn = match handler.connections.get_mut(this.stream.conn_key) {
+            Some(c) => c,
+            None => return Poll::Ready(Err(QuicError::NotConnected)),
+        };
+        let entry = match conn.streams.get_mut(this.stream.stream_id) {
+            Some(e) => e,
+            None => return Poll::Ready(Err(QuicError::NotConnected)),
+        };
+        if let Some(ref mut recv) = entry.recv {
+            let n = recv.read(this.buf);
+            if n > 0 {
+                return Poll::Ready(Ok(n));
+            }
+            // Check if FIN received and all data consumed
+            if recv.fin_received && recv.received == recv.read_offset {
+                return Poll::Ready(Ok(0)); // EOF
+            }
+        } else {
+            return Poll::Ready(Err(QuicError::NotConnected));
+        }
+        // Register waker for when data arrives
+        conn.event_queue.register_waker(cx.waker());
         Poll::Pending
     }
 }
@@ -239,10 +373,34 @@ pub struct StreamWrite<'a> {
 impl<'a> Future for StreamWrite<'a> {
     type Output = Result<usize, QuicError>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let _stream = self.stream;
-        let _buf = self.buf;
-        // TODO: write to SendHalf buffer
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let handler = unsafe { &mut *self.stream.handler.get() };
+        let conn = match handler.connections.get_mut(self.stream.conn_key) {
+            Some(c) => c,
+            None => return Poll::Ready(Err(QuicError::NotConnected)),
+        };
+        if matches!(
+            conn.state,
+            ConnectionState::Closing | ConnectionState::Closed | ConnectionState::Draining
+        ) {
+            return Poll::Ready(Err(QuicError::ConnectionClosed));
+        }
+        let entry = match conn.streams.get_mut(self.stream.stream_id) {
+            Some(e) => e,
+            None => return Poll::Ready(Err(QuicError::NotConnected)),
+        };
+        if let Some(ref mut send) = entry.send {
+            if send.fin_sent {
+                return Poll::Ready(Err(QuicError::ConnectionClosed));
+            }
+            let n = send.write(self.buf);
+            if n > 0 {
+                return Poll::Ready(Ok(n));
+            }
+        } else {
+            return Poll::Ready(Err(QuicError::NotConnected));
+        }
+        conn.event_queue.register_waker(cx.waker());
         Poll::Pending
     }
 }
@@ -274,10 +432,29 @@ pub struct RecvStreamRead<'a> {
 impl<'a> Future for RecvStreamRead<'a> {
     type Output = Result<usize, QuicError>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let _stream = self.stream;
-        let _buf = &self.get_mut().buf;
-        // TODO: read from RecvHalf buffer
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let handler = unsafe { &mut *this.stream.handler.get() };
+        let conn = match handler.connections.get_mut(this.stream.conn_key) {
+            Some(c) => c,
+            None => return Poll::Ready(Err(QuicError::NotConnected)),
+        };
+        let entry = match conn.streams.get_mut(this.stream.stream_id) {
+            Some(e) => e,
+            None => return Poll::Ready(Err(QuicError::NotConnected)),
+        };
+        if let Some(ref mut recv) = entry.recv {
+            let n = recv.read(this.buf);
+            if n > 0 {
+                return Poll::Ready(Ok(n));
+            }
+            if recv.fin_received && recv.received == recv.read_offset {
+                return Poll::Ready(Ok(0)); // EOF
+            }
+        } else {
+            return Poll::Ready(Err(QuicError::NotConnected));
+        }
+        conn.event_queue.register_waker(cx.waker());
         Poll::Pending
     }
 }
@@ -296,12 +473,19 @@ impl QuicSendStream {
 
     /// Signal that no more data will be sent (send FIN).
     pub fn finish(&self) {
-        // TODO: transition send state to DataSent
+        let handler = unsafe { &mut *self.handler.get() };
+        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
+            if let Some(entry) = conn.streams.get_mut(self.stream_id) {
+                if let Some(ref mut send) = entry.send {
+                    send.fin_sent = true;
+                }
+            }
+        }
     }
 
     /// Reset the stream with an error code.
     pub fn reset(&self, _error_code: u64) {
-        // TODO: send RESET_STREAM
+        // TODO: queue RESET_STREAM frame
     }
 
     pub fn id(&self) -> StreamId {
@@ -317,10 +501,34 @@ pub struct SendStreamWrite<'a> {
 impl<'a> Future for SendStreamWrite<'a> {
     type Output = Result<usize, QuicError>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let _stream = self.stream;
-        let _buf = self.buf;
-        // TODO: write to SendHalf buffer
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let handler = unsafe { &mut *self.stream.handler.get() };
+        let conn = match handler.connections.get_mut(self.stream.conn_key) {
+            Some(c) => c,
+            None => return Poll::Ready(Err(QuicError::NotConnected)),
+        };
+        if matches!(
+            conn.state,
+            ConnectionState::Closing | ConnectionState::Closed | ConnectionState::Draining
+        ) {
+            return Poll::Ready(Err(QuicError::ConnectionClosed));
+        }
+        let entry = match conn.streams.get_mut(self.stream.stream_id) {
+            Some(e) => e,
+            None => return Poll::Ready(Err(QuicError::NotConnected)),
+        };
+        if let Some(ref mut send) = entry.send {
+            if send.fin_sent {
+                return Poll::Ready(Err(QuicError::ConnectionClosed));
+            }
+            let n = send.write(self.buf);
+            if n > 0 {
+                return Poll::Ready(Ok(n));
+            }
+        } else {
+            return Poll::Ready(Err(QuicError::NotConnected));
+        }
+        conn.event_queue.register_waker(cx.waker());
         Poll::Pending
     }
 }
