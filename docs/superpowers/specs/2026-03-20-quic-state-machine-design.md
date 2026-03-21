@@ -15,9 +15,9 @@ Wire all existing QUIC building blocks into a working server-side protocol engin
 
 Targeted corrections to existing algorithms before building on top of them:
 
-1. **loss.rs** — `update_rtt()`: only clamp `ack_delay` to `max_ack_delay` when `handshake_confirmed` is true. Pass `handshake_confirmed` as parameter.
-2. **congestion.rs** — `on_congestion_event()`: accept `sent_time: Instant` parameter. Check `sent_time <= congestion_recovery_start_time` instead of boolean flag. Remove `in_congestion_recovery` field.
-3. **congestion.rs** — `on_ack()`: accept `in_flight: bool` parameter. Return early if `!in_flight`.
+1. **loss.rs** — `update_rtt()`: only clamp `ack_delay` to `max_ack_delay` when `handshake_confirmed` is true. When `handshake_confirmed` is false, use `ack_delay` as-is (unclamped). Pass `handshake_confirmed` as parameter.
+2. **congestion.rs** — `on_congestion_event()`: accept `sent_time: Instant` parameter. Check `sent_time <= congestion_recovery_start_time` instead of boolean flag. Remove `in_congestion_recovery` field. **This changes the `CongestionController` trait signature in `src/net/congestion/mod.rs`.** The trait is QUIC-only — TCP uses its own `CubicState` directly and does not implement this trait, so no TCP breakage.
+3. **congestion.rs** — `on_ack()`: accept `in_flight: bool` parameter. Return early if `!in_flight`. **Same trait signature change.**
 4. **congestion.rs** — `on_congestion_event()`: store `congestion_recovery_start_time = now`. The `on_ack` method checks if the acked packet was sent after recovery start to clear recovery.
 5. **congestion.rs** — `in_persistent_congestion()`: ensure the PTO passed always includes `max_ack_delay` regardless of space.
 6. **loss.rs** — `discard_space()`: reset `pto_count = 0` per RFC 9002 Appendix A.11.
@@ -98,7 +98,7 @@ Steps:
 
 | Frame | Action |
 |-------|--------|
-| CRYPTO | Accumulate in `CryptoBuffer`. When contiguous data available, feed to `CryptoState.process_crypto_data()`. Install any new keys. Queue response CRYPTO data in `conn.pending_crypto[space]`. |
+| CRYPTO | Accumulate in `CryptoRecvBuffer` for this space. When contiguous data available (`offset == received`), feed to `CryptoState.process_crypto_data()`. Install any new keys (handshake→`conn.keys.handshake`, 1-RTT→`conn.keys.one_rtt`). Queue response CRYPTO data in `conn.pending_crypto[space]`. **After handshake progresses:** call `CryptoState.peer_transport_parameters()` — if available, decode and store in `conn.peer_params`, then apply: `FlowControl.update_max_data_send(peer.initial_max_data)`, `StreamMap.peer_max_bidi/uni = peer.initial_max_streams_*`, compute `idle_timeout = min(local, peer)`, etc. Also call `conn.path.amplification.set_validated()` when handshake completes. |
 | ACK | `AckState::decode_ack_ranges()` → `LossDetector.on_ack_received()` → feed acked/lost to congestion controller → build retransmit queue for lost packets |
 | STREAM | Validate stream ID direction. `StreamMap.get_or_create()`. `RecvHalf.receive()`. Update `FlowControl.on_data_received()`. Push `QuicEvent::StreamReadable`. |
 | MAX_DATA | `FlowControl.update_max_data_send()` |
@@ -198,9 +198,15 @@ When `process_ipv4` sees an Initial packet for an unknown DCID with a listener o
 
 #### Pending State on QuicConnectionState
 
-New fields needed:
+New fields needed on `QuicConnectionState`:
 
 ```rust
+// --- Handshake CRYPTO buffering ---
+
+// Inbound CRYPTO reassembly per space [Initial, Handshake, 1-RTT]
+// Handles out-of-order CRYPTO frames (RFC 9000 §7.5, min 4096 bytes)
+pub crypto_recv: [CryptoRecvBuffer; 3],
+
 // Outbound CRYPTO data per space [Initial, Handshake, 1-RTT]
 pub pending_crypto: [Vec<u8>; 3],
 // Offset of next byte to send per space
@@ -208,17 +214,25 @@ pub crypto_offset: [u64; 3],
 // Offset of next byte acked per space
 pub crypto_acked: [u64; 3],
 
-// Control frames queued for sending
+// --- Transport ---
+
+// Pacing state (RFC 9002 §7.7)
+pub pacing: Pacer,
+// Pending retransmissions from lost packets
+pub retransmit: RetransmitQueue,
+
+// --- Control frames queued for sending ---
 pub pending_path_response: Option<[u8; 8]>,
 pub send_handshake_done: bool,
 
-// Per-connection frame log for loss tracking
-pub frame_log: FrameLog,
+// --- Per-connection frame log for loss tracking ---
+pub frame_log: FrameLog,  // capacity: 1024 entries
 
-// Duplicate PN detection per space
+// --- Duplicate PN detection per space ---
 pub recv_pn_seen: [PnBitset; 3],
 
-// Network addressing (for building response packets)
+// --- Network addressing ---
+// Consolidated in PathState (remove SocketAddr from PathState, use these):
 pub local_addr: IpAddress,
 pub remote_addr: IpAddress,
 pub local_port: u16,
@@ -227,16 +241,38 @@ pub local_mac: MacAddress,
 pub remote_mac: MacAddress,
 ```
 
-`PnBitset` — simple duplicate PN tracker. A window of 256 bits around the largest received PN. Bit set = PN already seen. Shifts as largest advances.
+**Address consolidation:** Remove `remote_addr: Option<SocketAddr>` and `local_addr: Option<SocketAddr>` from `PathState`. Use the new `IpAddress` + port fields above. `PathState` keeps only validation/migration state (not address storage). This avoids duplicate source-of-truth.
+
+**`CryptoRecvBuffer`** — per-space CRYPTO frame reassembly:
+```rust
+pub struct CryptoRecvBuffer {
+    data: [u8; 8192],   // fixed buffer, no heap (RFC 9000 §7.5: min 4096)
+    received: u64,       // contiguous frontier
+    len: usize,          // bytes written
+}
+```
+When a CRYPTO frame arrives at `offset == received`, data is appended and `received` advances. Out-of-order data is buffered and delivered when gaps fill. If buffer exceeded → `CRYPTO_BUFFER_EXCEEDED` error.
+
+**`PnBitset`** — duplicate PN tracker. Window of 1024 bits (128 bytes) around largest received PN.
 
 ```rust
 pub struct PnBitset {
-    bits: [u64; 4],  // 256 bits
-    base: u64,       // lowest PN tracked
+    bits: [u64; 16],  // 1024 bits — handles reordering up to 1024 packets
+    base: u64,        // lowest PN tracked
 }
 ```
 
+**`FrameLog` capacity:** 1024 entries. Initialized in `QuicConnectionState::new()`.
+
+**`poll_send` signature update:** Add `neighbor_handler: &NeighborHandler` and `local_mac: MacAddress` parameters to match TCP's `poll_send` pattern. The handler passes these from `self.neighbor_handler`.
+
 #### ProcessResult / TimerResult
+
+**PacketBuilder::write_crypto space parameter:** The existing `write_crypto` hardcodes `space: 0` in the `SentFrame::Crypto` it logs. Must be changed to accept the current packet space as a parameter so the retransmit queue correctly identifies which space to retransmit CRYPTO data for.
+
+**Version Negotiation response:** When the handler receives an Initial with an unsupported version, it builds a VN packet directly (no connection state needed): swap DCID↔SCID from the incoming packet, version=0x00000000, list supported versions. Use `build_version_negotiation()` from `transport/version.rs`. Write directly into a free frame with Ethernet+IP+UDP headers.
+
+**`evict_stale` vs Idle timer:** The idle timer (armed via `TimerWheel`) is the primary mechanism. `evict_stale()` serves as a fallback sweep for connections whose timers might not have fired (e.g., if the wheel was not advanced during a long pause). It checks `conn.created_at + conn.idle_timeout < now` and cleans up.
 
 ```rust
 pub enum ProcessResult {
