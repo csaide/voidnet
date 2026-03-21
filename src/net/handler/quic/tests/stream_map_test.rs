@@ -177,9 +177,10 @@ fn recv_half_flow_control_exceeded() {
 #[test]
 fn stream_map_get_by_id() {
     let mut map = StreamMap::new(true); // client
+    map.peer_max_bidi = 100; // allow creating streams
     // Client-initiated bidi stream 0
     let id = StreamId(0);
-    map.get_or_create(id);
+    map.get_or_create(id).unwrap();
 
     assert!(map.get(id).is_some());
     assert!(map.get(StreamId(4)).is_none()); // stream index 1 not created
@@ -188,8 +189,9 @@ fn stream_map_get_by_id() {
 #[test]
 fn stream_map_get_or_create() {
     let mut map = StreamMap::new(true); // client
+    map.peer_max_bidi = 100; // allow creating streams
     let id = StreamId(8); // client bidi, index 2
-    let entry = map.get_or_create(id);
+    let entry = map.get_or_create(id).unwrap();
     assert!(entry.send.is_some()); // bidi has send
     assert!(entry.recv.is_some()); // bidi has recv
 
@@ -200,8 +202,9 @@ fn stream_map_get_or_create() {
 #[test]
 fn stream_map_remove() {
     let mut map = StreamMap::new(true);
+    map.peer_max_bidi = 100; // allow creating streams
     let id = StreamId(0);
-    map.get_or_create(id);
+    map.get_or_create(id).unwrap();
     assert_eq!(map.stream_count(), 1);
 
     let removed = map.remove(id);

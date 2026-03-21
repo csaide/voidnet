@@ -22,6 +22,7 @@ pub struct QuicCubic {
 
     // Recovery
     congestion_recovery_start_time: Option<Instant>,
+    in_congestion_recovery: bool,
 
     // App-limited
     app_limited: bool,
@@ -39,6 +40,7 @@ impl QuicCubic {
             k: 0.0,
             epoch_start: None,
             congestion_recovery_start_time: None,
+            in_congestion_recovery: false,
             app_limited: false,
         }
     }
@@ -77,8 +79,17 @@ impl CongestionController for QuicCubic {
         self.bytes_in_flight += bytes;
     }
 
-    fn on_ack(&mut self, acked_bytes: usize, _rtt: Duration, _min_rtt: Duration, _now: Instant) {
+    fn on_ack(&mut self, acked_bytes: usize, _rtt: Duration, _min_rtt: Duration, now: Instant) {
         self.bytes_in_flight = self.bytes_in_flight.saturating_sub(acked_bytes);
+
+        // Exit recovery when we get an ACK after recovery started
+        if self.in_congestion_recovery {
+            if let Some(start) = self.congestion_recovery_start_time {
+                if now > start {
+                    self.in_congestion_recovery = false;
+                }
+            }
+        }
 
         if self.app_limited {
             return; // Don't grow window when app-limited (RFC 9002 §7.8)
@@ -97,12 +108,11 @@ impl CongestionController for QuicCubic {
         self.bytes_in_flight = self.bytes_in_flight.saturating_sub(lost_bytes);
 
         // Only one congestion response per recovery period
-        if let Some(start) = self.congestion_recovery_start_time {
-            if now <= start + Duration::from_millis(1) {
-                return; // Already in recovery
-            }
+        if self.in_congestion_recovery {
+            return;
         }
 
+        self.in_congestion_recovery = true;
         self.congestion_recovery_start_time = Some(now);
         self.w_max = self.cwnd as f64;
         self.ssthresh =

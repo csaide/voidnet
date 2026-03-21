@@ -114,6 +114,11 @@ impl OooRanges {
             return;
         }
 
+        // Enforce max_entries limit (DoS prevention)
+        if self.count() >= self.max_entries as usize {
+            return;
+        }
+
         // If using overflow BTreeMap
         if let Some(ref mut map) = self.overflow {
             Self::insert_into_btree(map, offset, len);
@@ -331,8 +336,12 @@ impl RecvHalf {
         }
 
         if offset < self.received {
-            // Duplicate/overlap — ignore
-            return Ok(());
+            let overlap = (self.received - offset) as usize;
+            if overlap >= data.len() {
+                return Ok(()); // fully duplicate, already have all this data
+            }
+            // Partially overlapping — trim prefix, process the new tail
+            return self.receive(self.received, &data[overlap..], fin);
         }
 
         // Calculate buffer-relative offset: how far from current read position

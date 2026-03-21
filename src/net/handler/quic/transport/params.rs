@@ -339,6 +339,20 @@ impl TransportParams {
             }
         }
 
+        // Validate constraints per RFC 9000
+        if params.ack_delay_exponent > 20 {
+            return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+        }
+        if params.max_ack_delay_ms > 16384 {
+            return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+        }
+        if params.max_udp_payload_size < 1200 {
+            return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+        }
+        if params.active_connection_id_limit < 2 {
+            return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+        }
+
         Ok(params)
     }
 }

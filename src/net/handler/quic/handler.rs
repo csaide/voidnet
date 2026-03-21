@@ -138,9 +138,12 @@ impl QuicHandler {
 
     /// Insert a new connection, returning its slab key.
     pub fn insert_connection(&mut self, conn: QuicConnectionState) -> usize {
-        let dcid = conn.dcid;
         let key = self.connections.insert(conn);
-        self.cid_map.insert(dcid, key);
+        let conn = &self.connections[key];
+        self.cid_map.insert(conn.dcid, key);
+        for cid in conn.scid_set.iter() {
+            self.cid_map.insert(*cid, key);
+        }
         key
     }
 

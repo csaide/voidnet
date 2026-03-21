@@ -2,6 +2,7 @@ use super::frame::StreamId;
 use super::frame_log::{FrameLog, SentFrame};
 use super::frame_writer;
 use super::packet_number::encode_pn;
+use super::varint::varint_len;
 
 /// Builds a QUIC packet in a byte buffer.
 pub struct PacketBuilder<'a> {
@@ -15,6 +16,8 @@ pub struct PacketBuilder<'a> {
     packet_number: u64,
     /// Whether this is a long header packet
     is_long_header: bool,
+    /// Offset of the Length field in long-header packets (2-byte varint)
+    length_offset: usize,
     /// Frame log start index for tracking sent frames
     frame_start: u32,
 }
@@ -73,7 +76,7 @@ impl<'a> PacketBuilder<'a> {
         }
 
         // Length field placeholder (2-byte varint, filled in finish())
-        let _length_offset = offset;
+        let length_offset = offset;
         offset += 2; // reserve 2 bytes for length
 
         // Packet number
@@ -90,6 +93,7 @@ impl<'a> PacketBuilder<'a> {
             offset,
             packet_number,
             is_long_header: true,
+            length_offset,
             frame_start: frame_log.head(),
         })
     }
@@ -132,6 +136,7 @@ impl<'a> PacketBuilder<'a> {
             offset,
             packet_number,
             is_long_header: false,
+            length_offset: 0, // unused for short headers
             frame_start: frame_log.head(),
         })
     }
@@ -148,7 +153,11 @@ impl<'a> PacketBuilder<'a> {
         data: &[u8],
         frame_log: &mut FrameLog,
     ) -> usize {
-        let max_data = self.remaining().min(data.len());
+        // Overhead: 1 (type) + varint(offset) + varint(length)
+        // We need to estimate overhead using the max possible data length first
+        let overhead = 1 + varint_len(offset_val) + varint_len(data.len() as u64);
+        let available = self.remaining().saturating_sub(overhead);
+        let max_data = available.min(data.len());
         if max_data == 0 {
             return 0;
         }
@@ -174,7 +183,15 @@ impl<'a> PacketBuilder<'a> {
         fin: bool,
         frame_log: &mut FrameLog,
     ) -> usize {
-        let max_data = self.remaining().min(data.len());
+        // Overhead: 1 (type) + varint(stream_id) + varint(offset) if >0 + varint(length)
+        let offset_overhead = if offset_val > 0 {
+            varint_len(offset_val)
+        } else {
+            0
+        };
+        let overhead = 1 + varint_len(id.0) + offset_overhead + varint_len(data.len() as u64);
+        let available = self.remaining().saturating_sub(overhead);
+        let max_data = available.min(data.len());
         if max_data == 0 && !fin {
             return 0;
         }
@@ -238,6 +255,14 @@ impl<'a> PacketBuilder<'a> {
     /// Finalize: returns the total packet length including space for AEAD tag.
     /// Caller must then call protect_packet() to encrypt.
     pub fn finish(self) -> usize {
+        // Write the Length field for long-header packets
+        if self.is_long_header {
+            // Length covers: PN + payload + AEAD tag (16 bytes)
+            let payload_len = self.offset - self.pn_offset + 16;
+            let len_varint = 0x4000 | (payload_len as u16); // 2-byte varint encoding
+            self.buf[self.length_offset] = (len_varint >> 8) as u8;
+            self.buf[self.length_offset + 1] = (len_varint & 0xFF) as u8;
+        }
         self.offset + 16 // +16 for AEAD tag
     }
 }

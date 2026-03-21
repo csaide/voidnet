@@ -3,6 +3,10 @@ use super::send::SendHalf;
 use super::state::StreamState;
 use crate::net::handler::quic::transport::frame::StreamId;
 
+/// Error returned when a stream cannot be created due to concurrency limits.
+#[derive(Debug)]
+pub struct StreamLimitError;
+
 /// Entry in the stream map
 pub struct StreamEntry {
     pub state: StreamState,
@@ -83,11 +87,52 @@ impl StreamMap {
     }
 
     /// Insert or get a stream entry, growing the Vec if needed.
-    pub fn get_or_create(&mut self, id: StreamId) -> &mut StreamEntry {
+    /// Returns an error if the stream would exceed concurrency limits.
+    pub fn get_or_create(&mut self, id: StreamId) -> Result<&mut StreamEntry, StreamLimitError> {
         let idx = id.index() as usize;
         let is_bidi = id.is_bidi();
         let is_client = self.is_client;
         let we_initiated = id.initiator_is_client() == is_client;
+
+        // Check if this is a new stream (not already existing)
+        let is_new = {
+            let vec = self.vec_for(id);
+            vec.get(idx).map_or(true, |entry| entry.is_none())
+        };
+
+        if is_new {
+            // Enforce stream concurrency limits
+            if !we_initiated {
+                if is_bidi && self.peer_opened_bidi >= self.local_max_bidi {
+                    return Err(StreamLimitError);
+                }
+                if !is_bidi && self.peer_opened_uni >= self.local_max_uni {
+                    return Err(StreamLimitError);
+                }
+            } else {
+                if is_bidi && self.local_opened_bidi >= self.peer_max_bidi {
+                    return Err(StreamLimitError);
+                }
+                if !is_bidi && self.local_opened_uni >= self.peer_max_uni {
+                    return Err(StreamLimitError);
+                }
+            }
+
+            // Increment opened counters before borrowing the vec mutably
+            if !we_initiated {
+                if is_bidi {
+                    self.peer_opened_bidi += 1;
+                } else {
+                    self.peer_opened_uni += 1;
+                }
+            } else {
+                if is_bidi {
+                    self.local_opened_bidi += 1;
+                } else {
+                    self.local_opened_uni += 1;
+                }
+            }
+        }
 
         let vec = self.vec_for_mut(id);
         if vec.len() <= idx {
@@ -97,10 +142,8 @@ impl StreamMap {
             let (state, has_send, has_recv) = if is_bidi {
                 (StreamState::new_bidi(), true, true)
             } else if we_initiated {
-                // We initiated a unidirectional stream — we send
                 (StreamState::new_send_only(), true, false)
             } else {
-                // Peer initiated a unidirectional stream — we receive
                 (StreamState::new_recv_only(), false, true)
             };
             vec[idx] = Some(StreamEntry {
@@ -117,7 +160,7 @@ impl StreamMap {
                 },
             });
         }
-        vec[idx].as_mut().unwrap()
+        Ok(vec[idx].as_mut().unwrap())
     }
 
     /// Remove a stream entry.
