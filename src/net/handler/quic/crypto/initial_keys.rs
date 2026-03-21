@@ -5,10 +5,8 @@ use rustls::quic::{DirectionalKeys, Keys, Version};
 /// Returns (client_keys, server_keys) as rustls DirectionalKeys.
 /// These are deterministic — derived from the client's initial DCID.
 pub fn derive_initial_keys(client_dcid: &[u8]) -> (DirectionalKeys, DirectionalKeys) {
-    let suite = match rustls::crypto::ring::cipher_suite::TLS13_AES_128_GCM_SHA256 {
-        rustls::SupportedCipherSuite::Tls13(s) => s,
-        _ => unreachable!(),
-    };
+    let rustls::SupportedCipherSuite::Tls13(suite) =
+        rustls::crypto::ring::cipher_suite::TLS13_AES_128_GCM_SHA256;
 
     let keys = Keys::initial(
         Version::V1,

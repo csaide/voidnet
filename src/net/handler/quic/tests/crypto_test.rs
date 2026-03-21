@@ -38,10 +38,8 @@ fn derive_initial_keys_encrypt_decrypt_roundtrip() {
 
     // Decrypt with server key (server's "remote" = client's direction)
     // We need server-side keys for this
-    let suite = match rustls::crypto::ring::cipher_suite::TLS13_AES_128_GCM_SHA256 {
-        rustls::SupportedCipherSuite::Tls13(s) => s,
-        _ => unreachable!(),
-    };
+    let rustls::SupportedCipherSuite::Tls13(suite) =
+        rustls::crypto::ring::cipher_suite::TLS13_AES_128_GCM_SHA256;
     let server_keys_obj = rustls::quic::Keys::initial(
         rustls::quic::Version::V1,
         suite,
