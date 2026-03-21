@@ -1,5 +1,6 @@
 pub mod ack;
 pub mod congestion;
+pub mod ecn;
 pub mod flow_control;
 pub mod frame;
 pub mod frame_log;
