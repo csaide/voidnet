@@ -238,6 +238,7 @@ impl LossDetector {
         ack_delay: Duration,
         acked_ranges: &[(u64, u64)], // (start, end) inclusive
         max_ack_delay: Duration,
+        handshake_confirmed: bool,
         now: Instant,
     ) -> (SmallVec<[SentPacket; 16]>, SmallVec<[(u64, SentPacket); 8]>) {
         let newly_acked_largest = self.spaces[space]
@@ -275,7 +276,13 @@ impl LossDetector {
         if newly_acked_largest {
             if let Some(time_sent) = largest_acked_time_sent {
                 let latest_rtt = now.duration_since(time_sent);
-                self.update_rtt(latest_rtt, ack_delay, max_ack_delay, now);
+                self.update_rtt(
+                    latest_rtt,
+                    ack_delay,
+                    max_ack_delay,
+                    handshake_confirmed,
+                    now,
+                );
             }
         }
 
@@ -294,6 +301,7 @@ impl LossDetector {
         latest_rtt: Duration,
         ack_delay: Duration,
         max_ack_delay: Duration,
+        handshake_confirmed: bool,
         now: Instant,
     ) {
         self.latest_rtt = latest_rtt;
@@ -310,10 +318,16 @@ impl LossDetector {
             return;
         }
 
-        let ack_delay = if ack_delay < max_ack_delay {
-            ack_delay
+        // Only clamp ack_delay to max_ack_delay after handshake is confirmed
+        // (RFC 9002 §5.3): before confirmation, use the raw ack_delay as-is.
+        let ack_delay = if handshake_confirmed {
+            if ack_delay < max_ack_delay {
+                ack_delay
+            } else {
+                max_ack_delay
+            }
         } else {
-            max_ack_delay
+            ack_delay
         };
         let adjusted_rtt = if latest_rtt > self.min_rtt + ack_delay {
             latest_rtt - ack_delay
@@ -328,6 +342,11 @@ impl LossDetector {
         };
         self.rttvar = (self.rttvar * 3 + diff) / 4;
         self.smoothed_rtt = (self.smoothed_rtt * 7 + adjusted_rtt) / 8;
+    }
+
+    /// Reset min_rtt to the given value (e.g., after path change or NAT rebinding).
+    pub fn reset_min_rtt(&mut self, latest_rtt: coarsetime::Duration) {
+        self.min_rtt = latest_rtt;
     }
 
     /// Detect lost packets in a space (RFC 9002 §6.1).
@@ -508,6 +527,6 @@ impl LossDetector {
         self.bytes_in_flight -= bytes_to_remove;
         self.spaces[space] = PacketNumberSpace::new();
         self.time_of_last_ack_eliciting_pkt[space] = None;
-        // Don't reset pto_count here per RFC 9002 — it's reset on ack.
+        self.pto_count = 0;
     }
 }

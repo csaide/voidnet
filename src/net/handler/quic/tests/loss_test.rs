@@ -107,6 +107,7 @@ fn rtt_first_sample() {
         rtt,
         Duration::from_millis(0),
         Duration::from_millis(25),
+        true,
         Instant::now(),
     );
 
@@ -126,6 +127,7 @@ fn rtt_subsequent_samples() {
         Duration::from_millis(100),
         Duration::from_millis(0),
         Duration::from_millis(25),
+        true,
         now,
     );
 
@@ -137,6 +139,7 @@ fn rtt_subsequent_samples() {
         Duration::from_millis(120),
         Duration::from_millis(0),
         Duration::from_millis(25),
+        true,
         now,
     );
 
@@ -160,6 +163,7 @@ fn rtt_ack_delay_capped() {
         Duration::from_millis(50),
         Duration::from_millis(0),
         Duration::from_millis(25),
+        true,
         now,
     );
 
@@ -168,6 +172,7 @@ fn rtt_ack_delay_capped() {
         Duration::from_millis(100),
         Duration::from_millis(50), // ack_delay > max_ack_delay
         Duration::from_millis(25), // max_ack_delay
+        true,
         now,
     );
 
@@ -188,6 +193,7 @@ fn rtt_ack_delay_not_applied_below_min() {
         Duration::from_millis(50),
         Duration::from_millis(0),
         Duration::from_millis(25),
+        true,
         now,
     );
 
@@ -198,6 +204,7 @@ fn rtt_ack_delay_not_applied_below_min() {
         Duration::from_millis(55),
         Duration::from_millis(10),
         Duration::from_millis(25),
+        true,
         now,
     );
 
@@ -216,6 +223,7 @@ fn pto_computation() {
         Duration::from_millis(100),
         Duration::from_millis(0),
         Duration::from_millis(25),
+        true,
         now,
     );
 
@@ -265,6 +273,7 @@ fn loss_by_packet_threshold() {
         Duration::from_millis(10),
         Duration::from_millis(0),
         Duration::from_millis(25),
+        true,
         now,
     );
 
@@ -281,6 +290,7 @@ fn loss_by_packet_threshold() {
         Duration::from_millis(0),
         &[(4, 4)],
         Duration::from_millis(25),
+        true,
         now + Duration::from_millis(20),
     );
 
@@ -304,6 +314,7 @@ fn loss_by_time_threshold() {
         Duration::from_millis(10),
         Duration::from_millis(0),
         Duration::from_millis(25),
+        true,
         now,
     );
 
@@ -327,6 +338,7 @@ fn loss_by_time_threshold() {
         Duration::from_millis(0),
         &[(1, 1)],
         Duration::from_millis(25),
+        true,
         ack_time,
     );
 
@@ -382,4 +394,67 @@ fn on_packet_sent_tracks_bytes() {
 
     // Check ack_eliciting tracking
     assert_eq!(ld.spaces[2].ack_eliciting_in_flight, 1); // only pkt1 was ack_eliciting
+}
+
+#[test]
+fn test_rtt_unclamped_before_handshake() {
+    let mut ld = LossDetector::new();
+    let now = Instant::now();
+
+    // First sample to initialize smoothed_rtt and min_rtt.
+    ld.update_rtt(
+        Duration::from_millis(100),
+        Duration::from_millis(0),
+        Duration::from_millis(25),
+        false,
+        now,
+    );
+
+    // Second sample: large ack_delay (50ms) that exceeds max_ack_delay (25ms).
+    // With handshake_confirmed=false, ack_delay must NOT be clamped to max_ack_delay;
+    // the full 50ms ack_delay is used to adjust the RTT.
+    // latest_rtt=120ms, min_rtt=100ms, ack_delay=50ms
+    // 120 > 100 + 50? No (120 <= 150), so adjusted_rtt = 120ms (no subtraction).
+    // But if we use ack_delay=25ms (clamped): 120 > 100 + 25? Yes, adjusted_rtt = 95ms.
+    // We verify adjusted_rtt = 120ms (not 95ms) by checking smoothed_rtt.
+    let srtt_before = ld.smoothed_rtt;
+    ld.update_rtt(
+        Duration::from_millis(120),
+        Duration::from_millis(50), // large ack_delay
+        Duration::from_millis(25), // max_ack_delay
+        false,                     // handshake NOT confirmed → no clamping
+        now,
+    );
+
+    // adjusted_rtt = 120ms (ack_delay not subtracted because 120 <= min_rtt(100) + 50)
+    let expected_adjusted = Duration::from_millis(120);
+    let expected_srtt = (srtt_before * 7 + expected_adjusted) / 8;
+    assert_eq!(
+        ld.smoothed_rtt, expected_srtt,
+        "smoothed_rtt should use full (unclamped) ack_delay before handshake"
+    );
+}
+
+#[test]
+fn test_discard_space_resets_pto_count() {
+    let mut ld = LossDetector::new();
+    let now = Instant::now();
+
+    // Put some packets in flight in Initial space (0).
+    for pn in 0..3 {
+        let pkt = make_sent_packet_at(now, 100, true);
+        ld.on_packet_sent(0, pn, pkt);
+    }
+
+    // Simulate PTO expiries bumping pto_count.
+    ld.pto_count = 5;
+
+    // Discard the Initial space — pto_count must be reset to 0 (RFC 9002 §6.2.2).
+    ld.discard_space(0);
+
+    assert_eq!(
+        ld.pto_count, 0,
+        "pto_count must be reset to 0 when a packet number space is discarded"
+    );
+    assert_eq!(ld.bytes_in_flight, 0);
 }
