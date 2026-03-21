@@ -7,6 +7,7 @@ pub(crate) mod event;
 pub(crate) mod handler;
 pub(crate) mod packet_parser;
 pub(crate) mod path;
+pub(crate) mod processor;
 pub(crate) mod stream;
 pub(crate) mod timer_kinds;
 pub(crate) mod token;
