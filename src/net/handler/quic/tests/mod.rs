@@ -1,5 +1,6 @@
 mod ack_test;
 mod aead_limits_test;
+mod cid_lifecycle_test;
 mod congestion_test;
 mod connection_id_test;
 mod crypto_test;
@@ -13,8 +14,10 @@ mod packet_number_test;
 mod params_test;
 mod retransmit_test;
 mod retry_test;
+mod stateless_reset_test;
 mod stream_map_test;
 mod stream_state_test;
 mod timer_kinds_test;
 mod tls_test;
 mod varint_test;
+mod version_test;
