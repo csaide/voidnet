@@ -200,6 +200,15 @@ fn decrypt_and_process(
             Ok(r) => r,
             Err(_) => {
                 conn.failed_decryptions += 1;
+                {
+                    let limits =
+                        crate::net::handler::quic::crypto::aead_limits::AeadLimits::AES_GCM;
+                    if limits.must_close(conn.failed_decryptions) {
+                        conn.close_error = Some(TransportError::AEAD_LIMIT_REACHED);
+                        conn.state = ConnectionState::Closing;
+                        return ProcessResult::ConnectionClosed;
+                    }
+                }
                 return ProcessResult::Ok;
             }
         };
@@ -587,7 +596,10 @@ fn handle_ack_frame(
         .map(|p| p.ack_delay_exponent)
         .unwrap_or(3); // default exponent is 3
     let ack_delay_us = ack.ack_delay * (1u64 << ack_delay_exponent);
-    let ack_delay = coarsetime::Duration::from_millis(ack_delay_us / 1000);
+    let ack_delay = coarsetime::Duration::new(
+        ack_delay_us / 1_000_000,
+        ((ack_delay_us % 1_000_000) * 1000) as u32,
+    );
     let max_ack_delay = conn
         .peer_params
         .as_ref()
@@ -607,19 +619,7 @@ fn handle_ack_frame(
         now,
     );
 
-    // Update congestion for acked packets
-    for pkt in &acked {
-        conn.congestion.on_ack(
-            pkt.size as usize,
-            conn.loss.latest_rtt,
-            conn.loss.min_rtt,
-            now,
-            pkt.in_flight,
-            pkt.time_sent,
-        );
-    }
-
-    // Handle lost packets
+    // Handle lost packets FIRST (RFC 9002 §A.7: loss before ack)
     if !lost.is_empty() {
         let frame_ranges: smallvec::SmallVec<[(u32, u32); 8]> =
             lost.iter().map(|(_, pkt)| pkt.frame_range).collect();
@@ -630,24 +630,35 @@ fn handle_ack_frame(
         conn.congestion
             .on_congestion_event(total_lost_bytes, now, max_sent_time);
 
-        // Fix 12: Check persistent congestion
+        // Persistent congestion: filter to ack-eliciting packets sent after first RTT sample
         if conn.loss.first_rtt_sample.is_some() && lost.len() >= 2 {
-            let max_ack_delay_pc = conn
-                .peer_params
-                .as_ref()
-                .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
-                .unwrap_or(coarsetime::Duration::from_millis(25));
-            let pc_threshold = QuicCubic::persistent_congestion_threshold(
-                conn.loss.smoothed_rtt,
-                conn.loss.rttvar,
-                max_ack_delay_pc,
-            );
-            let earliest = lost.first().unwrap().1.time_sent;
-            let latest = lost.last().unwrap().1.time_sent;
-            let duration = latest.duration_since(earliest);
-            if duration > pc_threshold {
-                conn.congestion.on_persistent_congestion();
-                conn.loss.reset_min_rtt(conn.loss.latest_rtt);
+            let first_rtt = conn.loss.first_rtt_sample.unwrap();
+            // Only consider ack-eliciting packets sent after first RTT sample
+            let eligible: smallvec::SmallVec<
+                [&crate::net::handler::quic::transport::loss::SentPacket; 8],
+            > = lost
+                .iter()
+                .map(|(_, pkt)| pkt)
+                .filter(|pkt| pkt.ack_eliciting && pkt.time_sent > first_rtt)
+                .collect();
+            if eligible.len() >= 2 {
+                let max_ack_delay_pc = conn
+                    .peer_params
+                    .as_ref()
+                    .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
+                    .unwrap_or(coarsetime::Duration::from_millis(25));
+                let pc_threshold = QuicCubic::persistent_congestion_threshold(
+                    conn.loss.smoothed_rtt,
+                    conn.loss.rttvar,
+                    max_ack_delay_pc,
+                );
+                let earliest = eligible.first().unwrap().time_sent;
+                let latest = eligible.last().unwrap().time_sent;
+                let duration = latest.duration_since(earliest);
+                if duration > pc_threshold {
+                    conn.congestion.on_persistent_congestion();
+                    conn.loss.reset_min_rtt(conn.loss.latest_rtt);
+                }
             }
         }
 
@@ -665,6 +676,18 @@ fn handle_ack_frame(
         if retransmit.max_data {
             conn.retransmit.max_data = true;
         }
+    }
+
+    // Update congestion for acked packets (after loss processing per RFC 9002 §A.7)
+    for pkt in &acked {
+        conn.congestion.on_ack(
+            pkt.size as usize,
+            conn.loss.latest_rtt,
+            conn.loss.min_rtt,
+            now,
+            pkt.in_flight,
+            pkt.time_sent,
+        );
     }
 }
 
