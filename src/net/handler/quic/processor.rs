@@ -236,6 +236,14 @@ fn decrypt_and_process(
         Ok(len) => len,
         Err(_) => {
             conn.failed_decryptions += 1;
+            {
+                let limits = crate::net::handler::quic::crypto::aead_limits::AeadLimits::AES_GCM;
+                if limits.must_close(conn.failed_decryptions) {
+                    conn.close_error = Some(TransportError::AEAD_LIMIT_REACHED);
+                    conn.state = ConnectionState::Closing;
+                    return ProcessResult::ConnectionClosed;
+                }
+            }
             return ProcessResult::Ok;
         }
     };
