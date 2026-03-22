@@ -293,6 +293,25 @@ fn decrypt_and_process(
     // Mark PN as seen
     conn.recv_pn_seen[space].mark(pn);
 
+    // Detect peer-initiated key update (RFC 9001 §6.2)
+    if space == 2 {
+        // key_phase bit is bit 2 (0x04) of first byte after header protection removal
+        let received_key_phase = (quic_payload[0] & 0x04) != 0;
+        if conn.key_update.is_peer_update(received_key_phase) {
+            // Peer initiated key update — derive new keys
+            if let Some(ref mut secrets) = conn.key_update_secrets {
+                let new_keys = secrets.next_packet_keys();
+                // Update packet keys, preserving header protection keys (RFC 9001 §5.4)
+                if let Some(ref mut kp) = conn.keys.one_rtt {
+                    kp.local.update_packet_key(new_keys.local);
+                    kp.remote.update_packet_key(new_keys.remote);
+                }
+                conn.key_update.on_update_initiated();
+                conn.packets_encrypted = 0;
+            }
+        }
+    }
+
     // Update amplification tracking (Fix 13: check if we were at limit before receiving)
     let was_at_limit = !conn.path.amplification.can_send(1);
     conn.path.amplification.on_bytes_received(datagram_len);
