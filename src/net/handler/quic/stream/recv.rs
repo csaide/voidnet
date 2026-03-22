@@ -149,6 +149,25 @@ impl StreamRingBuffer {
         n
     }
 
+    /// Returns two contiguous slices representing data at `offset` of length up to available.
+    /// The first slice covers data before the wrap point, the second after.
+    /// If no wrap, the second slice is empty.
+    pub fn peek_slices(&self, offset: usize, max_len: usize) -> (&[u8], &[u8]) {
+        let available = self.len().saturating_sub(offset);
+        let n = max_len.min(available);
+        if n == 0 {
+            return (&[], &[]);
+        }
+        let start = (self.head + offset) & self.mask;
+        let end = start + n;
+        if end <= self.buf.len() {
+            (&self.buf[start..end], &[])
+        } else {
+            let first_len = self.buf.len() - start;
+            (&self.buf[start..], &self.buf[..n - first_len])
+        }
+    }
+
     /// Consume `n` bytes from the head without copying them out.
     #[inline]
     pub fn consume(&mut self, n: usize) {

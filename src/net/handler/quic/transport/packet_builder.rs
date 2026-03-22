@@ -211,6 +211,70 @@ impl<'a> PacketBuilder<'a> {
         data.len()
     }
 
+    /// Write a STREAM frame with data from two contiguous parts (ring buffer halves).
+    /// Returns total bytes of stream data written.
+    pub fn write_stream_parts(
+        &mut self,
+        id: StreamId,
+        offset_val: u64,
+        part1: &[u8],
+        part2: &[u8],
+        fin: bool,
+        frame_log: &mut FrameLog,
+    ) -> usize {
+        let total_data = part1.len() + part2.len();
+        let offset_overhead = if offset_val > 0 {
+            varint_len(offset_val)
+        } else {
+            0
+        };
+        let overhead = 1 + varint_len(id.0) + offset_overhead + varint_len(total_data as u64);
+        let available = self.remaining().saturating_sub(overhead);
+        let max_data = available.min(total_data);
+        if max_data == 0 && !fin {
+            return 0;
+        }
+
+        // Build frame type
+        let mut frame_type: u8 = 0x08 | 0x02; // STREAM + LEN
+        if offset_val > 0 {
+            frame_type |= 0x04;
+        }
+        let actual_fin = fin && max_data >= total_data;
+        if actual_fin {
+            frame_type |= 0x01;
+        }
+
+        // Write header
+        self.buf[self.offset] = frame_type;
+        self.offset += 1;
+        self.offset += encode_varint(id.0, &mut self.buf[self.offset..]);
+        if offset_val > 0 {
+            self.offset += encode_varint(offset_val, &mut self.buf[self.offset..]);
+        }
+        self.offset += encode_varint(max_data as u64, &mut self.buf[self.offset..]);
+
+        // Write data from parts
+        let from_part1 = max_data.min(part1.len());
+        if from_part1 > 0 {
+            self.buf[self.offset..self.offset + from_part1].copy_from_slice(&part1[..from_part1]);
+            self.offset += from_part1;
+        }
+        let from_part2 = max_data - from_part1;
+        if from_part2 > 0 {
+            self.buf[self.offset..self.offset + from_part2].copy_from_slice(&part2[..from_part2]);
+            self.offset += from_part2;
+        }
+
+        frame_log.push(SentFrame::Stream {
+            id,
+            offset: offset_val,
+            len: max_data,
+            fin: actual_fin,
+        });
+        max_data
+    }
+
     /// Write PADDING to reach minimum size.
     pub fn pad_to(&mut self, min_size: usize) {
         let target = min_size.min(self.buf.len().saturating_sub(16));

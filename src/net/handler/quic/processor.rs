@@ -1593,24 +1593,18 @@ fn build_packet_in_frame(
             }
             if let Some(entry) = conn.streams.get_mut(stream_id) {
                 if let Some(ref mut send) = entry.send {
-                    // Buffer holds data from send.acked onwards.
-                    // Unsent data starts at offset (send.sent - send.acked) within the buffer.
                     let unsent_off = (send.sent - send.acked) as usize;
-                    let data_len = send
-                        .buffer
-                        .len()
-                        .saturating_sub(unsent_off)
-                        .min(builder.remaining().saturating_sub(20))
-                        .min(4096);
-                    let mut temp = [0u8; 4096];
-                    let peeked = send.buffer.peek_at(unsent_off, &mut temp[..data_len]);
-                    let all_sent = unsent_off + peeked >= send.buffer.len();
+                    let max_len = builder.remaining().saturating_sub(20);
+                    let (part1, part2) = send.buffer.peek_slices(unsent_off, max_len);
+                    let total = part1.len() + part2.len();
+                    let all_sent = unsent_off + total >= send.buffer.len();
                     let fin = send.fin_sent && all_sent;
-                    if peeked > 0 || fin {
-                        let written = builder.write_stream(
+                    if total > 0 || fin {
+                        let written = builder.write_stream_parts(
                             stream_id,
                             send.sent,
-                            &temp[..peeked],
+                            part1,
+                            part2,
                             fin,
                             &mut conn.frame_log,
                         );

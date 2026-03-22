@@ -289,3 +289,18 @@ fn stream_pool_resets_on_release() {
     assert!(recycled_r.buffer.is_empty());
     assert_eq!(recycled_r.max_stream_data, 8000);
 }
+
+#[test]
+fn ring_buffer_peek_slices() {
+    let mut rb = StreamRingBuffer::new(8); // 8-byte ring (capacity=7 due to power-of-two - 1)
+    rb.write(&[1, 2, 3, 4, 5, 6]);
+    let mut discard = [0u8; 4];
+    rb.read(&mut discard); // head advances to 4, len=2, data at [4..6]
+    rb.write(&[7, 8, 9, 10]); // wraps: positions 4,5,6,7(=0),1,2 contain 5,6,7,8,9,10
+    let (a, b) = rb.peek_slices(0, 6);
+    // First part: from head(4) to end of buffer = [5,6,7,8]
+    // Second part: from start of buffer = [9,10]
+    assert_eq!(a.len() + b.len(), 6);
+    assert_eq!(a, &[5, 6, 7, 8]);
+    assert_eq!(b, &[9, 10]);
+}
