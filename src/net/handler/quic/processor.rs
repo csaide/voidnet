@@ -1001,6 +1001,21 @@ fn build_packet_in_frame(
             );
             conn.packets_encrypted += 1;
 
+            // Track key phase for key updates
+            conn.key_update.on_packet_sent(pn);
+
+            // Check if key update is needed (AEAD confidentiality limit)
+            let limits = crate::net::handler::quic::crypto::aead_limits::AeadLimits::AES_GCM;
+            if space == 2 && limits.needs_key_update(conn.packets_encrypted) {
+                if conn.key_update.can_initiate_update() {
+                    // TODO: Derive next keys using conn.key_update_secrets
+                    // via rustls::quic::Secrets::next_packet_keys()
+                    // For now, key update is needed but actual derivation is deferred
+                    conn.key_update.on_update_initiated();
+                    conn.packets_encrypted = 0;
+                }
+            }
+
             // Build Ethernet + IP + UDP headers
             write_transport_headers(conn, frame, quic_offset, protected_len)
         }

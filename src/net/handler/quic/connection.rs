@@ -1,6 +1,7 @@
 use coarsetime::{Duration, Instant};
 
 use super::connection_id::{CidSet, ConnectionId};
+use super::crypto::key_update::KeyUpdateState;
 use super::crypto::keys::PacketKeys;
 use super::crypto::tls::CryptoState;
 use super::error::TransportError;
@@ -129,6 +130,9 @@ pub struct QuicConnectionState {
     /// Per-connection event queue for waking socket futures.
     pub event_queue: LocalQueue<QuicEvent>,
 
+    /// Key update state tracking (RFC 9001 §6)
+    pub key_update: KeyUpdateState,
+
     /// Key update secrets from rustls (for key update support)
     pub key_update_secrets: Option<rustls::quic::Secrets>,
 
@@ -199,6 +203,7 @@ impl QuicConnectionState {
             accept_queue: None,
             stream_accept_queue: LocalQueue::new(64),
             event_queue: LocalQueue::new(64),
+            key_update: KeyUpdateState::new(),
             key_update_secrets: None,
             version: 0x00000001, // QUIC v1 default
             close_error: None,

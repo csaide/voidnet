@@ -4,8 +4,8 @@ use crate::net::handler::quic::crypto::aead_limits::AeadLimits;
 fn aes_gcm_confidentiality_limit() {
     let limits = AeadLimits::AES_GCM;
     assert!(!limits.needs_key_update(0));
-    assert!(!limits.needs_key_update((1 << 23) - 1));
-    assert!(limits.needs_key_update(1 << 23));
+    assert!(!limits.needs_key_update((1 << 23) - 2));
+    assert!(limits.needs_key_update((1 << 23) - 1));
 }
 
 #[test]

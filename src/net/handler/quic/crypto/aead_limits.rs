@@ -21,7 +21,7 @@ impl AeadLimits {
 
     /// Check if key update is needed (approaching confidentiality limit)
     pub fn needs_key_update(&self, packets_encrypted: u64) -> bool {
-        packets_encrypted >= self.confidentiality_limit
+        packets_encrypted + 1 >= self.confidentiality_limit
     }
 
     /// Check if connection must be closed (integrity limit reached)
