@@ -53,6 +53,24 @@ impl QuicCubic {
 
     pub fn on_persistent_congestion(&mut self) {
         self.cwnd = self.minimum_window();
+        self.congestion_recovery_start_time = None;
+        self.ssthresh = self.cwnd;
+    }
+
+    /// RFC 9002 §7.6.1: persistent congestion duration always includes max_ack_delay
+    pub fn persistent_congestion_threshold(
+        smoothed_rtt: coarsetime::Duration,
+        rttvar: coarsetime::Duration,
+        max_ack_delay: coarsetime::Duration,
+    ) -> coarsetime::Duration {
+        let granularity = coarsetime::Duration::from_millis(1);
+        let var4 = rttvar * 4;
+        let var_component = if var4 > granularity {
+            var4
+        } else {
+            granularity
+        };
+        (smoothed_rtt + var_component + max_ack_delay) * K_PERSISTENT_CONGESTION_THRESHOLD
     }
 
     fn minimum_window(&self) -> usize {

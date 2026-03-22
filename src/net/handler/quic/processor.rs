@@ -9,6 +9,7 @@ use crate::net::handler::quic::error::TransportError;
 use crate::net::handler::quic::packet_parser::{self, packet_space};
 use crate::net::handler::quic::timer_kinds::QuicTimerKind;
 use crate::net::handler::quic::transport::ack::AckState;
+use crate::net::handler::quic::transport::congestion::QuicCubic;
 use crate::net::handler::quic::transport::frame::{self, QuicFrame, StreamId};
 use crate::net::handler::quic::transport::loss::SentPacket;
 use crate::net::handler::quic::transport::packet_builder::PacketBuilder;
@@ -141,7 +142,10 @@ pub fn process_packet(
 
         match header {
             PacketHeader::Long(long) => {
-                let space = packet_space(long.packet_type);
+                let space = match packet_space(long.packet_type) {
+                    Some(s) => s,
+                    None => return ProcessResult::Ok, // Unknown/Retry — no PN space
+                };
                 let pn_offset = if long.packet_type == PacketType::Initial {
                     match packet_parser::parse_initial_fields(&quic_payload[long.payload_offset..])
                     {
@@ -350,6 +354,11 @@ fn dispatch_frames(
             }
 
             QuicFrame::MaxStreams { max, bidi } => {
+                if max > (1u64 << 60) {
+                    conn.close_error = Some(TransportError::FRAME_ENCODING_ERROR);
+                    conn.state = ConnectionState::Closing;
+                    return ProcessResult::ConnectionClosed;
+                }
                 if bidi {
                     conn.streams.peer_max_bidi = conn.streams.peer_max_bidi.max(max);
                 } else {
@@ -561,11 +570,15 @@ fn handle_ack_frame(
                 .as_ref()
                 .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
                 .unwrap_or(coarsetime::Duration::from_millis(25));
-            let pto = conn.loss.pto(2, max_ack_delay_pc);
+            let pc_threshold = QuicCubic::persistent_congestion_threshold(
+                conn.loss.smoothed_rtt,
+                conn.loss.rttvar,
+                max_ack_delay_pc,
+            );
             let earliest = lost.first().unwrap().1.time_sent;
             let latest = lost.last().unwrap().1.time_sent;
             let duration = latest.duration_since(earliest);
-            if conn.congestion.in_persistent_congestion(duration, pto) {
+            if duration > pc_threshold {
                 conn.congestion.on_persistent_congestion();
                 conn.loss.reset_min_rtt(conn.loss.latest_rtt);
             }
