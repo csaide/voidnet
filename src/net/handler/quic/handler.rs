@@ -486,6 +486,7 @@ impl QuicHandler {
             free_frames.push(frame);
             return;
         }
+        unsafe { frame.set_len(frame.capacity()) };
         // Write Ethernet header
         crate::net::wire::ethernet::write_ethernet_header(
             &mut frame,
@@ -573,6 +574,7 @@ impl QuicHandler {
             free_frames.push(frame);
             return;
         }
+        unsafe { frame.set_len(frame.capacity()) };
         let eth_len = std::mem::size_of::<crate::net::wire::ethernet::EthernetFrame>();
         crate::net::wire::ethernet::write_ethernet_header(
             &mut frame,
