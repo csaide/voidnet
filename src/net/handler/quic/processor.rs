@@ -1438,6 +1438,52 @@ fn build_packet_in_frame(
         }
     }
 
+    // 4c. MAX_STREAM_DATA — expand per-stream windows (RFC 9000 §4.2)
+    if space == 2 {
+        // Retransmit lost MAX_STREAM_DATA first
+        let retransmit_ids: smallvec::SmallVec<[StreamId; 4]> =
+            conn.retransmit.max_stream_data.drain(..).collect();
+        for stream_id in retransmit_ids {
+            if let Some(entry) = conn.streams.get_mut(stream_id) {
+                if let Some(ref recv) = entry.recv {
+                    let current = recv.max_stream_data;
+                    if builder.write_max_stream_data(stream_id, current, &mut conn.frame_log) {
+                        wrote_ack_eliciting = true;
+                    } else {
+                        conn.retransmit.max_stream_data.push(stream_id);
+                        break;
+                    }
+                }
+            }
+        }
+        // Proactively send MAX_STREAM_DATA for streams needing window expansion
+        let stream_ids: smallvec::SmallVec<[StreamId; 16]> = conn
+            .streams
+            .iter_recv()
+            .filter_map(|(id, entry)| {
+                entry
+                    .recv
+                    .as_ref()
+                    .and_then(|r| r.should_send_max_stream_data().map(|_| id))
+            })
+            .collect();
+        for stream_id in stream_ids {
+            if builder.remaining() < 20 {
+                break;
+            }
+            if let Some(entry) = conn.streams.get_mut(stream_id) {
+                if let Some(ref mut recv) = entry.recv {
+                    if let Some(new_max) = recv.should_send_max_stream_data() {
+                        if builder.write_max_stream_data(stream_id, new_max, &mut conn.frame_log) {
+                            recv.commit_max_stream_data(new_max);
+                            wrote_ack_eliciting = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 4. PATH_RESPONSE
     if space == 2 {
         if let Some(data) = conn.pending_path_response.take() {

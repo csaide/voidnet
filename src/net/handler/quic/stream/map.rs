@@ -35,6 +35,20 @@ pub struct StreamMap {
     pub local_opened_uni: u64,
     pub peer_opened_bidi: u64,
     pub peer_opened_uni: u64,
+
+    // Per-stream flow control limits from transport params (RFC 9000 §18.2)
+    /// Receive limit for locally-initiated bidi streams (our initial_max_stream_data_bidi_local)
+    pub local_recv_max_bidi: u64,
+    /// Send limit for peer-initiated bidi streams (peer's initial_max_stream_data_bidi_local)
+    pub peer_send_max_bidi: u64,
+    /// Receive limit for peer-initiated bidi streams (our initial_max_stream_data_bidi_remote)
+    pub local_recv_max_bidi_remote: u64,
+    /// Send limit for locally-initiated bidi streams (peer's initial_max_stream_data_bidi_remote)
+    pub peer_send_max_bidi_remote: u64,
+    /// Receive limit for peer-initiated uni streams (our initial_max_stream_data_uni)
+    pub local_recv_max_uni: u64,
+    /// Send limit for locally-initiated uni streams (peer's initial_max_stream_data_uni)
+    pub peer_send_max_uni: u64,
 }
 
 impl StreamMap {
@@ -53,6 +67,12 @@ impl StreamMap {
             local_opened_uni: 0,
             peer_opened_bidi: 0,
             peer_opened_uni: 0,
+            local_recv_max_bidi: 65536,
+            peer_send_max_bidi: 65536,
+            local_recv_max_bidi_remote: 65536,
+            peer_send_max_bidi_remote: 65536,
+            local_recv_max_uni: 65536,
+            peer_send_max_uni: 65536,
         }
     }
 
@@ -134,37 +154,69 @@ impl StreamMap {
             }
         }
 
+        // Compute per-stream flow control limits from transport params (RFC 9000 §18.2)
+        // before taking mutable borrow on the Vec.
+        let (send_limit, recv_limit) = if is_bidi {
+            if we_initiated {
+                (self.peer_send_max_bidi_remote, self.local_recv_max_bidi)
+            } else {
+                (self.peer_send_max_bidi, self.local_recv_max_bidi_remote)
+            }
+        } else if we_initiated {
+            (self.peer_send_max_uni, 0)
+        } else {
+            (0, self.local_recv_max_uni)
+        };
+
         let vec = self.vec_for_mut(id);
         if vec.len() <= idx {
             vec.resize_with(idx + 1, || None);
         }
 
         // For peer-initiated streams, create intermediate entries for all indices 0..=idx
+        // (RFC 9000 §2.1: stream IDs used out of order open all lower-numbered streams).
+        // Intermediate streams (i < idx) are created with deferred buffer allocation
+        // (no SendHalf/RecvHalf) to prevent memory exhaustion from large stream ID gaps.
+        // Buffers are allocated on-demand when data arrives via get_or_create().
         if !we_initiated && is_new {
-            for i in 0..=idx {
+            for i in 0..idx {
                 if vec.get(i).map_or(true, |e| e.is_none()) {
                     if vec.len() <= i {
                         vec.resize_with(i + 1, || None);
                     }
-                    let (state, has_send, has_recv) = if is_bidi {
-                        (StreamState::new_bidi(), true, true)
+                    let state = if is_bidi {
+                        StreamState::new_bidi()
                     } else {
-                        (StreamState::new_recv_only(), false, true)
+                        StreamState::new_recv_only()
                     };
+                    // Deferred: no send/recv buffers until data arrives
                     vec[i] = Some(StreamEntry {
                         state,
-                        send: if has_send {
-                            Some(SendHalf::new(65536))
-                        } else {
-                            None
-                        },
-                        recv: if has_recv {
-                            Some(RecvHalf::new(65536))
-                        } else {
-                            None
-                        },
+                        send: None,
+                        recv: None,
                     });
                 }
+            }
+            // The target stream (idx) gets full buffers
+            if vec.get(idx).map_or(true, |e| e.is_none()) {
+                let (state, has_send, has_recv) = if is_bidi {
+                    (StreamState::new_bidi(), true, true)
+                } else {
+                    (StreamState::new_recv_only(), false, true)
+                };
+                vec[idx] = Some(StreamEntry {
+                    state,
+                    send: if has_send {
+                        Some(SendHalf::new(send_limit))
+                    } else {
+                        None
+                    },
+                    recv: if has_recv {
+                        Some(RecvHalf::new(recv_limit))
+                    } else {
+                        None
+                    },
+                });
             }
             return Ok(vec[idx].as_mut().unwrap());
         }
@@ -180,16 +232,27 @@ impl StreamMap {
             vec[idx] = Some(StreamEntry {
                 state,
                 send: if has_send {
-                    Some(SendHalf::new(65536))
+                    Some(SendHalf::new(send_limit))
                 } else {
                     None
                 },
                 recv: if has_recv {
-                    Some(RecvHalf::new(65536))
+                    Some(RecvHalf::new(recv_limit))
                 } else {
                     None
                 },
             });
+        } else if let Some(ref mut entry) = vec[idx] {
+            // Lazy-allocate buffers for deferred intermediate streams.
+            // These were created with None send/recv to avoid memory exhaustion.
+            let needs_send = is_bidi && entry.send.is_none();
+            let needs_recv = !we_initiated && entry.recv.is_none();
+            if needs_send {
+                entry.send = Some(SendHalf::new(send_limit));
+            }
+            if needs_recv {
+                entry.recv = Some(RecvHalf::new(recv_limit));
+            }
         }
         Ok(vec[idx].as_mut().unwrap())
     }
@@ -239,6 +302,21 @@ impl StreamMap {
                     }
                 }
                 None
+            })
+        })
+    }
+
+    pub fn iter_recv(&self) -> impl Iterator<Item = (StreamId, &StreamEntry)> {
+        let types: [(u64, &Vec<Option<StreamEntry>>); 4] = [
+            (0, &self.client_bidi),
+            (1, &self.server_bidi),
+            (2, &self.client_uni),
+            (3, &self.server_uni),
+        ];
+        types.into_iter().flat_map(|(type_bits, vec)| {
+            vec.iter().enumerate().filter_map(move |(idx, slot)| {
+                slot.as_ref()
+                    .map(|entry| (StreamId((idx as u64) << 2 | type_bits), entry))
             })
         })
     }

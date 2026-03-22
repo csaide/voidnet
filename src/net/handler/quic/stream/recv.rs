@@ -107,6 +107,27 @@ impl StreamRingBuffer {
         }
         n
     }
+
+    /// Peek at data starting at `offset` bytes from head, without consuming.
+    #[inline]
+    pub fn peek_at(&self, offset: usize, buf: &mut [u8]) -> usize {
+        let avail = self.len();
+        if offset >= avail {
+            return 0;
+        }
+        let n = buf.len().min(avail - offset);
+        for i in 0..n {
+            buf[i] = self.buf[(self.head + offset + i) & self.mask];
+        }
+        n
+    }
+
+    /// Consume `n` bytes from the head without copying them out.
+    #[inline]
+    pub fn consume(&mut self, n: usize) {
+        let n = n.min(self.len());
+        self.head = (self.head + n) & self.mask;
+    }
 }
 
 /// Out-of-order range tracking. 8 inline entries, overflow to BTreeMap.
@@ -312,6 +333,7 @@ pub struct RecvHalf {
     pub received: u64,    // contiguous frontier (stream offset)
     pub read_offset: u64, // how much the app has consumed (stream offset)
     pub max_stream_data: u64,
+    pub committed_max_stream_data: u64,
     pub final_size: Option<u64>,
     pub fin_received: bool,
     pub is_reset: bool,
@@ -325,11 +347,29 @@ impl RecvHalf {
             received: 0,
             read_offset: 0,
             max_stream_data: initial_max_stream_data,
+            committed_max_stream_data: initial_max_stream_data,
             final_size: None,
             fin_received: false,
             is_reset: false,
             ooo: OooRanges::new(256),
         }
+    }
+
+    pub fn should_send_max_stream_data(&self) -> Option<u64> {
+        if self.is_reset || self.fin_received {
+            return None;
+        }
+        let consumed = self.read_offset;
+        if consumed > self.committed_max_stream_data / 2 {
+            Some(consumed + self.committed_max_stream_data)
+        } else {
+            None
+        }
+    }
+
+    pub fn commit_max_stream_data(&mut self, new_max: u64) {
+        self.max_stream_data = new_max;
+        self.committed_max_stream_data = new_max;
     }
 
     pub fn on_reset(&mut self, final_size: u64) -> Result<(), RecvError> {

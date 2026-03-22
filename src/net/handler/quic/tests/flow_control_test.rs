@@ -1,6 +1,21 @@
 use crate::net::handler::quic::transport::flow_control::FlowControl;
 
 #[test]
+fn stream_recv_should_send_max_stream_data() {
+    use crate::net::handler::quic::stream::recv::RecvHalf;
+    let mut recv = RecvHalf::new(1000);
+    assert!(recv.receive(0, &[0u8; 600], false).is_ok());
+    let mut buf = [0u8; 600];
+    let n = recv.read(&mut buf);
+    assert_eq!(n, 600);
+    let new_max = recv.should_send_max_stream_data();
+    assert!(new_max.is_some());
+    assert!(new_max.unwrap() > 1000);
+    recv.commit_max_stream_data(new_max.unwrap());
+    assert!(recv.should_send_max_stream_data().is_none());
+}
+
+#[test]
 fn flow_control_send_within_limit() {
     let fc = FlowControl::new(1000, 2000);
     assert!(fc.can_send(500));

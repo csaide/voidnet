@@ -275,6 +275,24 @@ impl<'a> PacketBuilder<'a> {
         true
     }
 
+    /// Write a MAX_STREAM_DATA frame (0x11). Returns true if written.
+    pub fn write_max_stream_data(
+        &mut self,
+        stream_id: StreamId,
+        max: u64,
+        frame_log: &mut FrameLog,
+    ) -> bool {
+        let needed = 1 + varint_len(stream_id.0) + varint_len(max);
+        if self.remaining() < needed {
+            return false;
+        }
+        let written =
+            frame_writer::write_max_stream_data(&mut self.buf[self.offset..], stream_id, max);
+        self.offset += written;
+        frame_log.push(SentFrame::MaxStreamData(stream_id, max));
+        true
+    }
+
     /// Write a HANDSHAKE_DONE frame (0x1e). Returns true if written.
     pub fn write_handshake_done(&mut self, frame_log: &mut FrameLog) -> bool {
         if self.remaining() < 1 {
