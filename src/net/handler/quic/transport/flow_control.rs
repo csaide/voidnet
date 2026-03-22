@@ -129,6 +129,10 @@ impl FlowControl {
         self.max_data_recv
     }
 
+    pub fn current_max_data_recv(&self) -> u64 {
+        self.max_data_recv
+    }
+
     pub fn data_received(&self) -> u64 {
         self.data_received
     }

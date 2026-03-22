@@ -55,6 +55,19 @@ fn flow_control_auto_tune() {
 }
 
 #[test]
+fn flow_control_should_send_max_data_after_consume() {
+    let mut fc = FlowControl::new(1000, 2000);
+    assert!(fc.on_data_received(1500).is_ok());
+    fc.on_data_consumed(1500);
+    let new_max = fc.should_send_max_data();
+    assert!(new_max.is_some());
+    let val = new_max.unwrap();
+    assert!(val > 2000, "new max should exceed original: {}", val);
+    fc.commit_max_data(val);
+    assert!(fc.should_send_max_data().is_none());
+}
+
+#[test]
 fn flow_control_blocked_notification() {
     let mut fc = FlowControl::new(1000, 2000);
     fc.on_data_sent(1000);

@@ -68,12 +68,19 @@ pub fn handle_timeout(
                             .on_congestion_event(total_lost_bytes, now, max_sent_time);
                     }
                     let retransmit = build_retransmit_queue(&conn.frame_log, &frame_ranges);
-                    conn.retransmit
-                        .crypto
-                        .extend(retransmit.crypto.iter().cloned());
-                    conn.retransmit
-                        .streams
-                        .extend(retransmit.streams.iter().cloned());
+                    // Rewind crypto_offset for CRYPTO retransmission
+                    for &(retx_space, retx_offset, _) in &retransmit.crypto {
+                        conn.crypto_offset[retx_space as usize] =
+                            conn.crypto_offset[retx_space as usize].min(retx_offset);
+                    }
+                    // Rewind stream send offset for stream retransmission
+                    for &(stream_id, retx_offset, _, _) in &retransmit.streams {
+                        if let Some(entry) = conn.streams.get_mut(stream_id) {
+                            if let Some(ref mut send) = entry.send {
+                                send.sent = send.sent.min(retx_offset);
+                            }
+                        }
+                    }
                     if retransmit.handshake_done {
                         conn.retransmit.handshake_done = true;
                     }
@@ -103,7 +110,8 @@ pub fn handle_timeout(
         }
         QuicTimerKind::Draining => TimerResult::Close,
         QuicTimerKind::KeyDiscard => {
-            // TODO: drop prev_remote_key
+            // Discard previous remote packet key after 3×PTO (RFC 9001 §6.5)
+            conn.key_update.prev_remote_packet_key = None;
             TimerResult::Ok
         }
         QuicTimerKind::PathValidation => {
@@ -112,8 +120,13 @@ pub fn handle_timeout(
         }
         QuicTimerKind::Handshake => {
             if conn.state == ConnectionState::Handshaking {
-                conn.state = ConnectionState::Closed;
-                return TimerResult::Close;
+                // RFC 9000 §10: transition through Closing→Draining, not directly to Closed.
+                // If we have no keys to send CONNECTION_CLOSE, the draining timer
+                // will eventually close the connection.
+                conn.close_error = Some(TransportError::INTERNAL_ERROR);
+                conn.state = ConnectionState::Closing;
+                conn.needs_draining_timer = true;
+                return TimerResult::Ok;
             }
             TimerResult::Ok
         }
@@ -130,9 +143,24 @@ pub fn process_packet(
     datagram_len: usize,
     now: Instant,
 ) -> ProcessResult {
-    // RFC 9000 §10.2.1: In Closing state, retransmit CONNECTION_CLOSE on incoming packets
+    // RFC 9000 §10.2.1: In Closing state, retransmit CONNECTION_CLOSE on incoming packets.
+    // Rate-limit to at most once per PTO (RFC 9000 §10.2.1 SHOULD limit rate).
     if conn.state == ConnectionState::Closing {
-        conn.closing_frame_sent = false; // trigger re-send in generate_packets
+        let should_retransmit = match conn.last_close_sent {
+            None => true,
+            Some(last) => {
+                let max_ack_delay = conn
+                    .peer_params
+                    .as_ref()
+                    .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
+                    .unwrap_or(coarsetime::Duration::from_millis(25));
+                let pto = conn.loss.pto(2, max_ack_delay);
+                now.duration_since(last) >= pto
+            }
+        };
+        if should_retransmit {
+            conn.closing_frame_sent = false; // trigger re-send in generate_packets
+        }
         return ProcessResult::Ok;
     }
 
@@ -190,7 +218,37 @@ pub fn process_packet(
                     // Short header is always the last packet in a datagram
                     Some((2, short.pn_offset, remaining.len()))
                 }
-                PacketHeader::VersionNegotiation(_) => None,
+                PacketHeader::VersionNegotiation(vn) => {
+                    // RFC 9000 §6.2: client processes VN from server
+                    if conn.side == Side::Client && conn.state == ConnectionState::Handshaking {
+                        // Check if any supported version is offered
+                        let mut i = 0;
+                        let mut found = false;
+                        while i + 4 <= vn.versions.len() {
+                            let v = u32::from_be_bytes([
+                                vn.versions[i],
+                                vn.versions[i + 1],
+                                vn.versions[i + 2],
+                                vn.versions[i + 3],
+                            ]);
+                            if crate::net::handler::quic::transport::version::is_supported_version(
+                                v,
+                            ) && v != conn.version
+                            {
+                                found = true;
+                                break;
+                            }
+                            i += 4;
+                        }
+                        if !found {
+                            // No compatible version — close
+                            conn.state = ConnectionState::Closed;
+                            last_result = ProcessResult::VersionNegotiation;
+                        }
+                        // TODO: retry with the negotiated version
+                    }
+                    None
+                }
             }
         };
 
@@ -247,15 +305,8 @@ fn decrypt_and_process(
         match unprotect_header(remote_key, quic_payload, pn_offset) {
             Ok(r) => r,
             Err(_) => {
-                conn.failed_decryptions += 1;
-                {
-                    let limits = conn.aead_limits;
-                    if limits.must_close(conn.failed_decryptions) {
-                        conn.close_error = Some(TransportError::AEAD_LIMIT_REACHED);
-                        conn.state = ConnectionState::Closing;
-                        return ProcessResult::ConnectionClosed;
-                    }
-                }
+                // Header protection failure is NOT an AEAD auth failure (RFC 9001 §6.6).
+                // Don't count toward integrity limit — just drop the packet.
                 return ProcessResult::Ok;
             }
         };
@@ -264,16 +315,26 @@ fn decrypt_and_process(
     let largest_acked = conn.ack[space].largest_received().unwrap_or(0);
     let pn = decode_pn(largest_acked, truncated_pn, (pn_length * 8) as u32);
 
-    // Check duplicate
-    if conn.recv_pn_seen[space].is_duplicate(pn) {
-        return ProcessResult::Ok;
-    }
+    // NOTE: Duplicate PN check is intentionally AFTER decryption (see below)
+    // to avoid timing side channels per RFC 9001 §9.5.
 
-    // Decrypt payload — need copy for AAD (header bytes before payload)
-    // Use stack buffer instead of heap allocation (max long header is ~60 bytes)
-    let mut header_buf = [0u8; 64];
-    let header_len = payload_offset.min(64);
+    // Decrypt payload — need copy for AAD (header bytes before payload).
+    // Max QUIC header: 1 + 4 + 1 + 20(DCID) + 1 + 20(SCID) + varint + token(≤255) + varint + 4(PN) ≈ 310.
+    // 256 covers all practical cases; Initial with max-length token could exceed,
+    // but tokens >200 bytes are pathological.
+    let mut header_buf = [0u8; 256];
+    let header_len = payload_offset.min(256);
     header_buf[..header_len].copy_from_slice(&quic_payload[..header_len]);
+
+    // For 1-RTT packets, save encrypted payload in case we need to retry with previous key
+    // after a key update (RFC 9001 §6.1: retain old keys for reordered packets).
+    let payload_slice = &quic_payload[payload_offset..];
+    let saved_payload = if space == 2 && conn.key_update.prev_remote_packet_key.is_some() {
+        Some(payload_slice.to_vec())
+    } else {
+        None
+    };
+
     let plaintext_len = match decrypt_payload(
         remote_key,
         pn,
@@ -282,18 +343,62 @@ fn decrypt_and_process(
     ) {
         Ok(len) => len,
         Err(_) => {
-            conn.failed_decryptions += 1;
-            {
+            // Current key failed. For 1-RTT, try previous key if available (RFC 9001 §6.5).
+            if let Some(ref saved) = saved_payload {
+                if let Some(ref prev_key) = conn.key_update.prev_remote_packet_key {
+                    // Restore the encrypted payload for retry
+                    quic_payload[payload_offset..payload_offset + saved.len()]
+                        .copy_from_slice(saved);
+                    match prev_key.decrypt_in_place(
+                        pn,
+                        &header_buf[..header_len],
+                        &mut quic_payload[payload_offset..payload_offset + saved.len()],
+                    ) {
+                        Ok(plaintext) => plaintext.len(),
+                        Err(_) => {
+                            // Both keys failed — genuine authentication failure
+                            conn.failed_decryptions += 1;
+                            let limits = conn.aead_limits;
+                            if limits.must_close(conn.failed_decryptions) {
+                                conn.close_error = Some(TransportError::AEAD_LIMIT_REACHED);
+                                conn.state = ConnectionState::Closing;
+                                conn.needs_draining_timer = true;
+                                return ProcessResult::ConnectionClosed;
+                            }
+                            return ProcessResult::Ok;
+                        }
+                    }
+                } else {
+                    conn.failed_decryptions += 1;
+                    let limits = conn.aead_limits;
+                    if limits.must_close(conn.failed_decryptions) {
+                        conn.close_error = Some(TransportError::AEAD_LIMIT_REACHED);
+                        conn.state = ConnectionState::Closing;
+                        conn.needs_draining_timer = true;
+                        return ProcessResult::ConnectionClosed;
+                    }
+                    return ProcessResult::Ok;
+                }
+            } else {
+                conn.failed_decryptions += 1;
                 let limits = conn.aead_limits;
                 if limits.must_close(conn.failed_decryptions) {
                     conn.close_error = Some(TransportError::AEAD_LIMIT_REACHED);
                     conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
                     return ProcessResult::ConnectionClosed;
                 }
+                return ProcessResult::Ok;
             }
-            return ProcessResult::Ok;
         }
     };
+
+    // RFC 9001 §9.5: Duplicate PN check AFTER decryption to avoid timing side channels.
+    // "the entire process of header protection removal, packet number recovery, and
+    // packet protection removal MUST be applied together without timing and other side channels."
+    if conn.recv_pn_seen[space].is_duplicate(pn) {
+        return ProcessResult::Ok;
+    }
 
     // Mark PN as seen
     conn.recv_pn_seen[space].mark(pn);
@@ -306,13 +411,19 @@ fn decrypt_and_process(
             // Peer initiated key update — derive new keys
             if let Some(ref mut secrets) = conn.key_update_secrets {
                 let new_keys = secrets.next_packet_keys();
-                // Update packet keys, preserving header protection keys (RFC 9001 §5.4)
+                // Retain old remote packet key for reordered packets (RFC 9001 §6.1).
+                // Header protection keys are unchanged by key updates (RFC 9001 §5.4),
+                // so we only need to save the old packet key. We swap it out via
+                // update_packet_key which replaces it in-place.
                 if let Some(ref mut kp) = conn.keys.one_rtt {
+                    let old_remote_pkt_key =
+                        std::mem::replace(&mut kp.remote.packet_key, new_keys.remote);
+                    conn.key_update.prev_remote_packet_key = Some(old_remote_pkt_key);
                     kp.local.update_packet_key(new_keys.local);
-                    kp.remote.update_packet_key(new_keys.remote);
                 }
                 conn.key_update.on_update_initiated();
                 conn.packets_encrypted[2] = 0;
+                conn.needs_key_discard_timer = true;
             }
         }
     }
@@ -370,6 +481,7 @@ fn dispatch_frames(
             Err(_) => {
                 conn.close_error = Some(TransportError::FRAME_ENCODING_ERROR);
                 conn.state = ConnectionState::Closing;
+                conn.needs_draining_timer = true;
                 return ProcessResult::ConnectionClosed;
             }
         };
@@ -387,6 +499,7 @@ fn dispatch_frames(
                 _ => {
                     conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
                     conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
                     return ProcessResult::ConnectionClosed;
                 }
             }
@@ -420,6 +533,7 @@ fn dispatch_frames(
                 ) {
                     conn.close_error = Some(err);
                     conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
                     return ProcessResult::ConnectionClosed;
                 }
             }
@@ -440,6 +554,7 @@ fn dispatch_frames(
                 if max > (1u64 << 60) {
                     conn.close_error = Some(TransportError::FRAME_ENCODING_ERROR);
                     conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
                     return ProcessResult::ConnectionClosed;
                 }
                 if bidi {
@@ -463,21 +578,36 @@ fn dispatch_frames(
                     conn.state = ConnectionState::Established;
                     conn.keys.handshake = None;
                     conn.loss.handshake_confirmed = true;
+                    conn.key_update.handshake_confirmed = true;
                     conn.loss.peer_completed_address_validation = true;
                     conn.loss.discard_space(1);
                 } else {
                     conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
                     conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
                     return ProcessResult::ConnectionClosed;
                 }
             }
 
-            QuicFrame::NewConnectionId(_) => {
-                // TODO: process via CidManager
+            QuicFrame::NewConnectionId(ncid) => {
+                // RFC 9000 §19.15: retire_prior_to MUST NOT be greater than sequence
+                if ncid.retire_prior_to > ncid.sequence {
+                    conn.close_error = Some(TransportError::FRAME_ENCODING_ERROR);
+                    conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
+                    return ProcessResult::ConnectionClosed;
+                }
+                // Store new peer CID for future use
+                let new_cid = crate::net::handler::quic::connection_id::ConnectionId::from_slice(
+                    ncid.connection_id.as_bytes(),
+                );
+                // Update dcid to the new CID (simple rotation)
+                conn.dcid = new_cid;
             }
 
             QuicFrame::RetireConnectionId { .. } => {
-                // TODO: deferred action via handler
+                // Peer is retiring one of our CIDs — acknowledged, no action needed
+                // (we don't track per-CID state beyond the cid_map in the handler)
             }
 
             QuicFrame::StopSending(stop) => {
@@ -486,6 +616,7 @@ fn dispatch_frames(
                 if !stop.stream_id.is_bidi() && !we_initiated {
                     conn.close_error = Some(TransportError::STREAM_STATE_ERROR);
                     conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
                     return ProcessResult::ConnectionClosed;
                 }
                 if let Some(entry) = conn.streams.get_mut(stop.stream_id) {
@@ -502,6 +633,7 @@ fn dispatch_frames(
                 if !reset.stream_id.is_bidi() && we_initiated {
                     conn.close_error = Some(TransportError::STREAM_STATE_ERROR);
                     conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
                     return ProcessResult::ConnectionClosed;
                 }
                 if let Some(entry) = conn.streams.get_mut(reset.stream_id) {
@@ -509,6 +641,7 @@ fn dispatch_frames(
                         if recv.on_reset(reset.final_size).is_err() {
                             conn.close_error = Some(TransportError::FINAL_SIZE_ERROR);
                             conn.state = ConnectionState::Closing;
+                            conn.needs_draining_timer = true;
                             return ProcessResult::ConnectionClosed;
                         }
                     }
@@ -516,6 +649,7 @@ fn dispatch_frames(
                 if conn.flow.on_stream_final_size(reset.final_size).is_err() {
                     conn.close_error = Some(TransportError::FLOW_CONTROL_ERROR);
                     conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
                     return ProcessResult::ConnectionClosed;
                 }
             }
@@ -568,6 +702,7 @@ fn handle_crypto_frame(
         Ok(o) => o,
         Err(_) => {
             conn.state = ConnectionState::Closing;
+            conn.needs_draining_timer = true;
             return;
         }
     };
@@ -584,12 +719,22 @@ fn handle_crypto_frame(
         if let Some(secrets) = output.next_secrets {
             conn.key_update_secrets = Some(secrets);
         }
+        // Update AEAD limits based on negotiated cipher suite (RFC 9001 §6.6)
+        if let Some(ref crypto) = conn.crypto {
+            if let Some(cs) = crypto.negotiated_cipher_suite() {
+                conn.aead_limits =
+                    crate::net::handler::quic::crypto::aead_limits::AeadLimits::from_cipher_suite(
+                        cs,
+                    );
+            }
+        }
         if conn.side == Side::Server {
             conn.state = ConnectionState::Established;
             conn.send_handshake_done = true;
             conn.notify_established = true;
             conn.path.amplification.set_validated();
             conn.loss.handshake_confirmed = true;
+            conn.key_update.handshake_confirmed = true;
             // Fix 6: DON'T discard handshake keys yet — wait until we
             // receive a 1-RTT packet (confirms client got the handshake).
             // Key discard happens in decrypt_and_process when space == 2.
@@ -628,6 +773,7 @@ fn handle_crypto_frame(
                     if let Err(err) = params.validate_for_side(peer_side) {
                         conn.close_error = Some(err);
                         conn.state = ConnectionState::Closing;
+                        conn.needs_draining_timer = true;
                         return;
                     }
                     conn.flow.update_max_data_send(params.initial_max_data);
@@ -643,6 +789,11 @@ fn handle_crypto_frame(
                         }
                     }
                     conn.max_udp_payload = (params.max_udp_payload_size as u16).max(1200);
+                    // Apply per-stream flow control limits from peer's transport params
+                    conn.streams.peer_send_max_bidi = params.initial_max_stream_data_bidi_local;
+                    conn.streams.peer_send_max_bidi_remote =
+                        params.initial_max_stream_data_bidi_remote;
+                    conn.streams.peer_send_max_uni = params.initial_max_stream_data_uni;
                     conn.peer_params = Some(params);
                 }
             }
@@ -706,10 +857,10 @@ fn handle_ack_frame(
         conn.congestion
             .on_congestion_event(total_lost_bytes, now, max_sent_time);
 
-        // Persistent congestion: filter to ack-eliciting packets sent after first RTT sample
+        // Persistent congestion (RFC 9002 §7.6.2): requires two ack-eliciting lost packets
+        // spanning the threshold, with NO acknowledged packets sent between them.
         if conn.loss.first_rtt_sample.is_some() && lost.len() >= 2 {
             let first_rtt = conn.loss.first_rtt_sample.unwrap();
-            // Only consider ack-eliciting packets sent after first RTT sample
             let eligible: smallvec::SmallVec<
                 [&crate::net::handler::quic::transport::loss::SentPacket; 8],
             > = lost
@@ -732,20 +883,33 @@ fn handle_ack_frame(
                 let latest = eligible.last().unwrap().time_sent;
                 let duration = latest.duration_since(earliest);
                 if duration > pc_threshold {
-                    conn.congestion.on_persistent_congestion();
-                    conn.loss.reset_min_rtt(conn.loss.latest_rtt);
+                    // RFC 9002 §7.6.2: "none of the packets sent between the send times
+                    // of these two packets are acknowledged"
+                    let any_acked_between = acked
+                        .iter()
+                        .any(|pkt| pkt.time_sent > earliest && pkt.time_sent < latest);
+                    if !any_acked_between {
+                        conn.congestion.on_persistent_congestion();
+                        conn.loss.reset_min_rtt(conn.loss.latest_rtt);
+                    }
                 }
             }
         }
 
         let retransmit = build_retransmit_queue(&conn.frame_log, &frame_ranges);
-        // Merge into conn.retransmit
-        conn.retransmit
-            .crypto
-            .extend(retransmit.crypto.iter().cloned());
-        conn.retransmit
-            .streams
-            .extend(retransmit.streams.iter().cloned());
+        // Rewind crypto_offset for CRYPTO retransmission
+        for &(retx_space, retx_offset, _) in &retransmit.crypto {
+            conn.crypto_offset[retx_space as usize] =
+                conn.crypto_offset[retx_space as usize].min(retx_offset);
+        }
+        // Rewind stream send offset for stream retransmission
+        for &(stream_id, retx_offset, _, _) in &retransmit.streams {
+            if let Some(entry) = conn.streams.get_mut(stream_id) {
+                if let Some(ref mut send) = entry.send {
+                    send.sent = send.sent.min(retx_offset);
+                }
+            }
+        }
         if retransmit.handshake_done {
             conn.retransmit.handshake_done = true;
         }
@@ -764,6 +928,39 @@ fn handle_ack_frame(
             pkt.in_flight,
             pkt.time_sent,
         );
+
+        // Advance stream send.acked and consume from buffer for acked stream data
+        for frame in conn.frame_log.range(pkt.frame_range.0, pkt.frame_range.1) {
+            if let crate::net::handler::quic::transport::frame_log::SentFrame::Stream {
+                id,
+                offset,
+                len,
+                ..
+            } = frame
+            {
+                let end = *offset + *len as u64;
+                if let Some(entry) = conn.streams.get_mut(*id) {
+                    if let Some(ref mut send) = entry.send {
+                        if end > send.acked {
+                            let advance = (end - send.acked) as usize;
+                            send.buffer.consume(advance);
+                            send.acked = end;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Track ACKs for key update state (RFC 9001 §6).
+    // If this is a 1-RTT ACK and it acknowledges a packet sent with the current key phase,
+    // mark the current phase as acknowledged so future key updates can be initiated.
+    if space == 2 {
+        if let Some(lowest_pn) = conn.key_update.lowest_pn_current_phase {
+            if ack.largest_acked >= lowest_pn {
+                conn.key_update.on_ack_for_current_phase();
+            }
+        }
     }
 
     // Process ECN if present
@@ -789,6 +986,8 @@ fn handle_stream_frame(
     data: &[u8],
     fin: bool,
 ) -> Option<TransportError> {
+    use crate::net::handler::quic::stream::state::RecvState;
+
     // Receiving data on our own send-only unidirectional stream is STREAM_STATE_ERROR
     let we_initiated = stream_id.initiator_is_client() == (conn.side == Side::Client);
     let is_bidi = stream_id.is_bidi();
@@ -804,6 +1003,13 @@ fn handle_stream_frame(
         Err(_) => return Some(TransportError::STREAM_LIMIT_ERROR),
     };
 
+    // RFC 9000 §3.2: only Recv and SizeKnown states can accept data
+    if let Some(recv_state) = entry.state.recv_state() {
+        if !recv_state.can_receive_data() {
+            return Some(TransportError::STREAM_STATE_ERROR);
+        }
+    }
+
     if let Some(ref mut recv) = entry.recv {
         match recv.receive(offset, data, fin) {
             Ok(new_bytes) => {
@@ -811,6 +1017,24 @@ fn handle_stream_frame(
                 if new_bytes > 0 {
                     if conn.flow.on_data_received(new_bytes as u64).is_err() {
                         return Some(TransportError::FLOW_CONTROL_ERROR);
+                    }
+                }
+                // RFC 9000 §3.2: transition Recv → SizeKnown when FIN received
+                if fin {
+                    if let Some(recv_state) = entry.state.recv_state_mut() {
+                        if *recv_state == RecvState::Recv {
+                            let _ = recv_state.transition(RecvState::SizeKnown);
+                        }
+                    }
+                    // Check if all data has been received contiguously
+                    if let Some(fs) = recv.final_size {
+                        if recv.received >= fs {
+                            if let Some(recv_state) = entry.state.recv_state_mut() {
+                                if *recv_state == RecvState::SizeKnown {
+                                    let _ = recv_state.transition(RecvState::DataRecvd);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -970,10 +1194,39 @@ pub fn generate_packets<'umem>(
             }
 
             conn.closing_frame_sent = true;
+            conn.last_close_sent = Some(now);
         }
+        // Arm draining timer for Closing state cleanup (RFC 9000 §10.2)
+        if conn.needs_draining_timer {
+            conn.needs_draining_timer = false;
+            let max_ack_delay = conn
+                .peer_params
+                .as_ref()
+                .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
+                .unwrap_or(coarsetime::Duration::from_millis(25));
+            let pto = conn.loss.pto(2, max_ack_delay);
+            let draining_deadline = now + pto * 3;
+            conn.timers
+                .arm(QuicTimerKind::Draining, conn_key, draining_deadline, wheel);
+        }
+
         // Stay in Closing — don't transition to Draining.
         // The draining timer will handle the transition.
         return;
+    }
+
+    // Arm key discard timer after key update (RFC 9001 §6.5: 3×PTO)
+    if conn.needs_key_discard_timer {
+        conn.needs_key_discard_timer = false;
+        let max_ack_delay = conn
+            .peer_params
+            .as_ref()
+            .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
+            .unwrap_or(coarsetime::Duration::from_millis(25));
+        let pto = conn.loss.pto(2, max_ack_delay);
+        let discard_deadline = now + pto * 3;
+        conn.timers
+            .arm(QuicTimerKind::KeyDiscard, conn_key, discard_deadline, wheel);
     }
 
     // Build packets for each space that has pending data
@@ -985,6 +1238,16 @@ pub fn generate_packets<'umem>(
         // Gate: amplification limit check
         let estimated_size = 1200;
         if !conn.path.amplification.can_send(estimated_size) {
+            continue;
+        }
+
+        // Gate: congestion window (RFC 9002 §7) — only gate 1-RTT data
+        if space == 2 && !conn.congestion.can_send() {
+            continue;
+        }
+
+        // Gate: pacing (RFC 9002 §7.7) — only pace 1-RTT data, not handshake
+        if space == 2 && !conn.pacing.can_send(now, estimated_size) {
             continue;
         }
 
@@ -1010,6 +1273,7 @@ pub fn generate_packets<'umem>(
         if total_len > 0 {
             unsafe { frame.set_len(total_len) };
             conn.path.amplification.on_bytes_sent(total_len);
+            conn.pacing.on_packet_sent(total_len, now);
             tx_return.push(frame);
         } else {
             free_frames.push(frame); // return unused frame
@@ -1101,15 +1365,20 @@ fn build_packet_in_frame(
 
     // Write frames in priority order:
 
-    // 1. CRYPTO data
-    if !conn.pending_crypto[space as usize].is_empty() {
-        let offset_val = conn.crypto_offset[space as usize];
-        let data = &conn.pending_crypto[space as usize];
-        let written = builder.write_crypto(offset_val, data, space, &mut conn.frame_log);
-        if written > 0 {
-            conn.crypto_offset[space as usize] += written as u64;
-            conn.pending_crypto[space as usize].drain(..written);
-            wrote_ack_eliciting = true;
+    // 1. CRYPTO data (new + retransmissions)
+    // pending_crypto is append-only; crypto_offset tracks the next byte to send.
+    // On loss, crypto_offset is rewound so the data is re-sent from the buffer.
+    {
+        let send_start = conn.crypto_offset[space as usize] as usize;
+        let buf = &conn.pending_crypto[space as usize];
+        if send_start < buf.len() {
+            let data = &buf[send_start..];
+            let offset_val = conn.crypto_offset[space as usize];
+            let written = builder.write_crypto(offset_val, data, space, &mut conn.frame_log);
+            if written > 0 {
+                conn.crypto_offset[space as usize] += written as u64;
+                wrote_ack_eliciting = true;
+            }
         }
     }
 
@@ -1153,6 +1422,22 @@ fn build_packet_in_frame(
         }
     }
 
+    // 4b. MAX_DATA — expand peer's send window (RFC 9000 §4.2)
+    if space == 2 {
+        if conn.retransmit.max_data {
+            let current_max = conn.flow.current_max_data_recv();
+            if builder.write_max_data(current_max, &mut conn.frame_log) {
+                conn.retransmit.max_data = false;
+                wrote_ack_eliciting = true;
+            }
+        } else if let Some(new_max) = conn.flow.should_send_max_data() {
+            if builder.write_max_data(new_max, &mut conn.frame_log) {
+                conn.flow.commit_max_data(new_max);
+                wrote_ack_eliciting = true;
+            }
+        }
+    }
+
     // 4. PATH_RESPONSE
     if space == 2 {
         if let Some(data) = conn.pending_path_response.take() {
@@ -1183,19 +1468,24 @@ fn build_packet_in_frame(
             }
             if let Some(entry) = conn.streams.get_mut(stream_id) {
                 if let Some(ref mut send) = entry.send {
+                    // Buffer holds data from send.acked onwards.
+                    // Unsent data starts at offset (send.sent - send.acked) within the buffer.
+                    let unsent_off = (send.sent - send.acked) as usize;
                     let data_len = send
                         .buffer
                         .len()
+                        .saturating_sub(unsent_off)
                         .min(builder.remaining().saturating_sub(20))
                         .min(4096);
                     let mut temp = [0u8; 4096];
-                    let read = send.buffer.read(&mut temp[..data_len]);
-                    let fin = send.fin_sent && send.buffer.is_empty();
-                    if read > 0 || fin {
+                    let peeked = send.buffer.peek_at(unsent_off, &mut temp[..data_len]);
+                    let all_sent = unsent_off + peeked >= send.buffer.len();
+                    let fin = send.fin_sent && all_sent;
+                    if peeked > 0 || fin {
                         let written = builder.write_stream(
                             stream_id,
                             send.sent,
-                            &temp[..read],
+                            &temp[..peeked],
                             fin,
                             &mut conn.frame_log,
                         );
@@ -1250,6 +1540,12 @@ fn build_packet_in_frame(
             );
             conn.packets_encrypted[space as usize] += 1;
 
+            // RFC 9001 §4.9.1: client MUST discard Initial keys when first sending Handshake
+            if space == 1 && conn.side == Side::Client && conn.keys.initial.is_some() {
+                conn.keys.initial = None;
+                conn.loss.discard_space(0);
+            }
+
             // Sync congestion controller with sent bytes
             if wrote_ack_eliciting {
                 conn.congestion.on_packets_sent(protected_len, now);
@@ -1265,13 +1561,17 @@ fn build_packet_in_frame(
                     if let Some(ref mut secrets) = conn.key_update_secrets {
                         let new_keys = secrets.next_packet_keys();
                         // Update packet keys while preserving header protection keys
-                        // (RFC 9001 §5.4: header protection keys are unchanged by key updates)
+                        // (RFC 9001 §5.4: header protection keys are unchanged by key updates).
+                        // Retain old remote packet key for reordered packets (RFC 9001 §6.1).
                         if let Some(ref mut kp) = conn.keys.one_rtt {
+                            let old_remote_pkt_key =
+                                std::mem::replace(&mut kp.remote.packet_key, new_keys.remote);
+                            conn.key_update.prev_remote_packet_key = Some(old_remote_pkt_key);
                             kp.local.update_packet_key(new_keys.local);
-                            kp.remote.update_packet_key(new_keys.remote);
                         }
                         conn.key_update.on_update_initiated();
                         conn.packets_encrypted[2] = 0;
+                        conn.needs_key_discard_timer = true;
                     }
                 }
             }

@@ -263,6 +263,18 @@ impl<'a> PacketBuilder<'a> {
         true
     }
 
+    /// Write a MAX_DATA frame (0x10). Returns true if written.
+    pub fn write_max_data(&mut self, max: u64, frame_log: &mut FrameLog) -> bool {
+        let needed = 1 + varint_len(max);
+        if self.remaining() < needed {
+            return false;
+        }
+        let written = frame_writer::write_max_data(&mut self.buf[self.offset..], max);
+        self.offset += written;
+        frame_log.push(SentFrame::MaxData(max));
+        true
+    }
+
     /// Write a HANDSHAKE_DONE frame (0x1e). Returns true if written.
     pub fn write_handshake_done(&mut self, frame_log: &mut FrameLog) -> bool {
         if self.remaining() < 1 {
