@@ -318,8 +318,15 @@ impl QuicStream {
     }
 
     /// Reset the stream with an error code.
-    pub fn reset(&self, _error_code: u64) {
-        // TODO: queue RESET_STREAM frame
+    pub fn reset(&self, error_code: u64) {
+        let handler = unsafe { &mut *self.handler.get() };
+        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
+            if let Some(entry) = conn.streams.get_mut(self.stream_id) {
+                if let Some(ref mut send) = entry.send {
+                    send.mark_reset(error_code);
+                }
+            }
+        }
     }
 
     /// Returns the stream identifier.
@@ -501,8 +508,15 @@ impl QuicSendStream {
     }
 
     /// Reset the stream with an error code.
-    pub fn reset(&self, _error_code: u64) {
-        // TODO: queue RESET_STREAM frame
+    pub fn reset(&self, error_code: u64) {
+        let handler = unsafe { &mut *self.handler.get() };
+        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
+            if let Some(entry) = conn.streams.get_mut(self.stream_id) {
+                if let Some(ref mut send) = entry.send {
+                    send.mark_reset(error_code);
+                }
+            }
+        }
     }
 
     pub fn id(&self) -> StreamId {

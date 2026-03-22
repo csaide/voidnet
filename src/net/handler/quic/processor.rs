@@ -1513,6 +1513,49 @@ fn build_packet_in_frame(
         }
     }
 
+    // 4e. RESET_STREAM — abort individual streams (RFC 9000 §3.1)
+    if space == 2 {
+        // Retransmit lost RESET_STREAMs
+        let retransmit_resets: smallvec::SmallVec<[(StreamId, u64, u64); 4]> =
+            conn.retransmit.reset_streams.drain(..).collect();
+        for (id, error_code, final_size) in retransmit_resets {
+            if builder.write_reset_stream(id, error_code, final_size, &mut conn.frame_log) {
+                wrote_ack_eliciting = true;
+            } else {
+                conn.retransmit
+                    .reset_streams
+                    .push((id, error_code, final_size));
+                break;
+            }
+        }
+        // Newly requested resets
+        let reset_streams: smallvec::SmallVec<[(StreamId, u64, u64); 4]> = conn
+            .streams
+            .iter_all_send()
+            .filter_map(|(id, entry)| {
+                entry.send.as_ref().and_then(|s| {
+                    if s.reset_requested {
+                        Some((id, s.reset_error_code, s.final_size()))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        for (id, error_code, final_size) in reset_streams {
+            if builder.write_reset_stream(id, error_code, final_size, &mut conn.frame_log) {
+                if let Some(entry) = conn.streams.get_mut(id) {
+                    if let Some(ref mut send) = entry.send {
+                        send.reset_requested = false;
+                    }
+                }
+                wrote_ack_eliciting = true;
+            } else {
+                break;
+            }
+        }
+    }
+
     // 4. PATH_RESPONSE
     if space == 2 {
         if let Some(data) = conn.pending_path_response.take() {

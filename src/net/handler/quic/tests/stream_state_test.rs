@@ -203,6 +203,19 @@ fn bidi_terminal_when_both_done() {
     assert!(s.is_terminal());
 }
 
+// --- SendHalf reset ---
+
+#[test]
+fn send_half_reset_marks_pending() {
+    use crate::net::handler::quic::stream::send::SendHalf;
+    let mut send = SendHalf::new(65536);
+    send.write(&[1, 2, 3]);
+    send.mark_reset(0x42);
+    assert!(send.reset_requested);
+    assert_eq!(send.reset_error_code, 0x42);
+    assert_eq!(send.final_size(), 3);
+}
+
 // --- Helper checks ---
 
 #[test]

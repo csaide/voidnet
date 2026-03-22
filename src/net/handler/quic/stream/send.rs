@@ -41,4 +41,13 @@ impl SendHalf {
         self.fin_sent = false;
         self.blocked_at = None;
     }
+
+    pub fn mark_reset(&mut self, error_code: u64) {
+        self.reset_requested = true;
+        self.reset_error_code = error_code;
+    }
+
+    pub fn final_size(&self) -> u64 {
+        self.acked + self.buffer.len() as u64
+    }
 }

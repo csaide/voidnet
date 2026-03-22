@@ -308,6 +308,33 @@ impl<'a> PacketBuilder<'a> {
         true
     }
 
+    /// Write a RESET_STREAM frame (0x04). Returns true if written.
+    pub fn write_reset_stream(
+        &mut self,
+        stream_id: StreamId,
+        error_code: u64,
+        final_size: u64,
+        frame_log: &mut FrameLog,
+    ) -> bool {
+        let needed = 1 + varint_len(stream_id.0) + varint_len(error_code) + varint_len(final_size);
+        if self.remaining() < needed {
+            return false;
+        }
+        let written = frame_writer::write_reset_stream(
+            &mut self.buf[self.offset..],
+            stream_id,
+            error_code,
+            final_size,
+        );
+        self.offset += written;
+        frame_log.push(SentFrame::ResetStream {
+            id: stream_id,
+            error_code,
+            final_size,
+        });
+        true
+    }
+
     /// Write a HANDSHAKE_DONE frame (0x1e). Returns true if written.
     pub fn write_handshake_done(&mut self, frame_log: &mut FrameLog) -> bool {
         if self.remaining() < 1 {
