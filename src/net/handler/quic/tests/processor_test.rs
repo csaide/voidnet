@@ -447,7 +447,7 @@ fn generate_packets_produces_response_after_initial() {
 
     // Verify connection state was updated
     assert!(
-        conn.packets_encrypted > 0,
+        conn.packets_encrypted.iter().sum::<u64>() > 0,
         "packets_encrypted counter should have incremented"
     );
 }

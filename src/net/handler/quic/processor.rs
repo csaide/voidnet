@@ -312,7 +312,7 @@ fn decrypt_and_process(
                     kp.remote.update_packet_key(new_keys.remote);
                 }
                 conn.key_update.on_update_initiated();
-                conn.packets_encrypted = 0;
+                conn.packets_encrypted[2] = 0;
             }
         }
     }
@@ -1248,7 +1248,7 @@ fn build_packet_in_frame(
                     frame_range,
                 },
             );
-            conn.packets_encrypted += 1;
+            conn.packets_encrypted[space as usize] += 1;
 
             // Sync congestion controller with sent bytes
             if wrote_ack_eliciting {
@@ -1260,7 +1260,7 @@ fn build_packet_in_frame(
 
             // Check if key update is needed (AEAD confidentiality limit)
             let limits = conn.aead_limits;
-            if space == 2 && limits.needs_key_update(conn.packets_encrypted) {
+            if space == 2 && limits.needs_key_update(conn.packets_encrypted[2]) {
                 if conn.key_update.can_initiate_update() {
                     if let Some(ref mut secrets) = conn.key_update_secrets {
                         let new_keys = secrets.next_packet_keys();
@@ -1271,7 +1271,7 @@ fn build_packet_in_frame(
                             kp.remote.update_packet_key(new_keys.remote);
                         }
                         conn.key_update.on_update_initiated();
-                        conn.packets_encrypted = 0;
+                        conn.packets_encrypted[2] = 0;
                     }
                 }
             }
