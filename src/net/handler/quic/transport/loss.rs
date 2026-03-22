@@ -458,12 +458,16 @@ impl LossDetector {
             return earliest_loss_time;
         }
 
-        // If no ack-eliciting packets in flight and peer has validated address,
-        // no timer needed (unless we're the client before handshake confirmed).
-        if self.peer_completed_address_validation
-            && self.spaces.iter().all(|s| s.ack_eliciting_in_flight == 0)
-        {
-            return None;
+        // If no ack-eliciting packets in flight, check whether we still need a timer.
+        let all_empty = self.spaces.iter().all(|s| s.ack_eliciting_in_flight == 0);
+        if all_empty {
+            if self.peer_completed_address_validation {
+                return None; // safe — peer has validated, no need for timer
+            }
+            // Anti-deadlock: arm PTO even with nothing in flight (RFC 9002 §A.8)
+            let pto_duration = self.pto(0, max_ack_delay);
+            let backoff = 1u32 << self.pto_count;
+            return Some(Instant::now() + pto_duration * backoff);
         }
 
         // PTO timer: find the earliest space with ack-eliciting in flight.
@@ -523,8 +527,12 @@ impl LossDetector {
             }
         }
 
-        // If no ack-eliciting in flight, probe Application space.
-        LossDetectionResult::SendProbe { space: 2 }
+        // RFC 9002 §A.9: probe Initial if not confirmed, else Handshake, else Application
+        if !self.handshake_confirmed {
+            LossDetectionResult::SendProbe { space: 0 }
+        } else {
+            LossDetectionResult::SendProbe { space: 2 }
+        }
     }
 
     /// Discard a packet number space (when keys are discarded).
