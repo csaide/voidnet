@@ -244,24 +244,23 @@ pub struct AcceptStream<'a> {
 }
 
 impl<'a> Future for AcceptStream<'a> {
-    type Output = QuicStream;
+    type Output = Result<QuicStream, QuicError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let handler = unsafe { &*self.conn.handler.get() };
         let conn = match handler.connections.get(self.conn.conn_key) {
             Some(c) => c,
             None => {
-                // Connection gone; park forever (caller should handle connection lifetime).
-                return Poll::Pending;
+                return Poll::Ready(Err(QuicError::ConnectionClosed));
             }
         };
 
         if let Some(stream_id) = conn.stream_accept_queue.pop() {
-            Poll::Ready(QuicStream {
+            Poll::Ready(Ok(QuicStream {
                 conn_key: self.conn.conn_key,
                 stream_id,
                 handler: self.conn.handler.clone(),
-            })
+            }))
         } else {
             conn.stream_accept_queue.register_waker(cx.waker());
             Poll::Pending
