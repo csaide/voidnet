@@ -1068,15 +1068,8 @@ fn handle_stream_frame(
         }
     }
 
-    // Clean up if stream is fully complete
-    if let Some(entry) = conn.streams.get(stream_id) {
-        if is_stream_complete(entry) {
-            conn.streams.remove(stream_id);
-            return None;
-        }
-    }
-
-    // Notify socket layer
+    // Notify socket layer BEFORE cleanup check — the socket must learn about
+    // the stream even if it's already complete (e.g., single-frame request with FIN).
     if is_new {
         conn.stream_accept_queue.push(stream_id);
     }
@@ -1107,6 +1100,18 @@ fn has_pending_data(conn: &QuicConnectionState, space: u8) -> bool {
         || conn.pending_path_response.is_some()
         || conn.needs_probe
         || (space == 2 && conn.streams.has_pending_send())
+        || (space == 2 && has_pending_control_frames(conn))
+}
+
+/// Check if there are pending control frames (flow control, retransmit, etc.)
+fn has_pending_control_frames(conn: &QuicConnectionState) -> bool {
+    conn.retransmit.max_data
+        || !conn.retransmit.max_stream_data.is_empty()
+        || conn.retransmit.max_streams
+        || !conn.retransmit.reset_streams.is_empty()
+        || !conn.retransmit.stop_sending.is_empty()
+        || conn.retransmit.handshake_done
+        || conn.flow.should_send_max_data().is_some()
 }
 
 /// Generate outbound QUIC packets from pending connection state.
