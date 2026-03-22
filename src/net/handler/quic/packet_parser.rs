@@ -224,13 +224,15 @@ pub fn parse_initial_fields(buf: &[u8]) -> Option<(&[u8], usize, usize)> {
 }
 
 /// Map [`PacketType`] to packet number space index (0 = Initial, 1 = Handshake, 2 = 1-RTT).
+///
+/// Returns `None` for packet types that have no packet number space (Retry, Unknown).
 #[inline]
-pub fn packet_space(packet_type: crate::net::wire::quic::PacketType) -> usize {
+pub fn packet_space(packet_type: crate::net::wire::quic::PacketType) -> Option<usize> {
     use crate::net::wire::quic::PacketType;
     match packet_type {
-        PacketType::Initial => 0,
-        PacketType::Handshake => 1,
-        PacketType::ZeroRtt | PacketType::OneRtt => 2,
-        PacketType::Retry => 0, // Retry doesn't use packet spaces, but map to 0
+        PacketType::Initial => Some(0),
+        PacketType::Handshake => Some(1),
+        PacketType::ZeroRtt | PacketType::OneRtt => Some(2),
+        PacketType::Retry | PacketType::Unknown => None,
     }
 }
