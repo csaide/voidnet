@@ -250,12 +250,18 @@ fn full_handshake_through_handler() {
     // 1. Generate ClientHello
     let client_config = make_client_config();
     let client_params = encode_test_transport_params();
-    let (_client_crypto, client_hello) =
-        CryptoState::new_client(client_config, "localhost", &client_params).unwrap();
+    let (_client_crypto, client_hello) = CryptoState::new_client(
+        client_config,
+        "localhost",
+        &client_params,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
     assert!(!client_hello.is_empty());
 
     // 2. Derive client Initial keys and build encrypted QUIC packet
-    let (client_local, _) = derive_initial_keys(&dcid_bytes, rustls::Side::Client);
+    let (client_local, _) =
+        derive_initial_keys(&dcid_bytes, rustls::Side::Client, rustls::quic::Version::V1);
     let client_encrypt_key = DirectionalKey::from_rustls(client_local);
     let quic_packet =
         build_initial_packet(&dcid_bytes, &scid_bytes, &client_hello, &client_encrypt_key);
@@ -388,9 +394,19 @@ fn stream_data_after_handshake() {
     let client_params_bytes = encode_test_transport_params();
     let server_params_bytes = encode_test_transport_params();
 
-    let (mut client_crypto, client_hello) =
-        CryptoState::new_client(client_config, "localhost", &client_params_bytes).unwrap();
-    let mut server_crypto = CryptoState::new_server(server_config, &server_params_bytes).unwrap();
+    let (mut client_crypto, client_hello) = CryptoState::new_client(
+        client_config,
+        "localhost",
+        &client_params_bytes,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
+    let mut server_crypto = CryptoState::new_server(
+        server_config,
+        &server_params_bytes,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
 
     // Round 1: ClientHello → Server
     let server_out = server_crypto.process_crypto_data(&client_hello).unwrap();
@@ -430,6 +446,8 @@ fn stream_data_after_handshake() {
     };
 
     let mut conn = QuicConnectionState::new(server_dcid.clone(), Side::Server, params, 1200, now);
+    // Set SCID to match the DCID used in incoming short header packets
+    conn.scid = ConnectionId::from_slice(&server_dcid_bytes);
 
     // Install server-side 1-RTT keys.
     // Server's "local" encrypts outgoing, server's "remote" decrypts incoming.

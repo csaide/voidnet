@@ -104,8 +104,13 @@ fn crypto_state_new_client_produces_initial_data() {
     let client_config = make_client_config();
     let params = encode_test_transport_params();
 
-    let (_state, initial_data) =
-        CryptoState::new_client(client_config, "localhost", &params).unwrap();
+    let (_state, initial_data) = CryptoState::new_client(
+        client_config,
+        "localhost",
+        &params,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
 
     // Client should produce a ClientHello
     assert!(
@@ -119,7 +124,8 @@ fn crypto_state_new_server_succeeds() {
     let server_config = make_server_config();
     let params = encode_test_transport_params();
 
-    let _state = CryptoState::new_server(server_config, &params).unwrap();
+    let _state =
+        CryptoState::new_server(server_config, &params, rustls::quic::Version::V1).unwrap();
     // Just verify construction succeeds
 }
 
@@ -131,12 +137,18 @@ fn client_server_handshake() {
     let server_params = encode_test_transport_params();
 
     // Step 1: Create client, get initial ClientHello
-    let (mut client, client_hello) =
-        CryptoState::new_client(client_config, "localhost", &client_params).unwrap();
+    let (mut client, client_hello) = CryptoState::new_client(
+        client_config,
+        "localhost",
+        &client_params,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
     assert!(!client_hello.is_empty());
 
     // Step 2: Create server, feed ClientHello
-    let mut server = CryptoState::new_server(server_config, &server_params).unwrap();
+    let mut server =
+        CryptoState::new_server(server_config, &server_params, rustls::quic::Version::V1).unwrap();
     let server_output = server.process_crypto_data(&client_hello).unwrap();
 
     // Server should produce response crypto data (ServerHello + encrypted extensions + etc.)
@@ -206,9 +218,15 @@ fn handshake_produces_one_rtt_keys() {
     let client_params = encode_test_transport_params();
     let server_params = encode_test_transport_params();
 
-    let (mut client, client_hello) =
-        CryptoState::new_client(client_config, "localhost", &client_params).unwrap();
-    let mut server = CryptoState::new_server(server_config, &server_params).unwrap();
+    let (mut client, client_hello) = CryptoState::new_client(
+        client_config,
+        "localhost",
+        &client_params,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
+    let mut server =
+        CryptoState::new_server(server_config, &server_params, rustls::quic::Version::V1).unwrap();
 
     // Drive the handshake to completion by exchanging data in a loop
     let mut got_client_1rtt = false;

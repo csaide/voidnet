@@ -22,6 +22,8 @@ pub struct CryptoOutput {
     pub one_rtt_keys: Option<KeyPair>,
     /// Whether the handshake is complete (1-RTT keys available).
     pub handshake_complete: bool,
+    /// Next key update secrets (for key rotation support).
+    pub next_secrets: Option<rustls::quic::Secrets>,
 }
 
 /// Wraps a rustls QUIC connection for TLS 1.3 handshake management.
@@ -38,12 +40,13 @@ impl CryptoState {
         config: Arc<ClientConfig>,
         server_name: &str,
         transport_params: &[u8],
+        version: Version,
     ) -> Result<(Self, Vec<u8>), TransportError> {
         let sni: ServerName<'static> = server_name
             .to_string()
             .try_into()
             .map_err(|_| TransportError::INTERNAL_ERROR)?;
-        let conn = quic::ClientConnection::new(config, Version::V1, sni, transport_params.to_vec())
+        let conn = quic::ClientConnection::new(config, version, sni, transport_params.to_vec())
             .map_err(|_| TransportError::INTERNAL_ERROR)?;
 
         let mut state = CryptoState::Client(conn);
@@ -58,8 +61,9 @@ impl CryptoState {
     pub fn new_server(
         config: Arc<ServerConfig>,
         transport_params: &[u8],
+        version: Version,
     ) -> Result<Self, TransportError> {
-        let conn = quic::ServerConnection::new(config, Version::V1, transport_params.to_vec())
+        let conn = quic::ServerConnection::new(config, version, transport_params.to_vec())
             .map_err(|_| TransportError::INTERNAL_ERROR)?;
 
         Ok(CryptoState::Server(conn))
@@ -83,6 +87,7 @@ impl CryptoState {
             handshake_keys: None,
             one_rtt_keys: None,
             handshake_complete: false,
+            next_secrets: None,
         };
 
         loop {
@@ -94,13 +99,13 @@ impl CryptoState {
                         remote: DirectionalKey::from_rustls(keys.remote),
                     });
                 }
-                Some(KeyChange::OneRtt { keys, next: _ }) => {
+                Some(KeyChange::OneRtt { keys, next }) => {
                     output.one_rtt_keys = Some(KeyPair {
                         local: DirectionalKey::from_rustls(keys.local),
                         remote: DirectionalKey::from_rustls(keys.remote),
                     });
                     output.handshake_complete = true;
-                    // TODO: store `next` Secrets for key updates (Task 25)
+                    output.next_secrets = Some(next);
                 }
                 None => break,
             }

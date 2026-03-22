@@ -8,7 +8,8 @@ use crate::net::handler::quic::crypto::packet_protection::{
 fn derive_initial_keys_succeeds() {
     // RFC 9001 Appendix A test DCID
     let dcid = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
-    let (client_keys, server_keys) = derive_initial_keys(&dcid, rustls::Side::Client);
+    let (client_keys, server_keys) =
+        derive_initial_keys(&dcid, rustls::Side::Client, rustls::quic::Version::V1);
     // If we got here without panic, keys were derived successfully.
     // The PacketKey and HeaderProtectionKey trait objects are valid.
 
@@ -19,14 +20,16 @@ fn derive_initial_keys_succeeds() {
 
 #[test]
 fn derive_initial_keys_empty_dcid() {
-    let (client_keys, _server_keys) = derive_initial_keys(&[], rustls::Side::Client);
+    let (client_keys, _server_keys) =
+        derive_initial_keys(&[], rustls::Side::Client, rustls::quic::Version::V1);
     assert!(client_keys.packet.tag_len() > 0);
 }
 
 #[test]
 fn derive_initial_keys_encrypt_decrypt_roundtrip() {
     let dcid = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
-    let (client_keys, _server_keys) = derive_initial_keys(&dcid, rustls::Side::Client);
+    let (client_keys, _server_keys) =
+        derive_initial_keys(&dcid, rustls::Side::Client, rustls::quic::Version::V1);
 
     // Client encrypts, server decrypts
     let packet_number = 0u64;
@@ -63,7 +66,8 @@ fn derive_initial_keys_encrypt_decrypt_roundtrip() {
 #[test]
 fn key_pair_from_initial_keys() {
     let dcid = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
-    let (client, server) = derive_initial_keys(&dcid, rustls::Side::Client);
+    let (client, server) =
+        derive_initial_keys(&dcid, rustls::Side::Client, rustls::quic::Version::V1);
     let client_key = DirectionalKey::from_rustls(client);
     let server_key = DirectionalKey::from_rustls(server);
     assert!(client_key.packet_key.tag_len() > 0);
@@ -74,7 +78,8 @@ fn key_pair_from_initial_keys() {
 fn protect_unprotect_roundtrip() {
     // Derive keys: client encrypts, server decrypts.
     let dcid = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
-    let (client_dk, _server_dk) = derive_initial_keys(&dcid, rustls::Side::Client);
+    let (client_dk, _server_dk) =
+        derive_initial_keys(&dcid, rustls::Side::Client, rustls::quic::Version::V1);
     let client_key = DirectionalKey::from_rustls(client_dk);
 
     // Get matching server decrypt key (server.remote = client direction).

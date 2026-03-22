@@ -208,19 +208,26 @@ fn process_initial_packet_extracts_crypto() {
     // 1. Create client-side TLS to generate ClientHello CRYPTO data
     let client_config = make_client_config();
     let client_params = encode_test_transport_params();
-    let (_client_crypto, client_hello) =
-        CryptoState::new_client(client_config, "localhost", &client_params).unwrap();
+    let (_client_crypto, client_hello) = CryptoState::new_client(
+        client_config,
+        "localhost",
+        &client_params,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
     assert!(!client_hello.is_empty(), "ClientHello should not be empty");
 
     // 2. Derive Initial keys from the client's DCID
     // Client encrypts with client keys, server decrypts with server keys.
     // derive_initial_keys(dcid, Side::Client) => (local=client_encrypt, remote=client_decrypt)
-    let (client_local, _client_remote) = derive_initial_keys(&dcid_bytes, rustls::Side::Client);
+    let (client_local, _client_remote) =
+        derive_initial_keys(&dcid_bytes, rustls::Side::Client, rustls::quic::Version::V1);
     let client_encrypt_key = DirectionalKey::from_rustls(client_local);
 
     // Server needs keys from client perspective: derive_initial_keys for Server side
     // gives (local=server_encrypt, remote=server_decrypt_of_client)
-    let (server_local, server_remote) = derive_initial_keys(&dcid_bytes, rustls::Side::Server);
+    let (server_local, server_remote) =
+        derive_initial_keys(&dcid_bytes, rustls::Side::Server, rustls::quic::Version::V1);
     let server_initial_keys = KeyPair {
         local: DirectionalKey::from_rustls(server_local),
         remote: DirectionalKey::from_rustls(server_remote),
@@ -237,7 +244,12 @@ fn process_initial_packet_extracts_crypto() {
     // 4. Create server connection state
     let server_config = make_server_config();
     let server_params_bytes = encode_test_transport_params();
-    let server_crypto = CryptoState::new_server(server_config, &server_params_bytes).unwrap();
+    let server_crypto = CryptoState::new_server(
+        server_config,
+        &server_params_bytes,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
 
     let server_params = TransportParams {
         initial_max_data: 1_000_000,
@@ -272,10 +284,11 @@ fn process_initial_packet_extracts_crypto() {
         conn.keys.one_rtt.is_some(),
         "Server should have installed 1-RTT keys after processing ClientHello"
     );
-    // Handshake keys are discarded after 1-RTT key installation (server side)
+    // Fix 6: Handshake keys are NOT discarded at 1-RTT key installation on server.
+    // They are discarded when the server receives a 1-RTT packet (confirming client got handshake).
     assert!(
-        conn.keys.handshake.is_none(),
-        "Server should have discarded handshake keys after 1-RTT key installation"
+        conn.keys.handshake.is_some(),
+        "Server should retain handshake keys until first 1-RTT packet received"
     );
 
     // ACK state should reflect receiving PN 0
@@ -303,13 +316,20 @@ fn generate_packets_produces_response_after_initial() {
     // 1. Generate ClientHello via client TLS
     let client_config = make_client_config();
     let client_params = encode_test_transport_params();
-    let (_client_crypto, client_hello) =
-        CryptoState::new_client(client_config, "localhost", &client_params).unwrap();
+    let (_client_crypto, client_hello) = CryptoState::new_client(
+        client_config,
+        "localhost",
+        &client_params,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
 
     // 2. Derive Initial keys
-    let (client_local, _) = derive_initial_keys(&dcid_bytes, rustls::Side::Client);
+    let (client_local, _) =
+        derive_initial_keys(&dcid_bytes, rustls::Side::Client, rustls::quic::Version::V1);
     let client_encrypt_key = DirectionalKey::from_rustls(client_local);
-    let (server_local, server_remote) = derive_initial_keys(&dcid_bytes, rustls::Side::Server);
+    let (server_local, server_remote) =
+        derive_initial_keys(&dcid_bytes, rustls::Side::Server, rustls::quic::Version::V1);
     let server_initial_keys = KeyPair {
         local: DirectionalKey::from_rustls(server_local),
         remote: DirectionalKey::from_rustls(server_remote),
@@ -321,7 +341,12 @@ fn generate_packets_produces_response_after_initial() {
     // 4. Create server connection state with network addressing
     let server_config = make_server_config();
     let server_params_bytes = encode_test_transport_params();
-    let server_crypto = CryptoState::new_server(server_config, &server_params_bytes).unwrap();
+    let server_crypto = CryptoState::new_server(
+        server_config,
+        &server_params_bytes,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
 
     let server_params = TransportParams {
         initial_max_data: 1_000_000,

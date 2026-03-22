@@ -73,10 +73,12 @@ fn initial_window(max_datagram_size: usize) -> usize {
 }
 
 impl CongestionController for QuicCubic {
+    #[inline]
     fn on_packets_sent(&mut self, bytes: usize, _now: Instant) {
         self.bytes_in_flight += bytes;
     }
 
+    #[inline]
     fn on_ack(
         &mut self,
         acked_bytes: usize,
@@ -94,12 +96,12 @@ impl CongestionController for QuicCubic {
         }
 
         // During recovery, only grow window for packets sent after recovery started
+        // (Fix 16: Don't clear congestion_recovery_start_time; it naturally becomes
+        // irrelevant as all packets are sent after it.)
         if let Some(start) = self.congestion_recovery_start_time {
             if sent_time <= start {
                 return; // still in recovery for this packet
             }
-            // Packet sent after recovery start: recovery is over
-            self.congestion_recovery_start_time = None;
         }
 
         if self.app_limited {
@@ -115,6 +117,7 @@ impl CongestionController for QuicCubic {
         }
     }
 
+    #[inline]
     fn on_congestion_event(&mut self, lost_bytes: usize, now: Instant, sent_time: Instant) {
         // Only one congestion response per recovery period (RFC 9002 §7.3.2)
         if let Some(start) = self.congestion_recovery_start_time {
@@ -133,11 +136,12 @@ impl CongestionController for QuicCubic {
         self.epoch_start = None; // reset CUBIC epoch
     }
 
-    fn on_ecn_ce(&mut self, now: Instant) {
-        // Same as congestion event; ECN CE marks are considered current
-        self.on_congestion_event(0, now, now);
+    fn on_ecn_ce(&mut self, sent_time: Instant, now: Instant) {
+        // ECN CE: trigger congestion event using the sent_time of the largest acked packet
+        self.on_congestion_event(0, now, sent_time);
     }
 
+    #[inline]
     fn window(&self) -> usize {
         self.cwnd
     }
@@ -146,6 +150,7 @@ impl CongestionController for QuicCubic {
         self.bytes_in_flight
     }
 
+    #[inline]
     fn can_send(&self) -> bool {
         self.bytes_in_flight < self.cwnd
     }

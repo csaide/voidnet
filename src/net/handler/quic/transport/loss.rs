@@ -231,6 +231,7 @@ impl LossDetector {
     }
 
     /// Process an ACK frame. Returns (newly acked packets, lost packets with pn).
+    #[inline]
     pub fn on_ack_received(
         &mut self,
         space: usize,
@@ -273,16 +274,20 @@ impl LossDetector {
         }
 
         // Update RTT if the largest acked packet was newly acked and we had it.
+        // Only update RTT if acked packets include at least one ack-eliciting (Fix 14).
         if newly_acked_largest {
-            if let Some(time_sent) = largest_acked_time_sent {
-                let latest_rtt = now.duration_since(time_sent);
-                self.update_rtt(
-                    latest_rtt,
-                    ack_delay,
-                    max_ack_delay,
-                    handshake_confirmed,
-                    now,
-                );
+            let includes_ack_eliciting = acked.iter().any(|p| p.ack_eliciting);
+            if includes_ack_eliciting {
+                if let Some(time_sent) = largest_acked_time_sent {
+                    let latest_rtt = now.duration_since(time_sent);
+                    self.update_rtt(
+                        latest_rtt,
+                        ack_delay,
+                        max_ack_delay,
+                        handshake_confirmed,
+                        now,
+                    );
+                }
             }
         }
 
@@ -296,6 +301,7 @@ impl LossDetector {
     }
 
     /// Update RTT estimates (RFC 9002 §5.3).
+    #[inline]
     pub fn update_rtt(
         &mut self,
         latest_rtt: Duration,
@@ -350,6 +356,7 @@ impl LossDetector {
     }
 
     /// Detect lost packets in a space (RFC 9002 §6.1).
+    #[inline]
     fn detect_lost_packets(
         &mut self,
         space: usize,

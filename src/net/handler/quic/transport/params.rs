@@ -221,6 +221,8 @@ impl TransportParams {
     pub fn decode(buf: &[u8]) -> Result<Self, TransportError> {
         let mut params = TransportParams::default();
         let mut pos = 0;
+        // Track seen parameter IDs for duplicate detection (covers IDs 0x00-0x1f)
+        let mut seen_ids = [false; 32];
 
         while pos < buf.len() {
             // Decode parameter type
@@ -242,6 +244,14 @@ impl TransportParams {
 
             let value = &buf[pos..pos + param_len];
             pos += param_len;
+
+            // Detect duplicate transport parameter IDs (RFC 9000 §7.4)
+            if id < 32 {
+                if seen_ids[id as usize] {
+                    return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+                }
+                seen_ids[id as usize] = true;
+            }
 
             match id {
                 ORIGINAL_DESTINATION_CONNECTION_ID => {
@@ -350,6 +360,12 @@ impl TransportParams {
             return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
         }
         if params.active_connection_id_limit < 2 {
+            return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+        }
+        if params.initial_max_streams_bidi > (1u64 << 60) {
+            return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+        }
+        if params.initial_max_streams_uni > (1u64 << 60) {
             return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
         }
 

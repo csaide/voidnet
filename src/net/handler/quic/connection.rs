@@ -83,6 +83,8 @@ pub struct QuicConnectionState {
 
     // Created time
     pub created_at: Instant,
+    /// Last activity time (for idle timeout tracking)
+    pub last_activity: Instant,
 
     // Handshake CRYPTO buffering
     pub crypto_recv: [CryptoRecvBuffer; 3],
@@ -125,6 +127,12 @@ pub struct QuicConnectionState {
     pub stream_accept_queue: LocalQueue<StreamId>,
     /// Per-connection event queue for waking socket futures.
     pub event_queue: LocalQueue<QuicEvent>,
+
+    /// Key update secrets from rustls (for key update support)
+    pub key_update_secrets: Option<rustls::quic::Secrets>,
+
+    /// QUIC version in use for this connection
+    pub version: u32,
 }
 
 impl QuicConnectionState {
@@ -160,6 +168,7 @@ impl QuicConnectionState {
             idle_timeout: Duration::from_secs(30),
             max_udp_payload: 1200,
             created_at: now,
+            last_activity: now,
             crypto_recv: [
                 CryptoRecvBuffer::new(),
                 CryptoRecvBuffer::new(),
@@ -186,6 +195,8 @@ impl QuicConnectionState {
             accept_queue: None,
             stream_accept_queue: LocalQueue::new(64),
             event_queue: LocalQueue::new(64),
+            key_update_secrets: None,
+            version: 0x00000001, // QUIC v1 default
         }
     }
 }

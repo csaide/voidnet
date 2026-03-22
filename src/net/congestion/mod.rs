@@ -13,7 +13,7 @@ pub trait CongestionController {
         sent_time: Instant,
     );
     fn on_congestion_event(&mut self, lost_bytes: usize, now: Instant, sent_time: Instant);
-    fn on_ecn_ce(&mut self, now: Instant);
+    fn on_ecn_ce(&mut self, sent_time: Instant, now: Instant);
     fn window(&self) -> usize;
     fn bytes_in_flight(&self) -> usize;
     fn can_send(&self) -> bool;

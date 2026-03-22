@@ -146,12 +146,24 @@ impl QuicHandler {
 
         // Peek DCID for connection lookup
         let quic_data = &frame[quic_offset..];
-        let dcid = match wire_quic::peek_dcid(quic_data) {
-            Some(cid) => cid.to_owned(),
-            None => {
+        let dcid = if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
+            match wire_quic::peek_dcid(quic_data) {
+                Some(cid) => cid.to_owned(),
+                None => {
+                    rx_return.push(frame);
+                    return;
+                }
+            }
+        } else {
+            // Short header: DCID starts at byte 1, length is our SCID length
+            let scid_len = 8; // default SCID length we generate
+            if quic_data.len() < 1 + scid_len {
                 rx_return.push(frame);
                 return;
             }
+            crate::net::handler::quic::connection_id::ConnectionId::from_slice(
+                &quic_data[1..1 + scid_len],
+            )
         };
 
         // Look up existing connection
@@ -233,12 +245,24 @@ impl QuicHandler {
 
         // Peek DCID for connection lookup
         let quic_data = &frame[quic_offset..];
-        let dcid = match wire_quic::peek_dcid(quic_data) {
-            Some(cid) => cid.to_owned(),
-            None => {
+        let dcid = if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
+            match wire_quic::peek_dcid(quic_data) {
+                Some(cid) => cid.to_owned(),
+                None => {
+                    rx_return.push(frame);
+                    return;
+                }
+            }
+        } else {
+            // Short header: DCID starts at byte 1, length is our SCID length
+            let scid_len = 8; // default SCID length we generate
+            if quic_data.len() < 1 + scid_len {
                 rx_return.push(frame);
                 return;
             }
+            crate::net::handler::quic::connection_id::ConnectionId::from_slice(
+                &quic_data[1..1 + scid_len],
+            )
         };
 
         // Look up existing connection
@@ -308,13 +332,9 @@ impl QuicHandler {
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        let keys: smallvec::SmallVec<[usize; 16]> =
-            self.connections.iter().map(|(key, _)| key).collect();
-        for key in keys {
-            if let Some(conn) = self.connections.get_mut(key) {
-                if processor::has_pending_data_any(conn) {
-                    processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
-                }
+        for (key, conn) in self.connections.iter_mut() {
+            if processor::has_pending_data_any(conn) {
+                processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
             }
         }
     }
@@ -325,7 +345,7 @@ impl QuicHandler {
             .connections
             .iter()
             .filter(|(_, conn)| {
-                let elapsed = now.duration_since(conn.created_at);
+                let elapsed = now.duration_since(conn.last_activity);
                 elapsed > conn.idle_timeout
             })
             .map(|(key, _)| key)
@@ -400,8 +420,11 @@ impl QuicHandler {
         let listener = self.listeners.get(&local_port)?;
 
         // Derive initial keys (server side)
-        let (local_dk, remote_dk) =
-            derive_initial_keys(client_dcid.as_bytes(), rustls::Side::Server);
+        let (local_dk, remote_dk) = derive_initial_keys(
+            client_dcid.as_bytes(),
+            rustls::Side::Server,
+            rustls::quic::Version::V1,
+        );
         let initial_keys = KeyPair {
             local: DirectionalKey::from_rustls(local_dk),
             remote: DirectionalKey::from_rustls(remote_dk),
@@ -417,8 +440,12 @@ impl QuicHandler {
         let params_len = listener.transport_params.encode(&mut params_buf);
 
         // Create CryptoState
-        let crypto =
-            CryptoState::new_server(listener.tls_config.clone(), &params_buf[..params_len]).ok()?;
+        let crypto = CryptoState::new_server(
+            listener.tls_config.clone(),
+            &params_buf[..params_len],
+            rustls::quic::Version::V1,
+        )
+        .ok()?;
 
         // Clone params and accept queue before borrowing listener is released
         let transport_params = listener.transport_params.clone();

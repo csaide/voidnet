@@ -3,7 +3,7 @@ pub const QUIC_VERSION_2: u32 = 0x6b3343cf;
 
 /// Check if a version is known/supported
 pub fn is_supported_version(version: u32) -> bool {
-    version == QUIC_VERSION_1
+    version == QUIC_VERSION_1 || version == QUIC_VERSION_2
 }
 
 /// Check if version matches the reserved pattern for VN testing (0x?a?a?a?a)

@@ -58,9 +58,12 @@ pub fn handle_timeout(
                 ) => {
                     let frame_ranges: smallvec::SmallVec<[(u32, u32); 8]> =
                         lost.iter().map(|(_, pkt)| pkt.frame_range).collect();
-                    for (_, pkt) in &lost {
+                    // Single congestion event per loss round (Fix 10)
+                    if let Some(max_sent_time) = lost.iter().map(|(_, pkt)| pkt.time_sent).max() {
+                        let total_lost_bytes: usize =
+                            lost.iter().map(|(_, pkt)| pkt.size as usize).sum();
                         conn.congestion
-                            .on_congestion_event(pkt.size as usize, now, pkt.time_sent);
+                            .on_congestion_event(total_lost_bytes, now, max_sent_time);
                     }
                     let retransmit = build_retransmit_queue(&conn.frame_log, &frame_ranges);
                     conn.retransmit
@@ -124,12 +127,13 @@ pub fn process_packet(
     datagram_len: usize,
     now: Instant,
 ) -> ProcessResult {
-    let dcid_len = conn.dcid.len();
+    // For short headers, the DCID in the incoming packet is OUR SCID
+    let short_dcid_len = conn.scid.len();
 
     // Extract (space, pn_offset) from the header using an immutable borrow,
     // then release the borrow before passing quic_payload mutably.
     let (space, pn_offset) = {
-        let (header, _header_len) = match wire_quic::parse_header(quic_payload, dcid_len) {
+        let (header, _header_len) = match wire_quic::parse_header(quic_payload, short_dcid_len) {
             Ok(h) => h,
             Err(_) => return ProcessResult::Ok, // unparseable, drop
         };
@@ -205,11 +209,14 @@ fn decrypt_and_process(
     }
 
     // Decrypt payload — need copy for AAD (header bytes before payload)
-    let header_bytes = quic_payload[..payload_offset].to_vec();
+    // Use stack buffer instead of heap allocation (max long header is ~60 bytes)
+    let mut header_buf = [0u8; 64];
+    let header_len = payload_offset.min(64);
+    header_buf[..header_len].copy_from_slice(&quic_payload[..header_len]);
     let plaintext_len = match decrypt_payload(
         remote_key,
         pn,
-        &header_bytes,
+        &header_buf[..header_len],
         &mut quic_payload[payload_offset..],
     ) {
         Ok(len) => len,
@@ -222,8 +229,15 @@ fn decrypt_and_process(
     // Mark PN as seen
     conn.recv_pn_seen[space].mark(pn);
 
-    // Update amplification tracking
+    // Update amplification tracking (Fix 13: check if we were at limit before receiving)
+    let was_at_limit = !conn.path.amplification.can_send(1);
     conn.path.amplification.on_bytes_received(datagram_len);
+    if was_at_limit && conn.path.amplification.can_send(1) {
+        // Unblocked from anti-amplification limit — caller will generate_packets
+    }
+
+    // Update last activity time for idle timeout tracking (Fix 8)
+    conn.last_activity = now;
 
     // Parse and dispatch frames
     let plaintext = &quic_payload[payload_offset..payload_offset + plaintext_len];
@@ -242,6 +256,13 @@ fn decrypt_and_process(
         // First Handshake packet processed -> discard Initial keys
         conn.keys.initial = None;
         conn.loss.discard_space(0);
+    }
+
+    // Fix 6: Discard handshake keys when server receives a 1-RTT packet
+    // (confirms client got the handshake)
+    if space == 2 && conn.keys.handshake.is_some() {
+        conn.keys.handshake = None;
+        conn.loss.discard_space(1);
     }
 
     result
@@ -271,7 +292,11 @@ fn dispatch_frames(
                 QuicFrame::ConnectionClose(cc) if cc.frame_type.is_some() => {
                     // type 0x1c has frame_type field (transport close) — allowed
                 }
-                _ => continue, // invalid frame for this space, skip
+                _ => {
+                    // PROTOCOL_VIOLATION: invalid frame for Initial/Handshake space
+                    conn.state = ConnectionState::Closing;
+                    return ProcessResult::ConnectionClosed;
+                }
             }
         }
 
@@ -397,14 +422,19 @@ fn handle_crypto_frame(
     }
     if let Some(rtt_keys) = output.one_rtt_keys {
         conn.keys.one_rtt = Some(rtt_keys);
+        // Store key update secrets for future key rotation (Fix 7)
+        if let Some(secrets) = output.next_secrets {
+            conn.key_update_secrets = Some(secrets);
+        }
         if conn.side == Side::Server {
             conn.state = ConnectionState::Established;
             conn.send_handshake_done = true;
             conn.notify_established = true;
             conn.path.amplification.set_validated();
-            // Discard handshake keys after installing 1-RTT
-            conn.keys.handshake = None;
-            conn.loss.discard_space(1);
+            conn.loss.handshake_confirmed = true;
+            // Fix 6: DON'T discard handshake keys yet — wait until we
+            // receive a 1-RTT packet (confirms client got the handshake).
+            // Key discard happens in decrypt_and_process when space == 2.
         }
         // Notify socket layer: handshake complete
         conn.event_queue
@@ -465,7 +495,14 @@ fn handle_ack_frame(
     );
 
     // Feed to loss detector
-    let ack_delay = coarsetime::Duration::from_millis(ack.ack_delay);
+    // Fix 1: Apply ack_delay_exponent. The ACK delay field is in microseconds / 2^exponent.
+    let ack_delay_exponent = conn
+        .peer_params
+        .as_ref()
+        .map(|p| p.ack_delay_exponent)
+        .unwrap_or(3); // default exponent is 3
+    let ack_delay_us = ack.ack_delay * (1u64 << ack_delay_exponent);
+    let ack_delay = coarsetime::Duration::from_millis(ack_delay_us / 1000);
     let max_ack_delay = conn
         .peer_params
         .as_ref()
@@ -502,9 +539,27 @@ fn handle_ack_frame(
         let frame_ranges: smallvec::SmallVec<[(u32, u32); 8]> =
             lost.iter().map(|(_, pkt)| pkt.frame_range).collect();
 
-        for (_, pkt) in &lost {
-            conn.congestion
-                .on_congestion_event(pkt.size as usize, now, pkt.time_sent);
+        // Fix 10: Single congestion event per loss round — use max sent_time
+        let max_sent_time = lost.iter().map(|(_, pkt)| pkt.time_sent).max().unwrap();
+        let total_lost_bytes: usize = lost.iter().map(|(_, pkt)| pkt.size as usize).sum();
+        conn.congestion
+            .on_congestion_event(total_lost_bytes, now, max_sent_time);
+
+        // Fix 12: Check persistent congestion
+        if conn.loss.first_rtt_sample.is_some() && lost.len() >= 2 {
+            let max_ack_delay_pc = conn
+                .peer_params
+                .as_ref()
+                .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
+                .unwrap_or(coarsetime::Duration::from_millis(25));
+            let pto = conn.loss.pto(2, max_ack_delay_pc);
+            let earliest = lost.first().unwrap().1.time_sent;
+            let latest = lost.last().unwrap().1.time_sent;
+            let duration = latest.duration_since(earliest);
+            if conn.congestion.in_persistent_congestion(duration, pto) {
+                conn.congestion.on_persistent_congestion();
+                conn.loss.reset_min_rtt(conn.loss.latest_rtt);
+            }
         }
 
         let retransmit = build_retransmit_queue(&conn.frame_log, &frame_ranges);
@@ -598,6 +653,14 @@ pub fn generate_packets<'umem>(
         conn.state,
         ConnectionState::Draining | ConnectionState::Closed
     ) {
+        return;
+    }
+
+    // Fix 9: Closing state — send CONNECTION_CLOSE then transition to Draining
+    if conn.state == ConnectionState::Closing {
+        // TODO: Build CONNECTION_CLOSE packet and send it.
+        // For now, transition directly to Draining.
+        conn.state = ConnectionState::Draining;
         return;
     }
 
@@ -696,7 +759,7 @@ fn build_packet_in_frame(
         match PacketBuilder::begin_long(
             &mut frame[quic_offset..],
             packet_type_bits,
-            0x00000001, // QUIC v1
+            conn.version,
             conn.dcid.as_bytes(),
             conn.scid.as_bytes(),
             pn,
@@ -739,7 +802,16 @@ fn build_packet_in_frame(
     // 2. ACK
     if conn.ack[space as usize].needs_ack() {
         if let Some(largest) = conn.ack[space as usize].largest_received() {
-            let ack_delay = 0u64; // simplified; proper delay computed from largest_received_time
+            // Fix 2: Compute actual ACK delay from largest_received_time
+            let ack_delay =
+                if let Some(recv_time) = conn.ack[space as usize].largest_received_time() {
+                    let delay = now.duration_since(recv_time);
+                    let exponent = conn.local_params.ack_delay_exponent;
+                    // Encode: delay_us / 2^exponent
+                    (delay.as_millis() * 1000) / (1u64 << exponent)
+                } else {
+                    0
+                };
             let first_ack_range = conn.ack[space as usize].first_ack_range();
             let ack_range_count = conn.ack[space as usize].ack_range_count();
             let encoded_ranges = conn.ack[space as usize].encoded_ranges().to_vec();
@@ -797,9 +869,10 @@ fn build_packet_in_frame(
                     let data_len = send
                         .buffer
                         .len()
-                        .min(builder.remaining().saturating_sub(20));
-                    let mut temp = vec![0u8; data_len];
-                    let read = send.buffer.read(&mut temp);
+                        .min(builder.remaining().saturating_sub(20))
+                        .min(1500); // Fix 23: Cap to stack buffer size
+                    let mut temp = [0u8; 1500];
+                    let read = send.buffer.read(&mut temp[..data_len]);
                     let fin = send.fin_sent && send.buffer.is_empty();
                     if read > 0 || fin {
                         let written = builder.write_stream(
@@ -820,9 +893,9 @@ fn build_packet_in_frame(
     }
 
     // 7. Initial padding — Initial packets must be at least 1200 bytes total
+    // Fix 15: The 1200-byte minimum is for the UDP datagram (UDP header + QUIC payload)
     if space == 0 {
-        // Minimum QUIC payload size to reach 1200 byte UDP datagram
-        let min_quic_size = 1200usize.saturating_sub(ip_len + UDP_HEADER_LEN);
+        let min_quic_size = 1200usize.saturating_sub(UDP_HEADER_LEN);
         builder.pad_to(min_quic_size);
     }
 
@@ -931,8 +1004,17 @@ fn write_transport_headers(
         conn.local_port,
         conn.remote_port,
         udp_len as u16,
-        [0, 0], // checksum = 0 (optional for IPv4 over UDP, can be added later)
+        [0, 0], // checksum initially 0
     );
+
+    // Fix 20: UDP checksum is MANDATORY for IPv6. For IPv4, checksum 0 is valid (optional).
+    if matches!(conn.local_addr, IpAddress::V6(_)) {
+        // TODO: Compute proper UDP checksum over IPv6 pseudo-header + UDP payload.
+        // Setting 0xFFFF as a placeholder — a proper implementation should compute
+        // the full checksum over the IPv6 pseudo-header + UDP header + payload.
+        let udp_mut = unsafe { UdpHeader::from_bytes_at_mut(frame, udp_offset) };
+        udp_mut.checksum = [0xFF, 0xFF];
+    }
 
     total_frame_len
 }

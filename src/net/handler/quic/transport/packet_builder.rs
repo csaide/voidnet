@@ -213,9 +213,10 @@ impl<'a> PacketBuilder<'a> {
 
     /// Write PADDING to reach minimum size.
     pub fn pad_to(&mut self, min_size: usize) {
-        while self.offset + 16 < min_size && self.offset < self.buf.len() - 16 {
-            self.buf[self.offset] = 0; // PADDING frame = 0x00
-            self.offset += 1;
+        let target = min_size.min(self.buf.len().saturating_sub(16));
+        if self.offset < target {
+            self.buf[self.offset..target].fill(0);
+            self.offset = target;
         }
     }
 

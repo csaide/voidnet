@@ -2,7 +2,7 @@
 ///
 /// Zero-copy: `ConnectionIdRef` borrows directly from the input buffer.
 use crate::net::handler::quic::connection_id::ConnectionIdRef;
-use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
+use crate::net::handler::quic::transport::version::{QUIC_VERSION_1, QUIC_VERSION_2};
 
 /// QUIC packet type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,6 +216,13 @@ fn decode_long_packet_type(first_byte: u8, version: u32) -> Result<PacketType, H
             1 => Ok(PacketType::ZeroRtt),
             2 => Ok(PacketType::Handshake),
             3 => Ok(PacketType::Retry),
+            _ => unreachable!(),
+        },
+        QUIC_VERSION_2 => match (first_byte & 0x30) >> 4 {
+            0 => Ok(PacketType::Retry),
+            1 => Ok(PacketType::Initial),
+            2 => Ok(PacketType::ZeroRtt),
+            3 => Ok(PacketType::Handshake),
             _ => unreachable!(),
         },
         0x00000000 => Ok(PacketType::Initial), // Version Negotiation handled separately
