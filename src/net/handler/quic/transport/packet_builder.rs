@@ -286,6 +286,18 @@ impl<'a> PacketBuilder<'a> {
         true
     }
 
+    /// Write a CONNECTION_CLOSE frame (0x1c). Returns true if written.
+    pub fn write_connection_close(&mut self, error_code: u64, frame_log: &mut FrameLog) -> bool {
+        let needed = 1 + 8 + 1 + 1; // generous estimate for type + error_code + frame_type(0) + reason_len(0)
+        if self.remaining() < needed {
+            return false;
+        }
+        let written =
+            frame_writer::write_connection_close(&mut self.buf[self.offset..], error_code, 0, &[]);
+        self.offset += written;
+        true
+    }
+
     /// Write a PING frame.
     pub fn write_ping(&mut self, frame_log: &mut FrameLog) {
         if self.remaining() > 0 {

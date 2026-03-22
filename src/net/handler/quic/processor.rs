@@ -725,8 +725,99 @@ pub fn generate_packets<'umem>(
 
     // Fix 9: Closing state — send CONNECTION_CLOSE then transition to Draining
     if conn.state == ConnectionState::Closing {
-        // TODO: Build CONNECTION_CLOSE packet and send it.
-        // For now, transition directly to Draining.
+        let error_code = conn.close_error.map(|e| e.code()).unwrap_or(0);
+
+        // Pick the highest available encryption space
+        let space: u8 = if conn.keys.one_rtt.is_some() {
+            2
+        } else if conn.keys.handshake.is_some() {
+            1
+        } else if conn.keys.initial.is_some() {
+            0
+        } else {
+            conn.state = ConnectionState::Draining;
+            return;
+        };
+
+        if let Some(mut frame) = free_frames.pop() {
+            let ip_len = match conn.local_addr {
+                IpAddress::V4(_) => IPV4_MIN_HEADER_LEN,
+                IpAddress::V6(_) => IPV6_HEADER_LEN,
+            };
+            let quic_offset = ETH_LEN + ip_len + UDP_HEADER_LEN;
+            let capacity = frame.capacity();
+            if capacity >= quic_offset + 64 {
+                unsafe { frame.set_len(capacity) };
+                let pn = conn.loss.next_pn(space as usize);
+                let largest_acked = conn.ack[space as usize].largest_received().unwrap_or(0);
+
+                let builder_opt = if space <= 1 {
+                    let packet_type_bits = if space == 0 { 0x00 } else { 0x02 };
+                    PacketBuilder::begin_long(
+                        &mut frame[quic_offset..],
+                        packet_type_bits,
+                        conn.version,
+                        conn.dcid.as_bytes(),
+                        conn.scid.as_bytes(),
+                        pn,
+                        largest_acked,
+                        &conn.frame_log,
+                    )
+                } else {
+                    PacketBuilder::begin_short(
+                        &mut frame[quic_offset..],
+                        conn.dcid.as_bytes(),
+                        pn,
+                        largest_acked,
+                        false,
+                        &conn.frame_log,
+                    )
+                };
+
+                if let Some(mut builder) = builder_opt {
+                    builder.write_connection_close(error_code, &mut conn.frame_log);
+                    let pn_offset = builder.pn_offset();
+                    let pn_length = builder.pn_length();
+                    let quic_len = builder.finish();
+
+                    let local_key = match space {
+                        0 => conn.keys.initial.as_ref().map(|kp| &kp.local),
+                        1 => conn.keys.handshake.as_ref().map(|kp| &kp.local),
+                        2 => conn.keys.one_rtt.as_ref().map(|kp| &kp.local),
+                        _ => None,
+                    };
+
+                    if let Some(key) = local_key {
+                        let quic_buf = &mut frame[quic_offset..quic_offset + quic_len];
+                        if let Ok(protected_len) =
+                            protect_packet(key, quic_buf, pn_offset, pn_length, pn)
+                        {
+                            let total_len = write_transport_headers(
+                                conn,
+                                &mut frame,
+                                quic_offset,
+                                protected_len,
+                            );
+                            if total_len > 0 {
+                                unsafe { frame.set_len(total_len) };
+                                tx_return.push(frame);
+                            } else {
+                                free_frames.push(frame);
+                            }
+                        } else {
+                            free_frames.push(frame);
+                        }
+                    } else {
+                        free_frames.push(frame);
+                    }
+                } else {
+                    free_frames.push(frame);
+                }
+            } else {
+                free_frames.push(frame);
+            }
+        }
+
         conn.state = ConnectionState::Draining;
         return;
     }
