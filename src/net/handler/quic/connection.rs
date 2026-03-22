@@ -152,6 +152,17 @@ pub struct QuicConnectionState {
     /// Flag: loss detection timer needs re-arming after ACK/timeout processing (RFC 9002 §A.7).
     /// Cleared when generate_packets runs and re-arms the timer.
     pub timer_needs_rearm: bool,
+
+    /// Flag: draining timer needs to be armed after entering Closing state (RFC 9000 §10.2).
+    /// Set by the processor; cleared by generate_packets when the timer is armed.
+    pub needs_draining_timer: bool,
+
+    /// Flag: key discard timer needs arming after a key update (RFC 9001 §6.5).
+    /// Old keys are retained for 3×PTO, then discarded.
+    pub needs_key_discard_timer: bool,
+
+    /// Timestamp of last CONNECTION_CLOSE sent in Closing state (for rate limiting, RFC 9000 §10.2.1).
+    pub last_close_sent: Option<Instant>,
 }
 
 impl QuicConnectionState {
@@ -168,6 +179,12 @@ impl QuicConnectionState {
         let mut streams = StreamMap::new(is_client);
         streams.local_max_bidi = local_params.initial_max_streams_bidi;
         streams.local_max_uni = local_params.initial_max_streams_uni;
+        streams.committed_max_bidi = local_params.initial_max_streams_bidi;
+        streams.committed_max_uni = local_params.initial_max_streams_uni;
+        // Set our local recv limits from our own transport params
+        streams.local_recv_max_bidi = local_params.initial_max_stream_data_bidi_local;
+        streams.local_recv_max_bidi_remote = local_params.initial_max_stream_data_bidi_remote;
+        streams.local_recv_max_uni = local_params.initial_max_stream_data_uni;
         let idle_timeout = if local_params.max_idle_timeout_ms > 0 {
             Duration::from_millis(local_params.max_idle_timeout_ms)
         } else {
@@ -230,6 +247,9 @@ impl QuicConnectionState {
             close_error: None,
             closing_frame_sent: false,
             timer_needs_rearm: false,
+            needs_draining_timer: false,
+            needs_key_discard_timer: false,
+            last_close_sent: None,
         }
     }
 }

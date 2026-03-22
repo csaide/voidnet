@@ -1484,6 +1484,35 @@ fn build_packet_in_frame(
         }
     }
 
+    // 4d. MAX_STREAMS — expand peer's stream concurrency (RFC 9000 §4.6)
+    if space == 2 {
+        if conn.retransmit.max_streams {
+            let bidi_max = conn.streams.local_max_bidi;
+            let uni_max = conn.streams.local_max_uni;
+            if bidi_max > 0 {
+                builder.write_max_streams(bidi_max, true, &mut conn.frame_log);
+            }
+            if uni_max > 0 {
+                builder.write_max_streams(uni_max, false, &mut conn.frame_log);
+            }
+            conn.retransmit.max_streams = false;
+            wrote_ack_eliciting = true;
+        } else {
+            if let Some(new_max) = conn.streams.should_send_max_streams_bidi() {
+                if builder.write_max_streams(new_max, true, &mut conn.frame_log) {
+                    conn.streams.commit_max_streams_bidi(new_max);
+                    wrote_ack_eliciting = true;
+                }
+            }
+            if let Some(new_max) = conn.streams.should_send_max_streams_uni() {
+                if builder.write_max_streams(new_max, false, &mut conn.frame_log) {
+                    conn.streams.commit_max_streams_uni(new_max);
+                    wrote_ack_eliciting = true;
+                }
+            }
+        }
+    }
+
     // 4. PATH_RESPONSE
     if space == 2 {
         if let Some(data) = conn.pending_path_response.take() {

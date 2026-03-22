@@ -293,6 +293,21 @@ impl<'a> PacketBuilder<'a> {
         true
     }
 
+    /// Write a MAX_STREAMS frame (0x12 for bidi, 0x13 for uni). Returns true if written.
+    pub fn write_max_streams(&mut self, max: u64, bidi: bool, frame_log: &mut FrameLog) -> bool {
+        let needed = 1 + varint_len(max);
+        if self.remaining() < needed {
+            return false;
+        }
+        let written = frame_writer::write_max_streams(&mut self.buf[self.offset..], max, bidi);
+        self.offset += written;
+        frame_log.push(SentFrame::MaxStreams {
+            bidi: if bidi { max } else { 0 },
+            uni: if bidi { 0 } else { max },
+        });
+        true
+    }
+
     /// Write a HANDSHAKE_DONE frame (0x1e). Returns true if written.
     pub fn write_handshake_done(&mut self, frame_log: &mut FrameLog) -> bool {
         if self.remaining() < 1 {

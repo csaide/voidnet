@@ -213,6 +213,23 @@ fn stream_map_remove() {
     assert!(map.get(id).is_none());
 }
 
+// ── MAX_STREAMS expansion ─────────────────────────────────────────
+
+#[test]
+fn max_streams_expansion() {
+    use crate::net::handler::quic::stream::map::StreamMap;
+    use crate::net::handler::quic::transport::frame::StreamId;
+    let mut map = StreamMap::new(false);
+    map.local_max_bidi = 4;
+    map.committed_max_bidi = 4;
+    for i in 0..3u64 {
+        assert!(map.get_or_create(StreamId(i * 4)).is_ok());
+    }
+    let new_bidi = map.should_send_max_streams_bidi();
+    assert!(new_bidi.is_some());
+    assert!(new_bidi.unwrap() > 4);
+}
+
 // ── StreamPool ────────────────────────────────────────────────────
 
 #[test]

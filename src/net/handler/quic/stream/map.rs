@@ -36,6 +36,10 @@ pub struct StreamMap {
     pub peer_opened_bidi: u64,
     pub peer_opened_uni: u64,
 
+    // Committed MAX_STREAMS values (last advertised to peer)
+    pub committed_max_bidi: u64,
+    pub committed_max_uni: u64,
+
     // Per-stream flow control limits from transport params (RFC 9000 §18.2)
     /// Receive limit for locally-initiated bidi streams (our initial_max_stream_data_bidi_local)
     pub local_recv_max_bidi: u64,
@@ -67,6 +71,8 @@ impl StreamMap {
             local_opened_uni: 0,
             peer_opened_bidi: 0,
             peer_opened_uni: 0,
+            committed_max_bidi: 0,
+            committed_max_uni: 0,
             local_recv_max_bidi: 65536,
             peer_send_max_bidi: 65536,
             local_recv_max_bidi_remote: 65536,
@@ -255,6 +261,38 @@ impl StreamMap {
             }
         }
         Ok(vec[idx].as_mut().unwrap())
+    }
+
+    /// Returns a new bidi MAX_STREAMS value to advertise, if the peer has used more than half
+    /// of the committed limit. Returns None if no update is needed.
+    pub fn should_send_max_streams_bidi(&self) -> Option<u64> {
+        if self.peer_opened_bidi > self.committed_max_bidi / 2 {
+            Some(self.peer_opened_bidi + self.committed_max_bidi)
+        } else {
+            None
+        }
+    }
+
+    /// Returns a new uni MAX_STREAMS value to advertise, if the peer has used more than half
+    /// of the committed limit. Returns None if no update is needed.
+    pub fn should_send_max_streams_uni(&self) -> Option<u64> {
+        if self.peer_opened_uni > self.committed_max_uni / 2 {
+            Some(self.peer_opened_uni + self.committed_max_uni)
+        } else {
+            None
+        }
+    }
+
+    /// Update local bidi stream limit and record as committed.
+    pub fn commit_max_streams_bidi(&mut self, max: u64) {
+        self.local_max_bidi = max;
+        self.committed_max_bidi = max;
+    }
+
+    /// Update local uni stream limit and record as committed.
+    pub fn commit_max_streams_uni(&mut self, max: u64) {
+        self.local_max_uni = max;
+        self.committed_max_uni = max;
     }
 
     /// Remove a stream entry.
