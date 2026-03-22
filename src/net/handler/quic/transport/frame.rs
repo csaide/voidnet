@@ -499,6 +499,10 @@ pub fn parse_frame(buf: &[u8]) -> Result<(QuicFrame<'_>, usize), FrameParseError
         // HANDSHAKE_DONE (0x1e)
         0x1e => Ok((QuicFrame::HandshakeDone, type_len)),
 
-        _ => Err(FrameParseError::InvalidFrameType(frame_type)),
+        _ => {
+            // RFC 9000 §19: unknown frame types MUST be ignored.
+            // Consume only the type varint and treat as zero-length.
+            Ok((QuicFrame::Padding, type_len))
+        }
     }
 }
