@@ -331,7 +331,8 @@ impl RecvHalf {
     }
 
     /// Write received data at an offset. Handles out-of-order.
-    pub fn receive(&mut self, offset: u64, data: &[u8], fin: bool) -> Result<(), RecvError> {
+    /// Returns Ok(bytes_written) where 0 means fully duplicate data.
+    pub fn receive(&mut self, offset: u64, data: &[u8], fin: bool) -> Result<usize, RecvError> {
         let end = offset + data.len() as u64;
 
         // Check flow control
@@ -357,7 +358,7 @@ impl RecvHalf {
         if offset < self.received {
             let overlap = (self.received - offset) as usize;
             if overlap >= data.len() {
-                return Ok(()); // fully duplicate, already have all this data
+                return Ok(0); // fully duplicate, already have all this data
             }
             // Partially overlapping — trim prefix, process the new tail
             return self.receive(self.received, &data[overlap..], fin);
@@ -367,7 +368,7 @@ impl RecvHalf {
         // read_offset tracks how much the app has consumed from the stream.
         // buffer head corresponds to read_offset in stream-space.
         let buf_offset = (offset - self.read_offset) as usize;
-        self.buffer.write_at(buf_offset, data);
+        let written = self.buffer.write_at(buf_offset, data);
 
         if offset == self.received {
             // In-order: advance contiguous frontier
@@ -381,7 +382,7 @@ impl RecvHalf {
             self.ooo.insert(offset, data.len());
         }
 
-        Ok(())
+        Ok(written)
     }
 
     fn drain_contiguous(&mut self) {

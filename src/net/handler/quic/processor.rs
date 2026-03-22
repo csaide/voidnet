@@ -324,13 +324,17 @@ fn dispatch_frames(
             }
 
             QuicFrame::Stream(stream) => {
-                handle_stream_frame(
+                if let Some(err) = handle_stream_frame(
                     conn,
                     stream.stream_id,
                     stream.offset,
                     stream.data,
                     stream.fin,
-                );
+                ) {
+                    conn.close_error = Some(err);
+                    conn.state = ConnectionState::Closing;
+                    return ProcessResult::ConnectionClosed;
+                }
             }
 
             QuicFrame::MaxData(max) => {
@@ -590,22 +594,27 @@ fn handle_stream_frame(
     offset: u64,
     data: &[u8],
     fin: bool,
-) {
+) -> Option<TransportError> {
     // Check if this is a new stream (not yet in the map)
     let is_new = conn.streams.get(stream_id).is_none();
 
     let entry = match conn.streams.get_or_create(stream_id) {
         Ok(e) => e,
-        Err(_) => return, // stream limit exceeded
+        Err(_) => return Some(TransportError::STREAM_LIMIT_ERROR),
     };
 
     if let Some(ref mut recv) = entry.recv {
-        // Connection-level flow control check
-        if conn.flow.on_data_received(data.len() as u64).is_err() {
-            // FLOW_CONTROL_ERROR — should close connection
-            return;
+        match recv.receive(offset, data, fin) {
+            Ok(new_bytes) => {
+                // Only count genuinely new bytes against connection flow control
+                if new_bytes > 0 {
+                    if conn.flow.on_data_received(new_bytes as u64).is_err() {
+                        return Some(TransportError::FLOW_CONTROL_ERROR);
+                    }
+                }
+            }
+            Err(_) => return Some(TransportError::FLOW_CONTROL_ERROR),
         }
-        let _ = recv.receive(offset, data, fin);
     }
 
     // Notify socket layer
@@ -616,6 +625,8 @@ fn handle_stream_frame(
         .push(crate::net::handler::quic::event::QuicEvent::StreamReadable(
             stream_id,
         ));
+
+    None
 }
 
 // ---------------------------------------------------------------------------
