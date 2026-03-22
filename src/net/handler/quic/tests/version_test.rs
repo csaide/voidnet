@@ -26,8 +26,8 @@ fn build_vn_packet() {
 
     let pkt = build_version_negotiation(&dcid, &scid, &supported);
 
-    // first byte: long header form (bit 7 set)
-    assert_eq!(pkt[0], 0x80);
+    // first byte: long header form (bit 7 must be set, bits 0-6 randomized)
+    assert!(pkt[0] & 0x80 != 0, "bit 7 (long header form) must be set");
 
     // bytes 1-4: version = 0
     assert_eq!(&pkt[1..5], &0u32.to_be_bytes());
