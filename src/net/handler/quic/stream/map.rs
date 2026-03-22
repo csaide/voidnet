@@ -101,31 +101,31 @@ impl StreamMap {
         };
 
         if is_new {
-            // Enforce stream concurrency limits
             if !we_initiated {
-                if is_bidi && self.peer_opened_bidi >= self.local_max_bidi {
-                    return Err(StreamLimitError);
-                }
-                if !is_bidi && self.peer_opened_uni >= self.local_max_uni {
-                    return Err(StreamLimitError);
+                let required_count = (idx as u64) + 1;
+                if is_bidi {
+                    if required_count > self.local_max_bidi {
+                        return Err(StreamLimitError);
+                    }
+                    if required_count > self.peer_opened_bidi {
+                        self.peer_opened_bidi = required_count;
+                    }
+                } else {
+                    if required_count > self.local_max_uni {
+                        return Err(StreamLimitError);
+                    }
+                    if required_count > self.peer_opened_uni {
+                        self.peer_opened_uni = required_count;
+                    }
                 }
             } else {
+                // locally initiated — keep existing logic
                 if is_bidi && self.local_opened_bidi >= self.peer_max_bidi {
                     return Err(StreamLimitError);
                 }
                 if !is_bidi && self.local_opened_uni >= self.peer_max_uni {
                     return Err(StreamLimitError);
                 }
-            }
-
-            // Increment opened counters before borrowing the vec mutably
-            if !we_initiated {
-                if is_bidi {
-                    self.peer_opened_bidi += 1;
-                } else {
-                    self.peer_opened_uni += 1;
-                }
-            } else {
                 if is_bidi {
                     self.local_opened_bidi += 1;
                 } else {
@@ -138,6 +138,37 @@ impl StreamMap {
         if vec.len() <= idx {
             vec.resize_with(idx + 1, || None);
         }
+
+        // For peer-initiated streams, create intermediate entries for all indices 0..=idx
+        if !we_initiated && is_new {
+            for i in 0..=idx {
+                if vec.get(i).map_or(true, |e| e.is_none()) {
+                    if vec.len() <= i {
+                        vec.resize_with(i + 1, || None);
+                    }
+                    let (state, has_send, has_recv) = if is_bidi {
+                        (StreamState::new_bidi(), true, true)
+                    } else {
+                        (StreamState::new_recv_only(), false, true)
+                    };
+                    vec[i] = Some(StreamEntry {
+                        state,
+                        send: if has_send {
+                            Some(SendHalf::new(65536))
+                        } else {
+                            None
+                        },
+                        recv: if has_recv {
+                            Some(RecvHalf::new(65536))
+                        } else {
+                            None
+                        },
+                    });
+                }
+            }
+            return Ok(vec[idx].as_mut().unwrap());
+        }
+
         if vec[idx].is_none() {
             let (state, has_send, has_recv) = if is_bidi {
                 (StreamState::new_bidi(), true, true)

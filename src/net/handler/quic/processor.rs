@@ -302,7 +302,7 @@ fn dispatch_frames(
                     // type 0x1c has frame_type field (transport close) — allowed
                 }
                 _ => {
-                    // PROTOCOL_VIOLATION: invalid frame for Initial/Handshake space
+                    conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
                     conn.state = ConnectionState::Closing;
                     return ProcessResult::ConnectionClosed;
                 }
@@ -398,6 +398,13 @@ fn dispatch_frames(
             }
 
             QuicFrame::StopSending(stop) => {
+                let we_initiated =
+                    stop.stream_id.initiator_is_client() == (conn.side == Side::Client);
+                if !stop.stream_id.is_bidi() && !we_initiated {
+                    conn.close_error = Some(TransportError::STREAM_STATE_ERROR);
+                    conn.state = ConnectionState::Closing;
+                    return ProcessResult::ConnectionClosed;
+                }
                 if let Some(entry) = conn.streams.get_mut(stop.stream_id) {
                     if let Some(ref mut send) = entry.send {
                         send.reset_requested = true;
@@ -407,12 +414,27 @@ fn dispatch_frames(
             }
 
             QuicFrame::ResetStream(reset) => {
+                let we_initiated =
+                    reset.stream_id.initiator_is_client() == (conn.side == Side::Client);
+                if !reset.stream_id.is_bidi() && we_initiated {
+                    conn.close_error = Some(TransportError::STREAM_STATE_ERROR);
+                    conn.state = ConnectionState::Closing;
+                    return ProcessResult::ConnectionClosed;
+                }
                 if let Some(entry) = conn.streams.get_mut(reset.stream_id) {
                     if let Some(ref mut recv) = entry.recv {
-                        recv.on_reset(reset.final_size);
+                        if recv.on_reset(reset.final_size).is_err() {
+                            conn.close_error = Some(TransportError::FINAL_SIZE_ERROR);
+                            conn.state = ConnectionState::Closing;
+                            return ProcessResult::ConnectionClosed;
+                        }
                     }
                 }
-                conn.flow.on_stream_final_size(reset.final_size);
+                if conn.flow.on_stream_final_size(reset.final_size).is_err() {
+                    conn.close_error = Some(TransportError::FLOW_CONTROL_ERROR);
+                    conn.state = ConnectionState::Closing;
+                    return ProcessResult::ConnectionClosed;
+                }
             }
 
             QuicFrame::PathResponse(data) => {
@@ -653,6 +675,13 @@ fn handle_stream_frame(
     data: &[u8],
     fin: bool,
 ) -> Option<TransportError> {
+    // Receiving data on our own send-only unidirectional stream is STREAM_STATE_ERROR
+    let we_initiated = stream_id.initiator_is_client() == (conn.side == Side::Client);
+    let is_bidi = stream_id.is_bidi();
+    if !is_bidi && we_initiated {
+        return Some(TransportError::STREAM_STATE_ERROR);
+    }
+
     // Check if this is a new stream (not yet in the map)
     let is_new = conn.streams.get(stream_id).is_none();
 
