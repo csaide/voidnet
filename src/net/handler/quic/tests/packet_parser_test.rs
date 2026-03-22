@@ -191,9 +191,10 @@ fn parse_initial_truncated() {
 
 #[test]
 fn packet_space_mapping() {
-    assert_eq!(packet_space(PacketType::Initial), 0);
-    assert_eq!(packet_space(PacketType::Handshake), 1);
-    assert_eq!(packet_space(PacketType::ZeroRtt), 2);
-    assert_eq!(packet_space(PacketType::OneRtt), 2);
-    assert_eq!(packet_space(PacketType::Retry), 0);
+    assert_eq!(packet_space(PacketType::Initial), Some(0));
+    assert_eq!(packet_space(PacketType::Handshake), Some(1));
+    assert_eq!(packet_space(PacketType::ZeroRtt), Some(2));
+    assert_eq!(packet_space(PacketType::OneRtt), Some(2));
+    assert_eq!(packet_space(PacketType::Retry), None);
+    assert_eq!(packet_space(PacketType::Unknown), None);
 }

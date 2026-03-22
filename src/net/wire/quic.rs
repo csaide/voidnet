@@ -13,6 +13,8 @@ pub enum PacketType {
     Retry,
     /// Short header (1-RTT).
     OneRtt,
+    /// Unrecognised version — invariant fields still valid (RFC 8999 §5.4).
+    Unknown,
 }
 
 /// Parsed QUIC packet header.
@@ -157,6 +159,9 @@ fn parse_long_header(
     if version == 0x00000000 {
         // Supported versions follow SCID, 4 bytes each.
         let versions = &buf[scid_end..];
+        if versions.is_empty() || versions.len() % 4 != 0 {
+            return Err(HeaderParseError::BufferTooShort);
+        }
         let total = scid_end + versions.len();
         return Ok((
             PacketHeader::VersionNegotiation(VnHeader {
@@ -226,7 +231,7 @@ fn decode_long_packet_type(first_byte: u8, version: u32) -> Result<PacketType, H
             _ => unreachable!(),
         },
         0x00000000 => Ok(PacketType::Initial), // Version Negotiation handled separately
-        _ => Err(HeaderParseError::UnknownVersion(version)),
+        _ => Ok(PacketType::Unknown),
     }
 }
 
@@ -459,6 +464,21 @@ mod tests {
         match hdr {
             PacketHeader::Long(lh) => assert_eq!(lh.packet_type, PacketType::Retry),
             other => panic!("expected Long, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unknown_version_parses_as_long_header() {
+        let mut buf = vec![0xC0]; // long header
+        buf.extend_from_slice(&0xDEADBEEFu32.to_be_bytes());
+        buf.push(4); // dcid_len
+        buf.extend_from_slice(&[1, 2, 3, 4]);
+        buf.push(4); // scid_len
+        buf.extend_from_slice(&[5, 6, 7, 8]);
+        let (header, _) = parse_header(&buf, 0).unwrap();
+        match header {
+            PacketHeader::Long(lh) => assert_eq!(lh.packet_type, PacketType::Unknown),
+            _ => panic!("expected long header"),
         }
     }
 }
