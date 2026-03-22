@@ -9,13 +9,11 @@ const RETRY_NONCE_V1: [u8; 12] = [
 ];
 
 /// Fixed key for Retry integrity tag computation (QUIC v2, RFC 9369)
-#[allow(dead_code)]
 const RETRY_KEY_V2: [u8; 16] = [
     0x8f, 0xb4, 0xb0, 0x1b, 0x56, 0xac, 0x48, 0xe2, 0x60, 0xfb, 0xcb, 0xce, 0xad, 0x7c, 0xcc, 0x92,
 ];
 
 /// Fixed nonce for Retry integrity tag computation (QUIC v2, RFC 9369)
-#[allow(dead_code)]
 const RETRY_NONCE_V2: [u8; 12] = [
     0xd8, 0x69, 0x69, 0xbc, 0x2d, 0x7c, 0x6d, 0x99, 0x90, 0xef, 0xb0, 0x4a,
 ];
@@ -23,8 +21,17 @@ const RETRY_NONCE_V2: [u8; 12] = [
 /// Compute Retry integrity tag.
 /// `odcid` = Original Destination Connection ID
 /// `retry_packet` = the Retry packet bytes WITHOUT the tag (header + token)
-pub fn compute_retry_integrity_tag(odcid: &[u8], retry_packet: &[u8]) -> [u8; 16] {
+/// `version` = QUIC version to select the correct key/nonce (v1 or v2)
+pub fn compute_retry_integrity_tag(odcid: &[u8], retry_packet: &[u8], version: u32) -> [u8; 16] {
     use ring::aead;
+
+    use super::super::transport::version::QUIC_VERSION_2;
+
+    let (key_bytes, nonce_bytes) = if version == QUIC_VERSION_2 {
+        (&RETRY_KEY_V2, &RETRY_NONCE_V2)
+    } else {
+        (&RETRY_KEY_V1, &RETRY_NONCE_V1)
+    };
 
     // Build AAD: ODCID_len(1) + ODCID + retry_packet
     let mut aad = Vec::with_capacity(1 + odcid.len() + retry_packet.len());
@@ -33,8 +40,8 @@ pub fn compute_retry_integrity_tag(odcid: &[u8], retry_packet: &[u8]) -> [u8; 16
     aad.extend_from_slice(retry_packet);
 
     // AES-128-GCM encrypt with empty plaintext → tag is the output
-    let key = aead::UnboundKey::new(&aead::AES_128_GCM, &RETRY_KEY_V1).unwrap();
-    let nonce = aead::Nonce::assume_unique_for_key(RETRY_NONCE_V1);
+    let key = aead::UnboundKey::new(&aead::AES_128_GCM, key_bytes).unwrap();
+    let nonce = aead::Nonce::assume_unique_for_key(*nonce_bytes);
     let key = aead::LessSafeKey::new(key);
 
     let mut in_out = Vec::new(); // empty plaintext
@@ -48,12 +55,16 @@ pub fn compute_retry_integrity_tag(odcid: &[u8], retry_packet: &[u8]) -> [u8; 16
 }
 
 /// Verify a Retry integrity tag.
-pub fn verify_retry_integrity_tag(odcid: &[u8], retry_packet_with_tag: &[u8]) -> bool {
+pub fn verify_retry_integrity_tag(
+    odcid: &[u8],
+    retry_packet_with_tag: &[u8],
+    version: u32,
+) -> bool {
     if retry_packet_with_tag.len() < 16 {
         return false;
     }
     let (packet, tag) = retry_packet_with_tag.split_at(retry_packet_with_tag.len() - 16);
-    let expected = compute_retry_integrity_tag(odcid, packet);
+    let expected = compute_retry_integrity_tag(odcid, packet, version);
     // Constant-time comparison (fixed-length, safe to compare byte-by-byte with XOR)
     let mut diff = 0u8;
     for (a, b) in expected.iter().zip(tag.iter()) {
