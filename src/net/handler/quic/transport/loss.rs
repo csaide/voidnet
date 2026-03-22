@@ -377,13 +377,16 @@ impl LossDetector {
         // Compute loss_delay in microseconds to maintain precision.
         let loss_delay_us =
             (K_TIME_THRESHOLD_NUM as u64 * max_rtt.as_micros()) / K_TIME_THRESHOLD_DEN as u64;
-        let loss_delay_ms = loss_delay_us / 1000;
-        let loss_delay_ms = if loss_delay_ms < K_GRANULARITY_MS {
-            K_GRANULARITY_MS
+        let granularity_us = K_GRANULARITY_MS * 1000;
+        let loss_delay_us = if loss_delay_us < granularity_us {
+            granularity_us
         } else {
-            loss_delay_ms
+            loss_delay_us
         };
-        let loss_delay = Duration::from_millis(loss_delay_ms);
+        let loss_delay = Duration::new(
+            loss_delay_us / 1_000_000,
+            ((loss_delay_us % 1_000_000) * 1000) as u32,
+        );
 
         let lost_send_time = now.checked_sub(loss_delay);
 
