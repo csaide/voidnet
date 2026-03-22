@@ -1094,18 +1094,25 @@ pub fn has_pending_data_any(conn: &QuicConnectionState) -> bool {
 
 /// Check if a packet-number space has anything to send.
 fn has_pending_data(conn: &QuicConnectionState, space: u8) -> bool {
-    !conn.pending_crypto[space as usize].is_empty()
-        || conn.ack[space as usize].needs_ack()
-        || (space == 2 && conn.send_handshake_done)
+    // Per-space: CRYPTO data or ACK needed
+    if !conn.pending_crypto[space as usize].is_empty() {
+        return true;
+    }
+    if conn.ack[space as usize].needs_ack() {
+        return true;
+    }
+    // Probe can be sent in any space (PING is valid everywhere)
+    if conn.needs_probe {
+        return true;
+    }
+    // Everything below is 1-RTT only (space 2)
+    if space != 2 {
+        return false;
+    }
+    conn.send_handshake_done
         || conn.pending_path_response.is_some()
-        || conn.needs_probe
-        || (space == 2 && conn.streams.has_pending_send())
-        || (space == 2 && has_pending_control_frames(conn))
-}
-
-/// Check if there are pending control frames (flow control, retransmit, etc.)
-fn has_pending_control_frames(conn: &QuicConnectionState) -> bool {
-    conn.retransmit.max_data
+        || conn.streams.has_pending_send()
+        || conn.retransmit.max_data
         || !conn.retransmit.max_stream_data.is_empty()
         || conn.retransmit.max_streams
         || !conn.retransmit.reset_streams.is_empty()
