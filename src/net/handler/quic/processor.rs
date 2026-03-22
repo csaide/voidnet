@@ -1089,6 +1089,14 @@ const ETH_LEN: usize = std::mem::size_of::<EthernetFrame>();
 
 /// Check if any packet-number space has anything to send.
 pub fn has_pending_data_any(conn: &QuicConnectionState) -> bool {
+    // Closing state always has pending data (CONNECTION_CLOSE frame)
+    if conn.state == ConnectionState::Closing && !conn.closing_frame_sent {
+        return true;
+    }
+    // Draining timer needs arming
+    if conn.needs_draining_timer {
+        return true;
+    }
     (0..3u8).any(|s| has_pending_data(conn, s))
 }
 
