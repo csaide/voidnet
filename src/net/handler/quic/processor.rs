@@ -480,6 +480,16 @@ fn handle_crypto_frame(
                         params_bytes,
                     )
                 {
+                    let peer_side = if conn.side == Side::Client {
+                        Side::Server
+                    } else {
+                        Side::Client
+                    };
+                    if let Err(err) = params.validate_for_side(peer_side) {
+                        conn.close_error = Some(err);
+                        conn.state = ConnectionState::Closing;
+                        return;
+                    }
                     conn.flow.update_max_data_send(params.initial_max_data);
                     conn.streams.peer_max_bidi = params.initial_max_streams_bidi;
                     conn.streams.peer_max_uni = params.initial_max_streams_uni;

@@ -353,7 +353,7 @@ impl TransportParams {
         if params.ack_delay_exponent > 20 {
             return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
         }
-        if params.max_ack_delay_ms > 16384 {
+        if params.max_ack_delay_ms >= 16384 {
             return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
         }
         if params.max_udp_payload_size < 1200 {
@@ -370,5 +370,31 @@ impl TransportParams {
         }
 
         Ok(params)
+    }
+
+    /// Validate transport parameters based on which side sent them (RFC 9000 §7.3, §18.2).
+    pub fn validate_for_side(
+        &self,
+        peer_side: crate::net::handler::quic::connection::Side,
+    ) -> Result<(), TransportError> {
+        use crate::net::handler::quic::connection::Side;
+        match peer_side {
+            Side::Client => {
+                // Clients MUST NOT send server-only parameters
+                if self.original_destination_connection_id.is_some()
+                    || self.stateless_reset_token.is_some()
+                    || self.retry_source_connection_id.is_some()
+                {
+                    return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+                }
+            }
+            Side::Server => {
+                // Servers MUST include original_destination_connection_id
+                if self.original_destination_connection_id.is_none() {
+                    return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+                }
+            }
+        }
+        Ok(())
     }
 }
