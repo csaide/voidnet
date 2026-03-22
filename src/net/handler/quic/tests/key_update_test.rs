@@ -7,8 +7,17 @@ fn cannot_initiate_before_ack() {
 }
 
 #[test]
+fn cannot_initiate_before_handshake_confirmed() {
+    let mut state = KeyUpdateState::new();
+    state.acked_current_phase = true;
+    // handshake_confirmed is false — must not allow key update (RFC 9001 §6)
+    assert!(!state.can_initiate_update());
+}
+
+#[test]
 fn can_initiate_after_ack() {
     let mut state = KeyUpdateState::new();
+    state.handshake_confirmed = true;
     state.acked_current_phase = true;
     assert!(state.can_initiate_update());
 }
@@ -25,6 +34,7 @@ fn update_flips_key_phase() {
 #[test]
 fn update_resets_ack_tracking() {
     let mut state = KeyUpdateState::new();
+    state.handshake_confirmed = true;
     state.acked_current_phase = true;
     state.on_update_initiated();
     assert!(!state.acked_current_phase);

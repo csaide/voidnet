@@ -254,6 +254,56 @@ impl QuicHandler {
         rx_return: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
+        let free_before = free_frames.num_frames();
+        let rx_before = rx_return.num_frames();
+        let tx_before = tx_return.num_frames();
+        self.process_ipv6_inner(
+            frame,
+            now,
+            wheel,
+            _neighbor_handler,
+            free_frames,
+            rx_return,
+            tx_return,
+        );
+        let free_after = free_frames.num_frames();
+        let rx_after = rx_return.num_frames();
+        let tx_after = tx_return.num_frames();
+        // 1 RX frame in. It goes to rx_return (+1).
+        // N frames popped from free, pushed to tx.
+        // Net: rx_after = rx_before + 1, free_delta = tx_delta
+        let free_delta = free_after as i64 - free_before as i64;
+        let tx_delta = tx_after as i64 - tx_before as i64;
+        let rx_delta = rx_after as i64 - rx_before as i64;
+        let total_delta = free_delta + tx_delta + rx_delta;
+        // total_delta should be exactly 1 (the incoming RX frame was added to rx_return)
+        debug_assert_eq!(
+            total_delta,
+            1,
+            "QUIC process_ipv6 frame imbalance: total_delta={} (free: {}→{} [{}], rx: {}→{} [{}], tx: {}→{} [{}])",
+            total_delta,
+            free_before,
+            free_after,
+            free_delta,
+            rx_before,
+            rx_after,
+            rx_delta,
+            tx_before,
+            tx_after,
+            tx_delta
+        );
+    }
+
+    fn process_ipv6_inner<'umem>(
+        &mut self,
+        frame: Frame<'umem>,
+        now: Instant,
+        wheel: &mut TimerWheel,
+        _neighbor_handler: &NeighborHandler,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
         use crate::net::wire::ethernet::EthernetFrame;
         use crate::net::wire::ip::{IPV6_HEADER_LEN, IpAddress, Ipv6Header};
         use crate::net::wire::quic as wire_quic;

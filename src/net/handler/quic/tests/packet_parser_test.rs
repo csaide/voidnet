@@ -39,13 +39,22 @@ fn crypto_recv_duplicate() {
 }
 
 #[test]
-fn crypto_recv_gap_dropped() {
+fn crypto_recv_gap_buffered() {
     let mut buf = CryptoRecvBuffer::new();
-    // Write at offset 100 when received=0 — gap, should drop
+    // Write at offset 100 when received=0 — gap, should be buffered (OOO)
     let n = buf.write(100, b"data").unwrap();
-    assert_eq!(n, 0);
+    assert_eq!(n, 4);
+    // Contiguous frontier hasn't advanced (gap at 0..100)
     assert_eq!(buf.received(), 0);
-    assert!(buf.is_empty());
+    assert!(buf.is_empty()); // no contiguous data yet
+
+    // Now fill the gap
+    let gap_data = [0u8; 100];
+    let n = buf.write(0, &gap_data).unwrap();
+    assert_eq!(n, 100);
+    // Contiguous frontier should now include the OOO data
+    assert_eq!(buf.received(), 104);
+    assert_eq!(buf.read_all().len(), 104);
 }
 
 #[test]

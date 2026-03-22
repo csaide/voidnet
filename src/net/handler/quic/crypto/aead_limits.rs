@@ -29,4 +29,12 @@ impl AeadLimits {
     pub fn must_close(&self, failed_decryptions: u64) -> bool {
         failed_decryptions >= self.integrity_limit
     }
+
+    /// Select limits from a negotiated cipher suite (RFC 9001 §6.6).
+    pub fn from_cipher_suite(cs: rustls::CipherSuite) -> Self {
+        match cs {
+            rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256 => Self::CHACHA20,
+            _ => Self::AES_GCM,
+        }
+    }
 }

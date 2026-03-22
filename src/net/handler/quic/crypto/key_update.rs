@@ -1,5 +1,3 @@
-use super::keys::DirectionalKey;
-
 /// Tracks key update state for a connection (RFC 9001 §6)
 pub struct KeyUpdateState {
     /// Current key phase bit (flipped on each update)
@@ -8,8 +6,13 @@ pub struct KeyUpdateState {
     pub lowest_pn_current_phase: Option<u64>,
     /// Whether we've received an ACK for current phase
     pub acked_current_phase: bool,
-    /// Previous receive key (kept for 3×PTO to handle reordering)
-    pub prev_remote_key: Option<DirectionalKey>,
+    /// Previous remote packet key (kept for reordered packets, RFC 9001 §6.1).
+    /// Header protection key is unchanged across key updates (RFC 9001 §5.4),
+    /// so only the packet key needs retention.
+    pub prev_remote_packet_key: Option<Box<dyn rustls::quic::PacketKey>>,
+    /// Whether the handshake has been confirmed (RFC 9001 §4.1.2).
+    /// Server: set when handshake completes. Client: set on HANDSHAKE_DONE receipt.
+    pub handshake_confirmed: bool,
 }
 
 impl KeyUpdateState {
@@ -18,15 +21,16 @@ impl KeyUpdateState {
             key_phase: false,
             lowest_pn_current_phase: None,
             acked_current_phase: false,
-            prev_remote_key: None,
+            prev_remote_packet_key: None,
+            handshake_confirmed: false,
         }
     }
 
-    /// Check if initiating a key update is allowed.
+    /// Check if initiating a key update is allowed (RFC 9001 §6).
     /// MUST NOT initiate before handshake confirmed.
     /// MUST NOT initiate without ACK for current phase.
     pub fn can_initiate_update(&self) -> bool {
-        self.acked_current_phase
+        self.handshake_confirmed && self.acked_current_phase
     }
 
     /// Record that a key update was initiated.

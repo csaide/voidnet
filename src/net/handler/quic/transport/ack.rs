@@ -140,8 +140,13 @@ impl AckState {
 
             // End of this range is prev_start - gap - 2
             // (gap+1 missing PNs separate it from prev_start)
-            let range_end = prev_start.saturating_sub(gap + 2);
-            let range_start = range_end.saturating_sub(ack_range);
+            // RFC 9000 §13.2: ranges must be in descending PN order; reject malformed
+            let Some(range_end) = prev_start.checked_sub(gap + 2) else {
+                break; // malformed ACK — underflow
+            };
+            let Some(range_start) = range_end.checked_sub(ack_range) else {
+                break; // malformed ACK — underflow
+            };
             result.push((range_start, range_end));
             prev_start = range_start;
         }

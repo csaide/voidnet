@@ -123,6 +123,14 @@ impl CryptoState {
         }
     }
 
+    /// Return the negotiated cipher suite, if available.
+    pub fn negotiated_cipher_suite(&self) -> Option<rustls::CipherSuite> {
+        match self {
+            CryptoState::Client(c) => c.negotiated_cipher_suite().map(|s| s.suite()),
+            CryptoState::Server(c) => c.negotiated_cipher_suite().map(|s| s.suite()),
+        }
+    }
+
     /// Get TLS alert code if any error occurred.
     pub fn alert(&self) -> Option<u8> {
         let alert = match self {

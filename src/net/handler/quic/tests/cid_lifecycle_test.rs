@@ -16,6 +16,14 @@ fn on_new_connection_id_retires_old() {
     let initial = ConnectionId::from_slice(&[0xaa]);
     let mut mgr = CidManager::new(initial, 4);
 
+    // First, store peer CIDs with sequences 0, 1, 2 so they can be retired
+    let cid0 = ConnectionId::from_slice(&[0x10]);
+    let cid1 = ConnectionId::from_slice(&[0x11]);
+    let cid2 = ConnectionId::from_slice(&[0x12]);
+    mgr.peer_cids.push_with_seq(cid0, 0);
+    mgr.peer_cids.push_with_seq(cid1, 1);
+    mgr.peer_cids.push_with_seq(cid2, 2);
+
     let new_cid = ConnectionId::from_slice(&[0xbb]);
     // sequence=3, retire_prior_to=3 means sequences 0, 1, 2 should be retired
     let retired = mgr.on_new_connection_id(3, 3, new_cid);
@@ -24,12 +32,20 @@ fn on_new_connection_id_retires_old() {
     assert!(retired.contains(&0));
     assert!(retired.contains(&1));
     assert!(retired.contains(&2));
+    // new CID should be stored
+    assert!(mgr.peer_cids.contains(&new_cid));
 }
 
 #[test]
 fn take_pending_retires() {
     let initial = ConnectionId::from_slice(&[0xcc]);
     let mut mgr = CidManager::new(initial, 4);
+
+    // Store peer CIDs with sequences 0 and 1
+    let cid0 = ConnectionId::from_slice(&[0x20]);
+    let cid1 = ConnectionId::from_slice(&[0x21]);
+    mgr.peer_cids.push_with_seq(cid0, 0);
+    mgr.peer_cids.push_with_seq(cid1, 1);
 
     let new_cid = ConnectionId::from_slice(&[0xdd]);
     mgr.on_new_connection_id(2, 2, new_cid);
@@ -49,11 +65,13 @@ fn at_limit_check() {
     let initial = ConnectionId::from_slice(&[0x01]);
     let mut mgr = CidManager::new(initial, 2);
 
-    // 1 CID in set, limit is 2 — not at limit
+    // 0 peer CIDs, limit is 2 — not at limit
     assert!(!mgr.at_limit());
 
-    // Add a second CID — now at limit
-    let cid2 = ConnectionId::from_slice(&[0x02]);
-    mgr.local_cids.push(cid2);
+    // Add two peer CIDs — now at limit
+    let cid1 = ConnectionId::from_slice(&[0x02]);
+    let cid2 = ConnectionId::from_slice(&[0x03]);
+    mgr.peer_cids.push_with_seq(cid1, 0);
+    mgr.peer_cids.push_with_seq(cid2, 1);
     assert!(mgr.at_limit());
 }

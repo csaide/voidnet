@@ -57,12 +57,22 @@ impl EcnState {
             return false;
         }
 
+        // RFC 9000 §13.4.2.1: If ECT counts don't account for sent packets, disable ECN.
+        // The increase in ECT(0)+ECT(1)+CE must be >= newly acknowledged ECT-marked packets.
+        let new_ect0 = ect0 - self.prev_ect0;
+        let new_ect1 = ect1 - self.prev_ect1;
+        let new_ce = ecn_ce - self.ce_counter;
+        let total_new_marks = new_ect0 + new_ect1 + new_ce;
+
         // Validation: if we sent ECT(0) but none reflected, disable ECN
-        if self.validation_pending && ect0 == 0 && self.ect0_sent > 0 {
-            self.disabled = true;
-            self.capable = false;
-            self.validation_pending = false;
-            return false;
+        if self.validation_pending && self.ect0_sent > 0 {
+            if total_new_marks == 0 {
+                // No ECN marks at all — path strips ECN
+                self.disabled = true;
+                self.capable = false;
+                self.validation_pending = false;
+                return false;
+            }
         }
 
         if ect0 > 0 {

@@ -10,3 +10,4 @@
 *.pub
 local.tfvars
 .worktrees/
+dist/tls/*.pem

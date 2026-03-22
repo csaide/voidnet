@@ -193,6 +193,10 @@ fn parse_short_header_inner(
     first_byte: u8,
     dcid_len: usize,
 ) -> Result<(PacketHeader<'_>, usize), HeaderParseError> {
+    // RFC 9000 §17.3.1: fixed bit (0x40) MUST be 1; discard packets with 0.
+    if first_byte & 0x40 == 0 {
+        return Err(HeaderParseError::BufferTooShort); // invalid packet
+    }
     // Short header: first_byte(1) + dcid(dcid_len) + packet_number(1..4)
     let dcid_end = 1 + dcid_len;
     if buf.len() < dcid_end {

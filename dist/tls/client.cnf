@@ -1,0 +1,23 @@
+[req]
+distinguished_name = req_distinguished_name
+req_extensions = v3_req
+prompt = no
+
+[req_distinguished_name]
+C = US
+ST = Washington
+L = Seattle
+O = Dblk R&D
+CN = *.dblk.dev
+
+[v3_req]
+basicConstraints = CA:FALSE
+keyUsage = keyEncipherment, digitalSignature
+extendedKeyUsage = clientAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = dblk.dev
+DNS.2 = localhost
+IP.1 = 127.0.0.1
+IP.2 = ::1

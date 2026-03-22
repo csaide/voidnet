@@ -250,11 +250,15 @@ impl LossDetector {
             self.spaces[space].largest_acked = Some(largest_acked);
         }
 
-        // Grab the send time of the largest_acked packet before removal (for RTT).
+        // Grab the send time and ack-eliciting flag of the largest_acked packet before removal (for RTT).
         let largest_acked_time_sent = self.spaces[space]
             .in_flight
             .get(largest_acked)
             .map(|p| p.time_sent);
+        let largest_acked_ack_eliciting = self.spaces[space]
+            .in_flight
+            .get(largest_acked)
+            .map_or(false, |p| p.ack_eliciting);
 
         // Remove acked packets from in-flight tracking.
         let mut acked = SmallVec::<[SentPacket; 16]>::new();
@@ -278,10 +282,9 @@ impl LossDetector {
         }
 
         // Update RTT if the largest acked packet was newly acked and we had it.
-        // Only update RTT if acked packets include at least one ack-eliciting (Fix 14).
+        // RFC 9002 §5.1: only generate RTT sample from ack-eliciting packets.
         if newly_acked_largest {
-            let includes_ack_eliciting = acked.iter().any(|p| p.ack_eliciting);
-            if includes_ack_eliciting {
+            if largest_acked_ack_eliciting {
                 if let Some(time_sent) = largest_acked_time_sent {
                     let latest_rtt = now.duration_since(time_sent);
                     self.update_rtt(
@@ -295,13 +298,13 @@ impl LossDetector {
             }
         }
 
+        // Detect lost packets (RFC 9002 §A.7: detect lost BEFORE resetting PTO).
+        let lost = self.detect_lost_packets(space, now);
+
         // Reset pto_count on successful ack (RFC 9002 §A.7).
         if self.peer_completed_address_validation {
             self.pto_count = 0;
         }
-
-        // Detect lost packets.
-        let lost = self.detect_lost_packets(space, now);
 
         (acked, lost)
     }
@@ -478,15 +481,17 @@ impl LossDetector {
         let mut earliest_pto: Option<Instant> = None;
 
         for space in 0..3 {
-            if self.spaces[space].ack_eliciting_in_flight == 0
-                && (space != 2 || self.handshake_confirmed)
-            {
+            // Skip spaces with no ack-eliciting packets in flight.
+            // RFC 9002 §6.2.1: Before handshake confirmed, skip space 2 only
+            // if it has no ack-eliciting packets. After handshake confirmed,
+            // skip any space with no ack-eliciting packets.
+            if self.spaces[space].ack_eliciting_in_flight == 0 {
                 continue;
             }
 
             if let Some(last_sent) = self.time_of_last_ack_eliciting_pkt[space] {
                 let pto_duration = self.pto(space, max_ack_delay);
-                let backoff = 1u32 << self.pto_count;
+                let backoff = 1u32 << self.pto_count.min(16);
                 let deadline = last_sent + pto_duration * backoff;
                 earliest_pto =
                     Some(earliest_pto.map_or(
