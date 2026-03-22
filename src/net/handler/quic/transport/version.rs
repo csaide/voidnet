@@ -11,23 +11,40 @@ pub fn is_reserved_version(version: u32) -> bool {
     (version & 0x0f0f0f0f) == 0x0a0a0a0a
 }
 
-/// Build a Version Negotiation packet.
+/// Build a Version Negotiation packet directly into `buf`.
 /// `dcid` and `scid` are echoed from the received packet (swapped: our DCID = their SCID).
-/// Returns the VN packet bytes.
-pub fn build_version_negotiation(dcid: &[u8], scid: &[u8], supported: &[u32]) -> Vec<u8> {
-    // Format: first_byte(1, bit 7 set) + version(0x00000000, 4 bytes) + dcid_len(1) + dcid + scid_len(1) + scid + versions(4 each)
-    let len = 1 + 4 + 1 + dcid.len() + 1 + scid.len() + supported.len() * 4;
-    let mut buf = Vec::with_capacity(len);
-    buf.push(0x80); // long header form, rest arbitrary
-    buf.extend_from_slice(&0u32.to_be_bytes()); // version = 0
-    buf.push(dcid.len() as u8);
-    buf.extend_from_slice(dcid);
-    buf.push(scid.len() as u8);
-    buf.extend_from_slice(scid);
+/// Returns the number of bytes written.
+pub fn build_version_negotiation(
+    buf: &mut [u8],
+    dcid: &[u8],
+    scid: &[u8],
+    supported: &[u32],
+) -> usize {
+    let mut pos = 0;
+    // First byte: bit 7 set, lower 7 bits random (anti-ossification, RFC 8999 §6)
+    let first_byte = {
+        use ring::rand::SecureRandom;
+        let mut b = [0u8; 1];
+        ring::rand::SystemRandom::new().fill(&mut b).unwrap();
+        0x80 | (b[0] & 0x7F)
+    };
+    buf[pos] = first_byte;
+    pos += 1;
+    buf[pos..pos + 4].copy_from_slice(&0u32.to_be_bytes());
+    pos += 4;
+    buf[pos] = dcid.len() as u8;
+    pos += 1;
+    buf[pos..pos + dcid.len()].copy_from_slice(dcid);
+    pos += dcid.len();
+    buf[pos] = scid.len() as u8;
+    pos += 1;
+    buf[pos..pos + scid.len()].copy_from_slice(scid);
+    pos += scid.len();
     for &v in supported {
-        buf.extend_from_slice(&v.to_be_bytes());
+        buf[pos..pos + 4].copy_from_slice(&v.to_be_bytes());
+        pos += 4;
     }
-    buf
+    pos
 }
 
 /// Client-side: check if a VN packet should be processed.

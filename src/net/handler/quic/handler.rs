@@ -474,17 +474,14 @@ impl QuicHandler {
             None => return,
         };
         // RFC 8999 §6: swap DCID/SCID in the response
-        let vn_payload = version::build_version_negotiation(
-            scid,
-            dcid,
-            &[version::QUIC_VERSION_1, version::QUIC_VERSION_2],
-        );
+        // Compute VN payload length up front so we can size-check before popping a frame
+        let vn_len = 1 + 4 + 1 + scid.len() + 1 + dcid.len() + 2 * 4; // 2 supported versions
         // Write into a free frame
         let Some(mut frame) = free_frames.pop() else {
             return;
         };
-        let udp_len = 8 + vn_payload.len();
-        let total = quic_offset + vn_payload.len();
+        let udp_len = 8 + vn_len;
+        let total = quic_offset + vn_len;
         if frame.capacity() < total {
             free_frames.push(frame);
             return;
@@ -529,8 +526,13 @@ impl QuicHandler {
             udp.length = (udp_len as u16).to_be_bytes();
             udp.checksum = [0, 0]; // IPv4 UDP checksum optional
         }
-        // Write QUIC VN payload
-        frame[quic_offset..quic_offset + vn_payload.len()].copy_from_slice(&vn_payload);
+        // Write QUIC VN payload directly into frame — no heap allocation
+        version::build_version_negotiation(
+            &mut frame[quic_offset..],
+            scid,
+            dcid,
+            &[version::QUIC_VERSION_1, version::QUIC_VERSION_2],
+        );
         unsafe { frame.set_len(total) };
         tx_return.push(frame);
     }
@@ -555,16 +557,13 @@ impl QuicHandler {
             Some(v) => v,
             None => return,
         };
-        let vn_payload = version::build_version_negotiation(
-            scid,
-            dcid,
-            &[version::QUIC_VERSION_1, version::QUIC_VERSION_2],
-        );
+        // Compute VN payload length up front so we can size-check before popping a frame
+        let vn_len = 1 + 4 + 1 + scid.len() + 1 + dcid.len() + 2 * 4; // 2 supported versions
         let Some(mut frame) = free_frames.pop() else {
             return;
         };
-        let udp_len = 8 + vn_payload.len();
-        let total = quic_offset + vn_payload.len();
+        let udp_len = 8 + vn_len;
+        let total = quic_offset + vn_len;
         if frame.capacity() < total {
             free_frames.push(frame);
             return;
@@ -602,8 +601,13 @@ impl QuicHandler {
             udp.length = (udp_len as u16).to_be_bytes();
             udp.checksum = [0, 0]; // TODO: compute IPv6 UDP checksum
         }
-        // Write QUIC VN payload
-        frame[quic_offset..quic_offset + vn_payload.len()].copy_from_slice(&vn_payload);
+        // Write QUIC VN payload directly into frame — no heap allocation
+        version::build_version_negotiation(
+            &mut frame[quic_offset..],
+            scid,
+            dcid,
+            &[version::QUIC_VERSION_1, version::QUIC_VERSION_2],
+        );
         unsafe { frame.set_len(total) };
         tx_return.push(frame);
     }
