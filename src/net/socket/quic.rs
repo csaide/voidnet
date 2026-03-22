@@ -35,6 +35,7 @@ pub enum QuicError {
 /// Created via `QuicListener::listen()` inside a `LocalRuntime::run()` closure.
 /// Use `accept()` to wait for incoming connections, which returns a `QuicConnection`.
 pub struct QuicListener {
+    local_addr: IpAddress,
     port: u16,
     accept_queue: LocalQueue<usize>, // connection slab keys
     handler: Rc<UnsafeCell<QuicHandler>>,
@@ -44,20 +45,27 @@ impl QuicListener {
     /// Bind a QUIC listener on the given address and port.
     /// The TLS config must include server certificates.
     pub fn listen(
-        _addr: IpAddress,
+        addr: IpAddress,
         port: u16,
         tls_config: Arc<ServerConfig>,
     ) -> Result<Self, QuicError> {
+        Self::listen_with_config(addr, port, tls_config, TransportParams::default())
+    }
+
+    /// Bind a QUIC listener with custom transport parameters.
+    pub fn listen_with_config(
+        addr: IpAddress,
+        port: u16,
+        tls_config: Arc<ServerConfig>,
+        params: TransportParams,
+    ) -> Result<Self, QuicError> {
         with_runtime_context(|ctx| {
             let handler = unsafe { &mut *ctx.quic_handler.get() };
-            let accept_queue = LocalQueue::new(128);
-            handler.listen_with_queue(
-                port,
-                tls_config,
-                TransportParams::default(),
-                accept_queue.clone(),
-            );
-            Ok(QuicListener {
+            let accept_queue = handler
+                .listen_with_queue(port, tls_config, params)
+                .map_err(|_| QuicError::NotConnected)?;
+            Ok(Self {
+                local_addr: addr,
                 port,
                 accept_queue,
                 handler: ctx.quic_handler.clone(),
@@ -70,8 +78,13 @@ impl QuicListener {
         Accept { listener: self }
     }
 
+    /// Returns the local IP address this listener is bound to.
+    pub fn local_addr(&self) -> IpAddress {
+        self.local_addr
+    }
+
     /// Returns the port this listener is bound to.
-    pub fn port(&self) -> u16 {
+    pub fn local_port(&self) -> u16 {
         self.port
     }
 
@@ -207,15 +220,51 @@ impl QuicConnection {
             .unwrap_or(coarsetime::Duration::from_millis(0))
     }
 
-    /// Close the connection with an error code and optional reason.
-    pub fn close(&self, _error_code: u64, _reason: &[u8]) {
+    /// Returns the local IP address of this connection, if the connection exists.
+    pub fn local_addr(&self) -> Option<IpAddress> {
+        let handler = unsafe { &*self.handler.get() };
+        handler.connections.get(self.conn_key).map(|c| c.local_addr)
+    }
+
+    /// Returns the remote IP address of this connection, if the connection exists.
+    pub fn remote_addr(&self) -> Option<IpAddress> {
+        let handler = unsafe { &*self.handler.get() };
+        handler
+            .connections
+            .get(self.conn_key)
+            .map(|c| c.remote_addr)
+    }
+
+    /// Returns the local port of this connection, if the connection exists.
+    pub fn local_port(&self) -> Option<u16> {
+        let handler = unsafe { &*self.handler.get() };
+        handler.connections.get(self.conn_key).map(|c| c.local_port)
+    }
+
+    /// Returns the remote port of this connection, if the connection exists.
+    pub fn remote_port(&self) -> Option<u16> {
+        let handler = unsafe { &*self.handler.get() };
+        handler
+            .connections
+            .get(self.conn_key)
+            .map(|c| c.remote_port)
+    }
+
+    /// Close the connection with an error code.
+    pub fn close(&mut self, error_code: u64) {
         let handler = unsafe { &mut *self.handler.get() };
         if let Some(conn) = handler.connections.get_mut(self.conn_key) {
-            if !matches!(
-                conn.state,
-                ConnectionState::Closing | ConnectionState::Closed | ConnectionState::Draining
-            ) {
+            if conn.state != ConnectionState::Closed
+                && conn.state != ConnectionState::Closing
+                && conn.state != ConnectionState::Draining
+            {
+                conn.close_error = Some(if error_code == 0 {
+                    TransportError::NO_ERROR
+                } else {
+                    TransportError::APPLICATION_ERROR
+                });
                 conn.state = ConnectionState::Closing;
+                conn.needs_draining_timer = true;
             }
         }
     }

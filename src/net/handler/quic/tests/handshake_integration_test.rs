@@ -281,7 +281,9 @@ fn full_handshake_through_handler() {
         initial_max_streams_bidi: 100,
         ..Default::default()
     };
-    handler.listen(QUIC_PORT, server_config, params);
+    handler
+        .listen(QUIC_PORT, server_config, params)
+        .expect("listen should succeed");
 
     // 5. Create frame and buffers
     let frame = Frame::new(0, &mut frame_data, frame_len, false);

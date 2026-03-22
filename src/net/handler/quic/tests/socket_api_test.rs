@@ -25,7 +25,7 @@ use crate::net::handler::quic::transport::params::TransportParams;
 use crate::net::handler::quic::transport::varint::encode_varint;
 use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
 use crate::net::neighbor::NeighborHandler;
-use crate::net::socket::LocalQueue;
+
 use crate::net::timer_wheel::TimerWheel;
 use crate::net::wire::ethernet::EthernetFrame;
 use crate::net::wire::ip::IPV4_MIN_HEADER_LEN;
@@ -398,8 +398,9 @@ fn accept_queue_populated_after_handshake() {
         initial_max_streams_bidi: 100,
         ..Default::default()
     };
-    let accept_queue: LocalQueue<usize> = LocalQueue::new(128);
-    handler.listen_with_queue(QUIC_PORT, server_config, params, accept_queue.clone());
+    let accept_queue = handler
+        .listen_with_queue(QUIC_PORT, server_config, params)
+        .expect("listen_with_queue should succeed");
 
     // Process the ClientHello
     let frame = Frame::new(0, &mut frame_data, frame_len, false);
@@ -659,8 +660,9 @@ fn cid_map_populated_with_listen_with_queue() {
         initial_max_streams_bidi: 100,
         ..Default::default()
     };
-    let accept_queue: LocalQueue<usize> = LocalQueue::new(128);
-    handler.listen_with_queue(QUIC_PORT, server_config, params, accept_queue.clone());
+    let accept_queue = handler
+        .listen_with_queue(QUIC_PORT, server_config, params)
+        .expect("listen_with_queue should succeed");
 
     let frame = Frame::new(0, &mut frame_data, frame_len, false);
     let mut wheel = TimerWheel::new(now);

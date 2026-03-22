@@ -1,4 +1,4 @@
-use coarsetime::Instant;
+use coarsetime::{Duration, Instant};
 use rustc_hash::FxHashMap;
 use slab::Slab;
 use std::sync::Arc;
@@ -31,6 +31,8 @@ pub struct QuicHandler {
     pub(crate) listeners: FxHashMap<u16, ListenerState>,
     pub(crate) rx_offload: bool,
     pub(crate) tx_offload: bool,
+    /// Length of SCIDs we generate (used for short-header DCID parsing).
+    pub(crate) local_cid_len: usize,
 }
 
 impl QuicHandler {
@@ -41,6 +43,7 @@ impl QuicHandler {
             listeners: FxHashMap::default(),
             rx_offload,
             tx_offload,
+            local_cid_len: 8,
         }
     }
 
@@ -50,12 +53,17 @@ impl QuicHandler {
     }
 
     /// Register a QUIC listener on a port.
+    ///
+    /// Returns `Err(())` if a listener is already registered on this port.
     pub fn listen(
         &mut self,
         port: u16,
         tls_config: Arc<rustls::ServerConfig>,
         params: TransportParams,
-    ) {
+    ) -> Result<(), ()> {
+        if self.listeners.contains_key(&port) {
+            return Err(());
+        }
         self.listeners.insert(
             port,
             ListenerState {
@@ -64,17 +72,25 @@ impl QuicHandler {
                 accept_queue: None,
             },
         );
+        Ok(())
     }
 
-    /// Register a QUIC listener on a port with an external accept queue.
+    /// Register a QUIC listener on a port with an accept queue.
+    ///
+    /// Creates a new `LocalQueue` internally and returns it to the caller.
     /// The accept queue receives connection slab keys when handshakes complete.
+    /// Returns `Err(())` if a listener is already registered on this port.
     pub fn listen_with_queue(
         &mut self,
         port: u16,
         tls_config: Arc<rustls::ServerConfig>,
         params: TransportParams,
-        accept_queue: LocalQueue<usize>,
-    ) {
+    ) -> Result<LocalQueue<usize>, ()> {
+        if self.listeners.contains_key(&port) {
+            return Err(());
+        }
+        let queue = LocalQueue::new(128);
+        let accept_queue = queue.clone();
         self.listeners.insert(
             port,
             ListenerState {
@@ -83,6 +99,7 @@ impl QuicHandler {
                 accept_queue: Some(accept_queue),
             },
         );
+        Ok(queue)
     }
 
     /// Remove a QUIC listener from a port.
@@ -156,7 +173,7 @@ impl QuicHandler {
             }
         } else {
             // Short header: DCID starts at byte 1, length is our SCID length
-            let scid_len = 8; // default SCID length we generate
+            let scid_len = self.local_cid_len;
             if quic_data.len() < 1 + scid_len {
                 rx_return.push(frame);
                 return;
@@ -183,7 +200,24 @@ impl QuicHandler {
                 } else {
                     0x00000001 // fallback to v1
                 };
-                if let Some(key) = self.create_server_connection(
+                // RFC 9000 §6.1: send Version Negotiation for unsupported versions
+                if !crate::net::handler::quic::transport::version::is_supported_version(version) {
+                    Self::send_version_negotiation_ipv4(
+                        quic_data,
+                        &frame,
+                        quic_offset,
+                        ip_offset,
+                        src_addr,
+                        dst_addr,
+                        src_port,
+                        dst_port,
+                        src_mac,
+                        dst_mac,
+                        free_frames,
+                        tx_return,
+                    );
+                    rx_return.push(frame);
+                } else if let Some(key) = self.create_server_connection(
                     &dcid, dst_addr, src_addr, dst_port, src_port, src_mac, dst_mac, now, version,
                 ) {
                     let conn = &mut self.connections[key];
@@ -261,7 +295,7 @@ impl QuicHandler {
             }
         } else {
             // Short header: DCID starts at byte 1, length is our SCID length
-            let scid_len = 8; // default SCID length we generate
+            let scid_len = self.local_cid_len;
             if quic_data.len() < 1 + scid_len {
                 rx_return.push(frame);
                 return;
@@ -288,7 +322,24 @@ impl QuicHandler {
                 } else {
                     0x00000001 // fallback to v1
                 };
-                if let Some(key) = self.create_server_connection(
+                // RFC 9000 §6.1: send Version Negotiation for unsupported versions
+                if !crate::net::handler::quic::transport::version::is_supported_version(version) {
+                    Self::send_version_negotiation_ipv6(
+                        quic_data,
+                        &frame,
+                        quic_offset,
+                        udp_offset,
+                        src_addr,
+                        dst_addr,
+                        src_port,
+                        dst_port,
+                        src_mac,
+                        dst_mac,
+                        free_frames,
+                        tx_return,
+                    );
+                    rx_return.push(frame);
+                } else if let Some(key) = self.create_server_connection(
                     &dcid, dst_addr, src_addr, dst_port, src_port, src_mac, dst_mac, now, version,
                 ) {
                     let conn = &mut self.connections[key];
@@ -352,13 +403,30 @@ impl QuicHandler {
     }
 
     /// Evict stale connections (called periodically).
+    /// RFC 9000 §10.1: idle timeout = max(negotiated_timeout, 3×PTO).
     pub fn evict_stale(&mut self, now: Instant) {
         let stale_keys: smallvec::SmallVec<[usize; 8]> = self
             .connections
             .iter()
             .filter(|(_, conn)| {
+                // 0 means disabled (RFC 9000 §18.2)
+                if conn.idle_timeout.as_millis() == 0 {
+                    return false;
+                }
+                let max_ack_delay = conn
+                    .peer_params
+                    .as_ref()
+                    .map(|p| Duration::from_millis(p.max_ack_delay_ms))
+                    .unwrap_or(Duration::from_millis(25));
+                let pto_3x = conn.loss.pto(2, max_ack_delay) * 3;
+                // RFC 9000 §10.1: effective timeout is at least 3×PTO
+                let effective_timeout = if pto_3x > conn.idle_timeout {
+                    pto_3x
+                } else {
+                    conn.idle_timeout
+                };
                 let elapsed = now.duration_since(conn.last_activity);
-                elapsed > conn.idle_timeout
+                elapsed > effective_timeout
             })
             .map(|(key, _)| key)
             .collect();
@@ -380,6 +448,184 @@ impl QuicHandler {
     ) -> Option<(usize, &mut QuicConnectionState)> {
         let key = self.cid_map.get(cid)?;
         Some((*key, &mut self.connections[*key]))
+    }
+
+    /// Build and send a Version Negotiation packet in response to an unsupported version (IPv4).
+    /// RFC 9000 §6.1, RFC 8999 §6.
+    fn send_version_negotiation_ipv4<'umem>(
+        quic_data: &[u8],
+        _incoming: &Frame<'umem>,
+        quic_offset: usize,
+        ip_offset: usize,
+        src_addr: IpAddress,
+        dst_addr: IpAddress,
+        src_port: u16,
+        dst_port: u16,
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        use crate::net::handler::quic::transport::version;
+        // Extract DCID and SCID from incoming long header
+        let (dcid, scid) = match Self::peek_dcid_scid(quic_data) {
+            Some(v) => v,
+            None => return,
+        };
+        // RFC 8999 §6: swap DCID/SCID in the response
+        let vn_payload = version::build_version_negotiation(
+            scid,
+            dcid,
+            &[version::QUIC_VERSION_1, version::QUIC_VERSION_2],
+        );
+        // Write into a free frame
+        let Some(mut frame) = free_frames.pop() else {
+            return;
+        };
+        let udp_len = 8 + vn_payload.len();
+        let total = quic_offset + vn_payload.len();
+        if frame.capacity() < total {
+            free_frames.push(frame);
+            return;
+        }
+        // Write Ethernet header
+        crate::net::wire::ethernet::write_ethernet_header(
+            &mut frame,
+            src_mac, // original src becomes our dst
+            dst_mac, // original dst becomes our src
+            crate::net::wire::ethernet::EtherTypes::IPv4,
+        );
+        // Write IPv4 header
+        let ip_hdr_len = crate::net::wire::ip::IPV4_MIN_HEADER_LEN;
+        let total_ip_len = (ip_hdr_len + udp_len) as u16;
+        {
+            let ip = &mut frame[ip_offset..ip_offset + ip_hdr_len];
+            ip.fill(0);
+            ip[0] = 0x45;
+            ip[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
+            ip[6] = 0x40; // DF
+            ip[8] = 64; // TTL
+            ip[9] = crate::net::wire::ip::IpProtocols::Udp;
+            if let IpAddress::V4(src) = dst_addr {
+                let b: [u8; 4] = src.into();
+                ip[12..16].copy_from_slice(&b);
+            }
+            if let IpAddress::V4(dst) = src_addr {
+                let b: [u8; 4] = dst.into();
+                ip[16..20].copy_from_slice(&b);
+            }
+        }
+        let ip_header = crate::net::wire::ip::Ipv4Header::from_bytes_mut(&mut frame);
+        ip_header.fill_checksum();
+        // Write UDP header
+        let udp_offset = ip_offset + ip_hdr_len;
+        {
+            let udp = unsafe {
+                crate::net::wire::udp::UdpHeader::from_bytes_at_mut(&mut frame, udp_offset)
+            };
+            udp.src_port = dst_port.to_be_bytes(); // swap ports
+            udp.dst_port = src_port.to_be_bytes();
+            udp.length = (udp_len as u16).to_be_bytes();
+            udp.checksum = [0, 0]; // IPv4 UDP checksum optional
+        }
+        // Write QUIC VN payload
+        frame[quic_offset..quic_offset + vn_payload.len()].copy_from_slice(&vn_payload);
+        unsafe { frame.set_len(total) };
+        tx_return.push(frame);
+    }
+
+    /// Build and send a Version Negotiation packet in response to an unsupported version (IPv6).
+    fn send_version_negotiation_ipv6<'umem>(
+        quic_data: &[u8],
+        _incoming: &Frame<'umem>,
+        quic_offset: usize,
+        udp_offset: usize,
+        src_addr: IpAddress,
+        dst_addr: IpAddress,
+        src_port: u16,
+        dst_port: u16,
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        free_frames: &mut impl FrameBuffer<'umem>,
+        tx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        use crate::net::handler::quic::transport::version;
+        let (dcid, scid) = match Self::peek_dcid_scid(quic_data) {
+            Some(v) => v,
+            None => return,
+        };
+        let vn_payload = version::build_version_negotiation(
+            scid,
+            dcid,
+            &[version::QUIC_VERSION_1, version::QUIC_VERSION_2],
+        );
+        let Some(mut frame) = free_frames.pop() else {
+            return;
+        };
+        let udp_len = 8 + vn_payload.len();
+        let total = quic_offset + vn_payload.len();
+        if frame.capacity() < total {
+            free_frames.push(frame);
+            return;
+        }
+        let eth_len = std::mem::size_of::<crate::net::wire::ethernet::EthernetFrame>();
+        crate::net::wire::ethernet::write_ethernet_header(
+            &mut frame,
+            src_mac,
+            dst_mac,
+            crate::net::wire::ethernet::EtherTypes::IPv6,
+        );
+        // Write IPv6 header
+        {
+            let ip = &mut frame[eth_len..eth_len + crate::net::wire::ip::IPV6_HEADER_LEN];
+            ip.fill(0);
+            ip[0] = 0x60; // version=6
+            let payload_len = udp_len as u16;
+            ip[4..6].copy_from_slice(&payload_len.to_be_bytes());
+            ip[6] = crate::net::wire::ip::IpProtocols::Udp; // next header
+            ip[7] = 64; // hop limit
+            if let IpAddress::V6(src) = dst_addr {
+                ip[8..24].copy_from_slice(&src.octets);
+            }
+            if let IpAddress::V6(dst) = src_addr {
+                ip[24..40].copy_from_slice(&dst.octets);
+            }
+        }
+        // Write UDP header
+        {
+            let udp = unsafe {
+                crate::net::wire::udp::UdpHeader::from_bytes_at_mut(&mut frame, udp_offset)
+            };
+            udp.src_port = dst_port.to_be_bytes();
+            udp.dst_port = src_port.to_be_bytes();
+            udp.length = (udp_len as u16).to_be_bytes();
+            udp.checksum = [0, 0]; // TODO: compute IPv6 UDP checksum
+        }
+        // Write QUIC VN payload
+        frame[quic_offset..quic_offset + vn_payload.len()].copy_from_slice(&vn_payload);
+        unsafe { frame.set_len(total) };
+        tx_return.push(frame);
+    }
+
+    /// Peek DCID and SCID bytes from a QUIC long header.
+    fn peek_dcid_scid(quic_data: &[u8]) -> Option<(&[u8], &[u8])> {
+        if quic_data.len() < 6 {
+            return None;
+        }
+        let dcid_len = quic_data[5] as usize;
+        let dcid_end = 6 + dcid_len;
+        if quic_data.len() < dcid_end + 1 {
+            return None;
+        }
+        let dcid = &quic_data[6..dcid_end];
+        let scid_len = quic_data[dcid_end] as usize;
+        let scid_start = dcid_end + 1;
+        let scid_end = scid_start + scid_len;
+        if quic_data.len() < scid_end {
+            return None;
+        }
+        let scid = &quic_data[scid_start..scid_end];
+        Some((dcid, scid))
     }
 
     /// Insert a new connection, returning its slab key.
