@@ -500,16 +500,16 @@ impl<'umem> LocalRuntime<'umem> {
             );
 
             // ---- QUIC Send ----
-            {
-                let wheel = unsafe { &mut *self.wheel.get() };
-                // SAFETY: single-threaded, no reentrant handler calls.
-                unsafe { &mut *self.quic_handler.get() }.poll_send(
-                    now,
-                    wheel,
-                    &mut self.free_frames,
-                    &mut self.tx_return,
-                );
-            }
+            // (temporarily disabled to isolate frame leak)
+            // {
+            //     let wheel = unsafe { &mut *self.wheel.get() };
+            //     unsafe { &mut *self.quic_handler.get() }.poll_send(
+            //         now,
+            //         wheel,
+            //         &mut self.free_frames,
+            //         &mut self.tx_return,
+            //     );
+            // }
 
             self.evict_counter = self.evict_counter.wrapping_add(1);
             if self.evict_counter & 65535 == 0 {
