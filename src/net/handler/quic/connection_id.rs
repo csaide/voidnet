@@ -37,6 +37,7 @@ impl ConnectionId {
         self.len as usize
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -97,9 +98,11 @@ impl<'a> ConnectionIdRef<'a> {
     }
 }
 
-/// Fixed-size set of Connection IDs, bounded by `active_connection_id_limit` (max 8).
+/// Fixed-size set of Connection IDs with sequence numbers,
+/// bounded by `active_connection_id_limit` (max 8).
 pub struct CidSet {
     cids: [ConnectionId; 8],
+    seqs: [u64; 8],
     count: u8,
 }
 
@@ -107,16 +110,23 @@ impl CidSet {
     pub fn new() -> Self {
         Self {
             cids: [ConnectionId::empty(); 8],
+            seqs: [0; 8],
             count: 0,
         }
     }
 
-    /// Adds a CID. Returns `false` if the set is already full (8 entries).
+    /// Adds a CID with sequence number 0. Returns `false` if the set is already full (8 entries).
     pub fn push(&mut self, cid: ConnectionId) -> bool {
+        self.push_with_seq(cid, self.count as u64)
+    }
+
+    /// Adds a CID with an explicit sequence number. Returns `false` if full.
+    pub fn push_with_seq(&mut self, cid: ConnectionId, seq: u64) -> bool {
         if self.count as usize >= 8 {
             return false;
         }
         self.cids[self.count as usize] = cid;
+        self.seqs[self.count as usize] = seq;
         self.count += 1;
         true
     }
@@ -127,12 +137,31 @@ impl CidSet {
             if &self.cids[i] == cid {
                 let last = self.count as usize - 1;
                 self.cids[i] = self.cids[last];
+                self.seqs[i] = self.seqs[last];
                 self.cids[last] = ConnectionId::empty();
+                self.seqs[last] = 0;
                 self.count -= 1;
                 return true;
             }
         }
         false
+    }
+
+    /// Remove by sequence number. Returns the CID if found.
+    pub fn remove_by_seq(&mut self, seq: u64) -> Option<ConnectionId> {
+        for i in 0..self.count as usize {
+            if self.seqs[i] == seq {
+                let cid = self.cids[i];
+                let last = self.count as usize - 1;
+                self.cids[i] = self.cids[last];
+                self.seqs[i] = self.seqs[last];
+                self.cids[last] = ConnectionId::empty();
+                self.seqs[last] = 0;
+                self.count -= 1;
+                return Some(cid);
+            }
+        }
+        None
     }
 
     pub fn contains(&self, cid: &ConnectionId) -> bool {

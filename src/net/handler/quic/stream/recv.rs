@@ -24,6 +24,7 @@ impl StreamRingBuffer {
         self.tail.wrapping_sub(self.head) & self.mask
     }
 
+    #[inline]
     pub fn capacity(&self) -> usize {
         self.mask
     }

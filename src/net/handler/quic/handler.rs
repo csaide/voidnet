@@ -48,6 +48,7 @@ impl QuicHandler {
     }
 
     /// Check if a UDP destination port is registered as a QUIC listener.
+    #[inline]
     pub fn is_quic_port(&self, port: u16) -> bool {
         self.listeners.contains_key(&port)
     }

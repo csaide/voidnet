@@ -22,6 +22,7 @@ impl AmplificationLimit {
     }
 
     /// Returns `true` if we are allowed to send `bytes` more bytes.
+    #[inline]
     pub fn can_send(&self, bytes: usize) -> bool {
         self.validated || self.bytes_sent + bytes <= 3 * self.bytes_received
     }
@@ -30,6 +31,7 @@ impl AmplificationLimit {
         self.bytes_received += bytes;
     }
 
+    #[inline]
     pub fn on_bytes_sent(&mut self, bytes: usize) {
         self.bytes_sent += bytes;
     }
