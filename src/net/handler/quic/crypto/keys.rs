@@ -13,6 +13,12 @@ impl DirectionalKey {
             header_key: dk.header,
         }
     }
+
+    /// Replace the packet key while keeping the existing header protection key.
+    /// Used during key updates where header protection keys are unchanged (RFC 9001 §5.4).
+    pub fn update_packet_key(&mut self, new_packet_key: Box<dyn rustls::quic::PacketKey>) {
+        self.packet_key = new_packet_key;
+    }
 }
 
 /// A pair of keys for one packet space (local encrypts, remote decrypts).

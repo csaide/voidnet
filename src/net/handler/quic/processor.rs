@@ -1234,11 +1234,17 @@ fn build_packet_in_frame(
             let limits = crate::net::handler::quic::crypto::aead_limits::AeadLimits::AES_GCM;
             if space == 2 && limits.needs_key_update(conn.packets_encrypted) {
                 if conn.key_update.can_initiate_update() {
-                    // TODO: Derive next keys using conn.key_update_secrets
-                    // via rustls::quic::Secrets::next_packet_keys()
-                    // For now, key update is needed but actual derivation is deferred
-                    conn.key_update.on_update_initiated();
-                    conn.packets_encrypted = 0;
+                    if let Some(ref mut secrets) = conn.key_update_secrets {
+                        let new_keys = secrets.next_packet_keys();
+                        // Update packet keys while preserving header protection keys
+                        // (RFC 9001 §5.4: header protection keys are unchanged by key updates)
+                        if let Some(ref mut kp) = conn.keys.one_rtt {
+                            kp.local.update_packet_key(new_keys.local);
+                            kp.remote.update_packet_key(new_keys.remote);
+                        }
+                        conn.key_update.on_update_initiated();
+                        conn.packets_encrypted = 0;
+                    }
                 }
             }
 
