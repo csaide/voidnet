@@ -314,6 +314,7 @@ pub struct RecvHalf {
     pub max_stream_data: u64,
     pub final_size: Option<u64>,
     pub fin_received: bool,
+    pub is_reset: bool,
     pub ooo: OooRanges,
 }
 
@@ -326,8 +327,13 @@ impl RecvHalf {
             max_stream_data: initial_max_stream_data,
             final_size: None,
             fin_received: false,
+            is_reset: false,
             ooo: OooRanges::new(256),
         }
+    }
+
+    pub fn on_reset(&mut self, _final_size: u64) {
+        self.is_reset = true;
     }
 
     /// Write received data at an offset. Handles out-of-order.
@@ -429,6 +435,7 @@ impl RecvHalf {
         self.read_offset = 0;
         self.final_size = None;
         self.fin_received = false;
+        self.is_reset = false;
         self.ooo = OooRanges::new(256);
     }
 }

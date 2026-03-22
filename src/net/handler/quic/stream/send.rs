@@ -8,6 +8,8 @@ pub struct SendHalf {
     pub max_stream_data: u64,
     pub fin_sent: bool,
     pub blocked_at: Option<u64>,
+    pub reset_requested: bool,
+    pub reset_error_code: u64,
 }
 
 impl SendHalf {
@@ -19,6 +21,8 @@ impl SendHalf {
             max_stream_data: initial_max_stream_data,
             fin_sent: false,
             blocked_at: None,
+            reset_requested: false,
+            reset_error_code: 0,
         }
     }
 

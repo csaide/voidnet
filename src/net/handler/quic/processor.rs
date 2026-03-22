@@ -390,7 +390,35 @@ fn dispatch_frames(
                 // TODO: deferred action via handler
             }
 
-            _ => {} // other frames: skip for now
+            QuicFrame::StopSending(stop) => {
+                if let Some(entry) = conn.streams.get_mut(stop.stream_id) {
+                    if let Some(ref mut send) = entry.send {
+                        send.reset_requested = true;
+                        send.reset_error_code = stop.error_code;
+                    }
+                }
+            }
+
+            QuicFrame::ResetStream(reset) => {
+                if let Some(entry) = conn.streams.get_mut(reset.stream_id) {
+                    if let Some(ref mut recv) = entry.recv {
+                        recv.on_reset(reset.final_size);
+                    }
+                }
+                conn.flow.on_stream_final_size(reset.final_size);
+            }
+
+            QuicFrame::PathResponse(data) => {
+                conn.path.on_path_response(&data);
+            }
+
+            QuicFrame::DataBlocked(_)
+            | QuicFrame::StreamDataBlocked { .. }
+            | QuicFrame::StreamsBlocked { .. } => {
+                // Informational — no action required
+            }
+
+            _ => {}
         }
     }
 
