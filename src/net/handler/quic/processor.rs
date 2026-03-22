@@ -973,13 +973,16 @@ fn build_packet_in_frame(
                 };
             let first_ack_range = conn.ack[space as usize].first_ack_range();
             let ack_range_count = conn.ack[space as usize].ack_range_count();
-            let encoded_ranges = conn.ack[space as usize].encoded_ranges().to_vec();
+            let ranges_slice = conn.ack[space as usize].encoded_ranges();
+            let mut ranges_buf = [0u8; 256];
+            let ranges_len = ranges_slice.len().min(256);
+            ranges_buf[..ranges_len].copy_from_slice(&ranges_slice[..ranges_len]);
             builder.write_ack(
                 largest,
                 ack_delay,
                 first_ack_range,
                 ack_range_count,
-                &encoded_ranges,
+                &ranges_buf[..ranges_len],
                 &mut conn.frame_log,
                 space,
             );
