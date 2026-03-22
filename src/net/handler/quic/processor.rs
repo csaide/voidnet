@@ -862,6 +862,7 @@ fn build_packet_in_frame(
         let written = builder.write_crypto(offset_val, data, space, &mut conn.frame_log);
         if written > 0 {
             conn.crypto_offset[space as usize] += written as u64;
+            conn.pending_crypto[space as usize].drain(..written);
             wrote_ack_eliciting = true;
         }
     }
