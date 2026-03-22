@@ -409,6 +409,7 @@ fn accept_queue_populated_after_handshake() {
 
     make_frame_buffers!(_free_bufs, free, rx, tx);
     handler.process_ipv4(frame, now, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(now, &mut wheel, &mut free, &mut tx);
 
     // Verify connection was created
     assert_eq!(handler.connections.len(), 1, "one connection should exist");
@@ -670,6 +671,7 @@ fn cid_map_populated_with_listen_with_queue() {
     make_frame_buffers!(_free_bufs, free, rx, tx);
 
     handler.process_ipv4(frame, now, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(now, &mut wheel, &mut free, &mut tx);
 
     // cid_map should have entries
     assert!(

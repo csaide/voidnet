@@ -303,6 +303,9 @@ fn full_handshake_through_handler() {
     // 6. Process!
     handler.process_ipv4(frame, now, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
 
+    // 6b. Generate response packets via poll_send (responses are not inline)
+    handler.poll_send(now, &mut wheel, &mut free, &mut tx);
+
     // 7. Verify: rx_return should have the consumed frame
     assert!(rx.num_frames() > 0, "frame should be returned to rx_return");
 

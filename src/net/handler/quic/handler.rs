@@ -190,7 +190,6 @@ impl QuicHandler {
             let quic_payload = &mut frame_data[quic_offset..];
             let conn = &mut self.connections[key];
             processor::process_packet(conn, quic_payload, datagram_len, now);
-            processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
             rx_return.push(frame_data);
         } else if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
             // Potential new connection — check if Initial + listener exists
@@ -203,9 +202,13 @@ impl QuicHandler {
                 };
                 // RFC 9000 §6.1: send Version Negotiation for unsupported versions
                 if !crate::net::handler::quic::transport::version::is_supported_version(version) {
+                    // Copy VN-relevant data before returning the RX frame.
+                    let mut vn_buf = [0u8; 256];
+                    let vn_data_len = quic_data.len().min(256);
+                    vn_buf[..vn_data_len].copy_from_slice(&quic_data[..vn_data_len]);
+                    rx_return.push(frame);
                     Self::send_version_negotiation_ipv4(
-                        quic_data,
-                        &frame,
+                        &vn_buf[..vn_data_len],
                         quic_offset,
                         ip_offset,
                         src_addr,
@@ -217,7 +220,6 @@ impl QuicHandler {
                         free_frames,
                         tx_return,
                     );
-                    rx_return.push(frame);
                 } else if let Some(key) = self.create_server_connection(
                     &dcid, dst_addr, src_addr, dst_port, src_port, src_mac, dst_mac, now, version,
                 ) {
@@ -225,7 +227,6 @@ impl QuicHandler {
                     let mut frame_data = frame;
                     let quic_payload = &mut frame_data[quic_offset..];
                     processor::process_packet(conn, quic_payload, datagram_len, now);
-                    processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
                     rx_return.push(frame_data);
                 } else {
                     rx_return.push(frame);
@@ -312,7 +313,6 @@ impl QuicHandler {
             let quic_payload = &mut frame_data[quic_offset..];
             let conn = &mut self.connections[key];
             processor::process_packet(conn, quic_payload, datagram_len, now);
-            processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
             rx_return.push(frame_data);
         } else if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
             // Potential new connection — check if Initial + listener exists
@@ -325,9 +325,12 @@ impl QuicHandler {
                 };
                 // RFC 9000 §6.1: send Version Negotiation for unsupported versions
                 if !crate::net::handler::quic::transport::version::is_supported_version(version) {
+                    let mut vn_buf = [0u8; 256];
+                    let vn_data_len = quic_data.len().min(256);
+                    vn_buf[..vn_data_len].copy_from_slice(&quic_data[..vn_data_len]);
+                    rx_return.push(frame);
                     Self::send_version_negotiation_ipv6(
-                        quic_data,
-                        &frame,
+                        &vn_buf[..vn_data_len],
                         quic_offset,
                         udp_offset,
                         src_addr,
@@ -339,7 +342,6 @@ impl QuicHandler {
                         free_frames,
                         tx_return,
                     );
-                    rx_return.push(frame);
                 } else if let Some(key) = self.create_server_connection(
                     &dcid, dst_addr, src_addr, dst_port, src_port, src_mac, dst_mac, now, version,
                 ) {
@@ -347,7 +349,6 @@ impl QuicHandler {
                     let mut frame_data = frame;
                     let quic_payload = &mut frame_data[quic_offset..];
                     processor::process_packet(conn, quic_payload, datagram_len, now);
-                    processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
                     rx_return.push(frame_data);
                 } else {
                     rx_return.push(frame);
@@ -455,7 +456,6 @@ impl QuicHandler {
     /// RFC 9000 §6.1, RFC 8999 §6.
     fn send_version_negotiation_ipv4<'umem>(
         quic_data: &[u8],
-        _incoming: &Frame<'umem>,
         quic_offset: usize,
         ip_offset: usize,
         src_addr: IpAddress,
@@ -546,7 +546,6 @@ impl QuicHandler {
     /// Build and send a Version Negotiation packet in response to an unsupported version (IPv6).
     fn send_version_negotiation_ipv6<'umem>(
         quic_data: &[u8],
-        _incoming: &Frame<'umem>,
         quic_offset: usize,
         udp_offset: usize,
         src_addr: IpAddress,
