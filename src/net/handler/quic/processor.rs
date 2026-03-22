@@ -1689,6 +1689,15 @@ fn build_packet_in_frame(
         }
     }
 
+    // Guard: don't send a packet with no frames at all.
+    // This can happen when has_pending_data() triggers for control frames
+    // but the current space (0 or 1) doesn't write them (they're 1-RTT only).
+    let frame_range_check = builder.frame_range(&conn.frame_log);
+    if frame_range_check.0 == frame_range_check.1 && !wrote_ack_eliciting {
+        // No frames written — don't finalize or send
+        return 0;
+    }
+
     // 7. Initial padding — Initial packets must be at least 1200 bytes total
     // RFC 9000 §14: the 1200-byte minimum applies to the UDP payload (= QUIC packet)
     if space == 0 {
