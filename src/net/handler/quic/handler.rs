@@ -191,6 +191,8 @@ impl QuicHandler {
             let conn = &mut self.connections[key];
             processor::process_packet(conn, quic_payload, datagram_len, now);
             rx_return.push(frame_data);
+            let conn = &mut self.connections[key];
+            processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
         } else if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
             // Potential new connection — check if Initial + listener exists
             if self.listeners.contains_key(&dst_port) && datagram_len >= 1200 {
@@ -228,6 +230,8 @@ impl QuicHandler {
                     let quic_payload = &mut frame_data[quic_offset..];
                     processor::process_packet(conn, quic_payload, datagram_len, now);
                     rx_return.push(frame_data);
+                    let conn = &mut self.connections[key];
+                    processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
                 } else {
                     rx_return.push(frame);
                 }
@@ -314,6 +318,8 @@ impl QuicHandler {
             let conn = &mut self.connections[key];
             processor::process_packet(conn, quic_payload, datagram_len, now);
             rx_return.push(frame_data);
+            let conn = &mut self.connections[key];
+            processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
         } else if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
             // Potential new connection — check if Initial + listener exists
             if self.listeners.contains_key(&dst_port) && datagram_len >= 1200 {
@@ -350,6 +356,8 @@ impl QuicHandler {
                     let quic_payload = &mut frame_data[quic_offset..];
                     processor::process_packet(conn, quic_payload, datagram_len, now);
                     rx_return.push(frame_data);
+                    let conn = &mut self.connections[key];
+                    processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
                 } else {
                     rx_return.push(frame);
                 }

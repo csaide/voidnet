@@ -1143,6 +1143,30 @@ pub fn generate_packets<'umem>(
     free_frames: &mut impl FrameBuffer<'umem>,
     tx_return: &mut impl FrameBuffer<'umem>,
 ) {
+    let free_before = free_frames.num_frames();
+    let tx_before = tx_return.num_frames();
+    generate_packets_inner(conn, conn_key, now, wheel, free_frames, tx_return);
+    let free_after = free_frames.num_frames();
+    let tx_after = tx_return.num_frames();
+    let popped = free_before as i64 - free_after as i64;
+    let pushed_tx = tx_after as i64 - tx_before as i64;
+    // Every frame popped from free must go to either tx_return or back to free
+    // So: popped == pushed_tx (net change in free = frames sent to tx)
+    debug_assert_eq!(
+        popped, pushed_tx,
+        "QUIC frame imbalance: popped {} from free, pushed {} to tx (free: {}→{}, tx: {}→{})",
+        popped, pushed_tx, free_before, free_after, tx_before, tx_after
+    );
+}
+
+fn generate_packets_inner<'umem>(
+    conn: &mut QuicConnectionState,
+    conn_key: usize,
+    now: Instant,
+    wheel: &mut TimerWheel,
+    free_frames: &mut impl FrameBuffer<'umem>,
+    tx_return: &mut impl FrameBuffer<'umem>,
+) {
     // Don't send in Draining or Closed state
     if matches!(
         conn.state,

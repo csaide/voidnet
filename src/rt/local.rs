@@ -538,14 +538,12 @@ impl<'umem> LocalRuntime<'umem> {
             }
 
             // ---- Drain TX Completions ----
-            // Kick the kernel repeatedly to produce completions and collect
-            // them directly into free_frames (NOT rx_return). Completion frames
-            // are TX frames returning — they belong in the TX pool, not the
-            // fill ring. Mixing them into rx_return caused fill ring bloat that
-            // pushed RX frames into free_frames, breaking frame accounting.
+            // Kick the kernel repeatedly to produce completions (~32 per
+            // sendto on veth) and collect them into rx_return. This keeps
+            // pace with the send rate so free_frames doesn't starve.
             while in_flight_tx > 0 {
                 self.socket.maybe_wake()?;
-                match self.umem.process_completion_queue(&mut self.free_frames) {
+                match self.umem.process_completion_queue(&mut self.rx_return) {
                     Ok(n) => {
                         debug_assert!(
                             in_flight_tx >= n,
