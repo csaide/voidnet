@@ -1222,6 +1222,11 @@ fn build_packet_in_frame(
             );
             conn.packets_encrypted += 1;
 
+            // Sync congestion controller with sent bytes
+            if wrote_ack_eliciting {
+                conn.congestion.on_packets_sent(protected_len, now);
+            }
+
             // Track key phase for key updates
             conn.key_update.on_packet_sent(pn);
 
