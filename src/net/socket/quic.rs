@@ -349,6 +349,7 @@ impl<'a> Future for StreamRead<'a> {
         if let Some(ref mut recv) = entry.recv {
             let n = recv.read(this.buf);
             if n > 0 {
+                conn.flow.on_data_consumed(n as u64);
                 return Poll::Ready(Ok(n));
             }
             // Check if FIN received and all data consumed
@@ -445,6 +446,7 @@ impl<'a> Future for RecvStreamRead<'a> {
         if let Some(ref mut recv) = entry.recv {
             let n = recv.read(this.buf);
             if n > 0 {
+                conn.flow.on_data_consumed(n as u64);
                 return Poll::Ready(Ok(n));
             }
             if recv.fin_received && recv.received == recv.read_offset {
