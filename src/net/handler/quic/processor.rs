@@ -88,6 +88,7 @@ pub fn handle_timeout(
                 }
                 crate::net::handler::quic::transport::loss::LossDetectionResult::None => {}
             }
+            conn.timer_needs_rearm = true;
             TimerResult::Ok
         }
         QuicTimerKind::Idle => TimerResult::Close,
@@ -120,7 +121,7 @@ pub fn handle_timeout(
     }
 }
 
-/// Process one QUIC packet (from a UDP datagram).
+/// Process QUIC packets from a UDP datagram (RFC 9000 §12.2: coalesced packets).
 /// `quic_payload` is the raw QUIC bytes AFTER the UDP header. MUTABLE for in-place decrypt.
 /// `datagram_len` is the total UDP datagram size (for amplification tracking).
 pub fn process_packet(
@@ -129,49 +130,90 @@ pub fn process_packet(
     datagram_len: usize,
     now: Instant,
 ) -> ProcessResult {
-    // For short headers, the DCID in the incoming packet is OUR SCID
-    let short_dcid_len = conn.scid.len();
+    let mut offset = 0;
+    let mut last_result = ProcessResult::Ok;
 
-    // Extract (space, pn_offset) from the header using an immutable borrow,
-    // then release the borrow before passing quic_payload mutably.
-    let (space, pn_offset) = {
-        let (header, _header_len) = match wire_quic::parse_header(quic_payload, short_dcid_len) {
-            Ok(h) => h,
-            Err(_) => return ProcessResult::Ok, // unparseable, drop
+    while offset < quic_payload.len() {
+        let remaining = &quic_payload[offset..];
+        if remaining.is_empty() {
+            break;
+        }
+
+        // For short headers, the DCID in the incoming packet is OUR SCID
+        let short_dcid_len = conn.scid.len();
+
+        let parse_result = {
+            let (header, _header_len) = match wire_quic::parse_header(remaining, short_dcid_len) {
+                Ok(h) => h,
+                Err(_) => break, // unparseable, stop processing
+            };
+
+            match header {
+                PacketHeader::Long(long) => {
+                    let space = match packet_space(long.packet_type) {
+                        Some(s) => s,
+                        None => break,
+                    };
+                    if long.packet_type == PacketType::Initial {
+                        match packet_parser::parse_initial_fields(&remaining[long.payload_offset..])
+                        {
+                            Some((_token, payload_length, relative_pn_offset)) => {
+                                let pn_offset = long.payload_offset + relative_pn_offset;
+                                // Total packet = everything up to pn_offset + payload_length
+                                let packet_len = pn_offset + payload_length as usize;
+                                Some((space, pn_offset, packet_len))
+                            }
+                            None => None,
+                        }
+                    } else if long.packet_type == PacketType::Handshake {
+                        match crate::net::handler::quic::transport::varint::decode_varint(
+                            &remaining[long.payload_offset..],
+                        ) {
+                            Some((length, consumed)) => {
+                                let pn_offset = long.payload_offset + consumed;
+                                let packet_len = pn_offset + length as usize;
+                                Some((space, pn_offset, packet_len))
+                            }
+                            None => None,
+                        }
+                    } else {
+                        None // 0-RTT not supported
+                    }
+                }
+                PacketHeader::Short(short) => {
+                    // Short header is always the last packet in a datagram
+                    Some((2, short.pn_offset, remaining.len()))
+                }
+                PacketHeader::VersionNegotiation(_) => None,
+            }
         };
 
-        match header {
-            PacketHeader::Long(long) => {
-                let space = match packet_space(long.packet_type) {
-                    Some(s) => s,
-                    None => return ProcessResult::Ok, // Unknown/Retry — no PN space
-                };
-                let pn_offset = if long.packet_type == PacketType::Initial {
-                    match packet_parser::parse_initial_fields(&quic_payload[long.payload_offset..])
-                    {
-                        Some((_token, _payload_length, relative_pn_offset)) => {
-                            long.payload_offset + relative_pn_offset
-                        }
-                        None => return ProcessResult::Ok,
-                    }
-                } else if long.packet_type == PacketType::Handshake {
-                    match crate::net::handler::quic::transport::varint::decode_varint(
-                        &quic_payload[long.payload_offset..],
-                    ) {
-                        Some((_length, consumed)) => long.payload_offset + consumed,
-                        None => return ProcessResult::Ok,
-                    }
-                } else {
-                    return ProcessResult::Ok; // 0-RTT not supported, Retry handled elsewhere
-                };
-                (space, pn_offset)
-            }
-            PacketHeader::Short(short) => (2, short.pn_offset),
-            PacketHeader::VersionNegotiation(_) => return ProcessResult::Ok,
-        }
-    };
+        let (space, pn_offset, packet_len) = match parse_result {
+            Some(r) => r,
+            None => break,
+        };
 
-    decrypt_and_process(conn, quic_payload, space, pn_offset, datagram_len, now)
+        // Ensure packet_len doesn't exceed remaining data
+        let packet_len = packet_len.min(quic_payload.len() - offset);
+
+        let result = decrypt_and_process(
+            conn,
+            &mut quic_payload[offset..offset + packet_len],
+            space,
+            pn_offset,
+            datagram_len,
+            now,
+        );
+
+        match result {
+            ProcessResult::ConnectionClosed => return ProcessResult::ConnectionClosed,
+            _ => last_result = result,
+        }
+
+        offset += packet_len;
+    }
+
+    last_result
 }
 
 fn decrypt_and_process(
@@ -711,6 +753,9 @@ fn handle_ack_frame(
             }
         }
     }
+
+    // Signal that the loss detection timer needs re-arming (RFC 9002 §A.7)
+    conn.timer_needs_rearm = true;
 }
 
 fn handle_stream_frame(
@@ -961,6 +1006,7 @@ pub fn generate_packets<'umem>(
         conn.timers
             .arm(QuicTimerKind::LossDetection, conn_key, deadline, wheel);
     }
+    conn.timer_needs_rearm = false;
 }
 
 /// Build a complete Ethernet+IP+UDP+QUIC packet into a frame buffer.

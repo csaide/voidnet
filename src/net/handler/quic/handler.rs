@@ -177,8 +177,14 @@ impl QuicHandler {
         } else if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
             // Potential new connection — check if Initial + listener exists
             if self.listeners.contains_key(&dst_port) && datagram_len >= 1200 {
+                // Extract version from long header bytes [1..5]
+                let version = if quic_data.len() >= 5 {
+                    u32::from_be_bytes([quic_data[1], quic_data[2], quic_data[3], quic_data[4]])
+                } else {
+                    0x00000001 // fallback to v1
+                };
                 if let Some(key) = self.create_server_connection(
-                    &dcid, dst_addr, src_addr, dst_port, src_port, src_mac, dst_mac, now,
+                    &dcid, dst_addr, src_addr, dst_port, src_port, src_mac, dst_mac, now, version,
                 ) {
                     let conn = &mut self.connections[key];
                     let mut frame_data = frame;
@@ -276,8 +282,14 @@ impl QuicHandler {
         } else if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
             // Potential new connection — check if Initial + listener exists
             if self.listeners.contains_key(&dst_port) && datagram_len >= 1200 {
+                // Extract version from long header bytes [1..5]
+                let version = if quic_data.len() >= 5 {
+                    u32::from_be_bytes([quic_data[1], quic_data[2], quic_data[3], quic_data[4]])
+                } else {
+                    0x00000001 // fallback to v1
+                };
                 if let Some(key) = self.create_server_connection(
-                    &dcid, dst_addr, src_addr, dst_port, src_port, src_mac, dst_mac, now,
+                    &dcid, dst_addr, src_addr, dst_port, src_port, src_mac, dst_mac, now, version,
                 ) {
                     let conn = &mut self.connections[key];
                     let mut frame_data = frame;
@@ -410,6 +422,7 @@ impl QuicHandler {
         remote_mac: MacAddress,
         local_mac: MacAddress,
         now: Instant,
+        version: u32,
     ) -> Option<usize> {
         use crate::net::handler::quic::connection::Side;
         use crate::net::handler::quic::crypto::initial_keys::derive_initial_keys;
@@ -419,12 +432,17 @@ impl QuicHandler {
 
         let listener = self.listeners.get(&local_port)?;
 
+        // Map version to rustls quic version for key derivation
+        let rustls_version =
+            if version == crate::net::handler::quic::transport::version::QUIC_VERSION_2 {
+                rustls::quic::Version::V2
+            } else {
+                rustls::quic::Version::V1
+            };
+
         // Derive initial keys (server side)
-        let (local_dk, remote_dk) = derive_initial_keys(
-            client_dcid.as_bytes(),
-            rustls::Side::Server,
-            rustls::quic::Version::V1,
-        );
+        let (local_dk, remote_dk) =
+            derive_initial_keys(client_dcid.as_bytes(), rustls::Side::Server, rustls_version);
         let initial_keys = KeyPair {
             local: DirectionalKey::from_rustls(local_dk),
             remote: DirectionalKey::from_rustls(remote_dk),
@@ -443,7 +461,7 @@ impl QuicHandler {
         let crypto = CryptoState::new_server(
             listener.tls_config.clone(),
             &params_buf[..params_len],
-            rustls::quic::Version::V1,
+            rustls_version,
         )
         .ok()?;
 
@@ -470,6 +488,7 @@ impl QuicHandler {
         conn.local_mac = local_mac;
         conn.remote_mac = remote_mac;
         conn.accept_queue = accept_queue;
+        conn.version = version;
 
         Some(self.insert_connection(conn))
     }

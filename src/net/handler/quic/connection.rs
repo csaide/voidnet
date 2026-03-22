@@ -143,6 +143,10 @@ pub struct QuicConnectionState {
 
     /// Transport error to send in CONNECTION_CLOSE when entering Closing state
     pub close_error: Option<TransportError>,
+
+    /// Flag: loss detection timer needs re-arming after ACK/timeout processing (RFC 9002 §A.7).
+    /// Cleared when generate_packets runs and re-arms the timer.
+    pub timer_needs_rearm: bool,
 }
 
 impl QuicConnectionState {
@@ -218,6 +222,7 @@ impl QuicConnectionState {
             key_update_secrets: None,
             version: 0x00000001, // QUIC v1 default
             close_error: None,
+            timer_needs_rearm: false,
         }
     }
 }
