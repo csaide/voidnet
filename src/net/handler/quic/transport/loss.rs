@@ -291,8 +291,10 @@ impl LossDetector {
             }
         }
 
-        // Reset pto_count on successful ack.
-        self.pto_count = 0;
+        // Reset pto_count on successful ack (RFC 9002 §A.7).
+        if self.peer_completed_address_validation {
+            self.pto_count = 0;
+        }
 
         // Detect lost packets.
         let lost = self.detect_lost_packets(space, now);
