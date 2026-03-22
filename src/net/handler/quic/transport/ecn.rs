@@ -11,6 +11,10 @@ pub struct EcnState {
     pub ce_counter: u64,
     /// Whether ECN was disabled (validation failed)
     pub disabled: bool,
+    /// Previous ECT(0) count from peer's ACK
+    pub prev_ect0: u64,
+    /// Previous ECT(1) count from peer's ACK
+    pub prev_ect1: u64,
 }
 
 impl EcnState {
@@ -21,6 +25,8 @@ impl EcnState {
             ect0_sent: 0,
             ce_counter: 0,
             disabled: false,
+            prev_ect0: 0,
+            prev_ect1: 0,
         }
     }
 
@@ -38,8 +44,16 @@ impl EcnState {
 
     /// Process ECN counts from an ACK frame.
     /// Returns true if congestion was signaled (CE count increased).
-    pub fn on_ack_ecn(&mut self, ect0: u64, _ect1: u64, ecn_ce: u64) -> bool {
+    pub fn on_ack_ecn(&mut self, ect0: u64, ect1: u64, ecn_ce: u64) -> bool {
         if self.disabled {
+            return false;
+        }
+
+        // RFC 9000 §13.4.2.1: ECN counts MUST NOT decrease
+        if ect0 < self.prev_ect0 || ect1 < self.prev_ect1 || ecn_ce < self.ce_counter {
+            self.disabled = true;
+            self.capable = false;
+            self.validation_pending = false;
             return false;
         }
 
@@ -56,8 +70,9 @@ impl EcnState {
             self.validation_pending = false;
         }
 
-        // Check for congestion signal
         let ce_increased = ecn_ce > self.ce_counter;
+        self.prev_ect0 = ect0;
+        self.prev_ect1 = ect1;
         self.ce_counter = ecn_ce;
         ce_increased
     }
