@@ -399,6 +399,27 @@ impl<'a> PacketBuilder<'a> {
         true
     }
 
+    /// Write a STOP_SENDING frame (0x05). Returns true if written.
+    pub fn write_stop_sending(
+        &mut self,
+        stream_id: StreamId,
+        error_code: u64,
+        frame_log: &mut FrameLog,
+    ) -> bool {
+        let needed = 1 + varint_len(stream_id.0) + varint_len(error_code);
+        if self.remaining() < needed {
+            return false;
+        }
+        let written =
+            frame_writer::write_stop_sending(&mut self.buf[self.offset..], stream_id, error_code);
+        self.offset += written;
+        frame_log.push(SentFrame::StopSending {
+            id: stream_id,
+            error_code,
+        });
+        true
+    }
+
     /// Write a HANDSHAKE_DONE frame (0x1e). Returns true if written.
     pub fn write_handshake_done(&mut self, frame_log: &mut FrameLog) -> bool {
         if self.remaining() < 1 {

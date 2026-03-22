@@ -357,6 +357,26 @@ impl StreamMap {
         })
     }
 
+    /// Iterate over all streams that have a recv half, regardless of state.
+    pub fn iter_all_recv(&self) -> impl Iterator<Item = (StreamId, &StreamEntry)> {
+        let types: [(u64, &Vec<Option<StreamEntry>>); 4] = [
+            (0, &self.client_bidi),
+            (1, &self.server_bidi),
+            (2, &self.client_uni),
+            (3, &self.server_uni),
+        ];
+        types.into_iter().flat_map(|(type_bits, vec)| {
+            vec.iter().enumerate().filter_map(move |(idx, slot)| {
+                let entry = slot.as_ref()?;
+                if entry.recv.is_some() {
+                    Some((StreamId((idx as u64) << 2 | type_bits), entry))
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
     pub fn iter_recv(&self) -> impl Iterator<Item = (StreamId, &StreamEntry)> {
         let types: [(u64, &Vec<Option<StreamEntry>>); 4] = [
             (0, &self.client_bidi),

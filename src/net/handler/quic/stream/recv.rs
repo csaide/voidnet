@@ -385,6 +385,8 @@ pub struct RecvHalf {
     pub fin_received: bool,
     pub is_reset: bool,
     pub ooo: OooRanges,
+    pub stop_sending_requested: bool,
+    pub stop_sending_error_code: u64,
 }
 
 impl RecvHalf {
@@ -399,7 +401,14 @@ impl RecvHalf {
             fin_received: false,
             is_reset: false,
             ooo: OooRanges::new(256),
+            stop_sending_requested: false,
+            stop_sending_error_code: 0,
         }
+    }
+
+    pub fn request_stop_sending(&mut self, error_code: u64) {
+        self.stop_sending_requested = true;
+        self.stop_sending_error_code = error_code;
     }
 
     pub fn should_send_max_stream_data(&self) -> Option<u64> {
@@ -537,5 +546,7 @@ impl RecvHalf {
         self.fin_received = false;
         self.is_reset = false;
         self.ooo = OooRanges::new(256);
+        self.stop_sending_requested = false;
+        self.stop_sending_error_code = 0;
     }
 }

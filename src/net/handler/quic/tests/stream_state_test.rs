@@ -216,6 +216,18 @@ fn send_half_reset_marks_pending() {
     assert_eq!(send.final_size(), 3);
 }
 
+// --- RecvHalf stop_sending ---
+
+#[test]
+fn recv_half_stop_sending() {
+    use crate::net::handler::quic::stream::recv::RecvHalf;
+    let mut recv = RecvHalf::new(65536);
+    assert!(!recv.stop_sending_requested);
+    recv.request_stop_sending(0x99);
+    assert!(recv.stop_sending_requested);
+    assert_eq!(recv.stop_sending_error_code, 0x99);
+}
+
 // --- Helper checks ---
 
 #[test]

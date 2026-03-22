@@ -1576,6 +1576,45 @@ fn build_packet_in_frame(
         }
     }
 
+    // 4f. STOP_SENDING — request peer stops sending on a stream (RFC 9000 §3.5)
+    if space == 2 {
+        let retransmit_stops: smallvec::SmallVec<[(StreamId, u64); 4]> =
+            conn.retransmit.stop_sending.drain(..).collect();
+        for (id, error_code) in retransmit_stops {
+            if builder.write_stop_sending(id, error_code, &mut conn.frame_log) {
+                wrote_ack_eliciting = true;
+            } else {
+                conn.retransmit.stop_sending.push((id, error_code));
+                break;
+            }
+        }
+        let stop_streams: smallvec::SmallVec<[(StreamId, u64); 4]> = conn
+            .streams
+            .iter_all_recv()
+            .filter_map(|(id, entry)| {
+                entry.recv.as_ref().and_then(|r| {
+                    if r.stop_sending_requested {
+                        Some((id, r.stop_sending_error_code))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        for (id, error_code) in stop_streams {
+            if builder.write_stop_sending(id, error_code, &mut conn.frame_log) {
+                if let Some(entry) = conn.streams.get_mut(id) {
+                    if let Some(ref mut recv) = entry.recv {
+                        recv.stop_sending_requested = false;
+                    }
+                }
+                wrote_ack_eliciting = true;
+            } else {
+                break;
+            }
+        }
+    }
+
     // 4. PATH_RESPONSE
     if space == 2 {
         if let Some(data) = conn.pending_path_response.take() {

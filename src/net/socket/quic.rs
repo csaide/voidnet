@@ -395,6 +395,18 @@ impl QuicStream {
         }
     }
 
+    /// Send STOP_SENDING to ask the peer to stop sending on this stream.
+    pub fn stop_sending(&self, error_code: u64) {
+        let handler = unsafe { &mut *self.handler.get() };
+        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
+            if let Some(entry) = conn.streams.get_mut(self.stream_id) {
+                if let Some(ref mut recv) = entry.recv {
+                    recv.request_stop_sending(error_code);
+                }
+            }
+        }
+    }
+
     /// Returns the stream identifier.
     pub fn id(&self) -> StreamId {
         self.stream_id
@@ -514,6 +526,18 @@ impl QuicRecvStream {
 
     pub fn id(&self) -> StreamId {
         self.stream_id
+    }
+
+    /// Send STOP_SENDING to ask the peer to stop sending on this stream.
+    pub fn stop_sending(&self, error_code: u64) {
+        let handler = unsafe { &mut *self.handler.get() };
+        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
+            if let Some(entry) = conn.streams.get_mut(self.stream_id) {
+                if let Some(ref mut recv) = entry.recv {
+                    recv.request_stop_sending(error_code);
+                }
+            }
+        }
     }
 }
 
