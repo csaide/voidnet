@@ -81,6 +81,7 @@ pub struct QuicConnectionState {
     pub aead_limits: crate::net::handler::quic::crypto::aead_limits::AeadLimits,
     pub packets_encrypted: [u64; 3],
     pub failed_decryptions: u64,
+    pub zero_rtt_rejected: u64,
 
     // Config
     pub idle_timeout: Duration,
@@ -211,6 +212,7 @@ impl QuicConnectionState {
             aead_limits: crate::net::handler::quic::crypto::aead_limits::AeadLimits::AES_GCM,
             packets_encrypted: [0; 3],
             failed_decryptions: 0,
+            zero_rtt_rejected: 0,
             idle_timeout,
             max_udp_payload: 1200,
             created_at: now,

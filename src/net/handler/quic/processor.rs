@@ -211,7 +211,8 @@ pub fn process_packet(
                             None => None,
                         }
                     } else {
-                        None // 0-RTT not supported
+                        conn.zero_rtt_rejected += 1;
+                        None // 0-RTT not yet supported; client will retry in 1-RTT
                     }
                 }
                 PacketHeader::Short(short) => {
