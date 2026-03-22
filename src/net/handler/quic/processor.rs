@@ -1181,13 +1181,54 @@ fn write_transport_headers(
     );
 
     // Fix 20: UDP checksum is MANDATORY for IPv6. For IPv4, checksum 0 is valid (optional).
-    if matches!(conn.local_addr, IpAddress::V6(_)) {
-        // TODO: Compute proper UDP checksum over IPv6 pseudo-header + UDP payload.
-        // Setting 0xFFFF as a placeholder — a proper implementation should compute
-        // the full checksum over the IPv6 pseudo-header + UDP header + payload.
+    if let (IpAddress::V6(src), IpAddress::V6(dst)) = (conn.local_addr, conn.remote_addr) {
+        let src_bytes: [u8; 16] = src.into();
+        let dst_bytes: [u8; 16] = dst.into();
+        let udp_segment = &frame[udp_offset..udp_offset + udp_len];
+        let cksum = ipv6_udp_checksum(&src_bytes, &dst_bytes, udp_segment);
         let udp_mut = unsafe { UdpHeader::from_bytes_at_mut(frame, udp_offset) };
-        udp_mut.checksum = [0xFF, 0xFF];
+        udp_mut.checksum = cksum.to_be_bytes();
     }
 
     total_frame_len
+}
+
+/// Compute the UDP checksum over an IPv6 pseudo-header and UDP segment.
+/// The UDP segment includes the UDP header and payload. The checksum field
+/// at bytes 6-7 of the segment is skipped during summation.
+fn ipv6_udp_checksum(src: &[u8; 16], dst: &[u8; 16], udp_segment: &[u8]) -> u16 {
+    let mut sum: u32 = 0;
+    // Pseudo-header: source address
+    for chunk in src.chunks(2) {
+        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+    }
+    // Pseudo-header: destination address
+    for chunk in dst.chunks(2) {
+        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+    }
+    // Pseudo-header: UDP length (32-bit for jumbo)
+    let udp_len = udp_segment.len() as u32;
+    sum += udp_len >> 16;
+    sum += udp_len & 0xFFFF;
+    // Pseudo-header: Next Header = UDP (17)
+    sum += 17u32;
+    // UDP segment (skip checksum field at bytes 6-7)
+    let mut i = 0;
+    while i + 1 < udp_segment.len() {
+        if i == 6 {
+            i += 2;
+            continue;
+        }
+        sum += u16::from_be_bytes([udp_segment[i], udp_segment[i + 1]]) as u32;
+        i += 2;
+    }
+    if i < udp_segment.len() {
+        sum += (udp_segment[i] as u32) << 8;
+    }
+    // Fold carry bits
+    while sum > 0xFFFF {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    let result = !(sum as u16);
+    if result == 0 { 0xFFFF } else { result }
 }
