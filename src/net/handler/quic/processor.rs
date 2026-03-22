@@ -1029,8 +1029,8 @@ fn build_packet_in_frame(
                         .buffer
                         .len()
                         .min(builder.remaining().saturating_sub(20))
-                        .min(1500); // Fix 23: Cap to stack buffer size
-                    let mut temp = [0u8; 1500];
+                        .min(4096);
+                    let mut temp = [0u8; 4096];
                     let read = send.buffer.read(&mut temp[..data_len]);
                     let fin = send.fin_sent && send.buffer.is_empty();
                     if read > 0 || fin {
