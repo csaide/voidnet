@@ -12,6 +12,7 @@ use super::stream::pool::StreamPool;
 use super::timer_kinds::QuicTimerHandles;
 use super::transport::ack::AckState;
 use super::transport::congestion::QuicCubic;
+use super::transport::ecn::EcnState;
 use super::transport::flow_control::FlowControl;
 use super::transport::frame::StreamId;
 use super::transport::frame_log::FrameLog;
@@ -58,6 +59,7 @@ pub struct QuicConnectionState {
     pub loss: LossDetector,
     pub congestion: QuicCubic,
     pub flow: FlowControl,
+    pub ecn: EcnState,
     /// Per packet-number-space ACK state: [Initial, Handshake, 1-RTT].
     pub ack: [AckState; 3],
 
@@ -157,6 +159,11 @@ impl QuicConnectionState {
         let mut streams = StreamMap::new(is_client);
         streams.local_max_bidi = local_params.initial_max_streams_bidi;
         streams.local_max_uni = local_params.initial_max_streams_uni;
+        let idle_timeout = if local_params.max_idle_timeout_ms > 0 {
+            Duration::from_millis(local_params.max_idle_timeout_ms)
+        } else {
+            Duration::from_millis(0)
+        };
         Self {
             dcid,
             scid_set: CidSet::new(),
@@ -167,6 +174,7 @@ impl QuicConnectionState {
             loss: LossDetector::new(),
             congestion,
             flow: FlowControl::new(0, local_params.initial_max_data),
+            ecn: EcnState::new(),
             ack: [AckState::new(), AckState::new(), AckState::new()],
             streams,
             stream_pool: StreamPool::new(64),
@@ -176,7 +184,7 @@ impl QuicConnectionState {
             timers: QuicTimerHandles::new(),
             packets_encrypted: 0,
             failed_decryptions: 0,
-            idle_timeout: Duration::from_secs(30),
+            idle_timeout,
             max_udp_payload: 1200,
             created_at: now,
             last_activity: now,

@@ -570,7 +570,9 @@ fn handle_crypto_frame(
                     if params.max_idle_timeout_ms > 0 {
                         let peer_timeout =
                             coarsetime::Duration::from_millis(params.max_idle_timeout_ms);
-                        if conn.idle_timeout > peer_timeout || conn.idle_timeout.as_millis() == 0 {
+                        if conn.idle_timeout.as_millis() == 0 {
+                            conn.idle_timeout = peer_timeout;
+                        } else if peer_timeout < conn.idle_timeout {
                             conn.idle_timeout = peer_timeout;
                         }
                     }
@@ -696,6 +698,18 @@ fn handle_ack_frame(
             pkt.in_flight,
             pkt.time_sent,
         );
+    }
+
+    // Process ECN if present
+    if let Some(ref ecn_counts) = ack.ecn {
+        let ce_signaled = conn
+            .ecn
+            .on_ack_ecn(ecn_counts.ect0, ecn_counts.ect1, ecn_counts.ecn_ce);
+        if ce_signaled {
+            if let Some(last_acked) = acked.last() {
+                conn.congestion.on_ecn_ce(last_acked.time_sent, now);
+            }
+        }
     }
 }
 
