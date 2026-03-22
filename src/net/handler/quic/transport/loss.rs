@@ -273,6 +273,10 @@ impl LossDetector {
             }
         }
 
+        if acked.is_empty() {
+            return (acked, SmallVec::new());
+        }
+
         // Update RTT if the largest acked packet was newly acked and we had it.
         // Only update RTT if acked packets include at least one ack-eliciting (Fix 14).
         if newly_acked_largest {
