@@ -1228,6 +1228,11 @@ pub fn generate_packets<'umem>(
                                     protected_len,
                                 );
                                 if total_len > 0 {
+                                    debug_assert!(
+                                        total_len >= 64,
+                                        "QUIC CLOSE: packet too small: {} bytes",
+                                        total_len
+                                    );
                                     unsafe { frame.set_len(total_len) };
                                     tx_return.push(frame);
                                 } else {
@@ -1325,6 +1330,13 @@ pub fn generate_packets<'umem>(
         let total_len = build_packet_in_frame(conn, space, now, &mut frame);
 
         if total_len > 0 {
+            debug_assert!(
+                total_len >= 64,
+                "QUIC: packet too small: {} bytes (space={}, state={:?})",
+                total_len,
+                space,
+                conn.state
+            );
             unsafe { frame.set_len(total_len) };
             conn.path.amplification.on_bytes_sent(total_len);
             conn.pacing.on_packet_sent(total_len, now);

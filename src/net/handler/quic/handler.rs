@@ -533,6 +533,11 @@ impl QuicHandler {
             dcid,
             &[version::QUIC_VERSION_1, version::QUIC_VERSION_2],
         );
+        debug_assert!(
+            total >= 64,
+            "QUIC VN IPv4: packet too small: {} bytes",
+            total
+        );
         unsafe { frame.set_len(total) };
         tx_return.push(frame);
     }
@@ -630,6 +635,11 @@ impl QuicHandler {
                 udp.checksum = checksum;
             }
         }
+        debug_assert!(
+            total >= 64,
+            "QUIC VN IPv6: packet too small: {} bytes",
+            total
+        );
         unsafe { frame.set_len(total) };
         tx_return.push(frame);
     }
