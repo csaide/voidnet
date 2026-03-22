@@ -5,6 +5,7 @@ use crate::net::handler::quic::connection::{ConnectionState, QuicConnectionState
 use crate::net::handler::quic::crypto::packet_protection::{
     decrypt_payload, protect_packet, unprotect_header,
 };
+use crate::net::handler::quic::error::TransportError;
 use crate::net::handler::quic::packet_parser::{self, packet_space};
 use crate::net::handler::quic::timer_kinds::QuicTimerKind;
 use crate::net::handler::quic::transport::ack::AckState;
@@ -279,7 +280,11 @@ fn dispatch_frames(
     while offset < plaintext.len() {
         let (frame, consumed) = match frame::parse_frame(&plaintext[offset..]) {
             Ok(r) => r,
-            Err(_) => break,
+            Err(_) => {
+                conn.close_error = Some(TransportError::FRAME_ENCODING_ERROR);
+                conn.state = ConnectionState::Closing;
+                return ProcessResult::ConnectionClosed;
+            }
         };
         offset += consumed;
 

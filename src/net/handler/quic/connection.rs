@@ -3,6 +3,7 @@ use coarsetime::{Duration, Instant};
 use super::connection_id::{CidSet, ConnectionId};
 use super::crypto::keys::PacketKeys;
 use super::crypto::tls::CryptoState;
+use super::error::TransportError;
 use super::packet_parser::{CryptoRecvBuffer, PnBitset};
 use super::path::PathState;
 use super::stream::map::StreamMap;
@@ -133,6 +134,9 @@ pub struct QuicConnectionState {
 
     /// QUIC version in use for this connection
     pub version: u32,
+
+    /// Transport error to send in CONNECTION_CLOSE when entering Closing state
+    pub close_error: Option<TransportError>,
 }
 
 impl QuicConnectionState {
@@ -197,6 +201,7 @@ impl QuicConnectionState {
             event_queue: LocalQueue::new(64),
             key_update_secrets: None,
             version: 0x00000001, // QUIC v1 default
+            close_error: None,
         }
     }
 }
