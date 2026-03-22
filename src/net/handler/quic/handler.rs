@@ -591,7 +591,7 @@ impl QuicHandler {
                 ip[24..40].copy_from_slice(&dst.octets);
             }
         }
-        // Write UDP header
+        // Write UDP header (checksum field zeroed until we compute it below)
         {
             let udp = unsafe {
                 crate::net::wire::udp::UdpHeader::from_bytes_at_mut(&mut frame, udp_offset)
@@ -599,15 +599,37 @@ impl QuicHandler {
             udp.src_port = dst_port.to_be_bytes();
             udp.dst_port = src_port.to_be_bytes();
             udp.length = (udp_len as u16).to_be_bytes();
-            udp.checksum = [0, 0]; // TODO: compute IPv6 UDP checksum
+            udp.checksum = [0, 0];
         }
-        // Write QUIC VN payload directly into frame — no heap allocation
+        // Write QUIC VN payload directly into frame — no heap allocation.
+        // Must happen before checksum so the full UDP segment is in the buffer.
         version::build_version_negotiation(
             &mut frame[quic_offset..],
             scid,
             dcid,
             &[version::QUIC_VERSION_1, version::QUIC_VERSION_2],
         );
+        // Compute IPv6 UDP checksum over the complete UDP segment (RFC 8200 §8.1).
+        // The IPv6 header uses dst_addr as source and src_addr as destination (VN is a response).
+        {
+            use crate::net::checksum::{
+                checksum_to_bytes, fold_checksum, pseudo_header_sum_v6, sum_words,
+            };
+            if let (IpAddress::V6(src_ip), IpAddress::V6(dst_ip)) = (dst_addr, src_addr) {
+                let udp_segment = &frame[udp_offset..total];
+                let sum = pseudo_header_sum_v6(
+                    &src_ip,
+                    &dst_ip,
+                    crate::net::wire::ip::IpProtocols::Udp,
+                    udp_len as u32,
+                ) + sum_words(udp_segment);
+                let checksum = checksum_to_bytes(fold_checksum(sum));
+                let udp = unsafe {
+                    crate::net::wire::udp::UdpHeader::from_bytes_at_mut(&mut frame, udp_offset)
+                };
+                udp.checksum = checksum;
+            }
+        }
         unsafe { frame.set_len(total) };
         tx_return.push(frame);
     }
