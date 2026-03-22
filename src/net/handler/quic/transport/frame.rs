@@ -115,6 +115,7 @@ pub struct ConnectionCloseFrame<'a> {
 pub enum FrameParseError {
     BufferTooShort,
     InvalidFrameType(u64),
+    InvalidFrame,
 }
 
 /// Parse one frame from buffer. Returns (frame, bytes_consumed) or error.
@@ -257,6 +258,9 @@ pub fn parse_frame(buf: &[u8]) -> Result<(QuicFrame<'_>, usize), FrameParseError
             let (length, n) = decode_varint(&rest[pos..]).ok_or(FrameParseError::BufferTooShort)?;
             pos += n;
             let length = length as usize;
+            if length == 0 {
+                return Err(FrameParseError::InvalidFrame);
+            }
             if rest.len() < pos + length {
                 return Err(FrameParseError::BufferTooShort);
             }
@@ -400,6 +404,13 @@ pub fn parse_frame(buf: &[u8]) -> Result<(QuicFrame<'_>, usize), FrameParseError
             }
             let cid_len = rest[pos] as usize;
             pos += 1;
+
+            if cid_len == 0 || cid_len > 20 {
+                return Err(FrameParseError::InvalidFrame);
+            }
+            if retire_prior_to > sequence {
+                return Err(FrameParseError::InvalidFrame);
+            }
 
             if rest.len() < pos + cid_len + 16 {
                 return Err(FrameParseError::BufferTooShort);

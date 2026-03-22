@@ -389,3 +389,56 @@ fn parse_unknown_frame_type() {
         _ => panic!("expected InvalidFrameType error"),
     }
 }
+
+#[test]
+fn parse_new_connection_id_cid_len_zero_fails() {
+    let mut buf = [0u8; 64];
+    buf[0] = 0x18;
+    let mut pos = 1;
+    pos += encode_varint(1, &mut buf[pos..]); // sequence
+    pos += encode_varint(0, &mut buf[pos..]); // retire_prior_to
+    buf[pos] = 0; // cid_len = 0
+    pos += 1;
+    // 16 bytes for stateless reset token
+    pos += 16;
+    assert!(parse_frame(&buf[..pos]).is_err());
+}
+
+#[test]
+fn parse_new_connection_id_cid_len_21_fails() {
+    let mut buf = [0u8; 64];
+    buf[0] = 0x18;
+    let mut pos = 1;
+    pos += encode_varint(1, &mut buf[pos..]); // sequence
+    pos += encode_varint(0, &mut buf[pos..]); // retire_prior_to
+    buf[pos] = 21; // cid_len too long
+    pos += 1;
+    // Fill 21 + 16 bytes
+    pos += 21 + 16;
+    assert!(parse_frame(&buf[..pos]).is_err());
+}
+
+#[test]
+fn parse_new_connection_id_retire_gt_sequence_fails() {
+    let mut buf = [0u8; 64];
+    buf[0] = 0x18;
+    let mut pos = 1;
+    pos += encode_varint(5, &mut buf[pos..]); // sequence
+    pos += encode_varint(6, &mut buf[pos..]); // retire > sequence
+    buf[pos] = 4; // cid_len
+    pos += 1;
+    buf[pos..pos + 4].copy_from_slice(&[1, 2, 3, 4]);
+    pos += 4;
+    // 16 bytes for stateless reset token
+    pos += 16;
+    assert!(parse_frame(&buf[..pos]).is_err());
+}
+
+#[test]
+fn parse_new_token_empty_fails() {
+    let mut buf = [0u8; 16];
+    buf[0] = 0x07;
+    let mut pos = 1;
+    pos += encode_varint(0, &mut buf[pos..]); // empty token
+    assert!(parse_frame(&buf[..pos]).is_err());
+}
