@@ -78,6 +78,7 @@ pub struct QuicConnectionState {
     pub timers: QuicTimerHandles,
 
     // AEAD limits (RFC 9001 §6.6)
+    pub aead_limits: crate::net::handler::quic::crypto::aead_limits::AeadLimits,
     pub packets_encrypted: u64,
     pub failed_decryptions: u64,
 
@@ -190,6 +191,7 @@ impl QuicConnectionState {
             local_params,
             peer_params: None,
             timers: QuicTimerHandles::new(),
+            aead_limits: crate::net::handler::quic::crypto::aead_limits::AeadLimits::AES_GCM,
             packets_encrypted: 0,
             failed_decryptions: 0,
             idle_timeout,

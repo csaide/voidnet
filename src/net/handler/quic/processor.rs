@@ -249,8 +249,7 @@ fn decrypt_and_process(
             Err(_) => {
                 conn.failed_decryptions += 1;
                 {
-                    let limits =
-                        crate::net::handler::quic::crypto::aead_limits::AeadLimits::AES_GCM;
+                    let limits = conn.aead_limits;
                     if limits.must_close(conn.failed_decryptions) {
                         conn.close_error = Some(TransportError::AEAD_LIMIT_REACHED);
                         conn.state = ConnectionState::Closing;
@@ -285,7 +284,7 @@ fn decrypt_and_process(
         Err(_) => {
             conn.failed_decryptions += 1;
             {
-                let limits = crate::net::handler::quic::crypto::aead_limits::AeadLimits::AES_GCM;
+                let limits = conn.aead_limits;
                 if limits.must_close(conn.failed_decryptions) {
                     conn.close_error = Some(TransportError::AEAD_LIMIT_REACHED);
                     conn.state = ConnectionState::Closing;
@@ -1260,7 +1259,7 @@ fn build_packet_in_frame(
             conn.key_update.on_packet_sent(pn);
 
             // Check if key update is needed (AEAD confidentiality limit)
-            let limits = crate::net::handler::quic::crypto::aead_limits::AeadLimits::AES_GCM;
+            let limits = conn.aead_limits;
             if space == 2 && limits.needs_key_update(conn.packets_encrypted) {
                 if conn.key_update.can_initiate_update() {
                     if let Some(ref mut secrets) = conn.key_update_secrets {

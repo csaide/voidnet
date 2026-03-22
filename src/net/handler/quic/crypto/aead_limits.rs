@@ -1,4 +1,5 @@
 /// AEAD usage limits per cipher suite (RFC 9001 §6.6)
+#[derive(Clone, Copy)]
 pub struct AeadLimits {
     /// Max packets to encrypt per key (confidentiality limit)
     pub confidentiality_limit: u64,
