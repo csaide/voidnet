@@ -968,6 +968,12 @@ fn handle_ack_frame(
                         }
                     }
                 }
+                // Clean up fully completed streams
+                if let Some(entry) = conn.streams.get(*id) {
+                    if is_stream_complete(entry) {
+                        conn.streams.remove(*id);
+                    }
+                }
             }
         }
     }
@@ -1059,6 +1065,14 @@ fn handle_stream_frame(
                 }
             }
             Err(_) => return Some(TransportError::FLOW_CONTROL_ERROR),
+        }
+    }
+
+    // Clean up if stream is fully complete
+    if let Some(entry) = conn.streams.get(stream_id) {
+        if is_stream_complete(entry) {
+            conn.streams.remove(stream_id);
+            return None;
         }
     }
 
@@ -1752,6 +1766,22 @@ fn build_packet_in_frame(
         }
         Err(_) => 0,
     }
+}
+
+/// Check if a stream is fully complete (both sides done) and can be removed.
+fn is_stream_complete(entry: &crate::net::handler::quic::stream::map::StreamEntry) -> bool {
+    let send_done = match &entry.send {
+        None => true,
+        Some(send) => {
+            (send.fin_sent && send.buffer.is_empty() && send.acked == send.sent)
+                || send.reset_requested
+        }
+    };
+    let recv_done = match &entry.recv {
+        None => true,
+        Some(recv) => (recv.fin_received && recv.read_offset == recv.received) || recv.is_reset,
+    };
+    send_done && recv_done
 }
 
 /// Write Ethernet + IP + UDP headers into the frame, returning the total

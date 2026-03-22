@@ -227,6 +227,19 @@ fn stream_map_remove() {
     assert!(map.get(id).is_none());
 }
 
+#[test]
+fn stream_removed_after_completion() {
+    use crate::net::handler::quic::stream::map::StreamMap;
+    use crate::net::handler::quic::transport::frame::StreamId;
+    let mut map = StreamMap::new(true); // client
+    map.peer_max_bidi = 10;
+    let id = StreamId(0);
+    assert!(map.get_or_create(id).is_ok());
+    assert!(map.get(id).is_some());
+    map.remove(id);
+    assert!(map.get(id).is_none());
+}
+
 // ── MAX_STREAMS expansion ─────────────────────────────────────────
 
 #[test]
