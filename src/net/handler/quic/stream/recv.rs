@@ -332,8 +332,21 @@ impl RecvHalf {
         }
     }
 
-    pub fn on_reset(&mut self, _final_size: u64) {
+    pub fn on_reset(&mut self, final_size: u64) -> Result<(), RecvError> {
+        if final_size < self.received {
+            return Err(RecvError::FinalSizeMismatch);
+        }
+        if let Some(fs) = self.final_size {
+            if fs != final_size {
+                return Err(RecvError::FinalSizeMismatch);
+            }
+        }
+        if final_size > self.max_stream_data {
+            return Err(RecvError::FlowControlExceeded);
+        }
+        self.final_size = Some(final_size);
         self.is_reset = true;
+        Ok(())
     }
 
     /// Write received data at an offset. Handles out-of-order.

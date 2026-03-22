@@ -139,11 +139,15 @@ impl FlowControl {
     /// flow control even if the data itself was never delivered to the
     /// application.  Call this instead of (or in addition to) `on_data_received`
     /// when processing RESET_STREAM.
-    pub fn on_stream_final_size(&mut self, final_size: u64) {
+    pub fn on_stream_final_size(&mut self, final_size: u64) -> Result<(), ()> {
         // Ensure data_received accounts for the final_size.  We only move
         // data_received forward — never back — since it is a cumulative counter.
         if final_size > self.data_received {
             self.data_received = final_size;
         }
+        if self.data_received > self.max_data_recv {
+            return Err(());
+        }
+        Ok(())
     }
 }
