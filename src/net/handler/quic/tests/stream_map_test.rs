@@ -70,6 +70,20 @@ fn stream_ring_buffer_write_at_offset() {
     assert_eq!(&buf[5..10], b"world");
 }
 
+#[test]
+fn ring_buffer_write_at_wrapping() {
+    use crate::net::handler::quic::stream::recv::StreamRingBuffer;
+    let mut rb = StreamRingBuffer::new(8);
+    rb.write(&[1, 2, 3, 4, 5, 6]);
+    let mut discard = [0u8; 4];
+    rb.read(&mut discard);
+    rb.write(&[7, 8, 9, 10]);
+    let mut out = [0u8; 6];
+    let read = rb.peek(&mut out);
+    assert_eq!(read, 6);
+    assert_eq!(out, [5, 6, 7, 8, 9, 10]);
+}
+
 // ── OooRanges ─────────────────────────────────────────────────────
 
 #[test]

@@ -87,8 +87,17 @@ impl StreamRingBuffer {
             return 0;
         }
         let n = data.len().min(cap - offset);
-        for i in 0..n {
-            self.buf[(self.head + offset + i) & self.mask] = data[i];
+        if n == 0 {
+            return 0;
+        }
+        let start = (self.head + offset) & self.mask;
+        let end = start + n;
+        if end <= self.buf.len() {
+            self.buf[start..end].copy_from_slice(&data[..n]);
+        } else {
+            let first = self.buf.len() - start;
+            self.buf[start..].copy_from_slice(&data[..first]);
+            self.buf[..n - first].copy_from_slice(&data[first..n]);
         }
         // Advance tail if this write extends beyond current tail
         let new_end = offset + n;
@@ -102,8 +111,17 @@ impl StreamRingBuffer {
     pub fn peek(&self, buf: &mut [u8]) -> usize {
         let avail = self.len();
         let n = buf.len().min(avail);
-        for i in 0..n {
-            buf[i] = self.buf[(self.head + i) & self.mask];
+        if n == 0 {
+            return 0;
+        }
+        let head_pos = self.head & self.mask;
+        let end = head_pos + n;
+        if end <= self.buf.len() {
+            buf[..n].copy_from_slice(&self.buf[head_pos..end]);
+        } else {
+            let first = self.buf.len() - head_pos;
+            buf[..first].copy_from_slice(&self.buf[head_pos..]);
+            buf[first..n].copy_from_slice(&self.buf[..n - first]);
         }
         n
     }
@@ -116,8 +134,17 @@ impl StreamRingBuffer {
             return 0;
         }
         let n = buf.len().min(avail - offset);
-        for i in 0..n {
-            buf[i] = self.buf[(self.head + offset + i) & self.mask];
+        if n == 0 {
+            return 0;
+        }
+        let start = (self.head + offset) & self.mask;
+        let end = start + n;
+        if end <= self.buf.len() {
+            buf[..n].copy_from_slice(&self.buf[start..end]);
+        } else {
+            let first = self.buf.len() - start;
+            buf[..first].copy_from_slice(&self.buf[start..]);
+            buf[first..n].copy_from_slice(&self.buf[..n - first]);
         }
         n
     }
