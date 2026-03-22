@@ -24,6 +24,10 @@ pub struct StreamMap {
     /// Whether this endpoint is a client
     pub is_client: bool,
 
+    /// Number of streams with data or a pending FIN to send. Maintained as a
+    /// dirty-stream counter so `has_pending_send` is O(1) instead of O(n).
+    pub pending_send_count: u32,
+
     // Concurrency limits (from transport params)
     pub local_max_bidi: u64,
     pub local_max_uni: u64,
@@ -63,6 +67,7 @@ impl StreamMap {
             client_uni: Vec::new(),
             server_uni: Vec::new(),
             is_client,
+            pending_send_count: 0,
             local_max_bidi: 0,
             local_max_uni: 0,
             peer_max_bidi: 0,
@@ -302,23 +307,10 @@ impl StreamMap {
         vec.get_mut(idx)?.take()
     }
 
-    /// Check if any stream has data pending to send.
+    /// Check if any stream has data or a pending FIN to send.
+    /// O(1) via the `pending_send_count` dirty-stream counter.
     pub fn has_pending_send(&self) -> bool {
-        for vec in [
-            &self.client_bidi,
-            &self.server_bidi,
-            &self.client_uni,
-            &self.server_uni,
-        ] {
-            for entry in vec.iter().flatten() {
-                if let Some(ref send) = entry.send {
-                    if send.buffer.len() > 0 || (send.fin_sent && send.sent == send.acked) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
+        self.pending_send_count > 0
     }
 
     /// Iterate over all streams that have send data pending.

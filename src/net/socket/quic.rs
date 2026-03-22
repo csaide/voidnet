@@ -358,10 +358,27 @@ impl QuicStream {
     pub fn finish(&self) {
         let handler = unsafe { &mut *self.handler.get() };
         if let Some(conn) = handler.connections.get_mut(self.conn_key) {
-            if let Some(entry) = conn.streams.get_mut(self.stream_id) {
-                if let Some(ref mut send) = entry.send {
-                    send.fin_sent = true;
+            // Determine if we need to increment the pending counter for a FIN-only stream.
+            // If the buffer is empty and fin_sent is not yet set, this is a FIN-only send.
+            let should_increment = {
+                if let Some(entry) = conn.streams.get_mut(self.stream_id) {
+                    if let Some(ref mut send) = entry.send {
+                        let was_empty = send.buffer.is_empty();
+                        if !send.fin_sent {
+                            send.fin_sent = true;
+                            was_empty
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
                 }
+            };
+            if should_increment {
+                conn.streams.pending_send_count += 1;
             }
         }
     }
@@ -465,8 +482,12 @@ impl<'a> Future for StreamWrite<'a> {
             if send.fin_sent {
                 return Poll::Ready(Err(QuicError::ConnectionClosed));
             }
+            let was_empty = send.buffer.is_empty();
             let n = send.write(self.buf);
             if n > 0 {
+                if was_empty {
+                    conn.streams.pending_send_count += 1;
+                }
                 return Poll::Ready(Ok(n));
             }
         } else {
@@ -548,10 +569,27 @@ impl QuicSendStream {
     pub fn finish(&self) {
         let handler = unsafe { &mut *self.handler.get() };
         if let Some(conn) = handler.connections.get_mut(self.conn_key) {
-            if let Some(entry) = conn.streams.get_mut(self.stream_id) {
-                if let Some(ref mut send) = entry.send {
-                    send.fin_sent = true;
+            // Determine if we need to increment the pending counter for a FIN-only stream.
+            // If the buffer is empty and fin_sent is not yet set, this is a FIN-only send.
+            let should_increment = {
+                if let Some(entry) = conn.streams.get_mut(self.stream_id) {
+                    if let Some(ref mut send) = entry.send {
+                        let was_empty = send.buffer.is_empty();
+                        if !send.fin_sent {
+                            send.fin_sent = true;
+                            was_empty
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
                 }
+            };
+            if should_increment {
+                conn.streams.pending_send_count += 1;
             }
         }
     }
@@ -601,8 +639,12 @@ impl<'a> Future for SendStreamWrite<'a> {
             if send.fin_sent {
                 return Poll::Ready(Err(QuicError::ConnectionClosed));
             }
+            let was_empty = send.buffer.is_empty();
             let n = send.write(self.buf);
             if n > 0 {
+                if was_empty {
+                    conn.streams.pending_send_count += 1;
+                }
                 return Poll::Ready(Ok(n));
             }
         } else {

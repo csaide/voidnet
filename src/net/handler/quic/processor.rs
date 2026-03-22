@@ -942,7 +942,7 @@ fn handle_ack_frame(
                 id,
                 offset,
                 len,
-                ..
+                fin,
             } = frame
             {
                 let end = *offset + *len as u64;
@@ -952,6 +952,18 @@ fn handle_ack_frame(
                             let advance = (end - send.acked) as usize;
                             send.buffer.consume(advance);
                             send.acked = end;
+                            // When buffer fully consumed and all in-flight data acked,
+                            // the stream is no longer pending (data case).
+                            if send.buffer.is_empty() && send.acked == send.sent {
+                                conn.streams.pending_send_count =
+                                    conn.streams.pending_send_count.saturating_sub(1);
+                            }
+                        }
+                        // FIN-only frame acked: decrement the counter that was incremented
+                        // by finish() when the buffer was empty at FIN time.
+                        if *fin && *len == 0 {
+                            conn.streams.pending_send_count =
+                                conn.streams.pending_send_count.saturating_sub(1);
                         }
                     }
                 }
