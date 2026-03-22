@@ -961,10 +961,9 @@ fn build_packet_in_frame(
     }
 
     // 7. Initial padding — Initial packets must be at least 1200 bytes total
-    // Fix 15: The 1200-byte minimum is for the UDP datagram (UDP header + QUIC payload)
+    // RFC 9000 §14: the 1200-byte minimum applies to the UDP payload (= QUIC packet)
     if space == 0 {
-        let min_quic_size = 1200usize.saturating_sub(UDP_HEADER_LEN);
-        builder.pad_to(min_quic_size);
+        builder.pad_to(1200);
     }
 
     // Finalize: get metadata before consuming builder
