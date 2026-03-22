@@ -226,6 +226,22 @@ impl QuicConnection {
     }
 }
 
+impl Drop for QuicConnection {
+    fn drop(&mut self) {
+        let handler = unsafe { &mut *self.handler.get() };
+        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
+            if conn.state != ConnectionState::Closed
+                && conn.state != ConnectionState::Closing
+                && conn.state != ConnectionState::Draining
+            {
+                conn.close_error = Some(TransportError::NO_ERROR);
+                conn.state = ConnectionState::Closing;
+                conn.needs_draining_timer = true;
+            }
+        }
+    }
+}
+
 pub struct Connect {
     _private: (),
 }
