@@ -606,10 +606,7 @@ fn handle_ack_frame(
         .map(|p| p.ack_delay_exponent)
         .unwrap_or(3); // default exponent is 3
     let ack_delay_us = ack.ack_delay * (1u64 << ack_delay_exponent);
-    let ack_delay = coarsetime::Duration::new(
-        ack_delay_us / 1_000_000,
-        ((ack_delay_us % 1_000_000) * 1000) as u32,
-    );
+    let ack_delay = coarsetime::Duration::from_millis(ack_delay_us / 1000);
     let max_ack_delay = conn
         .peer_params
         .as_ref()
@@ -1015,7 +1012,7 @@ fn build_packet_in_frame(
             conn.dcid.as_bytes(),
             pn,
             largest_acked,
-            false, // key_phase
+            conn.key_update.key_phase, // key_phase
             &conn.frame_log,
         ) {
             Some(b) => b,
