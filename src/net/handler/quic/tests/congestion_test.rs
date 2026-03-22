@@ -161,6 +161,61 @@ fn test_recovery_exits_on_new_ack() {
     assert!(cc.window() > window_in_recovery);
 }
 
+/// RFC 8312: CUBIC congestion avoidance grows the window beyond w_max after loss.
+#[test]
+fn cubic_growth_after_loss() {
+    use crate::net::congestion::CongestionController;
+    use crate::net::handler::quic::transport::congestion::QuicCubic;
+    use coarsetime::{Duration, Instant};
+
+    let mds = 1200;
+    let mut cubic = QuicCubic::new(mds);
+    let now = Instant::now();
+
+    // Grow in slow start
+    for _ in 0..20 {
+        cubic.on_packets_sent(mds, now);
+        cubic.on_ack(
+            mds,
+            Duration::from_millis(50),
+            Duration::from_millis(50),
+            now,
+            true,
+            now,
+        );
+    }
+    let pre_loss = cubic.window();
+    assert!(pre_loss > 20000);
+
+    // Loss event
+    let loss_time = now + Duration::from_millis(100);
+    cubic.on_congestion_event(mds, loss_time, loss_time);
+    let post_loss = cubic.window();
+    assert!(post_loss < pre_loss);
+    assert_eq!(post_loss, (pre_loss as f64 * 0.5) as usize);
+
+    // Congestion avoidance — CUBIC should grow
+    for i in 0..200u64 {
+        let t = loss_time + Duration::from_millis(200 + i * 50);
+        cubic.on_packets_sent(mds, t);
+        cubic.on_ack(
+            mds,
+            Duration::from_millis(50),
+            Duration::from_millis(50),
+            t,
+            true,
+            t,
+        );
+    }
+    let final_cwnd = cubic.window();
+    assert!(
+        final_cwnd > post_loss,
+        "CUBIC should grow: final={}, post_loss={}",
+        final_cwnd,
+        post_loss
+    );
+}
+
 /// RFC 9002 §7.3.2: on_ack for a packet that was not in-flight must not
 /// cause window growth.
 #[test]

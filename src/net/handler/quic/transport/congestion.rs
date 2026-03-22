@@ -7,6 +7,9 @@ const K_MINIMUM_WINDOW_PACKETS: usize = 2;
 const K_LOSS_REDUCTION_FACTOR: f64 = 0.5;
 const K_PERSISTENT_CONGESTION_THRESHOLD: u32 = 3;
 
+const CUBIC_C: f64 = 0.4;
+const CUBIC_BETA: f64 = 0.5; // QUIC uses 0.5, not 0.3 (RFC 9002 §7.3.2)
+
 pub struct QuicCubic {
     // Window state
     pub(crate) cwnd: usize,
@@ -15,9 +18,8 @@ pub struct QuicCubic {
     max_datagram_size: usize,
 
     // CUBIC state
-    w_max: f64, // window size at last congestion event
-    #[allow(dead_code)]
-    k: f64, // time period for CUBIC to reach w_max
+    w_max: f64,                   // window size at last congestion event
+    k: f64,                       // time period for CUBIC to reach w_max
     epoch_start: Option<Instant>, // start of current congestion epoch
 
     // Recovery
@@ -100,9 +102,9 @@ impl CongestionController for QuicCubic {
     fn on_ack(
         &mut self,
         acked_bytes: usize,
-        _rtt: Duration,
+        rtt: Duration,
         _min_rtt: Duration,
-        _now: Instant,
+        now: Instant,
         in_flight: bool,
         sent_time: Instant,
     ) {
@@ -130,8 +132,40 @@ impl CongestionController for QuicCubic {
             // Slow start: cwnd += acked_bytes
             self.cwnd += acked_bytes;
         } else {
-            // Congestion avoidance: cwnd += mds * acked_bytes / cwnd
-            self.cwnd += self.max_datagram_size * acked_bytes / self.cwnd;
+            // CUBIC congestion avoidance (RFC 8312 §4.1)
+            let t = match self.epoch_start {
+                Some(epoch) => {
+                    let elapsed = now.duration_since(epoch);
+                    elapsed.as_millis() as f64 / 1000.0
+                }
+                None => {
+                    self.epoch_start = Some(now);
+                    0.0
+                }
+            };
+
+            // W_cubic(t) = C * (t - K)^3 * mds + W_max  (bytes)
+            let w_cubic =
+                CUBIC_C * (t - self.k).powi(3) * self.max_datagram_size as f64 + self.w_max;
+
+            // TCP-friendly estimate (RFC 8312 §4.2)
+            let rtt_secs = rtt.as_millis().max(1) as f64 / 1000.0;
+            let w_est = self.w_max * CUBIC_BETA
+                + (3.0 * (1.0 - CUBIC_BETA) / (1.0 + CUBIC_BETA))
+                    * (t / rtt_secs)
+                    * self.max_datagram_size as f64;
+
+            // Use the larger of CUBIC and TCP-friendly, but never below current cwnd
+            let target = w_cubic.max(w_est).max(self.cwnd as f64);
+            let target_cwnd = target as usize;
+
+            if target_cwnd > self.cwnd {
+                let increment = ((target_cwnd - self.cwnd) * self.max_datagram_size) / self.cwnd;
+                self.cwnd += increment.max(1) * acked_bytes / self.max_datagram_size;
+            } else {
+                // Reno fallback
+                self.cwnd += self.max_datagram_size * acked_bytes / self.cwnd;
+            }
         }
     }
 
@@ -148,6 +182,9 @@ impl CongestionController for QuicCubic {
         self.bytes_in_flight = self.bytes_in_flight.saturating_sub(lost_bytes);
         self.congestion_recovery_start_time = Some(now);
         self.w_max = self.cwnd as f64;
+        // K = cbrt(W_max * (1 - beta) / (C * mds))  (RFC 8312 §4.1, segment-scale)
+        self.k =
+            (self.w_max * (1.0 - CUBIC_BETA) / (CUBIC_C * self.max_datagram_size as f64)).cbrt();
         self.ssthresh =
             ((self.cwnd as f64 * K_LOSS_REDUCTION_FACTOR) as usize).max(self.minimum_window());
         self.cwnd = self.ssthresh;
