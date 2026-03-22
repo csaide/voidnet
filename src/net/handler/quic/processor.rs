@@ -376,9 +376,16 @@ fn dispatch_frames(
             }
 
             QuicFrame::HandshakeDone => {
-                // Client-side: transition to Established
                 if conn.side == Side::Client {
                     conn.state = ConnectionState::Established;
+                    conn.keys.handshake = None;
+                    conn.loss.handshake_confirmed = true;
+                    conn.loss.peer_completed_address_validation = true;
+                    conn.loss.discard_space(1);
+                } else {
+                    conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
+                    conn.state = ConnectionState::Closing;
+                    return ProcessResult::ConnectionClosed;
                 }
             }
 

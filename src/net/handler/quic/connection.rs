@@ -154,6 +154,9 @@ impl QuicConnectionState {
         let is_client = side == Side::Client;
         let congestion = QuicCubic::new(max_datagram_size);
         let initial_window = congestion.cwnd;
+        let mut streams = StreamMap::new(is_client);
+        streams.local_max_bidi = local_params.initial_max_streams_bidi;
+        streams.local_max_uni = local_params.initial_max_streams_uni;
         Self {
             dcid,
             scid_set: CidSet::new(),
@@ -165,7 +168,7 @@ impl QuicConnectionState {
             congestion,
             flow: FlowControl::new(0, local_params.initial_max_data),
             ack: [AckState::new(), AckState::new(), AckState::new()],
-            streams: StreamMap::new(is_client),
+            streams,
             stream_pool: StreamPool::new(64),
             path: PathState::new(),
             local_params,
