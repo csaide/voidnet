@@ -688,26 +688,33 @@ fn handle_crypto_frame(
     } // gap or duplicate
 
     // Feed contiguous data to rustls
-    let crypto_data = conn.crypto_recv[space].read_all().to_vec();
+    let crypto_data = conn.crypto_recv[space].read_all();
     if crypto_data.is_empty() {
         return;
     }
+    let data_len = crypto_data.len();
 
-    let crypto = match conn.crypto.as_mut() {
+    // Take CryptoState out of the Option to break the mutable borrow
+    // on conn (crypto_recv borrows conn, crypto also borrows conn).
+    let mut crypto = match conn.crypto.take() {
         Some(c) => c,
         None => return,
     };
 
-    let output = match crypto.process_crypto_data(&crypto_data) {
-        Ok(o) => o,
+    let output = match crypto.process_crypto_data(crypto_data) {
+        Ok(o) => {
+            conn.crypto = Some(crypto);
+            o
+        }
         Err(_) => {
+            conn.crypto = Some(crypto);
             conn.state = ConnectionState::Closing;
             conn.needs_draining_timer = true;
             return;
         }
     };
 
-    conn.crypto_recv[space].drain(crypto_data.len());
+    conn.crypto_recv[space].drain(data_len);
 
     // Install new keys
     if let Some(hs_keys) = output.handshake_keys {
