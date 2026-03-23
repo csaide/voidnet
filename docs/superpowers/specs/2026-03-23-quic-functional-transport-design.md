@@ -36,24 +36,34 @@ What's missing or incomplete is addressed in the six sections below.
 
 **Design:**
 
-Add `retransmit_ranges: SmallVec<[(u64, u64); 4]>` to `SendHalf`. Each entry is a `(start_offset, end_offset)` byte range that was lost and needs retransmission.
+Add two tracking structures to `SendHalf`:
+- `retransmit_ranges: SmallVec<[(u64, u64); 4]>` — byte ranges lost and needing retransmit. Kept sorted, merged on insert to prevent fragmentation.
+- `acked_ranges: SmallVec<[(u64, u64); 4]>` — non-contiguous acknowledged byte ranges ahead of the contiguous ack frontier.
 
-Packet builder priority order:
-1. Retransmit ranges (lost data first)
-2. New data from `sent..buffer_end` (subject to flow control)
+**Offset semantics:**
+- `acked`: highest *contiguous* byte offset acknowledged (the ring buffer head). All bytes below this are confirmed and can be freed.
+- `acked_ranges`: out-of-order ACK ranges above `acked`. When a gap fills, coalesce into `acked` and advance the ring buffer head.
+- `sent`: highest byte offset transmitted (the new-data frontier).
 
-When ACKs arrive and advance `acked`:
-- Remove fully-acked retransmit ranges
-- Trim partially-acked ranges
-- Free ring buffer space (advance head)
-- Push `QuicEvent` to wake blocked `StreamWrite` futures (backpressure release)
+**Example lifecycle:** Write 1000 bytes. ACK 0-400 → `acked=400`, head advances, 400 bytes freed. Lose 400-600. ACK 600-800 → `acked_ranges=[(600,800)]`, head stays at 400 (data 400-600 still in buffer for retransmit). Loss detected → `retransmit_ranges=[(400,600)]`. Retransmit 400-600. ACK 400-600 → gap fills, coalesce: `acked=800`, `acked_ranges` cleared, head advances to 800.
+
+**Packet builder priority order:**
+1. Retransmit ranges (lost data first) — read from ring buffer at arbitrary offsets via `peek_at(offset, len)` (new method on `StreamRingBuffer`)
+2. New data from `sent..buffer_end` (subject to flow control) — existing `peek_slices` path
+
+**Ring buffer change:** Add `peek_at(offset_from_head: usize, buf: &mut [u8]) -> usize` to `StreamRingBuffer` for reading at arbitrary offsets without advancing head. This lets the packet builder read retransmit data from anywhere in the buffer.
+
+**Backpressure:** When `on_ack` advances `acked` and frees ring buffer space, push `QuicEvent::DataAcked` to wake blocked `StreamWrite` futures.
+
+**`pending_send_count` update:** A stream has pending send data if `!buffer.is_empty() || !retransmit_ranges.is_empty()`. Update `has_pending_send()` to check both.
 
 Loss detection changes: instead of rewinding `sent`, insert the lost byte range into `retransmit_ranges`.
 
 **Files modified:**
-- `stream/send.rs` — add retransmit ranges, ack processing, buffer space reclaim
-- `processor.rs` — loss handler inserts ranges instead of rewinding `sent`
-- `transport/packet_builder.rs` — emit retransmit ranges before new data
+- `stream/send.rs` — add retransmit ranges, acked ranges, ack processing, buffer space reclaim
+- `stream/recv.rs` — add `peek_at()` method to `StreamRingBuffer`
+- `processor.rs` — loss handler inserts ranges instead of rewinding `sent`; ACK handler updates `acked_ranges`
+- `transport/packet_builder.rs` — emit retransmit ranges (via `peek_at`) before new data
 
 ---
 
@@ -72,8 +82,14 @@ New method `QuicHandler::initiate_connection()`:
 6. Insert connection in slab, register SCID in CID map
 7. Mark connection as needing to send
 
+**Address resolution:** The client needs `local_addr`, `local_mac`, and `remote_mac` to build outgoing frames. `local_addr` and `local_mac` come from the runtime context (already available in `QuicHandler`). `remote_mac` requires the gateway MAC from the routing table — use the same ARP/ND-resolved MAC that the UDP socket path uses. Store `remote_addr` and `remote_port` from the `connect()` call parameters. The `initiate_connection()` method takes these as arguments alongside the TLS config.
+
+**Connect future design:** `connect()` is currently a static method returning a stub. Change it to call `initiate_connection()` first (creating the connection eagerly), then return a `Connect` future holding `conn_key: usize` and `handler: Rc<UnsafeCell<QuicHandler>>`. The future polls connection state and resolves to `QuicConnection` when `Established`. This mirrors how `Accept` works.
+
+**Rustls config retention:** Store `Arc<ClientConfig>` and `server_name: String` in `QuicConnectionState` so they're available for version negotiation retry (Section 6 needs to create a fresh `ClientConnection`).
+
 `Connect` future:
-- Holds `conn_key` and handler reference
+- Holds `conn_key` and handler reference (created eagerly by `connect()`)
 - Polls connection state; resolves when `Established`
 - Registers waker on `event_queue`
 - Processor already pushes events on handshake completion — just need to ensure it does so for client side too
@@ -81,8 +97,9 @@ New method `QuicHandler::initiate_connection()`:
 Client Initial padding: RFC 9000 sect 14.1 requires >= 1200 bytes. Packet builder pads Initial packets from client side.
 
 **Files modified:**
-- `handler.rs` — add `initiate_connection()` method
-- `socket/quic.rs` — implement `Connect` future, wire `connect()` to handler
+- `handler.rs` — add `initiate_connection()` method with address resolution
+- `connection.rs` — add optional `client_config` and `server_name` fields
+- `socket/quic.rs` — implement `Connect` future with `conn_key` + handler ref, change `connect()` to eager creation
 - `transport/packet_builder.rs` — ensure client Initial padding to 1200 bytes
 
 ---
@@ -95,7 +112,7 @@ Client Initial padding: RFC 9000 sect 14.1 requires >= 1200 bytes. Packet builde
 
 1. **Connection closed event.** When CONNECTION_CLOSE is received (already parsed in processor), push `QuicEvent::ConnectionClosed` to `event_queue`. All blocked stream futures wake and check connection state.
 
-2. **Drain wake-all.** Before the handler removes a connection (on draining timer or idle timeout), call `event_queue.wake_all()` so no futures are left hanging.
+2. **Drain wake-all.** Before the handler removes a connection (on draining timer or idle timeout), call `wake_all()` on both `event_queue` and `stream_accept_queue` so no futures are left hanging (the `AcceptStream` future registers on `stream_accept_queue`, not `event_queue`).
 
 3. **Error code propagation.** Extend `QuicError::ConnectionClosed` to `ConnectionClosed(Option<u64>)` to carry the peer's error code. Stream read/write futures return this when the connection is in Closing/Draining/Closed state.
 
@@ -129,11 +146,13 @@ Where `PreviousPath` holds `{ remote_addr, remote_port, remote_mac, path_state }
 6. Send PATH_CHALLENGE on new path (`initiate_validation()`)
 7. Arm `PathValidation` timer
 
+**Cross-boundary signaling:** `process_packet()` takes `&mut QuicConnectionState` without access to `QuicHandler`, so it cannot update the DCID map directly. The processor returns migration signals via a new field `conn.pending_migration: Option<MigrationAction>` (containing old/new CID info). The handler checks this after `process_packet()` returns and performs the DCID map update. Same pattern used for other handler-level operations like connection removal.
+
 **Path validation timeout revert.** `handle_timeout(PathValidation)`:
 - If `prev_path` exists and current path not validated: restore previous path, drop failed path
 - If no `prev_path`: close connection
 
-**NAT rebinding.** If only port changed and DCID matches a known CID: update remote port, skip full migration (no CID rotation, no path validation).
+**NAT rebinding vs intentional migration (RFC 9000 sect 9.3).** Distinguish by whether the peer used a new CID: if the packet's DCID is the *same* CID the peer was already using and only the source port changed, treat as NAT rebinding — update remote port, skip CID rotation and path validation. If the peer sent on a *new* CID (one from NEW_CONNECTION_ID that wasn't the active one), treat as intentional migration — full flow above.
 
 **Amplification on new path.** `generate_packets` checks `path.amplification.can_send()` before sending on unvalidated paths. Already enforced for server Initial; extend to migration paths.
 
@@ -172,13 +191,17 @@ Key update is signaled via the key phase bit in short (1-RTT) headers, not a fra
 - AEAD limit approach: when `packets_encrypted[2]` nears confidentiality limit, set `needs_key_update = true`
 - Optional: `QuicConnection::update_keys()` for app-driven rotation
 
+**Counter reset.** On key update, reset `packets_encrypted[2]` to 0. The AEAD limit tracks per-key usage, not per-connection lifetime. Without this, the limit would trigger immediately after every update.
+
 **ACK tracking.** When ACK received for pn >= `lowest_pn_current_phase`, set `acked_current_phase = true` to unblock next update.
+
+**Key derivation.** `conn.key_update_secrets` (already stored, type `rustls::quic::Secrets`) provides `next_packet_keys()` which returns a `PacketKeySet` with both local and remote keys. No raw HKDF needed — rustls handles the derivation.
 
 **Files modified:**
 - `connection.rs` — add `needs_key_update` flag
-- `processor.rs` — detect peer key update in 1-RTT decrypt path, handle phase mismatch
+- `processor.rs` — detect peer key update in 1-RTT decrypt path, handle phase mismatch, reset `packets_encrypted[2]`
 - `transport/packet_builder.rs` — initiate key update when flag set
-- `crypto/keys.rs` — add key derivation from secrets helper
+- `crypto/keys.rs` — wrap `Secrets::next_packet_keys()` call and install results
 
 ---
 
@@ -198,12 +221,12 @@ Key update is signaled via the key phase bit in short (1-RTT) headers, not a fra
 **Retry with new version:**
 1. Store original version in `conn.original_version: Option<u32>`
 2. Update `conn.version` to negotiated version
-3. Re-derive Initial keys with version-appropriate salt (v2 uses `0x0dede3def700a6db819381be6e269dcbf9bd2ed9`)
-4. Reset crypto state — fresh ClientHello from rustls
+3. Re-derive Initial keys with version-appropriate salt (rustls handles v1/v2 salt selection internally via `Version` enum — no raw salt bytes needed)
+4. Create a fresh rustls `ClientConnection` using the stored `client_config` and `server_name` (from Section 2). rustls connections are not resettable — must create new.
 5. Reset packet number spaces and ACK state
 6. Re-send Initial packet
 
-**Downgrade prevention (RFC 9369 sect 4).** After handshake, validate `version_information` transport parameter. Mismatch → TRANSPORT_PARAMETER_ERROR.
+**Downgrade prevention (RFC 9369 sect 4).** After handshake, validate `version_information` transport parameter: server's `chosen_version` must match negotiated version, and `other_versions` must include the client's originally-attempted version. Mismatch → TRANSPORT_PARAMETER_ERROR.
 
 **Scope limit:** Incompatible VN only (round-trip penalty variant). Compatible VN (RFC 9368) deferred.
 
@@ -212,7 +235,7 @@ Key update is signaled via the key phase bit in short (1-RTT) headers, not a fra
 - `handler.rs` — route VN packets to client connection
 - `processor.rs` — VN packet processing, version retry logic
 - `crypto/initial_keys.rs` — support v2 salt for key derivation
-- `transport/params.rs` — validate `version_information` after handshake
+- `transport/params.rs` — add `version_information` transport parameter parsing (type 0x11) and post-handshake validation
 
 ---
 
