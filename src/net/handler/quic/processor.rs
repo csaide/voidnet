@@ -1525,6 +1525,10 @@ pub fn generate_packets<'umem>(
         if !conn.closing_frame_sent {
             let error_code = conn.close_error.map(|e| e.code()).unwrap_or(0);
 
+            // RFC 9000 §10.2.3: application close (0x1d) MUST only be in 1-RTT space.
+            // Fall back to transport close (0x1c) if 1-RTT keys aren't available.
+            let use_app_close = conn.close_is_application && conn.keys.one_rtt.is_some();
+
             // Pick the highest available encryption space
             let space: u8 = if conn.keys.one_rtt.is_some() {
                 2
@@ -1576,7 +1580,11 @@ pub fn generate_packets<'umem>(
                     };
 
                     if let Some(mut builder) = builder_opt {
-                        builder.write_connection_close(error_code, &mut conn.frame_log);
+                        if use_app_close {
+                            builder.write_connection_close_app(error_code, &mut conn.frame_log);
+                        } else {
+                            builder.write_connection_close(error_code, &mut conn.frame_log);
+                        }
                         let pn_offset = builder.pn_offset();
                         let pn_length = builder.pn_length();
                         let quic_len = builder.finish();

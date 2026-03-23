@@ -478,6 +478,22 @@ impl<'a> PacketBuilder<'a> {
         true
     }
 
+    /// Write an application-level CONNECTION_CLOSE frame (0x1d). Returns true if written.
+    pub fn write_connection_close_app(
+        &mut self,
+        error_code: u64,
+        _frame_log: &mut FrameLog,
+    ) -> bool {
+        let needed = 1 + 8 + 1; // type + error_code + reason_len(0)
+        if self.remaining() < needed {
+            return false;
+        }
+        let written =
+            frame_writer::write_connection_close_app(&mut self.buf[self.offset..], error_code, &[]);
+        self.offset += written;
+        true
+    }
+
     /// Write a NEW_CONNECTION_ID frame (0x18). Returns true if written.
     pub fn write_new_connection_id(
         &mut self,
