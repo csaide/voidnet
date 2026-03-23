@@ -13,6 +13,7 @@ use crate::net::handler::quic::error::TransportError;
 use crate::net::handler::quic::transport::frame::StreamId;
 use crate::net::handler::quic::transport::params::TransportParams;
 use crate::net::socket::LocalQueue;
+use crate::net::wire::ethernet::MacAddress;
 use crate::net::wire::ip::IpAddress;
 use crate::rt::context::with_runtime_context;
 
@@ -143,14 +144,40 @@ pub struct QuicConnection {
 
 impl QuicConnection {
     /// Connect to a remote QUIC server.
+    ///
+    /// `local_addr`/`local_mac` identify this endpoint.
+    /// `remote_mac` is the gateway/next-hop MAC (from ARP/ND resolution).
     pub fn connect(
-        _addr: IpAddress,
-        _port: u16,
-        _server_name: &str,
-        _tls_config: Arc<ClientConfig>,
-    ) -> Connect {
-        // Client connect is deferred to a future milestone.
-        Connect { _private: () }
+        local_addr: IpAddress,
+        local_port: u16,
+        local_mac: MacAddress,
+        remote_addr: IpAddress,
+        remote_port: u16,
+        remote_mac: MacAddress,
+        server_name: &str,
+        tls_config: Arc<ClientConfig>,
+    ) -> Result<Connect, QuicError> {
+        with_runtime_context(|ctx| {
+            let handler = unsafe { &mut *ctx.quic_handler.get() };
+            let conn_key = handler
+                .initiate_connection(
+                    remote_addr,
+                    remote_port,
+                    local_addr,
+                    local_port,
+                    local_mac,
+                    remote_mac,
+                    server_name,
+                    tls_config,
+                    TransportParams::default(),
+                    coarsetime::Instant::now(),
+                )
+                .ok_or(QuicError::NotConnected)?;
+            Ok(Connect {
+                conn_key,
+                handler: ctx.quic_handler.clone(),
+            })
+        })
     }
 
     /// Open a new bidirectional stream.
@@ -290,15 +317,34 @@ impl Drop for QuicConnection {
 }
 
 pub struct Connect {
-    _private: (),
+    conn_key: usize,
+    handler: Rc<UnsafeCell<QuicHandler>>,
 }
 
 impl Future for Connect {
     type Output = Result<QuicConnection, QuicError>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Client-side connect is deferred to a future milestone.
-        Poll::Pending
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let handler = unsafe { &*self.handler.get() };
+        let conn = match handler.connections.get(self.conn_key) {
+            Some(c) => c,
+            None => return Poll::Ready(Err(QuicError::NotConnected)),
+        };
+        match conn.state {
+            ConnectionState::Established | ConnectionState::HandshakeComplete => {
+                Poll::Ready(Ok(QuicConnection {
+                    conn_key: self.conn_key,
+                    handler: self.handler.clone(),
+                }))
+            }
+            ConnectionState::Closing | ConnectionState::Draining | ConnectionState::Closed => {
+                Poll::Ready(Err(QuicError::ConnectionClosed))
+            }
+            ConnectionState::Handshaking => {
+                conn.event_queue.register_waker(cx.waker());
+                Poll::Pending
+            }
+        }
     }
 }
 
