@@ -67,7 +67,7 @@ fn make_self_signed_config() -> Arc<ServerConfig> {
         .with_single_cert(vec![cert_der], key_der)
         .expect("Failed to build TLS config");
     config.alpn_protocols = vec![b"hq-interop".to_vec(), b"h3".to_vec()];
-    config.max_early_data_size = 0;
+    config.max_early_data_size = u32::MAX;
     Arc::new(config)
 }
 
@@ -91,7 +91,7 @@ fn load_config_from_files(cert_path: &str, key_path: &str) -> Arc<ServerConfig> 
         .with_single_cert(certs, key)
         .expect("Failed to build TLS config");
     config.alpn_protocols = vec![b"hq-interop".to_vec(), b"h3".to_vec()];
-    config.max_early_data_size = 0;
+    config.max_early_data_size = u32::MAX;
     Arc::new(config)
 }
 
@@ -123,6 +123,10 @@ async fn handle_stream(stream: QuicStream) {
 }
 
 fn main() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     let args = Args::parse();
 
     let tls_config = match (&args.cert, &args.key) {
@@ -169,9 +173,23 @@ fn main() {
 
     runtime
         .run(exit, async move {
-            let listener =
-                QuicListener::listen(args.local_addr.ip, args.local_addr.port, tls_config)
-                    .expect("Failed to listen");
+            let params = libvoid::net::handler::quic::TransportParams {
+                initial_max_data: 10_000_000,
+                initial_max_stream_data_bidi_local: 1_000_000,
+                initial_max_stream_data_bidi_remote: 1_000_000,
+                initial_max_stream_data_uni: 1_000_000,
+                initial_max_streams_bidi: 100,
+                initial_max_streams_uni: 100,
+                max_idle_timeout_ms: 30_000,
+                ..Default::default()
+            };
+            let listener = QuicListener::listen_with_config(
+                args.local_addr.ip,
+                args.local_addr.port,
+                tls_config,
+                params,
+            )
+            .expect("Failed to listen");
             println!("QUIC echo server listening on {}", args.local_addr);
 
             loop {
