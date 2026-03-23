@@ -210,9 +210,26 @@ pub fn process_packet(
                             }
                             None => None,
                         }
+                    } else if long.packet_type == PacketType::ZeroRtt {
+                        // 0-RTT: same length-prefixed format as Handshake (RFC 9000 §17.2)
+                        match crate::net::handler::quic::transport::varint::decode_varint(
+                            &remaining[long.payload_offset..],
+                        ) {
+                            Some((length, consumed)) => {
+                                let pn_offset = long.payload_offset + consumed;
+                                let packet_len = pn_offset + length as usize;
+                                if conn.keys.zero_rtt_open.is_some() {
+                                    Some((space, pn_offset, packet_len))
+                                } else {
+                                    conn.zero_rtt_rejected += 1;
+                                    None
+                                }
+                            }
+                            None => None,
+                        }
                     } else {
                         conn.zero_rtt_rejected += 1;
-                        None // 0-RTT not yet supported; client will retry in 1-RTT
+                        None
                     }
                 }
                 PacketHeader::Short(short) => {
@@ -293,7 +310,12 @@ fn decrypt_and_process(
     let remote_key = match space {
         0 => conn.keys.initial.as_ref().map(|kp| &kp.remote),
         1 => conn.keys.handshake.as_ref().map(|kp| &kp.remote),
-        2 => conn.keys.one_rtt.as_ref().map(|kp| &kp.remote),
+        2 => conn
+            .keys
+            .one_rtt
+            .as_ref()
+            .map(|kp| &kp.remote)
+            .or(conn.keys.zero_rtt_open.as_ref()),
         _ => None,
     };
     let remote_key = match remote_key {
@@ -393,6 +415,11 @@ fn decrypt_and_process(
             }
         }
     };
+
+    // Track 0-RTT acceptance for observability
+    if space == 2 && conn.keys.one_rtt.is_none() && conn.keys.zero_rtt_open.is_some() {
+        conn.zero_rtt_accepted += 1;
+    }
 
     // RFC 9001 §9.5: Duplicate PN check AFTER decryption to avoid timing side channels.
     // "the entire process of header protection removal, packet number recovery, and

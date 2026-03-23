@@ -451,3 +451,28 @@ fn generate_packets_produces_response_after_initial() {
         "packets_encrypted counter should have incremented"
     );
 }
+
+#[test]
+fn zero_rtt_rejected_without_keys() {
+    use crate::net::handler::quic::connection::{QuicConnectionState, Side};
+    use crate::net::handler::quic::transport::params::TransportParams;
+
+    let params = TransportParams {
+        initial_max_data: 1_000_000,
+        initial_max_stream_data_bidi_local: 100_000,
+        initial_max_stream_data_bidi_remote: 100_000,
+        initial_max_streams_bidi: 100,
+        ..Default::default()
+    };
+    let conn = QuicConnectionState::new(
+        crate::net::handler::quic::connection_id::ConnectionId::from_slice(&[1, 2, 3, 4]),
+        Side::Server,
+        params,
+        1200,
+        coarsetime::Instant::now(),
+    );
+    // No 0-RTT keys installed — counter starts at 0
+    assert_eq!(conn.zero_rtt_rejected, 0);
+    assert_eq!(conn.zero_rtt_accepted, 0);
+    assert!(conn.keys.zero_rtt_open.is_none());
+}
