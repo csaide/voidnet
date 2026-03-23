@@ -49,6 +49,8 @@ pub struct QuicHandler {
     pub(crate) tx_offload: bool,
     /// Length of SCIDs we generate (used for short-header DCID parsing).
     pub(crate) local_cid_len: usize,
+    /// Maximum number of concurrent connections (DoS protection).
+    pub(crate) max_connections: usize,
 }
 
 impl QuicHandler {
@@ -61,6 +63,7 @@ impl QuicHandler {
             rx_offload,
             tx_offload,
             local_cid_len: 8,
+            max_connections: 10_000,
         }
     }
 
@@ -1003,6 +1006,11 @@ impl QuicHandler {
         use crate::net::handler::quic::crypto::keys::{DirectionalKey, KeyPair};
         use crate::net::handler::quic::crypto::tls::CryptoState;
         use ring::rand::SecureRandom;
+
+        // DoS protection: refuse new connections if at capacity
+        if self.connections.len() >= self.max_connections {
+            return None;
+        }
 
         let listener = self.listeners.get(&local_port)?;
 
