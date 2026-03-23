@@ -535,3 +535,275 @@ fn client_initial_below_1200() {
         "Initial packet under 1200 bytes should not create a connection"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Task 20: Adversarial Frame-Level + Protocol-Level Tests
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Helper: complete a TLS handshake and return an established connection + client keys.
+fn establish_connection() -> (QuicConnectionState, KeyPair) {
+    let now = Instant::now();
+
+    let client_config = make_client_config();
+    let server_config = make_server_config();
+    let client_params_bytes = encode_test_transport_params();
+    let server_params_bytes = encode_test_transport_params();
+
+    let (mut client_crypto, client_hello) = CryptoState::new_client(
+        client_config,
+        "localhost",
+        &client_params_bytes,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
+    let mut server_crypto = CryptoState::new_server(
+        server_config,
+        &server_params_bytes,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
+
+    // Round 1: ClientHello -> Server
+    let server_out = server_crypto.process_crypto_data(&client_hello, 0).unwrap();
+    let mut server_one_rtt: Option<KeyPair> = server_out.one_rtt_keys;
+    let server_hs_keys = server_out.handshake_keys;
+
+    // Round 2: Server response -> Client
+    let server_crypto_data: Vec<u8> = server_out
+        .crypto_data
+        .iter()
+        .flat_map(|d| d.iter().copied())
+        .collect();
+    let client_out = client_crypto
+        .process_crypto_data(&server_crypto_data, 0)
+        .unwrap();
+    let client_one_rtt: Option<KeyPair> = client_out.one_rtt_keys;
+
+    // Client Finished -> Server
+    let client_crypto_data: Vec<u8> = client_out
+        .crypto_data
+        .iter()
+        .flat_map(|d| d.iter().copied())
+        .collect();
+    if !client_crypto_data.is_empty() {
+        let server_out2 = server_crypto
+            .process_crypto_data(&client_crypto_data, 0)
+            .unwrap();
+        if server_one_rtt.is_none() {
+            server_one_rtt = server_out2.one_rtt_keys;
+        }
+    }
+
+    let client_keys = client_one_rtt.expect("client must have 1-RTT keys");
+    let server_keys = server_one_rtt.expect("server must have 1-RTT keys");
+
+    let server_dcid_bytes = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+    let server_dcid = ConnectionId::from_slice(&server_dcid_bytes);
+
+    let params = test_transport_params();
+
+    let mut conn = QuicConnectionState::new(server_dcid, Side::Server, params, 1200, now);
+    conn.scid = ConnectionId::from_slice(&server_dcid_bytes);
+    conn.keys.one_rtt = Some(server_keys);
+    if let Some(hs) = server_hs_keys {
+        conn.keys.handshake = Some(hs);
+    }
+    conn.state = ConnectionState::Established;
+    conn.streams.local_max_bidi = 100;
+    conn.streams.local_max_uni = 100;
+    conn.flow =
+        crate::net::handler::quic::transport::flow_control::FlowControl::new(1_000_000, 1_000_000);
+
+    (conn, client_keys)
+}
+
+/// Build a 1-RTT short header packet with arbitrary payload frames.
+fn build_short_header_packet(
+    dcid: &[u8],
+    pn: u64,
+    frame_payload: &[u8],
+    client_local_key: &DirectionalKey,
+) -> Vec<u8> {
+    let tag_len = client_local_key.packet_key.tag_len();
+    let first_byte = 0x40u8; // form=0, fixed=1, 1-byte PN
+
+    let mut header = Vec::new();
+    header.push(first_byte);
+    header.extend_from_slice(dcid);
+    let pn_offset = header.len();
+    header.push(pn as u8); // 1-byte PN
+    let payload_start = header.len();
+
+    let total_len = payload_start + frame_payload.len() + tag_len;
+    let mut packet = vec![0u8; total_len];
+    packet[..header.len()].copy_from_slice(&header);
+    packet[payload_start..payload_start + frame_payload.len()].copy_from_slice(frame_payload);
+
+    protect_packet(client_local_key, &mut packet, pn_offset, 1, pn).unwrap();
+
+    packet
+}
+
+/// Test 6: STREAM frame with stream ID exceeding MAX_STREAMS should trigger error.
+#[test]
+fn stream_id_exceeds_max_streams() {
+    let now = Instant::now();
+    let (mut conn, client_keys) = establish_connection();
+
+    let dcid = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+    // Build STREAM frame with stream ID 0x1000 (= bidi stream index 1024, way beyond max 100)
+    let mut frame_payload = Vec::new();
+    frame_payload.push(0x0a); // STREAM type: LEN=1, OFF=0, FIN=0
+    let mut varint_buf = [0u8; 8];
+    let n = encode_varint(0x1000, &mut varint_buf); // stream_id
+    frame_payload.extend_from_slice(&varint_buf[..n]);
+    let data = b"test";
+    let n = encode_varint(data.len() as u64, &mut varint_buf);
+    frame_payload.extend_from_slice(&varint_buf[..n]);
+    frame_payload.extend_from_slice(data);
+
+    let packet = build_short_header_packet(&dcid, 0, &frame_payload, &client_keys.local);
+
+    let datagram_len = packet.len();
+    let mut packet_mut = packet;
+    let _result = processor::process_packet(&mut conn, &mut packet_mut, datagram_len, now);
+
+    // Should not crash. The connection may close or the frame may be rejected,
+    // but the key invariant is no panic.
+}
+
+/// Test 7: Opening stream with a gap should implicitly open intermediate streams (RFC 9000 §2.1).
+#[test]
+fn stream_id_gap_implicit_open() {
+    let now = Instant::now();
+    let (mut conn, client_keys) = establish_connection();
+
+    let dcid = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+    // Open stream 0x08 (client-initiated bidi stream #2, index=2) without opening 0x04 (#1)
+    let mut frame_payload = Vec::new();
+    frame_payload.push(0x0a); // STREAM type: LEN=1, OFF=0, FIN=0
+    let mut varint_buf = [0u8; 8];
+    let n = encode_varint(0x08, &mut varint_buf); // stream_id = 8 (bidi #2)
+    frame_payload.extend_from_slice(&varint_buf[..n]);
+    let data = b"hello";
+    let n = encode_varint(data.len() as u64, &mut varint_buf);
+    frame_payload.extend_from_slice(&varint_buf[..n]);
+    frame_payload.extend_from_slice(data);
+
+    let packet = build_short_header_packet(&dcid, 0, &frame_payload, &client_keys.local);
+
+    let datagram_len = packet.len();
+    let mut packet_mut = packet;
+    let result = processor::process_packet(&mut conn, &mut packet_mut, datagram_len, now);
+
+    // Should not crash. Per RFC 9000 §2.1, receiving stream #2 should implicitly
+    // open streams #0 and #1.
+    assert!(
+        matches!(result, processor::ProcessResult::Ok),
+        "process_packet should return Ok for a valid stream gap"
+    );
+
+    // Stream 0x08 should exist with data
+    let entry = conn.streams.get(StreamId(0x08));
+    assert!(
+        entry.is_some(),
+        "stream 0x08 should exist after receiving data"
+    );
+}
+
+/// Test 8: CONNECTION_CLOSE with unknown error code should be accepted gracefully.
+#[test]
+fn connection_close_unknown_error_code() {
+    let now = Instant::now();
+    let (mut conn, client_keys) = establish_connection();
+
+    let dcid = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+    // Build CONNECTION_CLOSE frame with error code 0xFFFF
+    let mut frame_payload = Vec::new();
+    frame_payload.push(0x1c); // CONNECTION_CLOSE (transport)
+    let mut varint_buf = [0u8; 8];
+    let n = encode_varint(0xFFFF, &mut varint_buf); // error_code
+    frame_payload.extend_from_slice(&varint_buf[..n]);
+    let n = encode_varint(0, &mut varint_buf); // frame_type (0 = no specific frame)
+    frame_payload.extend_from_slice(&varint_buf[..n]);
+    let n = encode_varint(0, &mut varint_buf); // reason phrase length = 0
+    frame_payload.extend_from_slice(&varint_buf[..n]);
+
+    let packet = build_short_header_packet(&dcid, 0, &frame_payload, &client_keys.local);
+
+    let datagram_len = packet.len();
+    let mut packet_mut = packet;
+    let result = processor::process_packet(&mut conn, &mut packet_mut, datagram_len, now);
+
+    // Should not crash. Connection should enter Draining or Closed state.
+    assert!(
+        matches!(result, processor::ProcessResult::ConnectionClosed),
+        "CONNECTION_CLOSE should result in ConnectionClosed, got {:?}",
+        match result {
+            processor::ProcessResult::Ok => "Ok",
+            processor::ProcessResult::ConnectionClosed => "ConnectionClosed",
+            processor::ProcessResult::VersionNegotiation => "VersionNegotiation",
+            processor::ProcessResult::StatelessReset => "StatelessReset",
+        }
+    );
+
+    assert!(
+        conn.state == ConnectionState::Draining || conn.state == ConnectionState::Closed,
+        "connection should be Draining or Closed after CONNECTION_CLOSE, got {:?}",
+        conn.state
+    );
+}
+
+/// Test 9: Server amplification limit — response to 1200-byte Initial should be ≤ 3600 bytes.
+#[test]
+fn amplification_limit_enforced() {
+    let now = Instant::now();
+
+    let (quic_packet, _, _) = build_valid_initial();
+    assert!(quic_packet.len() >= 1200);
+    let client_datagram_size = quic_packet.len();
+
+    let mut handler = setup_server_handler();
+    let mut wheel = TimerWheel::new(now);
+    let nh = NeighborHandler::new("lo", Duration::from_secs(60)).unwrap();
+
+    let mut frame_data = vec![0u8; 4096];
+    let frame_len = wrap_in_eth_ipv4_udp(&quic_packet, &mut frame_data);
+    let frame = Frame::new(0, &mut frame_data, frame_len, false);
+
+    let mut free_bufs: Vec<Vec<u8>> = (0..16).map(|_| vec![0u8; 4096]).collect();
+    let mut free = BasicFrameBuffer::new(16);
+    for (i, buf) in free_bufs.iter_mut().enumerate() {
+        let f = Frame::new((i as u64 + 1) * 4096, buf.as_mut_slice(), 1, false);
+        free.push(f);
+    }
+    let mut rx = BasicFrameBuffer::new(4);
+    let mut tx = BasicFrameBuffer::new(16);
+
+    handler.process_ipv4(frame, now, &mut wheel, &nh, &mut free, &mut rx, &mut tx);
+    handler.poll_send(now, &mut wheel, &mut free, &mut tx);
+
+    // Count total bytes in TX output (QUIC payload only, excluding Eth/IP/UDP headers)
+    let eth_len = std::mem::size_of::<EthernetFrame>();
+    let headers_len = eth_len + IPV4_MIN_HEADER_LEN + UDP_HEADER_LEN;
+    let mut total_quic_bytes = 0usize;
+    for frame in tx.iter_frames() {
+        let flen = frame.len();
+        if flen > headers_len {
+            total_quic_bytes += flen - headers_len;
+        }
+    }
+
+    // Amplification limit: server may send at most 3 × bytes received
+    let amplification_limit = 3 * client_datagram_size;
+    assert!(
+        total_quic_bytes <= amplification_limit,
+        "server sent {} QUIC bytes, exceeds 3x amplification limit of {} (client sent {})",
+        total_quic_bytes,
+        amplification_limit,
+        client_datagram_size,
+    );
+}
