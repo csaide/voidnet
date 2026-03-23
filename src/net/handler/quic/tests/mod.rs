@@ -1,4 +1,5 @@
 mod ack_test;
+mod adversarial_test;
 mod aead_limits_test;
 mod cid_lifecycle_test;
 mod compat_vn_test;

@@ -195,8 +195,8 @@ impl QuicHandler {
         let quic_data = &frame[quic_offset..];
         let dcid = if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
             match wire_quic::peek_dcid(quic_data) {
-                Some(cid) => cid.to_owned(),
-                None => {
+                Some(cid) if cid.len() <= 20 => cid.to_owned(),
+                _ => {
                     rx_return.push(frame);
                     return;
                 }
@@ -408,8 +408,8 @@ impl QuicHandler {
         let quic_data = &frame[quic_offset..];
         let dcid = if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
             match wire_quic::peek_dcid(quic_data) {
-                Some(cid) => cid.to_owned(),
-                None => {
+                Some(cid) if cid.len() <= 20 => cid.to_owned(),
+                _ => {
                     rx_return.push(frame);
                     return;
                 }
