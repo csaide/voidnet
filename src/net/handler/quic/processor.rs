@@ -73,12 +73,12 @@ pub fn handle_timeout(
                         conn.crypto_offset[retx_space as usize] =
                             conn.crypto_offset[retx_space as usize].min(retx_offset);
                     }
-                    // Rewind stream send offset for stream retransmission
-                    for &(stream_id, retx_offset, _, _) in &retransmit.streams {
+                    // Insert retransmit ranges for lost stream data
+                    for &(stream_id, retx_offset, retx_len, _) in &retransmit.streams {
                         if let Some(entry) = conn.streams.get_mut(stream_id)
                             && let Some(ref mut send) = entry.send
                         {
-                            send.sent = send.sent.min(retx_offset);
+                            send.add_retransmit_range(retx_offset, retx_offset + retx_len as u64);
                         }
                     }
                     if retransmit.handshake_done {
@@ -933,12 +933,12 @@ fn handle_ack_frame(
             conn.crypto_offset[retx_space as usize] =
                 conn.crypto_offset[retx_space as usize].min(retx_offset);
         }
-        // Rewind stream send offset for stream retransmission
-        for &(stream_id, retx_offset, _, _) in &retransmit.streams {
+        // Insert retransmit ranges for lost stream data
+        for &(stream_id, retx_offset, retx_len, _) in &retransmit.streams {
             if let Some(entry) = conn.streams.get_mut(stream_id)
                 && let Some(ref mut send) = entry.send
             {
-                send.sent = send.sent.min(retx_offset);
+                send.add_retransmit_range(retx_offset, retx_offset + retx_len as u64);
             }
         }
         if retransmit.handshake_done {

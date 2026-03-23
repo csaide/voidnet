@@ -18,6 +18,8 @@ pub enum QuicEvent {
     StreamReset(StreamId, u64),
     /// Connection-level error occurred
     ConnectionError(TransportError),
+    /// Stream send data was acknowledged, buffer space freed (backpressure release)
+    DataAcked,
     /// Connection was closed (application error code)
     ConnectionClosed(u64),
 }
