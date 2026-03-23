@@ -472,7 +472,7 @@ impl LossDetector {
             }
             // Anti-deadlock: arm PTO even with nothing in flight (RFC 9002 §A.8)
             let pto_duration = self.pto(0, max_ack_delay);
-            let backoff = 1u32 << self.pto_count;
+            let backoff = 1u32 << self.pto_count.min(16);
             return Some(Instant::now() + pto_duration * backoff);
         }
 
@@ -480,10 +480,14 @@ impl LossDetector {
         let mut earliest_pto: Option<Instant> = None;
 
         for space in 0..3 {
+            // RFC 9002 §6.2.1: "An endpoint MUST NOT set its PTO timer for
+            // the Application Data packet number space until the handshake
+            // is confirmed."
+            if space == 2 && !self.handshake_confirmed {
+                continue;
+            }
+
             // Skip spaces with no ack-eliciting packets in flight.
-            // RFC 9002 §6.2.1: Before handshake confirmed, skip space 2 only
-            // if it has no ack-eliciting packets. After handshake confirmed,
-            // skip any space with no ack-eliciting packets.
             if self.spaces[space].ack_eliciting_in_flight == 0 {
                 continue;
             }

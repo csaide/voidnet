@@ -56,7 +56,9 @@ impl QuicCubic {
     pub fn on_persistent_congestion(&mut self) {
         self.cwnd = self.minimum_window();
         self.congestion_recovery_start_time = None;
-        self.ssthresh = self.cwnd;
+        // RFC 9002 §7.6.2: after persistent congestion the sender re-enters
+        // slow start.  Setting ssthresh = MAX ensures cwnd < ssthresh.
+        self.ssthresh = usize::MAX;
     }
 
     /// RFC 9002 §7.6.1: persistent congestion duration always includes max_ack_delay
