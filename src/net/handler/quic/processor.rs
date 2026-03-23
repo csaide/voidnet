@@ -450,11 +450,16 @@ fn decrypt_and_process(
 
     // For 1-RTT packets, save encrypted payload in case we need to retry with previous key
     // after a key update (RFC 9001 §6.1: retain old keys for reordered packets).
+    // Use a fixed-size stack buffer instead of Vec to avoid per-packet heap allocation.
+    // QUIC packets are bounded by UDP datagram size (typically <= 1472 bytes for IPv4).
     let payload_slice = &quic_payload[payload_offset..];
-    let saved_payload = if space == 2 && conn.key_update.prev_remote_packet_key.is_some() {
-        Some(payload_slice.to_vec())
+    let mut saved_buf = [0u8; 1500];
+    let saved_len = if space == 2 && conn.key_update.prev_remote_packet_key.is_some() {
+        let len = payload_slice.len().min(1500);
+        saved_buf[..len].copy_from_slice(&payload_slice[..len]);
+        len
     } else {
-        None
+        0
     };
 
     let plaintext_len = match decrypt_payload(
@@ -466,15 +471,15 @@ fn decrypt_and_process(
         Ok(len) => len,
         Err(_) => {
             // Current key failed. For 1-RTT, try previous key if available (RFC 9001 §6.5).
-            if let Some(ref saved) = saved_payload {
+            if saved_len > 0 {
                 if let Some(ref prev_key) = conn.key_update.prev_remote_packet_key {
                     // Restore the encrypted payload for retry
-                    quic_payload[payload_offset..payload_offset + saved.len()]
-                        .copy_from_slice(saved);
+                    quic_payload[payload_offset..payload_offset + saved_len]
+                        .copy_from_slice(&saved_buf[..saved_len]);
                     match prev_key.decrypt_in_place(
                         pn,
                         &header_buf[..header_len],
-                        &mut quic_payload[payload_offset..payload_offset + saved.len()],
+                        &mut quic_payload[payload_offset..payload_offset + saved_len],
                     ) {
                         Ok(plaintext) => plaintext.len(),
                         Err(_) => {
