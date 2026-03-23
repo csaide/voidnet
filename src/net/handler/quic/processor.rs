@@ -1686,8 +1686,16 @@ pub fn generate_packets<'umem>(
             .arm(QuicTimerKind::KeyDiscard, conn_key, discard_deadline, wheel);
     }
 
-    // Build packets for each space that has pending data
+    // Build packets for each space that has pending data.
+    // RFC 9000 §14.1: coalesce Initial+Handshake into a single UDP datagram
+    // to satisfy the 1200-byte minimum efficiently.
+    let mut handshake_coalesced = false;
     for space in 0..3u8 {
+        // Skip Handshake if already coalesced with Initial
+        if space == 1 && handshake_coalesced {
+            continue;
+        }
+
         if !has_pending_data(conn, space) {
             continue;
         }
@@ -1728,6 +1736,56 @@ pub fn generate_packets<'umem>(
         let total_len = build_packet_in_frame(conn, space, now, &mut frame);
 
         if total_len > 0 {
+            // RFC 9000 §14.1: Coalesce Handshake packet after Initial in the same
+            // UDP datagram. The Initial is already padded to 1200 bytes; appending
+            // the Handshake packet reduces the number of datagrams needed.
+            if space == 0
+                && has_pending_data(conn, 1)
+                && conn.keys.handshake.is_some()
+                && conn.path.amplification.can_send(1)
+            {
+                let ip_len = match conn.local_addr {
+                    IpAddress::V4(_) => IPV4_MIN_HEADER_LEN,
+                    IpAddress::V6(_) => IPV6_HEADER_LEN,
+                };
+                let quic_offset = ETH_LEN + ip_len + UDP_HEADER_LEN;
+                let initial_quic_len = total_len - quic_offset;
+
+                // Build Handshake QUIC packet right after the Initial QUIC packet
+                let hs_quic_offset = quic_offset + initial_quic_len;
+                let capacity = frame.capacity();
+                if capacity > hs_quic_offset + 64 {
+                    unsafe { frame.set_len(capacity) };
+                    let hs_quic_len =
+                        build_quic_packet(conn, 1, now, &mut frame[hs_quic_offset..], 0);
+                    if hs_quic_len > 0 {
+                        // Rewrite transport headers for the combined QUIC payload
+                        let combined_quic_len = initial_quic_len + hs_quic_len;
+                        let combined_total = write_transport_headers(
+                            conn,
+                            &mut frame,
+                            quic_offset,
+                            combined_quic_len,
+                        );
+                        if combined_total > 0 {
+                            debug_assert!(
+                                combined_total >= 42,
+                                "QUIC: coalesced packet too small: {} bytes",
+                                combined_total,
+                            );
+                            unsafe { frame.set_len(combined_total) };
+                            conn.path.amplification.on_bytes_sent(combined_total);
+                            conn.pacing.on_packet_sent(combined_total, now);
+                            tx_return.push(frame);
+                            handshake_coalesced = true;
+                            continue;
+                        }
+                    }
+                    // Handshake coalescing failed — fall through with just the Initial
+                    unsafe { frame.set_len(total_len) };
+                }
+            }
+
             // Minimum packet size varies by CID length; 21 bytes is the absolute
             // minimum (ETH+IP+UDP headers are separate, this is total frame size).
             debug_assert!(
@@ -1811,17 +1869,40 @@ fn build_packet_in_frame(
         IpAddress::V4(_) => IPV4_MIN_HEADER_LEN,
         IpAddress::V6(_) => IPV6_HEADER_LEN,
     };
-    let udp_offset = ETH_LEN + ip_len;
-    let quic_offset = udp_offset + UDP_HEADER_LEN;
+    let quic_offset = ETH_LEN + ip_len + UDP_HEADER_LEN;
 
-    // Set frame length to capacity so we can write into the full buffer
     let capacity = frame.capacity();
     if capacity < quic_offset + 64 {
-        return 0; // buffer too small for even minimal packet
+        return 0;
     }
     unsafe { frame.set_len(capacity) };
 
-    // Build QUIC payload starting at quic_offset
+    // Default pad_to: Initial packets must be >= 1200 bytes (RFC 9000 §14)
+    let pad_to = if space == 0 { 1200 } else { 0 };
+    let quic_len = build_quic_packet(conn, space, now, &mut frame[quic_offset..], pad_to);
+    if quic_len == 0 {
+        return 0;
+    }
+
+    write_transport_headers(conn, frame, quic_offset, quic_len)
+}
+
+/// Build and encrypt a QUIC packet into `buf`, starting at offset 0 of the slice.
+///
+/// `pad_to`: minimum QUIC packet size in bytes (0 = use default minimum only).
+/// Returns the protected QUIC packet length, or 0 on failure.
+/// Records the sent packet in loss detection and updates connection state.
+fn build_quic_packet(
+    conn: &mut QuicConnectionState,
+    space: u8,
+    now: Instant,
+    buf: &mut [u8],
+    pad_to: usize,
+) -> usize {
+    if buf.len() < 64 {
+        return 0;
+    }
+
     let pn = conn.loss.next_pn(space as usize);
     let largest_acked = conn.ack[space as usize].largest_received().unwrap_or(0);
 
@@ -1833,7 +1914,7 @@ fn build_packet_in_frame(
             conn.version,
         );
         match PacketBuilder::begin_long(
-            &mut frame[quic_offset..],
+            buf,
             packet_type_bits,
             conn.version,
             conn.dcid.as_bytes(),
@@ -1848,7 +1929,7 @@ fn build_packet_in_frame(
     } else {
         // Short header (1-RTT)
         match PacketBuilder::begin_short(
-            &mut frame[quic_offset..],
+            buf,
             conn.dcid.as_bytes(),
             pn,
             largest_acked,
@@ -2311,10 +2392,9 @@ fn build_packet_in_frame(
         builder.pad_to(min_offset);
     }
 
-    // 7b. Initial padding — Initial packets must be at least 1200 bytes total
-    // RFC 9000 §14: the 1200-byte minimum applies to the UDP payload (= QUIC packet)
-    if space == 0 {
-        builder.pad_to(1200);
+    // 7b. Configurable minimum padding (e.g., Initial packets to 1200 bytes per RFC 9000 §14)
+    if pad_to > 0 {
+        builder.pad_to(pad_to);
     }
 
     // Finalize: get metadata before consuming builder
@@ -2335,7 +2415,7 @@ fn build_packet_in_frame(
         None => return 0,
     };
 
-    let quic_buf = &mut frame[quic_offset..quic_offset + quic_len];
+    let quic_buf = &mut buf[..quic_len];
     match protect_packet(local_key, quic_buf, pn_offset, pn_length, pn) {
         Ok(protected_len) => {
             // Record sent packet for loss detection
@@ -2405,8 +2485,7 @@ fn build_packet_in_frame(
                 conn.needs_key_discard_timer = true;
             }
 
-            // Build Ethernet + IP + UDP headers
-            write_transport_headers(conn, frame, quic_offset, protected_len)
+            protected_len
         }
         Err(_) => 0,
     }
