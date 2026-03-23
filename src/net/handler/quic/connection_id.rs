@@ -176,6 +176,11 @@ impl CidSet {
         self.count as usize
     }
 
+    /// Iterate over sequence numbers in the set.
+    pub fn iter_seqs(&self) -> impl Iterator<Item = u64> + '_ {
+        self.seqs[..self.count as usize].iter().copied()
+    }
+
     /// Pick an unused CID from the set (one that isn't the current active CID).
     /// Returns (cid, sequence) or None if no spares.
     pub fn pick_unused(&self, active: &ConnectionId) -> Option<(ConnectionId, u64)> {

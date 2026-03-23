@@ -39,12 +39,16 @@ impl CidManager {
         let mut retired = Vec::new();
 
         // Retire all peer CIDs with sequence < retire_prior_to
-        let mut seq = 0u64;
-        while seq < retire_prior_to {
+        // Iterate over existing entries (bounded by CidSet capacity), not the sequence range
+        let seqs_to_retire: smallvec::SmallVec<[u64; 8]> = self
+            .peer_cids
+            .iter_seqs()
+            .filter(|&s| s < retire_prior_to)
+            .collect();
+        for seq in seqs_to_retire {
             if let Some(_removed) = self.peer_cids.remove_by_seq(seq) {
                 retired.push(seq);
             }
-            seq += 1;
         }
 
         // Store the new CID (unless it's one we should retire)

@@ -75,3 +75,31 @@ fn at_limit_check() {
     mgr.peer_cids.push_with_seq(cid2, 1);
     assert!(mgr.at_limit());
 }
+
+#[test]
+fn retire_prior_to_large_value_does_not_loop() {
+    let initial = ConnectionId::from_slice(&[0xaa]);
+    let mut mgr = CidManager::new(initial, 4);
+    let cid0 = ConnectionId::from_slice(&[0x10]);
+    mgr.peer_cids.push_with_seq(cid0, 5);
+
+    // retire_prior_to = 2^60 should NOT cause a long loop
+    let new_cid = ConnectionId::from_slice(&[0xbb]);
+    let start = std::time::Instant::now();
+    let retired = mgr.on_new_connection_id(
+        1_152_921_504_606_846_976,
+        1_152_921_504_606_846_976,
+        new_cid,
+    );
+    let elapsed = start.elapsed();
+
+    // Must complete in under 10ms (was infinite before fix)
+    assert!(
+        elapsed.as_millis() < 10,
+        "retire loop took too long: {:?}",
+        elapsed
+    );
+    // Should have retired cid0 (seq 5 < retire_prior_to)
+    assert!(retired.contains(&5));
+    assert!(mgr.peer_cids.contains(&new_cid));
+}
