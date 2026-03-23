@@ -82,6 +82,16 @@ pub fn build_version_negotiation(
     pos
 }
 
+/// Returns the 2-bit long header packet type field for Retry packets.
+/// v1: 0b11 (0x03), v2: 0b00 (0x00) per RFC 9369 §3.2.
+pub fn retry_packet_type_bits(version: u32) -> u8 {
+    if version == QUIC_VERSION_2 {
+        0x00
+    } else {
+        0x03
+    }
+}
+
 /// Client-side: check if a VN packet should be processed.
 /// Discard if we've already successfully processed any packet on this connection.
 pub fn should_process_version_negotiation(has_processed_packet: bool) -> bool {

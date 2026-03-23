@@ -592,3 +592,45 @@ impl<'a> PacketBuilder<'a> {
         self.offset + 16 // +16 for AEAD tag
     }
 }
+
+/// Build a complete Retry packet (RFC 9000 §17.2.5).
+///
+/// Standalone function — Retry packets lack Length and Packet Number fields
+/// so they cannot use PacketBuilder.
+pub fn build_retry_packet(
+    version: u32,
+    dcid: &[u8],
+    scid: &[u8],
+    odcid: &[u8],
+    token: &[u8],
+) -> Vec<u8> {
+    use super::version::retry_packet_type_bits;
+    use crate::net::handler::quic::crypto::retry::compute_retry_integrity_tag;
+
+    let type_bits = retry_packet_type_bits(version);
+
+    // First byte: form(1)=1, fixed(1)=1, type(2), unused(4)=random
+    let unused: u8 = {
+        use ring::rand::SecureRandom;
+        let mut b = [0u8; 1];
+        ring::rand::SystemRandom::new().fill(&mut b).unwrap();
+        b[0] & 0x0F
+    };
+    let first_byte: u8 = 0xC0 | (type_bits << 4) | unused;
+
+    let packet_len = 1 + 4 + 1 + dcid.len() + 1 + scid.len() + token.len() + 16;
+    let mut packet = Vec::with_capacity(packet_len);
+
+    packet.push(first_byte);
+    packet.extend_from_slice(&version.to_be_bytes());
+    packet.push(dcid.len() as u8);
+    packet.extend_from_slice(dcid);
+    packet.push(scid.len() as u8);
+    packet.extend_from_slice(scid);
+    packet.extend_from_slice(token);
+
+    let tag = compute_retry_integrity_tag(odcid, &packet, version);
+    packet.extend_from_slice(&tag);
+
+    packet
+}
