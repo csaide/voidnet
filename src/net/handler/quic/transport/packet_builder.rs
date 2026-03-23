@@ -478,6 +478,44 @@ impl<'a> PacketBuilder<'a> {
         true
     }
 
+    /// Write a NEW_CONNECTION_ID frame (0x18). Returns true if written.
+    pub fn write_new_connection_id(
+        &mut self,
+        sequence: u64,
+        retire_prior_to: u64,
+        cid: &[u8],
+        reset_token: [u8; 16],
+        frame_log: &mut FrameLog,
+    ) -> bool {
+        use crate::net::handler::quic::connection_id::ConnectionIdRef;
+        let needed = 1 + varint_len(sequence) + varint_len(retire_prior_to) + 1 + cid.len() + 16;
+        if self.remaining() < needed {
+            return false;
+        }
+        let n = frame_writer::write_new_connection_id(
+            &mut self.buf[self.offset..],
+            sequence,
+            retire_prior_to,
+            ConnectionIdRef::from_slice(cid),
+            reset_token,
+        );
+        self.offset += n;
+        frame_log.push(SentFrame::NewConnectionId { sequence });
+        true
+    }
+
+    /// Write a RETIRE_CONNECTION_ID frame (0x19). Returns true if written.
+    pub fn write_retire_connection_id(&mut self, sequence: u64, frame_log: &mut FrameLog) -> bool {
+        let needed = 1 + varint_len(sequence);
+        if self.remaining() < needed {
+            return false;
+        }
+        let n = frame_writer::write_retire_connection_id(&mut self.buf[self.offset..], sequence);
+        self.offset += n;
+        frame_log.push(SentFrame::RetireConnectionId { sequence });
+        true
+    }
+
     /// Write a PING frame.
     pub fn write_ping(&mut self, frame_log: &mut FrameLog) {
         if self.remaining() > 0 {

@@ -1357,6 +1357,10 @@ fn has_pending_data(conn: &QuicConnectionState, space: u8) -> bool {
         || !conn.retransmit.stop_sending.is_empty()
         || conn.retransmit.handshake_done
         || conn.flow.should_send_max_data().is_some()
+        || !conn.retransmit.pending_retire_cids.is_empty()
+        || !conn.retransmit.pending_new_cids.is_empty()
+        || !conn.retransmit.retire_connection_ids.is_empty()
+        || !conn.retransmit.new_connection_ids.is_empty()
 }
 
 /// Generate outbound QUIC packets from pending connection state.
@@ -1919,6 +1923,80 @@ fn build_packet_in_frame(
         } else {
             // Couldn't fit; put it back
             conn.pending_path_response = Some(data);
+        }
+    }
+
+    // 4g. RETIRE_CONNECTION_ID frames (1-RTT space only, RFC 9000 §5.1.2)
+    if space == 2 {
+        // From CidManager pending retires (queued during NEW_CONNECTION_ID processing)
+        while let Some(seq) = conn.retransmit.pending_retire_cids.pop() {
+            if builder.write_retire_connection_id(seq, &mut conn.frame_log) {
+                wrote_ack_eliciting = true;
+            } else {
+                conn.retransmit.pending_retire_cids.push(seq);
+                break;
+            }
+        }
+        // Retransmit lost RETIRE_CONNECTION_ID
+        let retransmit_retire: smallvec::SmallVec<[u64; 4]> =
+            conn.retransmit.retire_connection_ids.drain(..).collect();
+        for seq in retransmit_retire {
+            if builder.write_retire_connection_id(seq, &mut conn.frame_log) {
+                wrote_ack_eliciting = true;
+            } else {
+                conn.retransmit.retire_connection_ids.push(seq);
+                break;
+            }
+        }
+    }
+
+    // 4h. NEW_CONNECTION_ID frames (1-RTT space only, RFC 9000 §5.1.1)
+    if space == 2 {
+        while let Some((seq, retire_prior_to, cid, token)) = conn.retransmit.pending_new_cids.pop()
+        {
+            if builder.write_new_connection_id(
+                seq,
+                retire_prior_to,
+                cid.as_bytes(),
+                token,
+                &mut conn.frame_log,
+            ) {
+                wrote_ack_eliciting = true;
+            } else {
+                conn.retransmit
+                    .pending_new_cids
+                    .push((seq, retire_prior_to, cid, token));
+                break;
+            }
+        }
+        // Retransmit lost NEW_CONNECTION_ID (look up CID details from cid_manager)
+        let retransmit_new: smallvec::SmallVec<[u64; 4]> =
+            conn.retransmit.new_connection_ids.drain(..).collect();
+        for seq in retransmit_new {
+            // Find the CID for this sequence in local_cids
+            if let Some((cid, found_seq)) = conn
+                .cid_manager
+                .local_cids
+                .iter()
+                .zip(conn.cid_manager.local_cids.iter_seqs())
+                .find(|(_, s)| *s == seq)
+                .map(|(c, s)| (*c, s))
+            {
+                let _ = found_seq;
+                let token = [0u8; 16]; // Simplified reset token for retransmit
+                if builder.write_new_connection_id(
+                    seq,
+                    0,
+                    cid.as_bytes(),
+                    token,
+                    &mut conn.frame_log,
+                ) {
+                    wrote_ack_eliciting = true;
+                } else {
+                    conn.retransmit.new_connection_ids.push(seq);
+                    break;
+                }
+            }
         }
     }
 

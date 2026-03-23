@@ -1,5 +1,6 @@
 use super::frame::StreamId;
 use super::frame_log::{FrameLog, SentFrame};
+use crate::net::handler::quic::connection_id::ConnectionId;
 use smallvec::SmallVec;
 
 /// Information that needs to be retransmitted after packet loss.
@@ -26,6 +27,10 @@ pub struct RetransmitQueue {
     pub reset_streams: SmallVec<[(StreamId, u64, u64); 4]>,
     /// Streams needing STOP_SENDING re-send
     pub stop_sending: SmallVec<[(StreamId, u64); 4]>,
+    /// NEW_CONNECTION_ID frames to send: (sequence, retire_prior_to, cid, reset_token)
+    pub pending_new_cids: SmallVec<[(u64, u64, ConnectionId, [u8; 16]); 4]>,
+    /// Sequences of CIDs to retire via RETIRE_CONNECTION_ID (RFC 9000 §5.1.2)
+    pub pending_retire_cids: SmallVec<[u64; 8]>,
 }
 
 impl Default for RetransmitQueue {
@@ -41,6 +46,8 @@ impl Default for RetransmitQueue {
             handshake_done: false,
             reset_streams: SmallVec::new(),
             stop_sending: SmallVec::new(),
+            pending_new_cids: SmallVec::new(),
+            pending_retire_cids: SmallVec::new(),
         }
     }
 }
@@ -61,6 +68,8 @@ impl RetransmitQueue {
             && !self.handshake_done
             && self.reset_streams.is_empty()
             && self.stop_sending.is_empty()
+            && self.pending_new_cids.is_empty()
+            && self.pending_retire_cids.is_empty()
     }
 }
 
