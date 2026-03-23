@@ -431,6 +431,18 @@ impl<'a> PacketBuilder<'a> {
         true
     }
 
+    /// Write a NEW_TOKEN frame (0x07). Returns true if written.
+    pub fn write_new_token(&mut self, token: &[u8]) -> bool {
+        // Overhead: 1 (type) + varint(token_len) + token
+        let overhead = 1 + varint_len(token.len() as u64) + token.len();
+        if self.remaining() < overhead {
+            return false;
+        }
+        let written = frame_writer::write_new_token(&mut self.buf[self.offset..], token);
+        self.offset += written;
+        true
+    }
+
     /// Write a PATH_RESPONSE frame (0x1b + 8 bytes data). Returns true if written.
     pub fn write_path_response(&mut self, data: [u8; 8]) -> bool {
         if self.remaining() < 9 {

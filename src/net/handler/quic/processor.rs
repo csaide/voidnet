@@ -762,6 +762,19 @@ fn dispatch_frames(
                 conn.path.on_path_response(&data);
             }
 
+            QuicFrame::NewToken(nt) => {
+                // RFC 9000 §19.7: only clients should receive NEW_TOKEN
+                if conn.side == Side::Client {
+                    conn.received_new_token = Some(nt.token.to_vec());
+                } else {
+                    // Server receiving NEW_TOKEN is a protocol violation
+                    conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
+                    conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
+                    return ProcessResult::ConnectionClosed;
+                }
+            }
+
             QuicFrame::DataBlocked(_)
             | QuicFrame::StreamDataBlocked { .. }
             | QuicFrame::StreamsBlocked { .. } => {
@@ -856,6 +869,28 @@ fn handle_crypto_frame(
             conn.path.amplification.set_validated();
             conn.loss.handshake_confirmed = true;
             conn.key_update.handshake_confirmed = true;
+
+            // Generate NEW_TOKEN for the client (RFC 9000 §8.1)
+            if let Some(ref secret) = conn.token_secret {
+                let client_ip_bytes: Vec<u8> = match conn.remote_addr {
+                    IpAddress::V4(v4) => v4.octets.to_vec(),
+                    IpAddress::V6(v6) => v6.octets.to_vec(),
+                };
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if let Ok(encrypted) = crate::net::handler::quic::token_crypto::encrypt_token(
+                    secret,
+                    crate::net::handler::quic::token_crypto::TokenType::NewToken,
+                    &client_ip_bytes,
+                    timestamp,
+                    conn.dcid.as_bytes(),
+                    conn.version,
+                ) {
+                    conn.pending_new_token = Some(encrypted);
+                }
+            }
             // Fix 6: DON'T discard handshake keys yet — wait until we
             // receive a 1-RTT packet (confirms client got the handshake).
             // Key discard happens in decrypt_and_process when space == 2.
@@ -1215,6 +1250,7 @@ fn has_pending_data(conn: &QuicConnectionState, space: u8) -> bool {
         return false;
     }
     conn.send_handshake_done
+        || conn.pending_new_token.is_some()
         || conn.pending_path_response.is_some()
         || conn.streams.has_pending_send()
         || conn.retransmit.max_data
@@ -1594,6 +1630,16 @@ fn build_packet_in_frame(
     {
         conn.send_handshake_done = false;
         wrote_ack_eliciting = true;
+    }
+
+    // 3b. NEW_TOKEN (server, 1-RTT space only, RFC 9000 §8.1)
+    if space == 2 && conn.side == Side::Server {
+        if let Some(ref token) = conn.pending_new_token {
+            if builder.write_new_token(token) {
+                conn.pending_new_token = None;
+                wrote_ack_eliciting = true;
+            }
+        }
     }
 
     // 4b. MAX_DATA — expand peer's send window (RFC 9000 §4.2)

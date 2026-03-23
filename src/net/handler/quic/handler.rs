@@ -30,6 +30,9 @@ pub struct ListenerState {
     pub tls_config: Arc<rustls::ServerConfig>,
     pub transport_params: TransportParams,
     pub accept_queue: Option<LocalQueue<usize>>,
+    /// Server secret for encrypting NEW_TOKEN tokens (RFC 9000 §8.1).
+    /// Generated randomly when the listener is created.
+    pub token_secret: [u8; 32],
 }
 
 /// QUIC protocol handler.
@@ -67,6 +70,16 @@ impl QuicHandler {
         self.listeners.contains_key(&port)
     }
 
+    /// Generate a random 32-byte token secret for NEW_TOKEN encryption.
+    fn generate_token_secret() -> [u8; 32] {
+        use ring::rand::SecureRandom;
+        let mut secret = [0u8; 32];
+        ring::rand::SystemRandom::new()
+            .fill(&mut secret)
+            .expect("failed to generate random token secret");
+        secret
+    }
+
     /// Register a QUIC listener on a port.
     ///
     /// Returns `Err(())` if a listener is already registered on this port.
@@ -85,6 +98,7 @@ impl QuicHandler {
                 tls_config,
                 transport_params: params,
                 accept_queue: None,
+                token_secret: Self::generate_token_secret(),
             },
         );
         Some(())
@@ -112,6 +126,7 @@ impl QuicHandler {
                 tls_config,
                 transport_params: params,
                 accept_queue: Some(accept_queue),
+                token_secret: Self::generate_token_secret(),
             },
         );
         Some(queue)
@@ -983,6 +998,7 @@ impl QuicHandler {
         conn.remote_mac = remote_mac;
         conn.accept_queue = accept_queue;
         conn.version = version;
+        conn.token_secret = Some(listener.token_secret);
 
         let key = self.insert_connection(conn);
         // Also map the original DCID so Initial retransmissions route here

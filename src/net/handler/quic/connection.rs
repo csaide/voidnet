@@ -199,6 +199,14 @@ pub struct QuicConnectionState {
     /// Handshake keys should be discarded after the next Handshake ACK is sent.
     /// Set when a 1-RTT packet is received (confirming client got the handshake).
     pub handshake_keys_pending_discard: bool,
+
+    /// Server secret for encrypting NEW_TOKEN tokens (RFC 9000 §8.1).
+    pub token_secret: Option<[u8; 32]>,
+    /// Encrypted token to send to the client in a NEW_TOKEN frame.
+    /// Set by the server after handshake completes; cleared once emitted.
+    pub pending_new_token: Option<Vec<u8>>,
+    /// Token received by the client via NEW_TOKEN frame.
+    pub received_new_token: Option<Vec<u8>>,
 }
 
 impl QuicConnectionState {
@@ -295,6 +303,9 @@ impl QuicConnectionState {
             prev_path: None,
             needs_key_update: false,
             handshake_keys_pending_discard: false,
+            token_secret: None,
+            pending_new_token: None,
+            received_new_token: None,
         }
     }
 }
