@@ -880,9 +880,20 @@ impl QuicHandler {
             remote: DirectionalKey::from_rustls(remote_dk),
         };
 
-        let mut scid_bytes = [0u8; 8];
-        ring::rand::SystemRandom::new().fill(&mut scid_bytes).ok()?;
-        let scid = ConnectionId::from_slice(&scid_bytes);
+        // Determine CID length from listener transport params or handler default
+        let cid_len = listener
+            .transport_params
+            .cid_length
+            .map(|l| l as usize)
+            .unwrap_or(self.local_cid_len);
+
+        let mut scid_buf = [0u8; 20];
+        if cid_len > 0 {
+            ring::rand::SystemRandom::new()
+                .fill(&mut scid_buf[..cid_len])
+                .ok()?;
+        }
+        let scid = ConnectionId::from_slice(&scid_buf[..cid_len]);
 
         // RFC 9000 §18.2: server MUST include these CID params in the TLS handshake
         let mut server_params = listener.transport_params.clone();
@@ -950,14 +961,22 @@ impl QuicHandler {
 
         let rng = ring::rand::SystemRandom::new();
 
-        // Generate random 8-byte DCID (destination, for the server) and SCID (our identifier)
-        let mut dcid_bytes = [0u8; 8];
-        rng.fill(&mut dcid_bytes).ok()?;
-        let dcid = ConnectionId::from_slice(&dcid_bytes);
+        // Determine CID length from transport params or fall back to handler default
+        let cid_len = transport_params
+            .cid_length
+            .map(|l| l as usize)
+            .unwrap_or(self.local_cid_len);
 
-        let mut scid_bytes = [0u8; 8];
-        rng.fill(&mut scid_bytes).ok()?;
-        let scid = ConnectionId::from_slice(&scid_bytes);
+        // Generate random DCID (destination, for the server) and SCID (our identifier)
+        let mut dcid_buf = [0u8; 20];
+        rng.fill(&mut dcid_buf[..cid_len.max(1)]).ok()?;
+        let dcid = ConnectionId::from_slice(&dcid_buf[..cid_len]);
+
+        let mut scid_buf = [0u8; 20];
+        if cid_len > 0 {
+            rng.fill(&mut scid_buf[..cid_len]).ok()?;
+        }
+        let scid = ConnectionId::from_slice(&scid_buf[..cid_len]);
 
         let rustls_version = rustls::quic::Version::V1;
 

@@ -68,6 +68,11 @@ pub struct TransportParams {
 
     // Tokens
     pub stateless_reset_token: Option<[u8; 16]>,
+
+    // Local config (not a wire parameter — not encoded/decoded)
+    /// Desired CID length for locally-generated connection IDs (0..=20).
+    /// `None` means use the handler's default (`local_cid_len`).
+    pub cid_length: Option<u8>,
 }
 
 impl Default for TransportParams {
@@ -89,11 +94,22 @@ impl Default for TransportParams {
             initial_source_connection_id: None,
             retry_source_connection_id: None,
             stateless_reset_token: None,
+            cid_length: None,
         }
     }
 }
 
 impl TransportParams {
+    /// Validate `cid_length` if set. Returns an error if the value exceeds 20.
+    pub fn validate_cid_length(&self) -> Result<(), TransportError> {
+        if let Some(len) = self.cid_length {
+            if len > 20 {
+                return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+            }
+        }
+        Ok(())
+    }
+
     /// Encode transport parameters to wire format.
     ///
     /// Only non-default values are written. Returns number of bytes written.

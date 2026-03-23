@@ -2079,3 +2079,39 @@ fn e2e_idle_timeout() {
         "server idle timeout should also return TimerResult::Close"
     );
 }
+
+// ── CID length configuration tests ──────────────────────────────────
+
+#[test]
+fn cid_length_configurable() {
+    let params = TransportParams {
+        cid_length: Some(4),
+        ..Default::default()
+    };
+    assert_eq!(params.cid_length, Some(4));
+    assert!(params.validate_cid_length().is_ok());
+
+    let params_zero = TransportParams {
+        cid_length: Some(0),
+        ..Default::default()
+    };
+    assert_eq!(params_zero.cid_length, Some(0));
+    assert!(params_zero.validate_cid_length().is_ok());
+
+    let params_max = TransportParams {
+        cid_length: Some(20),
+        ..Default::default()
+    };
+    assert_eq!(params_max.cid_length, Some(20));
+    assert!(params_max.validate_cid_length().is_ok());
+
+    let invalid = TransportParams {
+        cid_length: Some(21),
+        ..Default::default()
+    };
+    assert!(invalid.validate_cid_length().is_err());
+
+    let default = TransportParams::default();
+    assert_eq!(default.cid_length, None);
+    assert!(default.validate_cid_length().is_ok());
+}
