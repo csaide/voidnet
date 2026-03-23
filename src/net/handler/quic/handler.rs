@@ -51,6 +51,9 @@ pub struct QuicHandler {
     pub(crate) local_cid_len: usize,
     /// Maximum number of concurrent connections (DoS protection).
     pub(crate) max_connections: usize,
+    /// Connection count threshold above which new Initial packets are dropped
+    /// (future work: send Retry packets for address validation).
+    pub(crate) retry_threshold: usize,
 }
 
 impl QuicHandler {
@@ -64,6 +67,7 @@ impl QuicHandler {
             tx_offload,
             local_cid_len: 8,
             max_connections: 10_000,
+            retry_threshold: 5_000,
         }
     }
 
@@ -1009,6 +1013,12 @@ impl QuicHandler {
 
         // DoS protection: refuse new connections if at capacity
         if self.connections.len() >= self.max_connections {
+            return None;
+        }
+
+        // DoS protection: when under load, drop without allocating state.
+        // Future work: send Retry packet for address validation (RFC 9000 §8.1).
+        if self.connections.len() >= self.retry_threshold {
             return None;
         }
 
