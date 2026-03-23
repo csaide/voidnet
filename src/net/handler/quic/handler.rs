@@ -3,6 +3,8 @@ use rustc_hash::FxHashMap;
 use slab::Slab;
 use std::sync::Arc;
 
+use rustls::ClientConfig;
+
 use crate::net::handler::quic::connection::QuicConnectionState;
 use crate::net::handler::quic::connection_id::ConnectionId;
 use crate::net::handler::quic::timer_kinds::*;
@@ -814,6 +816,89 @@ impl QuicHandler {
         let key = self.insert_connection(conn);
         // Also map the original DCID so Initial retransmissions route here
         self.cid_map.insert(*original_dcid, key);
+        Some(key)
+    }
+
+    /// Create a new client-side QUIC connection and initiate the handshake.
+    ///
+    /// Generates connection IDs, derives initial keys, performs the TLS ClientHello,
+    /// and buffers the initial CRYPTO data for sending.
+    /// Returns the slab key on success.
+    pub fn initiate_connection(
+        &mut self,
+        remote_addr: IpAddress,
+        remote_port: u16,
+        local_addr: IpAddress,
+        local_port: u16,
+        local_mac: MacAddress,
+        remote_mac: MacAddress,
+        server_name: &str,
+        tls_config: Arc<ClientConfig>,
+        transport_params: TransportParams,
+        now: Instant,
+    ) -> Option<usize> {
+        use crate::net::handler::quic::connection::Side;
+        use crate::net::handler::quic::crypto::initial_keys::derive_initial_keys;
+        use crate::net::handler::quic::crypto::keys::{DirectionalKey, KeyPair};
+        use crate::net::handler::quic::crypto::tls::CryptoState;
+        use ring::rand::SecureRandom;
+
+        let rng = ring::rand::SystemRandom::new();
+
+        // Generate random 8-byte DCID (destination, for the server) and SCID (our identifier)
+        let mut dcid_bytes = [0u8; 8];
+        rng.fill(&mut dcid_bytes).ok()?;
+        let dcid = ConnectionId::from_slice(&dcid_bytes);
+
+        let mut scid_bytes = [0u8; 8];
+        rng.fill(&mut scid_bytes).ok()?;
+        let scid = ConnectionId::from_slice(&scid_bytes);
+
+        let rustls_version = rustls::quic::Version::V1;
+
+        // Derive initial keys from DCID (RFC 9001 §5.2)
+        let (local_dk, remote_dk) =
+            derive_initial_keys(dcid.as_bytes(), rustls::Side::Client, rustls_version);
+        let initial_keys = KeyPair {
+            local: DirectionalKey::from_rustls(local_dk),
+            remote: DirectionalKey::from_rustls(remote_dk),
+        };
+
+        // Encode transport params with our SCID
+        let mut client_params = transport_params.clone();
+        client_params.initial_source_connection_id = Some(scid);
+
+        let mut params_buf = [0u8; 512];
+        let params_len = client_params.encode(&mut params_buf);
+
+        // Create client-side crypto state; returns (CryptoState, initial ClientHello data)
+        let (crypto, initial_data) = CryptoState::new_client(
+            tls_config.clone(),
+            server_name,
+            &params_buf[..params_len],
+            rustls_version,
+        )
+        .ok()?;
+
+        let mut conn = QuicConnectionState::new(dcid, Side::Client, transport_params, 1200, now);
+        conn.keys.initial = Some(initial_keys);
+        conn.crypto = Some(crypto);
+        conn.scid = scid;
+        conn.scid_set.push(scid);
+        conn.local_addr = local_addr;
+        conn.remote_addr = remote_addr;
+        conn.local_port = local_port;
+        conn.remote_port = remote_port;
+        conn.local_mac = local_mac;
+        conn.remote_mac = remote_mac;
+        conn.client_config = Some(tls_config);
+        conn.server_name = Some(server_name.to_string());
+        conn.version = crate::net::handler::quic::transport::version::QUIC_VERSION_1;
+
+        // Buffer the ClientHello CRYPTO data for the Initial space (index 0)
+        conn.pending_crypto[0] = initial_data;
+
+        let key = self.insert_connection(conn);
         Some(key)
     }
 }
