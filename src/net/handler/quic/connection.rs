@@ -3,6 +3,7 @@ use std::sync::Arc;
 use coarsetime::{Duration, Instant};
 use rustls::ClientConfig;
 
+use super::cid_lifecycle::CidManager;
 use super::connection_id::{CidSet, ConnectionId};
 use super::crypto::key_update::KeyUpdateState;
 use super::crypto::keys::PacketKeys;
@@ -68,6 +69,9 @@ pub struct QuicConnectionState {
     pub scid_set: CidSet,
     pub state: ConnectionState,
     pub side: Side,
+
+    /// CID lifecycle manager (RFC 9000 §5.1)
+    pub cid_manager: CidManager,
 
     // Crypto
     pub keys: PacketKeys,
@@ -250,6 +254,7 @@ impl QuicConnectionState {
             scid_set: CidSet::new(),
             state: ConnectionState::Handshaking,
             side,
+            cid_manager: CidManager::new(ConnectionId::empty(), 2),
             keys: PacketKeys::new(),
             crypto: None,
             loss: LossDetector::new(),

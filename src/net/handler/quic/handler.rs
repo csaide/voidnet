@@ -997,6 +997,7 @@ impl QuicHandler {
         conn.crypto = Some(crypto);
         conn.scid = scid;
         conn.scid_set.push(scid);
+        conn.cid_manager = super::cid_lifecycle::CidManager::new(scid, 2);
         conn.local_addr = local_addr;
         conn.remote_addr = remote_addr;
         conn.local_port = local_port;
@@ -1105,6 +1106,7 @@ impl QuicHandler {
         conn.crypto = Some(crypto);
         conn.scid = scid;
         conn.scid_set.push(scid);
+        conn.cid_manager = super::cid_lifecycle::CidManager::new(scid, 2);
         conn.local_addr = local_addr;
         conn.remote_addr = remote_addr;
         conn.local_port = local_port;

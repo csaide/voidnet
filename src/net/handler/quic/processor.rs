@@ -994,6 +994,9 @@ fn handle_crypto_frame(
             conn.datagrams.max_send_size = Some(max_size);
         }
 
+        // Update CidManager with peer's active_connection_id_limit
+        conn.cid_manager.active_limit = params.active_connection_id_limit;
+
         conn.peer_params = Some(params);
     }
 }

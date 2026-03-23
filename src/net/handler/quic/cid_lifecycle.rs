@@ -12,6 +12,10 @@ pub struct CidManager {
     pub pending_retire: Vec<u64>,
     /// Active CID limit from peer's transport params
     pub active_limit: u64,
+    /// Highest sequence number issued to peer via NEW_CONNECTION_ID
+    pub highest_issued_seq: u64,
+    /// Whether a replacement CID needs to be issued (after peer retires one of ours)
+    pub needs_replacement_cid: bool,
 }
 
 impl CidManager {
@@ -24,6 +28,8 @@ impl CidManager {
             next_sequence: 1, // 0 was the initial
             pending_retire: Vec::new(),
             active_limit,
+            highest_issued_seq: 0,
+            needs_replacement_cid: false,
         }
     }
 
@@ -65,6 +71,19 @@ impl CidManager {
     /// Get pending RetireConnectionId sequences to send.
     pub fn take_pending_retires(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.pending_retire)
+    }
+
+    /// Generate a new CID entry for the local CID set.
+    /// Returns the sequence number to be sent in a NEW_CONNECTION_ID frame.
+    /// The caller must generate the random CID bytes and reset token.
+    pub fn issue_new_cid(&mut self, cid: ConnectionId) -> Option<u64> {
+        let seq = self.next_sequence;
+        if !self.local_cids.push_with_seq(cid, seq) {
+            return None; // local set full
+        }
+        self.next_sequence += 1;
+        self.highest_issued_seq = seq;
+        Some(seq)
     }
 
     /// Check if we're at the active CID limit.
