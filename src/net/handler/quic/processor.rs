@@ -958,8 +958,9 @@ fn handle_crypto_frame(
             conn.crypto = Some(crypto);
             o
         }
-        Err(_) => {
+        Err(err) => {
             conn.crypto = Some(crypto);
+            conn.close_error = Some(err);
             conn.state = ConnectionState::Closing;
             conn.needs_draining_timer = true;
             return;
