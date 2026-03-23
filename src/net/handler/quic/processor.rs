@@ -955,6 +955,13 @@ fn handle_crypto_frame(
 
     // Install new keys
     if let Some(hs_keys) = output.handshake_keys {
+        // RFC 9001 §4.1.3: unconsumed data at Initial level is PROTOCOL_VIOLATION
+        if conn.crypto_recv[0].has_unconsumed_data() {
+            conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
+            conn.state = ConnectionState::Closing;
+            conn.needs_draining_timer = true;
+            return;
+        }
         conn.keys.handshake = Some(hs_keys);
         conn.loss.has_handshake_keys = true;
     }
@@ -962,6 +969,13 @@ fn handle_crypto_frame(
         conn.keys.zero_rtt_open = Some(zero_rtt_key);
     }
     if let Some(rtt_keys) = output.one_rtt_keys {
+        // RFC 9001 §4.1.3: unconsumed data at Initial or Handshake level is PROTOCOL_VIOLATION
+        if conn.crypto_recv[0].has_unconsumed_data() || conn.crypto_recv[1].has_unconsumed_data() {
+            conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
+            conn.state = ConnectionState::Closing;
+            conn.needs_draining_timer = true;
+            return;
+        }
         conn.keys.one_rtt = Some(rtt_keys);
         conn.keys.zero_rtt_open = None; // 0-RTT no longer needed (RFC 9001 §4.9.3)
         // Store key update secrets for future key rotation (Fix 7)

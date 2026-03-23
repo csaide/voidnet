@@ -218,6 +218,13 @@ impl CryptoRecvBuffer {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    /// Whether the buffer has any unconsumed data (including out-of-order fragments).
+    /// Used to check RFC 9001 §4.1.3 requirement that lower levels have no
+    /// unconsumed data when higher-level keys are installed.
+    pub fn has_unconsumed_data(&self) -> bool {
+        self.len > 0 || self.ooo_count > 0
+    }
 }
 
 // ─── PnBitset ───
