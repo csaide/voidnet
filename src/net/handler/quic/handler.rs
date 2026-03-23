@@ -939,6 +939,9 @@ impl QuicHandler {
             .map(|l| l as usize)
             .unwrap_or(self.local_cid_len);
 
+        // Update handler's SCID length so short-header parsing uses correct length
+        self.local_cid_len = cid_len;
+
         let mut scid_buf = [0u8; 20];
         if cid_len > 0 {
             ring::rand::SystemRandom::new()
@@ -1018,6 +1021,9 @@ impl QuicHandler {
             .cid_length
             .map(|l| l as usize)
             .unwrap_or(self.local_cid_len);
+
+        // Update handler's SCID length so short-header parsing uses correct length
+        self.local_cid_len = cid_len;
 
         // Generate random DCID (destination, for Initial key derivation).
         // RFC 9000 §7.2: Initial DCID MUST be at least 8 bytes, regardless of
