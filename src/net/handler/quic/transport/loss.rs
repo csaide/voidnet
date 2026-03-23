@@ -220,6 +220,11 @@ impl LossDetector {
         pn
     }
 
+    /// Reset the next packet number for a space to 0 (e.g., after Retry).
+    pub fn reset_next_pn(&mut self, space: usize) {
+        self.next_pn[space] = 0;
+    }
+
     /// Record a sent packet.
     pub fn on_packet_sent(&mut self, space: usize, pn: u64, pkt: SentPacket) {
         if pkt.in_flight {

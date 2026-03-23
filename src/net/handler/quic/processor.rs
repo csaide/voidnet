@@ -24,6 +24,13 @@ use crate::net::wire::quic::{self as wire_quic, PacketHeader, PacketType};
 use crate::net::wire::udp::{UDP_HEADER_LEN, UdpHeader};
 use crate::xdp::frame::{Frame, FrameBuffer};
 
+use crate::net::handler::quic::connection_id::ConnectionId;
+use crate::net::handler::quic::crypto::initial_keys::derive_initial_keys;
+use crate::net::handler::quic::crypto::keys::{DirectionalKey, KeyPair};
+use crate::net::handler::quic::crypto::retry::verify_retry_integrity_tag;
+use crate::net::handler::quic::packet_parser::PnBitset;
+use crate::net::handler::quic::transport::version::rustls_quic_version;
+
 pub enum ProcessResult {
     Ok,
     ConnectionClosed,
@@ -2804,4 +2811,81 @@ fn ipv6_udp_checksum(src: &[u8; 16], dst: &[u8; 16], udp_segment: &[u8]) -> u16 
     }
     let result = !(sum as u16);
     if result == 0 { 0xFFFF } else { result }
+}
+
+/// Handle an incoming Retry packet on the client side (RFC 9000 §17.2.5.2).
+/// Returns true if the Retry was accepted and state was updated.
+pub fn handle_retry_packet(
+    conn: &mut QuicConnectionState,
+    retry_packet: &[u8],
+    version: u32,
+) -> bool {
+    // 1. Only one Retry per connection
+    if conn.retry_received {
+        return false;
+    }
+
+    // 2. Only clients handle Retry
+    if conn.side != Side::Client {
+        return false;
+    }
+
+    // 3. Verify integrity tag using current DCID as the original DCID
+    if !verify_retry_integrity_tag(conn.dcid.as_bytes(), retry_packet, version) {
+        return false;
+    }
+
+    // 4. Parse header to get SCID and token
+    let (header, _consumed) = match wire_quic::parse_header(retry_packet, 0) {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+
+    let long_header = match header {
+        PacketHeader::Long(ref lh) if lh.packet_type == PacketType::Retry => lh,
+        _ => return false,
+    };
+
+    // 5. Extract token: between header end and 16-byte integrity tag
+    let token_end = retry_packet.len().saturating_sub(16);
+    if long_header.payload_offset > token_end {
+        return false;
+    }
+    let token = &retry_packet[long_header.payload_offset..token_end];
+
+    // 6. Store original DCID
+    conn.original_dcid = Some(conn.dcid);
+
+    // 7. Update DCID to Retry's SCID
+    let new_dcid = ConnectionId::from_slice(long_header.scid.as_bytes());
+    conn.dcid = new_dcid;
+
+    // 8. Mark retry received
+    conn.retry_received = true;
+
+    // 9. Store token
+    conn.retry_token = Some(token.to_vec());
+
+    // 10. Store retry source CID
+    conn.retry_source_cid = Some(new_dcid);
+
+    // 11. Reset Initial PN space
+    conn.loss.reset_next_pn(0);
+    conn.loss.discard_space(0);
+
+    // 12. Reset ACK and PnBitset for Initial space
+    conn.ack[0] = AckState::new();
+    conn.recv_pn_seen[0] = PnBitset::new();
+
+    // 13. Regenerate Initial keys using the new DCID
+    let rustls_version = rustls_quic_version(version);
+    let (local_dk, remote_dk) =
+        derive_initial_keys(new_dcid.as_bytes(), rustls::Side::Client, rustls_version);
+    conn.keys.initial = Some(KeyPair {
+        local: DirectionalKey::from_rustls(local_dk),
+        remote: DirectionalKey::from_rustls(remote_dk),
+    });
+
+    // 14. Return true
+    true
 }

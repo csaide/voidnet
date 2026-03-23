@@ -405,3 +405,104 @@ fn generate_retry_packet_produces_valid_retry() {
         )
     );
 }
+
+#[test]
+fn client_handles_retry_packet() {
+    use crate::net::handler::quic::connection::{QuicConnectionState, Side};
+    use crate::net::handler::quic::transport::packet_builder::build_retry_packet;
+    use crate::net::handler::quic::transport::params::TransportParams;
+    use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
+    use coarsetime::Instant;
+
+    let now = Instant::now();
+    let dcid = ConnectionId::from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+    let scid = ConnectionId::from_slice(&[0x0A, 0x0B, 0x0C, 0x0D]);
+    let mut conn =
+        QuicConnectionState::new(dcid, Side::Client, TransportParams::default(), 1200, now);
+    conn.scid = scid;
+    conn.version = QUIC_VERSION_1;
+
+    // Build a Retry packet
+    let server_scid = &[0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7];
+    let token = &[0xDE, 0xAD, 0xBE, 0xEF];
+    let retry_packet = build_retry_packet(
+        QUIC_VERSION_1,
+        scid.as_bytes(),
+        server_scid,
+        dcid.as_bytes(),
+        token,
+    );
+
+    let handled = crate::net::handler::quic::processor::handle_retry_packet(
+        &mut conn,
+        &retry_packet,
+        QUIC_VERSION_1,
+    );
+    assert!(handled);
+    assert!(conn.retry_received);
+    assert_eq!(conn.dcid, ConnectionId::from_slice(server_scid));
+    assert_eq!(conn.retry_token.as_deref(), Some(token.as_slice()));
+    assert_eq!(conn.original_dcid, Some(dcid));
+}
+
+#[test]
+fn client_rejects_second_retry() {
+    use crate::net::handler::quic::connection::{QuicConnectionState, Side};
+    use crate::net::handler::quic::transport::packet_builder::build_retry_packet;
+    use crate::net::handler::quic::transport::params::TransportParams;
+    use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
+    use coarsetime::Instant;
+
+    let now = Instant::now();
+    let dcid = ConnectionId::from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+    let mut conn =
+        QuicConnectionState::new(dcid, Side::Client, TransportParams::default(), 1200, now);
+    conn.retry_received = true;
+
+    let retry_packet = build_retry_packet(
+        QUIC_VERSION_1,
+        &[0x0A],
+        &[0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7],
+        dcid.as_bytes(),
+        &[0xCA, 0xFE],
+    );
+
+    let handled = crate::net::handler::quic::processor::handle_retry_packet(
+        &mut conn,
+        &retry_packet,
+        QUIC_VERSION_1,
+    );
+    assert!(!handled);
+}
+
+#[test]
+fn client_rejects_retry_with_bad_tag() {
+    use crate::net::handler::quic::connection::{QuicConnectionState, Side};
+    use crate::net::handler::quic::transport::packet_builder::build_retry_packet;
+    use crate::net::handler::quic::transport::params::TransportParams;
+    use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
+    use coarsetime::Instant;
+
+    let now = Instant::now();
+    let dcid = ConnectionId::from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+    let mut conn =
+        QuicConnectionState::new(dcid, Side::Client, TransportParams::default(), 1200, now);
+
+    let mut retry_packet = build_retry_packet(
+        QUIC_VERSION_1,
+        &[0x0A],
+        &[0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7],
+        dcid.as_bytes(),
+        &[0xCA, 0xFE],
+    );
+    let len = retry_packet.len();
+    retry_packet[len - 1] ^= 0xFF; // tamper tag
+
+    let handled = crate::net::handler::quic::processor::handle_retry_packet(
+        &mut conn,
+        &retry_packet,
+        QUIC_VERSION_1,
+    );
+    assert!(!handled);
+    assert!(!conn.retry_received); // should not be set
+}
