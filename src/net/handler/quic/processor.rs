@@ -299,7 +299,7 @@ pub fn process_packet(
 
                                 // Create fresh TLS client connection with negotiated version
                                 if let (Some(config), Some(server_name)) =
-                                    (&conn.client_config, &conn.server_name)
+                                    (conn.client_config.as_ref(), conn.server_name.as_ref())
                                 {
                                     let mut params_buf = [0u8; 512];
                                     let params_len = conn.local_params.encode(&mut params_buf);
