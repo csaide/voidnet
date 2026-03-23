@@ -80,14 +80,14 @@ impl PathState {
 
     /// Process a PATH_RESPONSE and check if it matches our challenge
     pub fn on_path_response(&mut self, data: &[u8; 8]) -> bool {
-        if let Some(pending) = &self.challenge_pending {
-            if pending == data {
-                self.validated = true;
-                self.challenge_pending = None;
-                self.challenge_sent_at = None;
-                self.amplification.set_validated();
-                return true;
-            }
+        if let Some(pending) = &self.challenge_pending
+            && pending == data
+        {
+            self.validated = true;
+            self.challenge_pending = None;
+            self.challenge_sent_at = None;
+            self.amplification.set_validated();
+            return true;
         }
         false
     }

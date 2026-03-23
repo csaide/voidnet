@@ -93,7 +93,7 @@ impl<'a> ConnectionIdRef<'a> {
         self.bytes
     }
 
-    pub fn to_owned(&self) -> ConnectionId {
+    pub fn to_owned(self) -> ConnectionId {
         ConnectionId::from_slice(self.bytes)
     }
 }

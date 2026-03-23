@@ -183,7 +183,7 @@ pub struct OooRanges {
     inline: [(u64, usize); 8],
     len: u8,
     max_entries: u16,
-    overflow: Option<Box<BTreeMap<u64, usize>>>,
+    overflow: Option<BTreeMap<u64, usize>>,
 }
 
 impl OooRanges {
@@ -240,7 +240,7 @@ impl OooRanges {
                 map.insert(o, l);
             }
             Self::insert_into_btree(&mut map, offset, len);
-            self.overflow = Some(Box::new(map));
+            self.overflow = Some(map);
             self.len = 0;
         }
     }
@@ -295,12 +295,12 @@ impl OooRanges {
         }
 
         // Also check left neighbor
-        if let Some((&o, &l)) = map.range(..offset).next_back() {
-            if o + l as u64 >= offset {
-                merged_start = merged_start.min(o);
-                merged_end = merged_end.max(o + l as u64);
-                map.remove(&o);
-            }
+        if let Some((&o, &l)) = map.range(..offset).next_back()
+            && o + l as u64 >= offset
+        {
+            merged_start = merged_start.min(o);
+            merged_end = merged_end.max(o + l as u64);
+            map.remove(&o);
         }
 
         map.insert(merged_start, (merged_end - merged_start) as usize);
@@ -356,7 +356,7 @@ impl OooRanges {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len == 0 && self.overflow.as_ref().map_or(true, |m| m.is_empty())
+        self.len == 0 && self.overflow.as_ref().is_none_or(BTreeMap::is_empty)
     }
 
     pub fn count(&self) -> usize {
@@ -432,10 +432,10 @@ impl RecvHalf {
         if final_size < self.received {
             return Err(RecvError::FinalSizeMismatch);
         }
-        if let Some(fs) = self.final_size {
-            if fs != final_size {
-                return Err(RecvError::FinalSizeMismatch);
-            }
+        if let Some(fs) = self.final_size
+            && fs != final_size
+        {
+            return Err(RecvError::FinalSizeMismatch);
         }
         if final_size > self.max_stream_data {
             return Err(RecvError::FlowControlExceeded);
@@ -457,17 +457,17 @@ impl RecvHalf {
 
         // Check final size consistency
         if fin {
-            if let Some(fs) = self.final_size {
-                if fs != end {
-                    return Err(RecvError::FinalSizeMismatch);
-                }
+            if let Some(fs) = self.final_size
+                && fs != end
+            {
+                return Err(RecvError::FinalSizeMismatch);
             }
             self.final_size = Some(end);
             self.fin_received = true;
-        } else if let Some(fs) = self.final_size {
-            if end > fs {
-                return Err(RecvError::FinalSizeMismatch);
-            }
+        } else if let Some(fs) = self.final_size
+            && end > fs
+        {
+            return Err(RecvError::FinalSizeMismatch);
         }
 
         if offset < self.received {

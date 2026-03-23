@@ -61,9 +61,9 @@ impl QuicHandler {
         port: u16,
         tls_config: Arc<rustls::ServerConfig>,
         params: TransportParams,
-    ) -> Result<(), ()> {
+    ) -> Option<()> {
         if self.listeners.contains_key(&port) {
-            return Err(());
+            return None;
         }
         self.listeners.insert(
             port,
@@ -73,7 +73,7 @@ impl QuicHandler {
                 accept_queue: None,
             },
         );
-        Ok(())
+        Some(())
     }
 
     /// Register a QUIC listener on a port with an accept queue.
@@ -86,9 +86,9 @@ impl QuicHandler {
         port: u16,
         tls_config: Arc<rustls::ServerConfig>,
         params: TransportParams,
-    ) -> Result<LocalQueue<usize>, ()> {
+    ) -> Option<LocalQueue<usize>> {
         if self.listeners.contains_key(&port) {
-            return Err(());
+            return None;
         }
         let queue = LocalQueue::new(128);
         let accept_queue = queue.clone();
@@ -100,7 +100,7 @@ impl QuicHandler {
                 accept_queue: Some(accept_queue),
             },
         );
-        Ok(queue)
+        Some(queue)
     }
 
     /// Remove a QUIC listener from a port.
@@ -204,36 +204,62 @@ impl QuicHandler {
                 };
                 // RFC 9000 §6.1: send Version Negotiation for unsupported versions
                 if !crate::net::handler::quic::transport::version::is_supported_version(version) {
-                    // Copy VN-relevant data before returning the RX frame.
-                    let mut vn_buf = [0u8; 256];
-                    let vn_data_len = quic_data.len().min(256);
-                    vn_buf[..vn_data_len].copy_from_slice(&quic_data[..vn_data_len]);
-                    rx_return.push(frame);
-                    Self::send_version_negotiation_ipv4(
-                        &vn_buf[..vn_data_len],
-                        quic_offset,
-                        ip_offset,
-                        src_addr,
+                    // Extract CIDs from the frame before we overwrite it.
+                    // Max CID length is 20 bytes (RFC 9000 §17.2).
+                    match Self::extract_cids(quic_data) {
+                        Some((dcid_buf, dcid_len, scid_buf, scid_len)) => {
+                            Self::build_vn_ipv4(
+                                frame,
+                                &dcid_buf[..dcid_len],
+                                &scid_buf[..scid_len],
+                                quic_offset,
+                                ip_offset,
+                                src_addr,
+                                dst_addr,
+                                src_port,
+                                dst_port,
+                                src_mac,
+                                dst_mac,
+                                tx_return,
+                                rx_return,
+                            );
+                        }
+                        None => rx_return.push(frame),
+                    }
+                } else {
+                    // Extract client's SCID from the long header.
+                    // RFC 9000 §7.2: server MUST use client's SCID as DCID.
+                    let client_scid = match Self::extract_cids(quic_data) {
+                        Some((_, _, scid_buf, scid_len)) => {
+                            ConnectionId::from_slice(&scid_buf[..scid_len])
+                        }
+                        None => {
+                            rx_return.push(frame);
+                            return;
+                        }
+                    };
+                    if let Some(key) = self.create_server_connection(
+                        &dcid,
+                        &client_scid,
                         dst_addr,
-                        src_port,
+                        src_addr,
                         dst_port,
+                        src_port,
                         src_mac,
                         dst_mac,
-                        free_frames,
-                        tx_return,
-                    );
-                } else if let Some(key) = self.create_server_connection(
-                    &dcid, dst_addr, src_addr, dst_port, src_port, src_mac, dst_mac, now, version,
-                ) {
-                    let conn = &mut self.connections[key];
-                    let mut frame_data = frame;
-                    let quic_payload = &mut frame_data[quic_offset..];
-                    processor::process_packet(conn, quic_payload, datagram_len, now);
-                    rx_return.push(frame_data);
-                    let conn = &mut self.connections[key];
-                    processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
-                } else {
-                    rx_return.push(frame);
+                        now,
+                        version,
+                    ) {
+                        let conn = &mut self.connections[key];
+                        let mut frame_data = frame;
+                        let quic_payload = &mut frame_data[quic_offset..];
+                        processor::process_packet(conn, quic_payload, datagram_len, now);
+                        rx_return.push(frame_data);
+                        let conn = &mut self.connections[key];
+                        processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+                    } else {
+                        rx_return.push(frame);
+                    }
                 }
             } else {
                 rx_return.push(frame);
@@ -245,56 +271,6 @@ impl QuicHandler {
 
     /// Process an incoming IPv6 UDP packet destined for a QUIC port.
     pub fn process_ipv6<'umem>(
-        &mut self,
-        frame: Frame<'umem>,
-        now: Instant,
-        wheel: &mut TimerWheel,
-        _neighbor_handler: &NeighborHandler,
-        free_frames: &mut impl FrameBuffer<'umem>,
-        rx_return: &mut impl FrameBuffer<'umem>,
-        tx_return: &mut impl FrameBuffer<'umem>,
-    ) {
-        let free_before = free_frames.num_frames();
-        let rx_before = rx_return.num_frames();
-        let tx_before = tx_return.num_frames();
-        self.process_ipv6_inner(
-            frame,
-            now,
-            wheel,
-            _neighbor_handler,
-            free_frames,
-            rx_return,
-            tx_return,
-        );
-        let free_after = free_frames.num_frames();
-        let rx_after = rx_return.num_frames();
-        let tx_after = tx_return.num_frames();
-        // 1 RX frame in. It goes to rx_return (+1).
-        // N frames popped from free, pushed to tx.
-        // Net: rx_after = rx_before + 1, free_delta = tx_delta
-        let free_delta = free_after as i64 - free_before as i64;
-        let tx_delta = tx_after as i64 - tx_before as i64;
-        let rx_delta = rx_after as i64 - rx_before as i64;
-        let total_delta = free_delta + tx_delta + rx_delta;
-        // total_delta should be exactly 1 (the incoming RX frame was added to rx_return)
-        debug_assert_eq!(
-            total_delta,
-            1,
-            "QUIC process_ipv6 frame imbalance: total_delta={} (free: {}→{} [{}], rx: {}→{} [{}], tx: {}→{} [{}])",
-            total_delta,
-            free_before,
-            free_after,
-            free_delta,
-            rx_before,
-            rx_after,
-            rx_delta,
-            tx_before,
-            tx_after,
-            tx_delta
-        );
-    }
-
-    fn process_ipv6_inner<'umem>(
         &mut self,
         frame: Frame<'umem>,
         now: Instant,
@@ -381,35 +357,58 @@ impl QuicHandler {
                 };
                 // RFC 9000 §6.1: send Version Negotiation for unsupported versions
                 if !crate::net::handler::quic::transport::version::is_supported_version(version) {
-                    let mut vn_buf = [0u8; 256];
-                    let vn_data_len = quic_data.len().min(256);
-                    vn_buf[..vn_data_len].copy_from_slice(&quic_data[..vn_data_len]);
-                    rx_return.push(frame);
-                    Self::send_version_negotiation_ipv6(
-                        &vn_buf[..vn_data_len],
-                        quic_offset,
-                        udp_offset,
-                        src_addr,
+                    match Self::extract_cids(quic_data) {
+                        Some((dcid_buf, dcid_len, scid_buf, scid_len)) => {
+                            Self::build_vn_ipv6(
+                                frame,
+                                &dcid_buf[..dcid_len],
+                                &scid_buf[..scid_len],
+                                quic_offset,
+                                udp_offset,
+                                src_addr,
+                                dst_addr,
+                                src_port,
+                                dst_port,
+                                src_mac,
+                                dst_mac,
+                                tx_return,
+                                rx_return,
+                            );
+                        }
+                        None => rx_return.push(frame),
+                    }
+                } else {
+                    let client_scid = match Self::extract_cids(quic_data) {
+                        Some((_, _, scid_buf, scid_len)) => {
+                            ConnectionId::from_slice(&scid_buf[..scid_len])
+                        }
+                        None => {
+                            rx_return.push(frame);
+                            return;
+                        }
+                    };
+                    if let Some(key) = self.create_server_connection(
+                        &dcid,
+                        &client_scid,
                         dst_addr,
-                        src_port,
+                        src_addr,
                         dst_port,
+                        src_port,
                         src_mac,
                         dst_mac,
-                        free_frames,
-                        tx_return,
-                    );
-                } else if let Some(key) = self.create_server_connection(
-                    &dcid, dst_addr, src_addr, dst_port, src_port, src_mac, dst_mac, now, version,
-                ) {
-                    let conn = &mut self.connections[key];
-                    let mut frame_data = frame;
-                    let quic_payload = &mut frame_data[quic_offset..];
-                    processor::process_packet(conn, quic_payload, datagram_len, now);
-                    rx_return.push(frame_data);
-                    let conn = &mut self.connections[key];
-                    processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
-                } else {
-                    rx_return.push(frame);
+                        now,
+                        version,
+                    ) {
+                        let conn = &mut self.connections[key];
+                        let mut frame_data = frame;
+                        let quic_payload = &mut frame_data[quic_offset..];
+                        processor::process_packet(conn, quic_payload, datagram_len, now);
+                        rx_return.push(frame_data);
+                        let conn = &mut self.connections[key];
+                        processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+                    } else {
+                        rx_return.push(frame);
+                    }
                 }
             } else {
                 rx_return.push(frame);
@@ -510,10 +509,43 @@ impl QuicHandler {
         Some((*key, &mut self.connections[*key]))
     }
 
-    /// Build and send a Version Negotiation packet in response to an unsupported version (IPv4).
+    /// Extract DCID and SCID from a QUIC long header into stack buffers.
+    /// Returns (dcid_buf, dcid_len, scid_buf, scid_len).
+    fn extract_cids(quic_data: &[u8]) -> Option<([u8; 20], usize, [u8; 20], usize)> {
+        if quic_data.len() < 6 {
+            return None;
+        }
+        let dcid_len = quic_data[5] as usize;
+        if dcid_len > 20 {
+            return None;
+        }
+        let dcid_end = 6 + dcid_len;
+        if quic_data.len() < dcid_end + 1 {
+            return None;
+        }
+        let scid_len = quic_data[dcid_end] as usize;
+        if scid_len > 20 {
+            return None;
+        }
+        let scid_start = dcid_end + 1;
+        let scid_end = scid_start + scid_len;
+        if quic_data.len() < scid_end {
+            return None;
+        }
+        let mut dcid_buf = [0u8; 20];
+        let mut scid_buf = [0u8; 20];
+        dcid_buf[..dcid_len].copy_from_slice(&quic_data[6..dcid_end]);
+        scid_buf[..scid_len].copy_from_slice(&quic_data[scid_start..scid_end]);
+        Some((dcid_buf, dcid_len, scid_buf, scid_len))
+    }
+
+    /// Build a Version Negotiation packet directly into the RX frame (IPv4).
+    /// Reuses the incoming frame — no pop from free_frames needed.
     /// RFC 9000 §6.1, RFC 8999 §6.
-    fn send_version_negotiation_ipv4<'umem>(
-        quic_data: &[u8],
+    fn build_vn_ipv4<'umem>(
+        mut frame: Frame<'umem>,
+        dcid: &[u8],
+        scid: &[u8],
         quic_offset: usize,
         ip_offset: usize,
         src_addr: IpAddress,
@@ -522,37 +554,25 @@ impl QuicHandler {
         dst_port: u16,
         src_mac: MacAddress,
         dst_mac: MacAddress,
-        free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
     ) {
         use crate::net::handler::quic::transport::version;
-        // Extract DCID and SCID from incoming long header
-        let (dcid, scid) = match Self::peek_dcid_scid(quic_data) {
-            Some(v) => v,
-            None => return,
-        };
         // RFC 8999 §6: swap DCID/SCID in the response
-        // Compute VN payload length up front so we can size-check before popping a frame
-        let vn_len = 1 + 4 + 1 + scid.len() + 1 + dcid.len() + 2 * 4; // 2 supported versions
-        // Write into a free frame
-        let Some(mut frame) = free_frames.pop() else {
-            return;
-        };
+        let vn_len = 1 + 4 + 1 + scid.len() + 1 + dcid.len() + 2 * 4;
         let udp_len = 8 + vn_len;
         let total = quic_offset + vn_len;
         if frame.capacity() < total {
-            free_frames.push(frame);
+            rx_return.push(frame);
             return;
         }
         unsafe { frame.set_len(frame.capacity()) };
-        // Write Ethernet header
         crate::net::wire::ethernet::write_ethernet_header(
             &mut frame,
-            src_mac, // original src becomes our dst
-            dst_mac, // original dst becomes our src
+            src_mac,
+            dst_mac,
             crate::net::wire::ethernet::EtherTypes::IPv4,
         );
-        // Write IPv4 header
         let ip_hdr_len = crate::net::wire::ip::IPV4_MIN_HEADER_LEN;
         let total_ip_len = (ip_hdr_len + udp_len) as u16;
         {
@@ -574,36 +594,33 @@ impl QuicHandler {
         }
         let ip_header = crate::net::wire::ip::Ipv4Header::from_bytes_mut(&mut frame);
         ip_header.fill_checksum();
-        // Write UDP header
         let udp_offset = ip_offset + ip_hdr_len;
         {
             let udp = unsafe {
                 crate::net::wire::udp::UdpHeader::from_bytes_at_mut(&mut frame, udp_offset)
             };
-            udp.src_port = dst_port.to_be_bytes(); // swap ports
+            udp.src_port = dst_port.to_be_bytes();
             udp.dst_port = src_port.to_be_bytes();
             udp.length = (udp_len as u16).to_be_bytes();
             udp.checksum = [0, 0]; // IPv4 UDP checksum optional
         }
-        // Write QUIC VN payload directly into frame — no heap allocation
         version::build_version_negotiation(
             &mut frame[quic_offset..],
             scid,
             dcid,
             &[version::QUIC_VERSION_1, version::QUIC_VERSION_2],
         );
-        debug_assert!(
-            total >= 64,
-            "QUIC VN IPv4: packet too small: {} bytes",
-            total
-        );
+        debug_assert!(total >= 64, "QUIC VN IPv4: packet too small: {total} bytes");
         unsafe { frame.set_len(total) };
         tx_return.push(frame);
     }
 
-    /// Build and send a Version Negotiation packet in response to an unsupported version (IPv6).
-    fn send_version_negotiation_ipv6<'umem>(
-        quic_data: &[u8],
+    /// Build a Version Negotiation packet directly into the RX frame (IPv6).
+    /// Reuses the incoming frame — no pop from free_frames needed.
+    fn build_vn_ipv6<'umem>(
+        mut frame: Frame<'umem>,
+        dcid: &[u8],
+        scid: &[u8],
         quic_offset: usize,
         udp_offset: usize,
         src_addr: IpAddress,
@@ -612,23 +629,15 @@ impl QuicHandler {
         dst_port: u16,
         src_mac: MacAddress,
         dst_mac: MacAddress,
-        free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
     ) {
         use crate::net::handler::quic::transport::version;
-        let (dcid, scid) = match Self::peek_dcid_scid(quic_data) {
-            Some(v) => v,
-            None => return,
-        };
-        // Compute VN payload length up front so we can size-check before popping a frame
-        let vn_len = 1 + 4 + 1 + scid.len() + 1 + dcid.len() + 2 * 4; // 2 supported versions
-        let Some(mut frame) = free_frames.pop() else {
-            return;
-        };
+        let vn_len = 1 + 4 + 1 + scid.len() + 1 + dcid.len() + 2 * 4;
         let udp_len = 8 + vn_len;
         let total = quic_offset + vn_len;
         if frame.capacity() < total {
-            free_frames.push(frame);
+            rx_return.push(frame);
             return;
         }
         unsafe { frame.set_len(frame.capacity()) };
@@ -639,15 +648,14 @@ impl QuicHandler {
             dst_mac,
             crate::net::wire::ethernet::EtherTypes::IPv6,
         );
-        // Write IPv6 header
         {
             let ip = &mut frame[eth_len..eth_len + crate::net::wire::ip::IPV6_HEADER_LEN];
             ip.fill(0);
-            ip[0] = 0x60; // version=6
+            ip[0] = 0x60;
             let payload_len = udp_len as u16;
             ip[4..6].copy_from_slice(&payload_len.to_be_bytes());
-            ip[6] = crate::net::wire::ip::IpProtocols::Udp; // next header
-            ip[7] = 64; // hop limit
+            ip[6] = crate::net::wire::ip::IpProtocols::Udp;
+            ip[7] = 64;
             if let IpAddress::V6(src) = dst_addr {
                 ip[8..24].copy_from_slice(&src.octets);
             }
@@ -655,7 +663,6 @@ impl QuicHandler {
                 ip[24..40].copy_from_slice(&dst.octets);
             }
         }
-        // Write UDP header (checksum field zeroed until we compute it below)
         {
             let udp = unsafe {
                 crate::net::wire::udp::UdpHeader::from_bytes_at_mut(&mut frame, udp_offset)
@@ -665,16 +672,13 @@ impl QuicHandler {
             udp.length = (udp_len as u16).to_be_bytes();
             udp.checksum = [0, 0];
         }
-        // Write QUIC VN payload directly into frame — no heap allocation.
-        // Must happen before checksum so the full UDP segment is in the buffer.
         version::build_version_negotiation(
             &mut frame[quic_offset..],
             scid,
             dcid,
             &[version::QUIC_VERSION_1, version::QUIC_VERSION_2],
         );
-        // Compute IPv6 UDP checksum over the complete UDP segment (RFC 8200 §8.1).
-        // The IPv6 header uses dst_addr as source and src_addr as destination (VN is a response).
+        // IPv6 UDP checksum (RFC 8200 §8.1)
         {
             use crate::net::checksum::{
                 checksum_to_bytes, fold_checksum, pseudo_header_sum_v6, sum_words,
@@ -694,34 +698,9 @@ impl QuicHandler {
                 udp.checksum = checksum;
             }
         }
-        debug_assert!(
-            total >= 64,
-            "QUIC VN IPv6: packet too small: {} bytes",
-            total
-        );
+        debug_assert!(total >= 64, "QUIC VN IPv6: packet too small: {total} bytes");
         unsafe { frame.set_len(total) };
         tx_return.push(frame);
-    }
-
-    /// Peek DCID and SCID bytes from a QUIC long header.
-    fn peek_dcid_scid(quic_data: &[u8]) -> Option<(&[u8], &[u8])> {
-        if quic_data.len() < 6 {
-            return None;
-        }
-        let dcid_len = quic_data[5] as usize;
-        let dcid_end = 6 + dcid_len;
-        if quic_data.len() < dcid_end + 1 {
-            return None;
-        }
-        let dcid = &quic_data[6..dcid_end];
-        let scid_len = quic_data[dcid_end] as usize;
-        let scid_start = dcid_end + 1;
-        let scid_end = scid_start + scid_len;
-        if quic_data.len() < scid_end {
-            return None;
-        }
-        let scid = &quic_data[scid_start..scid_end];
-        Some((dcid, scid))
     }
 
     /// Insert a new connection, returning its slab key.
@@ -752,11 +731,13 @@ impl QuicHandler {
 
     /// Create a new server-side connection from an incoming Initial packet.
     ///
-    /// `client_dcid` is the DCID the client used (becomes our remote CID).
+    /// `original_dcid` is the client's Initial DCID (for key derivation, RFC 9001 §5.2).
+    /// `client_scid` is the client's SCID (used as our DCID per RFC 9000 §7.2).
     /// Returns the slab key on success.
     fn create_server_connection(
         &mut self,
-        client_dcid: &ConnectionId,
+        original_dcid: &ConnectionId,
+        client_scid: &ConnectionId,
         local_addr: IpAddress,
         remote_addr: IpAddress,
         local_port: u16,
@@ -774,7 +755,6 @@ impl QuicHandler {
 
         let listener = self.listeners.get(&local_port)?;
 
-        // Map version to rustls quic version for key derivation
         let rustls_version =
             if version == crate::net::handler::quic::transport::version::QUIC_VERSION_2 {
                 rustls::quic::Version::V2
@@ -782,24 +762,29 @@ impl QuicHandler {
                 rustls::quic::Version::V1
             };
 
-        // Derive initial keys (server side)
-        let (local_dk, remote_dk) =
-            derive_initial_keys(client_dcid.as_bytes(), rustls::Side::Server, rustls_version);
+        // Derive initial keys from original DCID (RFC 9001 §5.2)
+        let (local_dk, remote_dk) = derive_initial_keys(
+            original_dcid.as_bytes(),
+            rustls::Side::Server,
+            rustls_version,
+        );
         let initial_keys = KeyPair {
             local: DirectionalKey::from_rustls(local_dk),
             remote: DirectionalKey::from_rustls(remote_dk),
         };
 
-        // Generate server SCID (8 random bytes)
         let mut scid_bytes = [0u8; 8];
         ring::rand::SystemRandom::new().fill(&mut scid_bytes).ok()?;
         let scid = ConnectionId::from_slice(&scid_bytes);
 
-        // Encode local transport params
-        let mut params_buf = [0u8; 512];
-        let params_len = listener.transport_params.encode(&mut params_buf);
+        // RFC 9000 §18.2: server MUST include these CID params in the TLS handshake
+        let mut server_params = listener.transport_params.clone();
+        server_params.original_destination_connection_id = Some(*original_dcid);
+        server_params.initial_source_connection_id = Some(scid);
 
-        // Create CryptoState
+        let mut params_buf = [0u8; 512];
+        let params_len = server_params.encode(&mut params_buf);
+
         let crypto = CryptoState::new_server(
             listener.tls_config.clone(),
             &params_buf[..params_len],
@@ -807,18 +792,12 @@ impl QuicHandler {
         )
         .ok()?;
 
-        // Clone params and accept queue before borrowing listener is released
         let transport_params = listener.transport_params.clone();
         let accept_queue = listener.accept_queue.clone();
 
-        // Create connection state
-        let mut conn = QuicConnectionState::new(
-            *client_dcid,
-            Side::Server,
-            transport_params,
-            1200, // max_datagram_size
-            now,
-        );
+        // RFC 9000 §7.2: server uses client's SCID as its DCID
+        let mut conn =
+            QuicConnectionState::new(*client_scid, Side::Server, transport_params, 1200, now);
         conn.keys.initial = Some(initial_keys);
         conn.crypto = Some(crypto);
         conn.scid = scid;
@@ -832,6 +811,9 @@ impl QuicHandler {
         conn.accept_queue = accept_queue;
         conn.version = version;
 
-        Some(self.insert_connection(conn))
+        let key = self.insert_connection(conn);
+        // Also map the original DCID so Initial retransmissions route here
+        self.cid_map.insert(*original_dcid, key);
+        Some(key)
     }
 }

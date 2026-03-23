@@ -128,7 +128,7 @@ impl StreamMap {
         // Check if this is a new stream (not already existing)
         let is_new = {
             let vec = self.vec_for(id);
-            vec.get(idx).map_or(true, |entry| entry.is_none())
+            vec.get(idx).is_none_or(Option::is_none)
         };
 
         if is_new {
@@ -191,7 +191,7 @@ impl StreamMap {
         // Buffers are allocated on-demand when data arrives via get_or_create().
         if !we_initiated && is_new {
             for i in 0..idx {
-                if vec.get(i).map_or(true, |e| e.is_none()) {
+                if vec.get(i).is_none_or(Option::is_none) {
                     if vec.len() <= i {
                         vec.resize_with(i + 1, || None);
                     }
@@ -209,7 +209,7 @@ impl StreamMap {
                 }
             }
             // The target stream (idx) gets full buffers
-            if vec.get(idx).map_or(true, |e| e.is_none()) {
+            if vec.get(idx).is_none_or(Option::is_none) {
                 let (state, has_send, has_recv) = if is_bidi {
                     (StreamState::new_bidi(), true, true)
                 } else {
@@ -325,11 +325,11 @@ impl StreamMap {
         type_bits_and_vecs.into_iter().flat_map(|(type_bits, vec)| {
             vec.iter_mut().enumerate().filter_map(move |(idx, slot)| {
                 let entry = slot.as_mut()?;
-                if let Some(ref send) = entry.send {
-                    if send.buffer.len() > 0 || send.fin_sent {
-                        let stream_id = StreamId((idx as u64) << 2 | type_bits);
-                        return Some((stream_id, entry));
-                    }
+                if let Some(ref send) = entry.send
+                    && (!send.buffer.is_empty() || send.fin_sent)
+                {
+                    let stream_id = StreamId((idx as u64) << 2 | type_bits);
+                    return Some((stream_id, entry));
                 }
                 None
             })

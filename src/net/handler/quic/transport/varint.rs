@@ -69,8 +69,8 @@ pub fn decode_varint(buf: &[u8]) -> Option<(u64, usize)> {
 #[inline]
 pub fn encode_varint(val: u64, buf: &mut [u8]) -> usize {
     if val <= 63 {
-        assert!(buf.len() >= 1, "buffer too small for 1-byte varint");
-        buf[0] = (0b00 << 6) | (val as u8);
+        assert!(!buf.is_empty(), "buffer too small for 1-byte varint");
+        buf[0] = val as u8;
         1
     } else if val <= 16383 {
         assert!(buf.len() >= 2, "buffer too small for 2-byte varint");

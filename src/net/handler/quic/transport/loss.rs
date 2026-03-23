@@ -244,7 +244,7 @@ impl LossDetector {
     ) -> (SmallVec<[SentPacket; 16]>, SmallVec<[(u64, SentPacket); 8]>) {
         let newly_acked_largest = self.spaces[space]
             .largest_acked
-            .map_or(true, |la| largest_acked > la);
+            .is_none_or(|la| largest_acked > la);
 
         if newly_acked_largest {
             self.spaces[space].largest_acked = Some(largest_acked);
@@ -258,7 +258,7 @@ impl LossDetector {
         let largest_acked_ack_eliciting = self.spaces[space]
             .in_flight
             .get(largest_acked)
-            .map_or(false, |p| p.ack_eliciting);
+            .is_some_and(|p| p.ack_eliciting);
 
         // Remove acked packets from in-flight tracking.
         let mut acked = SmallVec::<[SentPacket; 16]>::new();
@@ -283,19 +283,18 @@ impl LossDetector {
 
         // Update RTT if the largest acked packet was newly acked and we had it.
         // RFC 9002 §5.1: only generate RTT sample from ack-eliciting packets.
-        if newly_acked_largest {
-            if largest_acked_ack_eliciting {
-                if let Some(time_sent) = largest_acked_time_sent {
-                    let latest_rtt = now.duration_since(time_sent);
-                    self.update_rtt(
-                        latest_rtt,
-                        ack_delay,
-                        max_ack_delay,
-                        handshake_confirmed,
-                        now,
-                    );
-                }
-            }
+        if newly_acked_largest
+            && largest_acked_ack_eliciting
+            && let Some(time_sent) = largest_acked_time_sent
+        {
+            let latest_rtt = now.duration_since(time_sent);
+            self.update_rtt(
+                latest_rtt,
+                ack_delay,
+                max_ack_delay,
+                handshake_confirmed,
+                now,
+            );
         }
 
         // Detect lost packets (RFC 9002 §A.7: detect lost BEFORE resetting PTO).
@@ -412,7 +411,7 @@ impl LossDetector {
 
         for (pn, time_sent) in candidates {
             let lost_by_packet = largest_acked >= pn + K_PACKET_THRESHOLD as u64;
-            let lost_by_time = lost_send_time.map_or(false, |t| time_sent <= t);
+            let lost_by_time = lost_send_time.is_some_and(|t| time_sent <= t);
 
             if lost_by_packet || lost_by_time {
                 if let Some(pkt) = self.spaces[space].in_flight.remove(pn) {

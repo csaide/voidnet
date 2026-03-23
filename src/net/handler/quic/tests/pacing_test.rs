@@ -19,7 +19,7 @@ fn pacer_update_rate() {
     pacer.update_rate(12000, Duration::from_millis(100));
     let rate = pacer.rate();
     assert!(
-        rate >= 145_000 && rate <= 160_000,
+        (145_000..=160_000).contains(&rate),
         "expected rate near 150000, got {}",
         rate
     );

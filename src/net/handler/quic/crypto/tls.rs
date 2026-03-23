@@ -131,10 +131,10 @@ impl CryptoState {
         }
 
         // Extract 0-RTT keys if available (valid session ticket presented)
-        if output.handshake_keys.is_some() {
-            if let Some(zero_rtt_dk) = self.zero_rtt_keys() {
-                output.zero_rtt_keys = Some(DirectionalKey::from_rustls(zero_rtt_dk));
-            }
+        if output.handshake_keys.is_some()
+            && let Some(zero_rtt_dk) = self.zero_rtt_keys()
+        {
+            output.zero_rtt_keys = Some(DirectionalKey::from_rustls(zero_rtt_dk));
         }
 
         Ok(output)
@@ -171,7 +171,7 @@ impl CryptoState {
             CryptoState::Client(c) => c.alert(),
             CryptoState::Server(c) => c.alert(),
         };
-        alert.map(|a| u8::from(a))
+        alert.map(u8::from)
     }
 
     // ── private helpers ──────────────────────────────────────────────

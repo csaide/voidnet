@@ -14,6 +14,7 @@ pub(crate) mod token;
 pub(crate) mod transport;
 
 pub use handler::QuicHandler;
+pub use transport::params::TransportParams;
 
 #[cfg(test)]
 mod tests;

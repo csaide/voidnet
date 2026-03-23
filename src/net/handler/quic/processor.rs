@@ -75,10 +75,10 @@ pub fn handle_timeout(
                     }
                     // Rewind stream send offset for stream retransmission
                     for &(stream_id, retx_offset, _, _) in &retransmit.streams {
-                        if let Some(entry) = conn.streams.get_mut(stream_id) {
-                            if let Some(ref mut send) = entry.send {
-                                send.sent = send.sent.min(retx_offset);
-                            }
+                        if let Some(entry) = conn.streams.get_mut(stream_id)
+                            && let Some(ref mut send) = entry.send
+                        {
+                            send.sent = send.sent.min(retx_offset);
                         }
                     }
                     if retransmit.handshake_done {
@@ -194,7 +194,7 @@ pub fn process_packet(
                             Some((_token, payload_length, relative_pn_offset)) => {
                                 let pn_offset = long.payload_offset + relative_pn_offset;
                                 // Total packet = everything up to pn_offset + payload_length
-                                let packet_len = pn_offset + payload_length as usize;
+                                let packet_len = pn_offset + payload_length;
                                 Some((space, pn_offset, packet_len))
                             }
                             None => None,
@@ -571,10 +571,10 @@ fn dispatch_frames(
             }
 
             QuicFrame::MaxStreamData { stream_id, max } => {
-                if let Ok(entry) = conn.streams.get_or_create(stream_id) {
-                    if let Some(ref mut send) = entry.send {
-                        send.max_stream_data = send.max_stream_data.max(max);
-                    }
+                if let Ok(entry) = conn.streams.get_or_create(stream_id)
+                    && let Some(ref mut send) = entry.send
+                {
+                    send.max_stream_data = send.max_stream_data.max(max);
                 }
             }
 
@@ -647,11 +647,11 @@ fn dispatch_frames(
                     conn.needs_draining_timer = true;
                     return ProcessResult::ConnectionClosed;
                 }
-                if let Some(entry) = conn.streams.get_mut(stop.stream_id) {
-                    if let Some(ref mut send) = entry.send {
-                        send.reset_requested = true;
-                        send.reset_error_code = stop.error_code;
-                    }
+                if let Some(entry) = conn.streams.get_mut(stop.stream_id)
+                    && let Some(ref mut send) = entry.send
+                {
+                    send.reset_requested = true;
+                    send.reset_error_code = stop.error_code;
                 }
             }
 
@@ -664,15 +664,14 @@ fn dispatch_frames(
                     conn.needs_draining_timer = true;
                     return ProcessResult::ConnectionClosed;
                 }
-                if let Some(entry) = conn.streams.get_mut(reset.stream_id) {
-                    if let Some(ref mut recv) = entry.recv {
-                        if recv.on_reset(reset.final_size).is_err() {
-                            conn.close_error = Some(TransportError::FINAL_SIZE_ERROR);
-                            conn.state = ConnectionState::Closing;
-                            conn.needs_draining_timer = true;
-                            return ProcessResult::ConnectionClosed;
-                        }
-                    }
+                if let Some(entry) = conn.streams.get_mut(reset.stream_id)
+                    && let Some(ref mut recv) = entry.recv
+                    && recv.on_reset(reset.final_size).is_err()
+                {
+                    conn.close_error = Some(TransportError::FINAL_SIZE_ERROR);
+                    conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
+                    return ProcessResult::ConnectionClosed;
                 }
                 if conn.flow.on_stream_final_size(reset.final_size).is_err() {
                     conn.close_error = Some(TransportError::FLOW_CONTROL_ERROR);
@@ -767,13 +766,11 @@ fn handle_crypto_frame(
             conn.key_update_secrets = Some(secrets);
         }
         // Update AEAD limits based on negotiated cipher suite (RFC 9001 §6.6)
-        if let Some(ref crypto) = conn.crypto {
-            if let Some(cs) = crypto.negotiated_cipher_suite() {
-                conn.aead_limits =
-                    crate::net::handler::quic::crypto::aead_limits::AeadLimits::from_cipher_suite(
-                        cs,
-                    );
-            }
+        if let Some(ref crypto) = conn.crypto
+            && let Some(cs) = crypto.negotiated_cipher_suite()
+        {
+            conn.aead_limits =
+                crate::net::handler::quic::crypto::aead_limits::AeadLimits::from_cipher_suite(cs);
         }
         if conn.side == Side::Server {
             conn.state = ConnectionState::Established;
@@ -799,47 +796,38 @@ fn handle_crypto_frame(
     }
 
     // Apply peer transport parameters if available
-    if conn.peer_params.is_none() {
-        if let Some(crypto) = conn.crypto.as_ref() {
-            if let Some(params_bytes) = crypto.peer_transport_parameters() {
-                if let Ok(params) =
-                    crate::net::handler::quic::transport::params::TransportParams::decode(
-                        params_bytes,
-                    )
-                {
-                    let peer_side = if conn.side == Side::Client {
-                        Side::Server
-                    } else {
-                        Side::Client
-                    };
-                    if let Err(err) = params.validate_for_side(peer_side) {
-                        conn.close_error = Some(err);
-                        conn.state = ConnectionState::Closing;
-                        conn.needs_draining_timer = true;
-                        return;
-                    }
-                    conn.flow.update_max_data_send(params.initial_max_data);
-                    conn.streams.peer_max_bidi = params.initial_max_streams_bidi;
-                    conn.streams.peer_max_uni = params.initial_max_streams_uni;
-                    if params.max_idle_timeout_ms > 0 {
-                        let peer_timeout =
-                            coarsetime::Duration::from_millis(params.max_idle_timeout_ms);
-                        if conn.idle_timeout.as_millis() == 0 {
-                            conn.idle_timeout = peer_timeout;
-                        } else if peer_timeout < conn.idle_timeout {
-                            conn.idle_timeout = peer_timeout;
-                        }
-                    }
-                    conn.max_udp_payload = (params.max_udp_payload_size as u16).max(1200);
-                    // Apply per-stream flow control limits from peer's transport params
-                    conn.streams.peer_send_max_bidi = params.initial_max_stream_data_bidi_local;
-                    conn.streams.peer_send_max_bidi_remote =
-                        params.initial_max_stream_data_bidi_remote;
-                    conn.streams.peer_send_max_uni = params.initial_max_stream_data_uni;
-                    conn.peer_params = Some(params);
-                }
+    if conn.peer_params.is_none()
+        && let Some(crypto) = conn.crypto.as_ref()
+        && let Some(params_bytes) = crypto.peer_transport_parameters()
+        && let Ok(params) =
+            crate::net::handler::quic::transport::params::TransportParams::decode(params_bytes)
+    {
+        let peer_side = if conn.side == Side::Client {
+            Side::Server
+        } else {
+            Side::Client
+        };
+        if let Err(err) = params.validate_for_side(peer_side) {
+            conn.close_error = Some(err);
+            conn.state = ConnectionState::Closing;
+            conn.needs_draining_timer = true;
+            return;
+        }
+        conn.flow.update_max_data_send(params.initial_max_data);
+        conn.streams.peer_max_bidi = params.initial_max_streams_bidi;
+        conn.streams.peer_max_uni = params.initial_max_streams_uni;
+        if params.max_idle_timeout_ms > 0 {
+            let peer_timeout = coarsetime::Duration::from_millis(params.max_idle_timeout_ms);
+            if conn.idle_timeout.as_millis() == 0 || peer_timeout < conn.idle_timeout {
+                conn.idle_timeout = peer_timeout;
             }
         }
+        conn.max_udp_payload = (params.max_udp_payload_size as u16).max(1200);
+        // Apply per-stream flow control limits from peer's transport params
+        conn.streams.peer_send_max_bidi = params.initial_max_stream_data_bidi_local;
+        conn.streams.peer_send_max_bidi_remote = params.initial_max_stream_data_bidi_remote;
+        conn.streams.peer_send_max_uni = params.initial_max_stream_data_uni;
+        conn.peer_params = Some(params);
     }
 }
 
@@ -901,8 +889,9 @@ fn handle_ack_frame(
 
         // Persistent congestion (RFC 9002 §7.6.2): requires two ack-eliciting lost packets
         // spanning the threshold, with NO acknowledged packets sent between them.
-        if conn.loss.first_rtt_sample.is_some() && lost.len() >= 2 {
-            let first_rtt = conn.loss.first_rtt_sample.unwrap();
+        if let Some(first_rtt) = conn.loss.first_rtt_sample
+            && lost.len() >= 2
+        {
             let eligible: smallvec::SmallVec<
                 [&crate::net::handler::quic::transport::loss::SentPacket; 8],
             > = lost
@@ -946,10 +935,10 @@ fn handle_ack_frame(
         }
         // Rewind stream send offset for stream retransmission
         for &(stream_id, retx_offset, _, _) in &retransmit.streams {
-            if let Some(entry) = conn.streams.get_mut(stream_id) {
-                if let Some(ref mut send) = entry.send {
-                    send.sent = send.sent.min(retx_offset);
-                }
+            if let Some(entry) = conn.streams.get_mut(stream_id)
+                && let Some(ref mut send) = entry.send
+            {
+                send.sent = send.sent.min(retx_offset);
             }
         }
         if retransmit.handshake_done {
@@ -981,32 +970,32 @@ fn handle_ack_frame(
             } = frame
             {
                 let end = *offset + *len as u64;
-                if let Some(entry) = conn.streams.get_mut(*id) {
-                    if let Some(ref mut send) = entry.send {
-                        if end > send.acked {
-                            let advance = (end - send.acked) as usize;
-                            send.buffer.consume(advance);
-                            send.acked = end;
-                            // When buffer fully consumed and all in-flight data acked,
-                            // the stream is no longer pending (data case).
-                            if send.buffer.is_empty() && send.acked == send.sent {
-                                conn.streams.pending_send_count =
-                                    conn.streams.pending_send_count.saturating_sub(1);
-                            }
-                        }
-                        // FIN-only frame acked: decrement the counter that was incremented
-                        // by finish() when the buffer was empty at FIN time.
-                        if *fin && *len == 0 {
+                if let Some(entry) = conn.streams.get_mut(*id)
+                    && let Some(ref mut send) = entry.send
+                {
+                    if end > send.acked {
+                        let advance = (end - send.acked) as usize;
+                        send.buffer.consume(advance);
+                        send.acked = end;
+                        // When buffer fully consumed and all in-flight data acked,
+                        // the stream is no longer pending (data case).
+                        if send.buffer.is_empty() && send.acked == send.sent {
                             conn.streams.pending_send_count =
                                 conn.streams.pending_send_count.saturating_sub(1);
                         }
                     }
+                    // FIN-only frame acked: decrement the counter that was incremented
+                    // by finish() when the buffer was empty at FIN time.
+                    if *fin && *len == 0 {
+                        conn.streams.pending_send_count =
+                            conn.streams.pending_send_count.saturating_sub(1);
+                    }
                 }
                 // Clean up fully completed streams
-                if let Some(entry) = conn.streams.get(*id) {
-                    if is_stream_complete(entry) {
-                        conn.streams.remove(*id);
-                    }
+                if let Some(entry) = conn.streams.get(*id)
+                    && is_stream_complete(entry)
+                {
+                    conn.streams.remove(*id);
                 }
             }
         }
@@ -1015,12 +1004,11 @@ fn handle_ack_frame(
     // Track ACKs for key update state (RFC 9001 §6).
     // If this is a 1-RTT ACK and it acknowledges a packet sent with the current key phase,
     // mark the current phase as acknowledged so future key updates can be initiated.
-    if space == 2 {
-        if let Some(lowest_pn) = conn.key_update.lowest_pn_current_phase {
-            if ack.largest_acked >= lowest_pn {
-                conn.key_update.on_ack_for_current_phase();
-            }
-        }
+    if space == 2
+        && let Some(lowest_pn) = conn.key_update.lowest_pn_current_phase
+        && ack.largest_acked >= lowest_pn
+    {
+        conn.key_update.on_ack_for_current_phase();
     }
 
     // Process ECN if present
@@ -1028,10 +1016,8 @@ fn handle_ack_frame(
         let ce_signaled = conn
             .ecn
             .on_ack_ecn(ecn_counts.ect0, ecn_counts.ect1, ecn_counts.ecn_ce);
-        if ce_signaled {
-            if let Some(last_acked) = acked.last() {
-                conn.congestion.on_ecn_ce(last_acked.time_sent, now);
-            }
+        if ce_signaled && let Some(last_acked) = acked.last() {
+            conn.congestion.on_ecn_ce(last_acked.time_sent, now);
         }
     }
 
@@ -1064,37 +1050,33 @@ fn handle_stream_frame(
     };
 
     // RFC 9000 §3.2: only Recv and SizeKnown states can accept data
-    if let Some(recv_state) = entry.state.recv_state() {
-        if !recv_state.can_receive_data() {
-            return Some(TransportError::STREAM_STATE_ERROR);
-        }
+    if let Some(recv_state) = entry.state.recv_state()
+        && !recv_state.can_receive_data()
+    {
+        return Some(TransportError::STREAM_STATE_ERROR);
     }
 
     if let Some(ref mut recv) = entry.recv {
         match recv.receive(offset, data, fin) {
             Ok(new_bytes) => {
                 // Only count genuinely new bytes against connection flow control
-                if new_bytes > 0 {
-                    if conn.flow.on_data_received(new_bytes as u64).is_err() {
-                        return Some(TransportError::FLOW_CONTROL_ERROR);
-                    }
+                if new_bytes > 0 && conn.flow.on_data_received(new_bytes as u64).is_err() {
+                    return Some(TransportError::FLOW_CONTROL_ERROR);
                 }
                 // RFC 9000 §3.2: transition Recv → SizeKnown when FIN received
                 if fin {
-                    if let Some(recv_state) = entry.state.recv_state_mut() {
-                        if *recv_state == RecvState::Recv {
-                            let _ = recv_state.transition(RecvState::SizeKnown);
-                        }
+                    if let Some(recv_state) = entry.state.recv_state_mut()
+                        && *recv_state == RecvState::Recv
+                    {
+                        let _ = recv_state.transition(RecvState::SizeKnown);
                     }
                     // Check if all data has been received contiguously
-                    if let Some(fs) = recv.final_size {
-                        if recv.received >= fs {
-                            if let Some(recv_state) = entry.state.recv_state_mut() {
-                                if *recv_state == RecvState::SizeKnown {
-                                    let _ = recv_state.transition(RecvState::DataRecvd);
-                                }
-                            }
-                        }
+                    if let Some(fs) = recv.final_size
+                        && recv.received >= fs
+                        && let Some(recv_state) = entry.state.recv_state_mut()
+                        && *recv_state == RecvState::SizeKnown
+                    {
+                        let _ = recv_state.transition(RecvState::DataRecvd);
                     }
                 }
             }
@@ -1483,43 +1465,44 @@ fn build_packet_in_frame(
     }
 
     // 2. ACK
-    if conn.ack[space as usize].needs_ack() {
-        if let Some(largest) = conn.ack[space as usize].largest_received() {
-            // Fix 2: Compute actual ACK delay from largest_received_time
-            let ack_delay =
-                if let Some(recv_time) = conn.ack[space as usize].largest_received_time() {
-                    let delay = now.duration_since(recv_time);
-                    let exponent = conn.local_params.ack_delay_exponent;
-                    // Encode: delay_us / 2^exponent
-                    (delay.as_millis() * 1000) / (1u64 << exponent)
-                } else {
-                    0
-                };
-            let first_ack_range = conn.ack[space as usize].first_ack_range();
-            let ack_range_count = conn.ack[space as usize].ack_range_count();
-            let ranges_slice = conn.ack[space as usize].encoded_ranges();
-            let mut ranges_buf = [0u8; 256];
-            let ranges_len = ranges_slice.len().min(256);
-            ranges_buf[..ranges_len].copy_from_slice(&ranges_slice[..ranges_len]);
-            builder.write_ack(
-                largest,
-                ack_delay,
-                first_ack_range,
-                ack_range_count,
-                &ranges_buf[..ranges_len],
-                &mut conn.frame_log,
-                space,
-            );
-            conn.ack[space as usize].ack_sent();
-        }
+    if conn.ack[space as usize].needs_ack()
+        && let Some(largest) = conn.ack[space as usize].largest_received()
+    {
+        // Fix 2: Compute actual ACK delay from largest_received_time
+        let ack_delay = if let Some(recv_time) = conn.ack[space as usize].largest_received_time() {
+            let delay = now.duration_since(recv_time);
+            let exponent = conn.local_params.ack_delay_exponent;
+            // Encode: delay_us / 2^exponent
+            (delay.as_millis() * 1000) / (1u64 << exponent)
+        } else {
+            0
+        };
+        let first_ack_range = conn.ack[space as usize].first_ack_range();
+        let ack_range_count = conn.ack[space as usize].ack_range_count();
+        let ranges_slice = conn.ack[space as usize].encoded_ranges();
+        let mut ranges_buf = [0u8; 256];
+        let ranges_len = ranges_slice.len().min(256);
+        ranges_buf[..ranges_len].copy_from_slice(&ranges_slice[..ranges_len]);
+        builder.write_ack(
+            largest,
+            ack_delay,
+            first_ack_range,
+            ack_range_count,
+            &ranges_buf[..ranges_len],
+            &mut conn.frame_log,
+            space,
+        );
+        conn.ack[space as usize].ack_sent();
     }
 
     // 3. HANDSHAKE_DONE (server, 1-RTT space only)
-    if space == 2 && conn.send_handshake_done && conn.side == Side::Server {
-        if builder.write_handshake_done(&mut conn.frame_log) {
-            conn.send_handshake_done = false;
-            wrote_ack_eliciting = true;
-        }
+    if space == 2
+        && conn.send_handshake_done
+        && conn.side == Side::Server
+        && builder.write_handshake_done(&mut conn.frame_log)
+    {
+        conn.send_handshake_done = false;
+        wrote_ack_eliciting = true;
     }
 
     // 4b. MAX_DATA — expand peer's send window (RFC 9000 §4.2)
@@ -1530,11 +1513,11 @@ fn build_packet_in_frame(
                 conn.retransmit.max_data = false;
                 wrote_ack_eliciting = true;
             }
-        } else if let Some(new_max) = conn.flow.should_send_max_data() {
-            if builder.write_max_data(new_max, &mut conn.frame_log) {
-                conn.flow.commit_max_data(new_max);
-                wrote_ack_eliciting = true;
-            }
+        } else if let Some(new_max) = conn.flow.should_send_max_data()
+            && builder.write_max_data(new_max, &mut conn.frame_log)
+        {
+            conn.flow.commit_max_data(new_max);
+            wrote_ack_eliciting = true;
         }
     }
 
@@ -1544,15 +1527,15 @@ fn build_packet_in_frame(
         let retransmit_ids: smallvec::SmallVec<[StreamId; 4]> =
             conn.retransmit.max_stream_data.drain(..).collect();
         for stream_id in retransmit_ids {
-            if let Some(entry) = conn.streams.get_mut(stream_id) {
-                if let Some(ref recv) = entry.recv {
-                    let current = recv.max_stream_data;
-                    if builder.write_max_stream_data(stream_id, current, &mut conn.frame_log) {
-                        wrote_ack_eliciting = true;
-                    } else {
-                        conn.retransmit.max_stream_data.push(stream_id);
-                        break;
-                    }
+            if let Some(entry) = conn.streams.get_mut(stream_id)
+                && let Some(ref recv) = entry.recv
+            {
+                let current = recv.max_stream_data;
+                if builder.write_max_stream_data(stream_id, current, &mut conn.frame_log) {
+                    wrote_ack_eliciting = true;
+                } else {
+                    conn.retransmit.max_stream_data.push(stream_id);
+                    break;
                 }
             }
         }
@@ -1571,15 +1554,13 @@ fn build_packet_in_frame(
             if builder.remaining() < 20 {
                 break;
             }
-            if let Some(entry) = conn.streams.get_mut(stream_id) {
-                if let Some(ref mut recv) = entry.recv {
-                    if let Some(new_max) = recv.should_send_max_stream_data() {
-                        if builder.write_max_stream_data(stream_id, new_max, &mut conn.frame_log) {
-                            recv.commit_max_stream_data(new_max);
-                            wrote_ack_eliciting = true;
-                        }
-                    }
-                }
+            if let Some(entry) = conn.streams.get_mut(stream_id)
+                && let Some(ref mut recv) = entry.recv
+                && let Some(new_max) = recv.should_send_max_stream_data()
+                && builder.write_max_stream_data(stream_id, new_max, &mut conn.frame_log)
+            {
+                recv.commit_max_stream_data(new_max);
+                wrote_ack_eliciting = true;
             }
         }
     }
@@ -1598,17 +1579,17 @@ fn build_packet_in_frame(
             conn.retransmit.max_streams = false;
             wrote_ack_eliciting = true;
         } else {
-            if let Some(new_max) = conn.streams.should_send_max_streams_bidi() {
-                if builder.write_max_streams(new_max, true, &mut conn.frame_log) {
-                    conn.streams.commit_max_streams_bidi(new_max);
-                    wrote_ack_eliciting = true;
-                }
+            if let Some(new_max) = conn.streams.should_send_max_streams_bidi()
+                && builder.write_max_streams(new_max, true, &mut conn.frame_log)
+            {
+                conn.streams.commit_max_streams_bidi(new_max);
+                wrote_ack_eliciting = true;
             }
-            if let Some(new_max) = conn.streams.should_send_max_streams_uni() {
-                if builder.write_max_streams(new_max, false, &mut conn.frame_log) {
-                    conn.streams.commit_max_streams_uni(new_max);
-                    wrote_ack_eliciting = true;
-                }
+            if let Some(new_max) = conn.streams.should_send_max_streams_uni()
+                && builder.write_max_streams(new_max, false, &mut conn.frame_log)
+            {
+                conn.streams.commit_max_streams_uni(new_max);
+                wrote_ack_eliciting = true;
             }
         }
     }
@@ -1644,10 +1625,10 @@ fn build_packet_in_frame(
             .collect();
         for (id, error_code, final_size) in reset_streams {
             if builder.write_reset_stream(id, error_code, final_size, &mut conn.frame_log) {
-                if let Some(entry) = conn.streams.get_mut(id) {
-                    if let Some(ref mut send) = entry.send {
-                        send.reset_requested = false;
-                    }
+                if let Some(entry) = conn.streams.get_mut(id)
+                    && let Some(ref mut send) = entry.send
+                {
+                    send.reset_requested = false;
                 }
                 wrote_ack_eliciting = true;
             } else {
@@ -1683,10 +1664,10 @@ fn build_packet_in_frame(
             .collect();
         for (id, error_code) in stop_streams {
             if builder.write_stop_sending(id, error_code, &mut conn.frame_log) {
-                if let Some(entry) = conn.streams.get_mut(id) {
-                    if let Some(ref mut recv) = entry.recv {
-                        recv.stop_sending_requested = false;
-                    }
+                if let Some(entry) = conn.streams.get_mut(id)
+                    && let Some(ref mut recv) = entry.recv
+                {
+                    recv.stop_sending_requested = false;
                 }
                 wrote_ack_eliciting = true;
             } else {
@@ -1696,14 +1677,14 @@ fn build_packet_in_frame(
     }
 
     // 4. PATH_RESPONSE
-    if space == 2 {
-        if let Some(data) = conn.pending_path_response.take() {
-            if builder.write_path_response(data) {
-                wrote_ack_eliciting = true;
-            } else {
-                // Couldn't fit; put it back
-                conn.pending_path_response = Some(data);
-            }
+    if space == 2
+        && let Some(data) = conn.pending_path_response.take()
+    {
+        if builder.write_path_response(data) {
+            wrote_ack_eliciting = true;
+        } else {
+            // Couldn't fit; put it back
+            conn.pending_path_response = Some(data);
         }
     }
 
@@ -1723,27 +1704,27 @@ fn build_packet_in_frame(
             if builder.remaining() < 20 {
                 break; // not enough space for a meaningful STREAM frame
             }
-            if let Some(entry) = conn.streams.get_mut(stream_id) {
-                if let Some(ref mut send) = entry.send {
-                    let unsent_off = (send.sent - send.acked) as usize;
-                    let max_len = builder.remaining().saturating_sub(20);
-                    let (part1, part2) = send.buffer.peek_slices(unsent_off, max_len);
-                    let total = part1.len() + part2.len();
-                    let all_sent = unsent_off + total >= send.buffer.len();
-                    let fin = send.fin_sent && all_sent;
-                    if total > 0 || fin {
-                        let written = builder.write_stream_parts(
-                            stream_id,
-                            send.sent,
-                            part1,
-                            part2,
-                            fin,
-                            &mut conn.frame_log,
-                        );
-                        send.sent += written as u64;
-                        if written > 0 || fin {
-                            wrote_ack_eliciting = true;
-                        }
+            if let Some(entry) = conn.streams.get_mut(stream_id)
+                && let Some(ref mut send) = entry.send
+            {
+                let unsent_off = (send.sent - send.acked) as usize;
+                let max_len = builder.remaining().saturating_sub(20);
+                let (part1, part2) = send.buffer.peek_slices(unsent_off, max_len);
+                let total = part1.len() + part2.len();
+                let all_sent = unsent_off + total >= send.buffer.len();
+                let fin = send.fin_sent && all_sent;
+                if total > 0 || fin {
+                    let written = builder.write_stream_parts(
+                        stream_id,
+                        send.sent,
+                        part1,
+                        part2,
+                        fin,
+                        &mut conn.frame_log,
+                    );
+                    send.sent += written as u64;
+                    if written > 0 || fin {
+                        wrote_ack_eliciting = true;
                     }
                 }
             }
@@ -1816,24 +1797,24 @@ fn build_packet_in_frame(
 
             // Check if key update is needed (AEAD confidentiality limit)
             let limits = conn.aead_limits;
-            if space == 2 && limits.needs_key_update(conn.packets_encrypted[2]) {
-                if conn.key_update.can_initiate_update() {
-                    if let Some(ref mut secrets) = conn.key_update_secrets {
-                        let new_keys = secrets.next_packet_keys();
-                        // Update packet keys while preserving header protection keys
-                        // (RFC 9001 §5.4: header protection keys are unchanged by key updates).
-                        // Retain old remote packet key for reordered packets (RFC 9001 §6.1).
-                        if let Some(ref mut kp) = conn.keys.one_rtt {
-                            let old_remote_pkt_key =
-                                std::mem::replace(&mut kp.remote.packet_key, new_keys.remote);
-                            conn.key_update.prev_remote_packet_key = Some(old_remote_pkt_key);
-                            kp.local.update_packet_key(new_keys.local);
-                        }
-                        conn.key_update.on_update_initiated();
-                        conn.packets_encrypted[2] = 0;
-                        conn.needs_key_discard_timer = true;
-                    }
+            if space == 2
+                && limits.needs_key_update(conn.packets_encrypted[2])
+                && conn.key_update.can_initiate_update()
+                && let Some(ref mut secrets) = conn.key_update_secrets
+            {
+                let new_keys = secrets.next_packet_keys();
+                // Update packet keys while preserving header protection keys
+                // (RFC 9001 §5.4: header protection keys are unchanged by key updates).
+                // Retain old remote packet key for reordered packets (RFC 9001 §6.1).
+                if let Some(ref mut kp) = conn.keys.one_rtt {
+                    let old_remote_pkt_key =
+                        std::mem::replace(&mut kp.remote.packet_key, new_keys.remote);
+                    conn.key_update.prev_remote_packet_key = Some(old_remote_pkt_key);
+                    kp.local.update_packet_key(new_keys.local);
                 }
+                conn.key_update.on_update_initiated();
+                conn.packets_encrypted[2] = 0;
+                conn.needs_key_discard_timer = true;
             }
 
             // Build Ethernet + IP + UDP headers

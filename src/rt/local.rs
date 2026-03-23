@@ -323,19 +323,16 @@ impl<'umem> LocalRuntime<'umem> {
     ///
     /// After return: `rx_return.num_frames() == 0`.
     #[inline(always)]
-    fn recycle_rx_return(&mut self) -> Result<()> {
-        // Feed fill queue — ring size prevents overfilling.
+    fn recycle_rx_return(&mut self, expected_total: usize) -> Result<()> {
         while self.rx_return.num_frames() > 0 {
-            if self.umem.process_fill_queue(&mut self.rx_return).is_err() {
-                break; // Fill ring full
+            if self.free_frames.num_frames() < expected_total {
+                self.free_frames.push(self.rx_return.pop().unwrap());
+            } else if self.umem.process_fill_queue(&mut self.rx_return).is_err() {
+                self.umem.maybe_wake_fill_queue(self.socket.fd())?;
             }
         }
-        // Overflow to free_frames — available for TX packet building.
-        while self.rx_return.num_frames() > 0 {
-            self.free_frames.push(self.rx_return.pop().unwrap());
-        }
-        // Wake fill queue so kernel processes newly submitted addresses.
-        self.umem.maybe_wake_fill_queue(self.socket.fd())
+
+        Ok(())
     }
 
     /// Runs the event loop until `exit` is set or `fut` completes.
@@ -500,16 +497,15 @@ impl<'umem> LocalRuntime<'umem> {
             );
 
             // ---- QUIC Send ----
-            // (temporarily disabled to isolate frame leak)
-            // {
-            //     let wheel = unsafe { &mut *self.wheel.get() };
-            //     unsafe { &mut *self.quic_handler.get() }.poll_send(
-            //         now,
-            //         wheel,
-            //         &mut self.free_frames,
-            //         &mut self.tx_return,
-            //     );
-            // }
+            {
+                let wheel = unsafe { &mut *self.wheel.get() };
+                unsafe { &mut *self.quic_handler.get() }.poll_send(
+                    now,
+                    wheel,
+                    &mut self.free_frames,
+                    &mut self.tx_return,
+                );
+            }
 
             self.evict_counter = self.evict_counter.wrapping_add(1);
             if self.evict_counter & 65535 == 0 {
@@ -559,7 +555,7 @@ impl<'umem> LocalRuntime<'umem> {
             // Single recycle pass: handler-returned RX frames and TX
             // completions all flow through here. Fill queue gets what it
             // needs (bounded by ring size), remainder goes to free_frames.
-            self.recycle_rx_return()?;
+            self.recycle_rx_return(expected_total as usize)?;
 
             // ---- Capacity-Driven Wakes ----
             // After frame recycling, wake any futures blocked on capacity.

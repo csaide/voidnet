@@ -61,14 +61,14 @@ impl SendState {
 
 impl RecvState {
     pub fn transition(&mut self, to: RecvState) -> Result<(), &'static str> {
-        let valid = match (*self, to) {
-            (RecvState::Recv, RecvState::SizeKnown) => true,
-            (RecvState::Recv, RecvState::ResetRecvd) => true,
-            (RecvState::SizeKnown, RecvState::DataRecvd) => true,
-            (RecvState::SizeKnown, RecvState::ResetRecvd) => true,
-            (RecvState::DataRecvd, RecvState::DataRead) => true,
-            _ => false,
-        };
+        let valid = matches!(
+            (*self, to),
+            (RecvState::Recv, RecvState::SizeKnown)
+                | (RecvState::Recv, RecvState::ResetRecvd)
+                | (RecvState::SizeKnown, RecvState::DataRecvd)
+                | (RecvState::SizeKnown, RecvState::ResetRecvd)
+                | (RecvState::DataRecvd, RecvState::DataRead)
+        );
         if valid {
             *self = to;
             Ok(())

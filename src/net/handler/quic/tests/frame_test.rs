@@ -410,7 +410,7 @@ fn parse_unknown_frame_type_ignored() {
         "unknown frame type should not error: {:?}",
         result.err()
     );
-    let (frame, consumed) = result.unwrap();
+    let (_, consumed) = result.unwrap();
     // Unknown frame consumed only its type varint
     assert!(consumed > 0);
     // Verify we can parse the next frame (PING) from the remaining bytes

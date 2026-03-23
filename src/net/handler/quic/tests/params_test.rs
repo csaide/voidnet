@@ -24,18 +24,20 @@ fn transport_params_defaults() {
 
 #[test]
 fn transport_params_encode_decode_roundtrip() {
-    let mut orig = TransportParams::default();
-    orig.max_idle_timeout_ms = 30000;
-    orig.max_udp_payload_size = 1452;
-    orig.initial_max_data = 1_048_576;
-    orig.initial_max_stream_data_bidi_local = 262_144;
-    orig.initial_max_stream_data_bidi_remote = 131_072;
-    orig.initial_max_stream_data_uni = 65_536;
-    orig.initial_max_streams_bidi = 100;
-    orig.initial_max_streams_uni = 50;
-    orig.max_ack_delay_ms = 20;
-    orig.ack_delay_exponent = 2;
-    orig.active_connection_id_limit = 4;
+    let orig = TransportParams {
+        max_idle_timeout_ms: 30000,
+        max_udp_payload_size: 1452,
+        initial_max_data: 1_048_576,
+        initial_max_stream_data_bidi_local: 262_144,
+        initial_max_stream_data_bidi_remote: 131_072,
+        initial_max_stream_data_uni: 65_536,
+        initial_max_streams_bidi: 100,
+        initial_max_streams_uni: 50,
+        max_ack_delay_ms: 20,
+        ack_delay_exponent: 2,
+        active_connection_id_limit: 4,
+        ..Default::default()
+    };
 
     let mut buf = [0u8; 512];
     let written = orig.encode(&mut buf);
@@ -74,12 +76,16 @@ fn transport_params_encode_decode_roundtrip() {
 
 #[test]
 fn transport_params_cid_roundtrip() {
-    let mut orig = TransportParams::default();
-    orig.original_destination_connection_id =
-        Some(ConnectionId::from_slice(&[0x01, 0x02, 0x03, 0x04]));
-    orig.initial_source_connection_id =
-        Some(ConnectionId::from_slice(&[0xaa, 0xbb, 0xcc, 0xdd, 0xee]));
-    orig.retry_source_connection_id = Some(ConnectionId::from_slice(&[0x10, 0x20]));
+    let orig = TransportParams {
+        original_destination_connection_id: Some(ConnectionId::from_slice(&[
+            0x01, 0x02, 0x03, 0x04,
+        ])),
+        initial_source_connection_id: Some(ConnectionId::from_slice(&[
+            0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+        ])),
+        retry_source_connection_id: Some(ConnectionId::from_slice(&[0x10, 0x20])),
+        ..Default::default()
+    };
 
     let mut buf = [0u8; 256];
     let written = orig.encode(&mut buf);
@@ -119,8 +125,10 @@ fn transport_params_stateless_reset_token() {
 
 #[test]
 fn transport_params_disable_migration() {
-    let mut orig = TransportParams::default();
-    orig.disable_active_migration = true;
+    let orig = TransportParams {
+        disable_active_migration: true,
+        ..Default::default()
+    };
 
     let mut buf = [0u8; 256];
     let written = orig.encode(&mut buf);
@@ -142,26 +150,24 @@ fn transport_params_unknown_id_skipped() {
     // then an unknown param id=0x20 with value 0x42,
     // then another known param (initial_max_data = 100, id=0x04)
     // varint encoding: small values are 1 byte with high bits 00
-    let mut buf = Vec::new();
-
-    // max_idle_timeout (0x01), length=varint_len(5000)=2, value=5000
-    // 5000 as varint: 5000 > 63, 5000 > 16383? No. So 2 bytes: 0x40 | (5000>>8), 5000&0xff
-    // 5000 = 0x1388, so (0x40 | 0x13)=0x53, 0x88
-    buf.push(0x01); // id = 1 (1-byte varint)
-    buf.push(0x02); // length = 2 (1-byte varint)
-    buf.push(0x53); // varint 5000 high byte
-    buf.push(0x88); // varint 5000 low byte
-
-    // Unknown id = 0x20 (32 decimal), length=1, value=0x42
-    buf.push(0x20); // id = 32 (1-byte varint)
-    buf.push(0x01); // length = 1
-    buf.push(0x42); // value
-
-    // initial_max_data (0x04), length=1, value=50
-    // 50 fits in a 1-byte QUIC varint (max 63, top 2 bits = 00)
-    buf.push(0x04); // id = 4 (1-byte varint)
-    buf.push(0x01); // length = 1
-    buf.push(50); // value = 50 (fits in 1-byte varint, top bits 00)
+    let buf = vec![
+        // max_idle_timeout (0x01), length=varint_len(5000)=2, value=5000
+        // 5000 as varint: 5000 > 63, 5000 > 16383? No. So 2 bytes: 0x40 | (5000>>8), 5000&0xff
+        // 5000 = 0x1388, so (0x40 | 0x13)=0x53, 0x88
+        0x01, // id = 1 (1-byte varint)
+        0x02, // length = 2 (1-byte varint)
+        0x53, // varint 5000 high byte
+        0x88, // varint 5000 low byte
+        // Unknown id = 0x20 (32 decimal), length=1, value=0x42
+        0x20, // id = 32 (1-byte varint)
+        0x01, // length = 1
+        0x42, // value
+        // initial_max_data (0x04), length=1, value=50
+        // 50 fits in a 1-byte QUIC varint (max 63, top 2 bits = 00)
+        0x04, // id = 4 (1-byte varint)
+        0x01, // length = 1
+        50,   // value = 50 (fits in 1-byte varint, top bits 00)
+    ];
 
     let decoded = TransportParams::decode(&buf).expect("unknown ID should be skipped");
     assert_eq!(decoded.max_idle_timeout_ms, 5000);

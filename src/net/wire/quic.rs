@@ -159,7 +159,7 @@ fn parse_long_header(
     if version == 0x00000000 {
         // Supported versions follow SCID, 4 bytes each.
         let versions = &buf[scid_end..];
-        if versions.is_empty() || versions.len() % 4 != 0 {
+        if versions.is_empty() || !versions.len().is_multiple_of(4) {
             return Err(HeaderParseError::BufferTooShort);
         }
         let total = scid_end + versions.len();

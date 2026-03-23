@@ -50,7 +50,7 @@ impl<'a> PacketBuilder<'a> {
         let mut offset = 0;
 
         // First byte: 1(long) 1(fixed) TT(type) PP(pn_len-1)
-        buf[offset] = 0xC0 | (packet_type_bits << 4) | ((pn_len - 1) as u8);
+        buf[offset] = 0xC0 | (packet_type_bits << 4) | (pn_len - 1);
         offset += 1;
 
         // Version
@@ -117,7 +117,7 @@ impl<'a> PacketBuilder<'a> {
         let mut offset = 0;
 
         // First byte: 0(short) 1(fixed) S(spin=0) 00(reserved) K(key_phase) PP(pn_len-1)
-        buf[offset] = 0x40 | if key_phase { 0x04 } else { 0 } | ((pn_len - 1) as u8);
+        buf[offset] = 0x40 | if key_phase { 0x04 } else { 0 } | (pn_len - 1);
         offset += 1;
 
         buf[offset..offset + dcid.len()].copy_from_slice(dcid);

@@ -414,20 +414,30 @@ fn stream_data_after_handshake() {
     .unwrap();
 
     // Round 1: ClientHello → Server
-    let server_out = server_crypto.process_crypto_data(&client_hello).unwrap();
+    let server_out = server_crypto.process_crypto_data(&client_hello, 0).unwrap();
     let mut server_one_rtt: Option<KeyPair> = server_out.one_rtt_keys;
     let server_hs_keys = server_out.handshake_keys;
 
-    // Round 2: Server response → Client
+    // Round 2: Server response → Client (concatenate per-space crypto data)
+    let server_crypto_data: Vec<u8> = server_out
+        .crypto_data
+        .iter()
+        .flat_map(|d| d.iter().copied())
+        .collect();
     let client_out = client_crypto
-        .process_crypto_data(&server_out.crypto_data)
+        .process_crypto_data(&server_crypto_data, 0)
         .unwrap();
     let client_one_rtt: Option<KeyPair> = client_out.one_rtt_keys;
 
     // If client has more data (Finished), feed it to server
-    if !client_out.crypto_data.is_empty() {
+    let client_crypto_data: Vec<u8> = client_out
+        .crypto_data
+        .iter()
+        .flat_map(|d| d.iter().copied())
+        .collect();
+    if !client_crypto_data.is_empty() {
         let server_out2 = server_crypto
-            .process_crypto_data(&client_out.crypto_data)
+            .process_crypto_data(&client_crypto_data, 0)
             .unwrap();
         if server_one_rtt.is_none() {
             server_one_rtt = server_out2.one_rtt_keys;
@@ -450,7 +460,7 @@ fn stream_data_after_handshake() {
         ..Default::default()
     };
 
-    let mut conn = QuicConnectionState::new(server_dcid.clone(), Side::Server, params, 1200, now);
+    let mut conn = QuicConnectionState::new(server_dcid, Side::Server, params, 1200, now);
     // Set SCID to match the DCID used in incoming short header packets
     conn.scid = ConnectionId::from_slice(&server_dcid_bytes);
 

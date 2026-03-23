@@ -63,7 +63,7 @@ impl QuicListener {
             let handler = unsafe { &mut *ctx.quic_handler.get() };
             let accept_queue = handler
                 .listen_with_queue(port, tls_config, params)
-                .map_err(|_| QuicError::NotConnected)?;
+                .ok_or(QuicError::NotConnected)?;
             Ok(Self {
                 local_addr: addr,
                 port,
@@ -253,19 +253,18 @@ impl QuicConnection {
     /// Close the connection with an error code.
     pub fn close(&mut self, error_code: u64) {
         let handler = unsafe { &mut *self.handler.get() };
-        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
-            if conn.state != ConnectionState::Closed
-                && conn.state != ConnectionState::Closing
-                && conn.state != ConnectionState::Draining
-            {
-                conn.close_error = Some(if error_code == 0 {
-                    TransportError::NO_ERROR
-                } else {
-                    TransportError::APPLICATION_ERROR
-                });
-                conn.state = ConnectionState::Closing;
-                conn.needs_draining_timer = true;
-            }
+        if let Some(conn) = handler.connections.get_mut(self.conn_key)
+            && conn.state != ConnectionState::Closed
+            && conn.state != ConnectionState::Closing
+            && conn.state != ConnectionState::Draining
+        {
+            conn.close_error = Some(if error_code == 0 {
+                TransportError::NO_ERROR
+            } else {
+                TransportError::APPLICATION_ERROR
+            });
+            conn.state = ConnectionState::Closing;
+            conn.needs_draining_timer = true;
         }
     }
 
@@ -278,15 +277,14 @@ impl QuicConnection {
 impl Drop for QuicConnection {
     fn drop(&mut self) {
         let handler = unsafe { &mut *self.handler.get() };
-        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
-            if conn.state != ConnectionState::Closed
-                && conn.state != ConnectionState::Closing
-                && conn.state != ConnectionState::Draining
-            {
-                conn.close_error = Some(TransportError::NO_ERROR);
-                conn.state = ConnectionState::Closing;
-                conn.needs_draining_timer = true;
-            }
+        if let Some(conn) = handler.connections.get_mut(self.conn_key)
+            && conn.state != ConnectionState::Closed
+            && conn.state != ConnectionState::Closing
+            && conn.state != ConnectionState::Draining
+        {
+            conn.close_error = Some(TransportError::NO_ERROR);
+            conn.state = ConnectionState::Closing;
+            conn.needs_draining_timer = true;
         }
     }
 }
@@ -386,24 +384,22 @@ impl QuicStream {
     /// Reset the stream with an error code.
     pub fn reset(&self, error_code: u64) {
         let handler = unsafe { &mut *self.handler.get() };
-        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
-            if let Some(entry) = conn.streams.get_mut(self.stream_id) {
-                if let Some(ref mut send) = entry.send {
-                    send.mark_reset(error_code);
-                }
-            }
+        if let Some(conn) = handler.connections.get_mut(self.conn_key)
+            && let Some(entry) = conn.streams.get_mut(self.stream_id)
+            && let Some(ref mut send) = entry.send
+        {
+            send.mark_reset(error_code);
         }
     }
 
     /// Send STOP_SENDING to ask the peer to stop sending on this stream.
     pub fn stop_sending(&self, error_code: u64) {
         let handler = unsafe { &mut *self.handler.get() };
-        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
-            if let Some(entry) = conn.streams.get_mut(self.stream_id) {
-                if let Some(ref mut recv) = entry.recv {
-                    recv.request_stop_sending(error_code);
-                }
-            }
+        if let Some(conn) = handler.connections.get_mut(self.conn_key)
+            && let Some(entry) = conn.streams.get_mut(self.stream_id)
+            && let Some(ref mut recv) = entry.recv
+        {
+            recv.request_stop_sending(error_code);
         }
     }
 
@@ -531,12 +527,11 @@ impl QuicRecvStream {
     /// Send STOP_SENDING to ask the peer to stop sending on this stream.
     pub fn stop_sending(&self, error_code: u64) {
         let handler = unsafe { &mut *self.handler.get() };
-        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
-            if let Some(entry) = conn.streams.get_mut(self.stream_id) {
-                if let Some(ref mut recv) = entry.recv {
-                    recv.request_stop_sending(error_code);
-                }
-            }
+        if let Some(conn) = handler.connections.get_mut(self.conn_key)
+            && let Some(entry) = conn.streams.get_mut(self.stream_id)
+            && let Some(ref mut recv) = entry.recv
+        {
+            recv.request_stop_sending(error_code);
         }
     }
 }
@@ -621,12 +616,11 @@ impl QuicSendStream {
     /// Reset the stream with an error code.
     pub fn reset(&self, error_code: u64) {
         let handler = unsafe { &mut *self.handler.get() };
-        if let Some(conn) = handler.connections.get_mut(self.conn_key) {
-            if let Some(entry) = conn.streams.get_mut(self.stream_id) {
-                if let Some(ref mut send) = entry.send {
-                    send.mark_reset(error_code);
-                }
-            }
+        if let Some(conn) = handler.connections.get_mut(self.conn_key)
+            && let Some(entry) = conn.streams.get_mut(self.stream_id)
+            && let Some(ref mut send) = entry.send
+        {
+            send.mark_reset(error_code);
         }
     }
 

@@ -27,7 +27,7 @@ impl SendHalf {
     }
 
     pub fn can_send(&self) -> bool {
-        self.sent < self.max_stream_data && self.buffer.len() > 0
+        self.sent < self.max_stream_data && !self.buffer.is_empty()
     }
 
     pub fn write(&mut self, data: &[u8]) -> usize {

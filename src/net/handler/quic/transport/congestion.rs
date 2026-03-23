@@ -118,10 +118,10 @@ impl CongestionController for QuicCubic {
         // During recovery, only grow window for packets sent after recovery started
         // (Fix 16: Don't clear congestion_recovery_start_time; it naturally becomes
         // irrelevant as all packets are sent after it.)
-        if let Some(start) = self.congestion_recovery_start_time {
-            if sent_time <= start {
-                return; // still in recovery for this packet
-            }
+        if let Some(start) = self.congestion_recovery_start_time
+            && sent_time <= start
+        {
+            return; // still in recovery for this packet
         }
 
         if self.app_limited {
@@ -172,11 +172,11 @@ impl CongestionController for QuicCubic {
     #[inline]
     fn on_congestion_event(&mut self, lost_bytes: usize, now: Instant, sent_time: Instant) {
         // Only one congestion response per recovery period (RFC 9002 §7.3.2)
-        if let Some(start) = self.congestion_recovery_start_time {
-            if sent_time <= start {
-                self.bytes_in_flight = self.bytes_in_flight.saturating_sub(lost_bytes);
-                return;
-            }
+        if let Some(start) = self.congestion_recovery_start_time
+            && sent_time <= start
+        {
+            self.bytes_in_flight = self.bytes_in_flight.saturating_sub(lost_bytes);
+            return;
         }
 
         self.bytes_in_flight = self.bytes_in_flight.saturating_sub(lost_bytes);

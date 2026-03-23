@@ -65,14 +65,12 @@ impl EcnState {
         let total_new_marks = new_ect0 + new_ect1 + new_ce;
 
         // Validation: if we sent ECT(0) but none reflected, disable ECN
-        if self.validation_pending && self.ect0_sent > 0 {
-            if total_new_marks == 0 {
-                // No ECN marks at all — path strips ECN
-                self.disabled = true;
-                self.capable = false;
-                self.validation_pending = false;
-                return false;
-            }
+        if self.validation_pending && self.ect0_sent > 0 && total_new_marks == 0 {
+            // No ECN marks at all — path strips ECN
+            self.disabled = true;
+            self.capable = false;
+            self.validation_pending = false;
+            return false;
         }
 
         if ect0 > 0 {
