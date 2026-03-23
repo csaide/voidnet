@@ -10,6 +10,9 @@ pub struct KeyUpdateState {
     /// Header protection key is unchanged across key updates (RFC 9001 §5.4),
     /// so only the packet key needs retention.
     pub prev_remote_packet_key: Option<Box<dyn rustls::quic::PacketKey>>,
+    /// Pre-cached next remote packet key (RFC 9001 §6.3: avoid timing side-channel
+    /// by having next receive keys ready before a key phase change is detected).
+    pub next_remote_packet_key: Option<Box<dyn rustls::quic::PacketKey>>,
     /// Whether the handshake has been confirmed (RFC 9001 §4.1.2).
     /// Server: set when handshake completes. Client: set on HANDSHAKE_DONE receipt.
     pub handshake_confirmed: bool,
@@ -22,6 +25,7 @@ impl KeyUpdateState {
             lowest_pn_current_phase: None,
             acked_current_phase: false,
             prev_remote_packet_key: None,
+            next_remote_packet_key: None,
             handshake_confirmed: false,
         }
     }

@@ -540,22 +540,28 @@ fn decrypt_and_process(
         // key_phase bit is bit 2 (0x04) of first byte after header protection removal
         let received_key_phase = (quic_payload[0] & 0x04) != 0;
         if conn.key_update.is_peer_update(received_key_phase) {
-            // Peer initiated key update — derive new keys
-            if let Some(ref mut secrets) = conn.key_update_secrets {
-                let new_keys = secrets.next_packet_keys();
-                // Retain old remote packet key for reordered packets (RFC 9001 §6.1).
-                // Header protection keys are unchanged by key updates (RFC 9001 §5.4),
-                // so we only need to save the old packet key. We swap it out via
-                // update_packet_key which replaces it in-place.
-                if let Some(ref mut kp) = conn.keys.one_rtt {
-                    let old_remote_pkt_key =
-                        std::mem::replace(&mut kp.remote.packet_key, new_keys.remote);
-                    conn.key_update.prev_remote_packet_key = Some(old_remote_pkt_key);
-                    kp.local.update_packet_key(new_keys.local);
+            // Peer initiated key update — use pre-cached next remote key (RFC 9001 §6.3:
+            // avoid timing side-channel by not deriving keys on-the-fly).
+            if let Some(cached_remote_key) = conn.key_update.next_remote_packet_key.take() {
+                if let Some(ref mut secrets) = conn.key_update_secrets {
+                    // Derive new local key (needed for sending) and pre-cache the NEXT
+                    // remote key for the subsequent key update.
+                    let new_keys = secrets.next_packet_keys();
+                    conn.key_update.next_remote_packet_key = Some(new_keys.remote);
+
+                    // Retain old remote packet key for reordered packets (RFC 9001 §6.1).
+                    // Header protection keys are unchanged by key updates (RFC 9001 §5.4),
+                    // so we only need to save the old packet key.
+                    if let Some(ref mut kp) = conn.keys.one_rtt {
+                        let old_remote_pkt_key =
+                            std::mem::replace(&mut kp.remote.packet_key, cached_remote_key);
+                        conn.key_update.prev_remote_packet_key = Some(old_remote_pkt_key);
+                        kp.local.update_packet_key(new_keys.local);
+                    }
+                    conn.key_update.on_update_initiated();
+                    conn.packets_encrypted[2] = 0;
+                    conn.needs_key_discard_timer = true;
                 }
-                conn.key_update.on_update_initiated();
-                conn.packets_encrypted[2] = 0;
-                conn.needs_key_discard_timer = true;
             }
         }
     }
@@ -1003,7 +1009,12 @@ fn handle_crypto_frame(
         conn.keys.one_rtt = Some(rtt_keys);
         conn.keys.zero_rtt_open = None; // 0-RTT no longer needed (RFC 9001 §4.9.3)
         // Store key update secrets for future key rotation (Fix 7)
-        if let Some(secrets) = output.next_secrets {
+        if let Some(mut secrets) = output.next_secrets {
+            // Pre-cache next remote receive key to avoid timing side-channel (RFC 9001 §6.3)
+            let next_keys = secrets.next_packet_keys();
+            conn.key_update.next_remote_packet_key = Some(next_keys.remote);
+            // Note: next_keys.local is discarded here; it will be re-derived during
+            // actual key update. Only the remote key needs pre-caching for timing.
             conn.key_update_secrets = Some(secrets);
         }
         // Update AEAD limits based on negotiated cipher suite (RFC 9001 §6.6)
@@ -2369,15 +2380,25 @@ fn build_packet_in_frame(
                 && conn.key_update.can_initiate_update()
                 && let Some(ref mut secrets) = conn.key_update_secrets
             {
-                let new_keys = secrets.next_packet_keys();
+                // Use pre-cached next remote key if available; otherwise derive fresh.
+                let (new_remote, new_local) =
+                    if let Some(cached) = conn.key_update.next_remote_packet_key.take() {
+                        let new_keys = secrets.next_packet_keys();
+                        // Pre-cache the next remote key for the subsequent update
+                        conn.key_update.next_remote_packet_key = Some(new_keys.remote);
+                        (cached, new_keys.local)
+                    } else {
+                        let new_keys = secrets.next_packet_keys();
+                        (new_keys.remote, new_keys.local)
+                    };
                 // Update packet keys while preserving header protection keys
                 // (RFC 9001 §5.4: header protection keys are unchanged by key updates).
                 // Retain old remote packet key for reordered packets (RFC 9001 §6.1).
                 if let Some(ref mut kp) = conn.keys.one_rtt {
                     let old_remote_pkt_key =
-                        std::mem::replace(&mut kp.remote.packet_key, new_keys.remote);
+                        std::mem::replace(&mut kp.remote.packet_key, new_remote);
                     conn.key_update.prev_remote_packet_key = Some(old_remote_pkt_key);
-                    kp.local.update_packet_key(new_keys.local);
+                    kp.local.update_packet_key(new_local);
                 }
                 conn.key_update.on_update_initiated();
                 conn.packets_encrypted[2] = 0;
