@@ -82,6 +82,7 @@ pub struct QuicConnectionState {
     pub packets_encrypted: [u64; 3],
     pub failed_decryptions: u64,
     pub zero_rtt_rejected: u64,
+    pub zero_rtt_accepted: u64,
 
     // Config
     pub idle_timeout: Duration,
@@ -164,6 +165,10 @@ pub struct QuicConnectionState {
 
     /// Timestamp of last CONNECTION_CLOSE sent in Closing state (for rate limiting, RFC 9000 §10.2.1).
     pub last_close_sent: Option<Instant>,
+
+    /// Handshake keys should be discarded after the next Handshake ACK is sent.
+    /// Set when a 1-RTT packet is received (confirming client got the handshake).
+    pub handshake_keys_pending_discard: bool,
 }
 
 impl QuicConnectionState {
@@ -213,6 +218,7 @@ impl QuicConnectionState {
             packets_encrypted: [0; 3],
             failed_decryptions: 0,
             zero_rtt_rejected: 0,
+            zero_rtt_accepted: 0,
             idle_timeout,
             max_udp_payload: 1200,
             created_at: now,
@@ -252,6 +258,7 @@ impl QuicConnectionState {
             needs_draining_timer: false,
             needs_key_discard_timer: false,
             last_close_sent: None,
+            handshake_keys_pending_discard: false,
         }
     }
 }

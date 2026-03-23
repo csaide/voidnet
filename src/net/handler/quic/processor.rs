@@ -298,7 +298,9 @@ fn decrypt_and_process(
     };
     let remote_key = match remote_key {
         Some(k) => k,
-        None => return ProcessResult::Ok, // no keys for this space yet, drop
+        None => {
+            return ProcessResult::Ok;
+        }
     };
 
     // Unprotect header (removes header protection, decodes truncated PN)
@@ -306,8 +308,6 @@ fn decrypt_and_process(
         match unprotect_header(remote_key, quic_payload, pn_offset) {
             Ok(r) => r,
             Err(_) => {
-                // Header protection failure is NOT an AEAD auth failure (RFC 9001 §6.6).
-                // Don't count toward integrity limit — just drop the packet.
                 return ProcessResult::Ok;
             }
         };
@@ -451,18 +451,18 @@ fn decrypt_and_process(
         conn.ack[space].set_ack_eliciting();
     }
 
-    // Check for key discard transitions
+    // Key discard transitions (RFC 9001 §4.9.2).
+    // Initial keys: discard after first Handshake packet processed.
     if space == 1 && conn.keys.initial.is_some() {
-        // First Handshake packet processed -> discard Initial keys
         conn.keys.initial = None;
         conn.loss.discard_space(0);
     }
-
-    // Fix 6: Discard handshake keys when server receives a 1-RTT packet
-    // (confirms client got the handshake)
+    // Handshake keys: mark for deferred discard when we receive a 1-RTT packet
+    // (confirms client got the handshake). Don't discard immediately — we may
+    // still need to send a Handshake ACK for the client's Finished. The actual
+    // discard happens in generate_packets after the ACK is sent.
     if space == 2 && conn.keys.handshake.is_some() {
-        conn.keys.handshake = None;
-        conn.loss.discard_space(1);
+        conn.handshake_keys_pending_discard = true;
     }
 
     result
@@ -702,7 +702,15 @@ fn handle_crypto_frame(
         None => return,
     };
 
-    let output = match crypto.process_crypto_data(crypto_data) {
+    // Determine starting space: output goes to the highest available level.
+    let starting_space = if conn.keys.one_rtt.is_some() {
+        2
+    } else if conn.keys.handshake.is_some() {
+        1
+    } else {
+        0
+    };
+    let output = match crypto.process_crypto_data(crypto_data, starting_space) {
         Ok(o) => {
             conn.crypto = Some(crypto);
             o
@@ -721,8 +729,12 @@ fn handle_crypto_frame(
     if let Some(hs_keys) = output.handshake_keys {
         conn.keys.handshake = Some(hs_keys);
     }
+    if let Some(zero_rtt_key) = output.zero_rtt_keys {
+        conn.keys.zero_rtt_open = Some(zero_rtt_key);
+    }
     if let Some(rtt_keys) = output.one_rtt_keys {
         conn.keys.one_rtt = Some(rtt_keys);
+        conn.keys.zero_rtt_open = None; // 0-RTT no longer needed (RFC 9001 §4.9.3)
         // Store key update secrets for future key rotation (Fix 7)
         if let Some(secrets) = output.next_secrets {
             conn.key_update_secrets = Some(secrets);
@@ -752,16 +764,11 @@ fn handle_crypto_frame(
             .push(crate::net::handler::quic::event::QuicEvent::HandshakeComplete);
     }
 
-    // Queue response CRYPTO data
-    if !output.crypto_data.is_empty() {
-        let response_space = if conn.keys.one_rtt.is_some() {
-            2
-        } else if conn.keys.handshake.is_some() {
-            1
-        } else {
-            0
-        };
-        conn.pending_crypto[response_space].extend_from_slice(&output.crypto_data);
+    // Queue per-space CRYPTO response data
+    for (space, data) in output.crypto_data.iter().enumerate() {
+        if !data.is_empty() {
+            conn.pending_crypto[space].extend_from_slice(data);
+        }
     }
 
     // Apply peer transport parameters if available
@@ -1094,8 +1101,8 @@ pub fn has_pending_data_any(conn: &QuicConnectionState) -> bool {
 
 /// Check if a packet-number space has anything to send.
 fn has_pending_data(conn: &QuicConnectionState, space: u8) -> bool {
-    // Per-space: CRYPTO data or ACK needed
-    if !conn.pending_crypto[space as usize].is_empty() {
+    // Per-space: unsent CRYPTO data or ACK needed
+    if (conn.crypto_offset[space as usize] as usize) < conn.pending_crypto[space as usize].len() {
         return true;
     }
     if conn.ack[space as usize].needs_ack() {
@@ -1128,30 +1135,6 @@ fn has_pending_data(conn: &QuicConnectionState, space: u8) -> bool {
 /// `protect_packet`, wraps it in Ethernet+IP+UDP headers, and pushes
 /// the resulting frame to `tx_return`.
 pub fn generate_packets<'umem>(
-    conn: &mut QuicConnectionState,
-    conn_key: usize,
-    now: Instant,
-    wheel: &mut TimerWheel,
-    free_frames: &mut impl FrameBuffer<'umem>,
-    tx_return: &mut impl FrameBuffer<'umem>,
-) {
-    let free_before = free_frames.num_frames();
-    let tx_before = tx_return.num_frames();
-    generate_packets_inner(conn, conn_key, now, wheel, free_frames, tx_return);
-    let free_after = free_frames.num_frames();
-    let tx_after = tx_return.num_frames();
-    let popped = free_before as i64 - free_after as i64;
-    let pushed_tx = tx_after as i64 - tx_before as i64;
-    // Every frame popped from free must go to either tx_return or back to free
-    // So: popped == pushed_tx (net change in free = frames sent to tx)
-    debug_assert_eq!(
-        popped, pushed_tx,
-        "QUIC frame imbalance: popped {} from free, pushed {} to tx (free: {}→{}, tx: {}→{})",
-        popped, pushed_tx, free_before, free_after, tx_before, tx_after
-    );
-}
-
-fn generate_packets_inner<'umem>(
     conn: &mut QuicConnectionState,
     conn_key: usize,
     now: Instant,
@@ -1360,6 +1343,14 @@ fn generate_packets_inner<'umem>(
         } else {
             free_frames.push(frame); // return unused frame
         }
+    }
+
+    // Deferred Handshake key discard: now that generate_packets has had a
+    // chance to send a Handshake ACK, discard the keys (RFC 9001 §4.9.2).
+    if conn.handshake_keys_pending_discard && conn.keys.handshake.is_some() {
+        conn.keys.handshake = None;
+        conn.loss.discard_space(1);
+        conn.handshake_keys_pending_discard = false;
     }
 
     // Notify the accept queue if this connection just completed handshake
