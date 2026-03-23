@@ -443,6 +443,17 @@ impl<'a> PacketBuilder<'a> {
         true
     }
 
+    /// Write a DATAGRAM_WITH_LENGTH frame (0x31, RFC 9221). Returns true if written.
+    pub fn write_datagram_with_length(&mut self, data: &[u8]) -> bool {
+        let overhead = 1 + varint_len(data.len() as u64) + data.len();
+        if self.remaining() < overhead {
+            return false;
+        }
+        let written = frame_writer::write_datagram_with_length(&mut self.buf[self.offset..], data);
+        self.offset += written;
+        true
+    }
+
     /// Write a PATH_RESPONSE frame (0x1b + 8 bytes data). Returns true if written.
     pub fn write_path_response(&mut self, data: [u8; 8]) -> bool {
         if self.remaining() < 9 {

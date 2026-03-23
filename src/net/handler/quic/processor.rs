@@ -775,6 +775,16 @@ fn dispatch_frames(
                 }
             }
 
+            QuicFrame::Datagram { data } => {
+                // RFC 9221: deliver if we advertised max_datagram_frame_size
+                if conn.datagrams.max_recv_size.is_some() {
+                    conn.datagrams.deliver(data);
+                    conn.event_queue
+                        .push(crate::net::handler::quic::event::QuicEvent::DatagramReceived);
+                }
+                // ack_eliciting already set above (non-Padding/ACK frame)
+            }
+
             QuicFrame::DataBlocked(_)
             | QuicFrame::StreamDataBlocked { .. }
             | QuicFrame::StreamsBlocked { .. } => {
@@ -977,6 +987,11 @@ fn handle_crypto_frame(
                 conn.scid_set.push_with_seq(pa.connection_id, 1);
                 conn.pending_preferred_addr_migration = true;
             }
+        }
+
+        // RFC 9221: if peer advertised max_datagram_frame_size, enable sending
+        if let Some(max_size) = params.max_datagram_frame_size {
+            conn.datagrams.max_send_size = Some(max_size);
         }
 
         conn.peer_params = Some(params);
@@ -1287,6 +1302,7 @@ fn has_pending_data(conn: &QuicConnectionState, space: u8) -> bool {
         || conn.pending_new_token.is_some()
         || conn.pending_path_response.is_some()
         || conn.streams.has_pending_send()
+        || conn.datagrams.has_pending_send()
         || conn.retransmit.max_data
         || !conn.retransmit.max_stream_data.is_empty()
         || conn.retransmit.max_streams
@@ -1937,6 +1953,18 @@ fn build_packet_in_frame(
                     }
                 }
             }
+        }
+    }
+
+    // 7. DATAGRAM frames (1-RTT space only, RFC 9221)
+    if space == 2 {
+        while let Some(data) = conn.datagrams.pop_send() {
+            if !builder.write_datagram_with_length(&data) {
+                // Couldn't fit; put it back at the front
+                conn.datagrams.send.push_front(data);
+                break;
+            }
+            wrote_ack_eliciting = true;
         }
     }
 

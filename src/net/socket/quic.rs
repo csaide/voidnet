@@ -343,6 +343,38 @@ impl QuicConnection {
     pub fn connection_key(&self) -> usize {
         self.conn_key
     }
+
+    /// Send an unreliable datagram (RFC 9221).
+    ///
+    /// Returns `Err(QuicError::WouldBlock)` if the extension was not negotiated
+    /// or the datagram is too large.
+    pub fn send_datagram(&self, data: &[u8]) -> Result<(), QuicError> {
+        let handler = unsafe { &mut *self.handler.get() };
+        let conn = handler
+            .connections
+            .get_mut(self.conn_key)
+            .ok_or(QuicError::NotConnected)?;
+        conn.datagrams
+            .queue_send(data.to_vec())
+            .map_err(|_| QuicError::WouldBlock)
+    }
+
+    /// Receive the next unreliable datagram (RFC 9221).
+    ///
+    /// Returns `None` if no datagram is available.
+    pub fn recv_datagram(&self) -> Option<Vec<u8>> {
+        let handler = unsafe { &mut *self.handler.get() };
+        let conn = handler.connections.get_mut(self.conn_key)?;
+        conn.datagrams.pop_recv()
+    }
+
+    /// Returns the maximum datagram payload size the peer supports, or `None`
+    /// if the DATAGRAM extension was not negotiated.
+    pub fn max_datagram_size(&self) -> Option<usize> {
+        let handler = unsafe { &*self.handler.get() };
+        let conn = handler.connections.get(self.conn_key)?;
+        conn.datagrams.max_send_size.map(|s| s as usize)
+    }
 }
 
 impl Drop for QuicConnection {

@@ -147,7 +147,7 @@ fn transport_params_disable_migration() {
 #[test]
 fn transport_params_unknown_id_skipped() {
     // Craft bytes with a known param (max_idle_timeout = 5000, id=0x01)
-    // then an unknown param id=0x20 with value 0x42,
+    // then an unknown param id=0x21 with value 0x42,
     // then another known param (initial_max_data = 100, id=0x04)
     // varint encoding: small values are 1 byte with high bits 00
     let buf = vec![
@@ -158,8 +158,8 @@ fn transport_params_unknown_id_skipped() {
         0x02, // length = 2 (1-byte varint)
         0x53, // varint 5000 high byte
         0x88, // varint 5000 low byte
-        // Unknown id = 0x20 (32 decimal), length=1, value=0x42
-        0x20, // id = 32 (1-byte varint)
+        // Unknown id = 0x21 (33 decimal), length=1, value=0x42
+        0x21, // id = 33 (1-byte varint)
         0x01, // length = 1
         0x42, // value
         // initial_max_data (0x04), length=1, value=50
