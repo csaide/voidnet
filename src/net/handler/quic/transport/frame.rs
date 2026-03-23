@@ -134,6 +134,8 @@ pub enum FrameParseError {
     BufferTooShort,
     InvalidFrameType(u64),
     InvalidFrame,
+    /// Unknown frame type that is not in the GREASE range (RFC 9000 §12.4).
+    UnknownFrameType(u64),
 }
 
 /// Parse one frame from buffer. Returns (frame, bytes_consumed) or error.
@@ -537,9 +539,15 @@ pub fn parse_frame(buf: &[u8]) -> Result<(QuicFrame<'_>, usize), FrameParseError
         }
 
         _ => {
-            // RFC 9000 §19: unknown frame types MUST be ignored.
-            // Consume only the type varint and treat as zero-length.
-            Ok((QuicFrame::Padding, type_len))
+            // RFC 9000 §19.21: GREASE frames (type % 0x1f == 0x1e) MUST be ignored.
+            if frame_type % 0x1f == 0x1e {
+                // GREASE frame — silently skip the type varint only.
+                // These have no defined payload, so consume just the type.
+                Ok((QuicFrame::Padding, type_len))
+            } else {
+                // RFC 9000 §12.4: unknown frame type is FRAME_ENCODING_ERROR.
+                Err(FrameParseError::UnknownFrameType(frame_type))
+            }
         }
     }
 }

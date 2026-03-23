@@ -378,47 +378,55 @@ fn parse_multiple_frames() {
 }
 
 #[test]
-fn parse_unknown_frame_type() {
-    // RFC 9000 §19: unknown frame types MUST be ignored, not cause a connection error.
-    // Single byte 0x20 (value 32, unknown) should be treated as no-op Padding.
+fn parse_unknown_frame_type_errors() {
+    // RFC 9000 §12.4: unknown frame types MUST be treated as FRAME_ENCODING_ERROR.
+    // 0x20 (value 32) is unknown and NOT in the GREASE range.
     let buf = [0x20];
     let result = parse_frame(&buf);
     assert!(
-        result.is_ok(),
-        "unknown frame type should not error: {:?}",
-        result.err()
+        result.is_err(),
+        "unknown non-GREASE frame type should error"
     );
-    let (frame, consumed) = result.unwrap();
-    assert_eq!(consumed, 1);
-    assert!(matches!(frame, QuicFrame::Padding));
+    assert!(matches!(result, Err(FrameParseError::UnknownFrameType(32))));
 }
 
 #[test]
-fn parse_unknown_frame_type_ignored() {
+fn parse_grease_frame_type_ignored() {
     use crate::net::handler::quic::transport::frame::parse_frame;
     use crate::net::handler::quic::transport::varint::encode_varint;
-    // Unknown frame type 0x1f followed by PING (0x01)
+    // RFC 9000 §19.21: GREASE frames (type % 0x1f == 0x1e) MUST be silently ignored.
+    // 0x1e (30) is a GREASE type: 30 % 31 == 30 == 0x1e. Also HANDSHAKE_DONE.
+    // Use 0x3d (61): 61 % 31 == 30 == 0x1e — a GREASE frame.
     let mut buf = [0u8; 16];
     let mut pos = 0;
-    pos += encode_varint(0x1f, &mut buf[pos..]);
+    pos += encode_varint(0x3d, &mut buf[pos..]);
     buf[pos] = 0x01; // PING
     pos += 1;
-    // Should successfully parse the unknown frame (treated as Padding)
+    // GREASE frame should be silently ignored (treated as Padding)
     let result = parse_frame(&buf[..pos]);
     assert!(
         result.is_ok(),
-        "unknown frame type should not error: {:?}",
+        "GREASE frame type should not error: {:?}",
         result.err()
     );
-    let (_, consumed) = result.unwrap();
-    // Unknown frame consumed only its type varint
-    assert!(consumed > 0);
+    let (frame, consumed) = result.unwrap();
+    assert!(matches!(frame, QuicFrame::Padding));
     // Verify we can parse the next frame (PING) from the remaining bytes
     let remaining = &buf[consumed..pos];
     if !remaining.is_empty() {
         let result2 = parse_frame(remaining);
         assert!(result2.is_ok());
     }
+}
+
+#[test]
+fn parse_unknown_non_grease_frame_type_errors() {
+    use crate::net::handler::quic::transport::varint::encode_varint;
+    // 0x1f (31) is NOT GREASE: 31 % 31 == 0 != 0x1e. Should error.
+    let mut buf = [0u8; 16];
+    let pos = encode_varint(0x1f, &mut buf);
+    let result = parse_frame(&buf[..pos]);
+    assert!(result.is_err(), "non-GREASE unknown type should error");
 }
 
 #[test]
