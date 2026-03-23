@@ -18,5 +18,17 @@ pub(crate) mod transport;
 pub use handler::QuicHandler;
 pub use transport::params::TransportParams;
 
+/// Public re-exports for benchmarks.
+pub mod bench {
+    pub use super::connection_id::ConnectionId;
+    pub use super::transport::frame::{StreamId, parse_frame};
+    pub use super::transport::varint::{decode_varint, encode_varint};
+
+    /// Frame encoding functions exposed for benchmarks.
+    pub mod frame_writer {
+        pub use crate::net::handler::quic::transport::frame_writer::{write_crypto, write_stream};
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -104,3 +104,7 @@ harness = false
 [[bench]]
 name = "http_parse"
 harness = false
+
+[[bench]]
+name = "quic"
+harness = false
