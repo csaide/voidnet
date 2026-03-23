@@ -6,6 +6,9 @@
 //! - `10` = 4 bytes (30-bit value, max 1073741823)
 //! - `11` = 8 bytes (62-bit value, max 4611686018427387903)
 
+/// Maximum value encodable as a QUIC variable-length integer (2^62 - 1).
+pub const VARINT_MAX: u64 = (1 << 62) - 1;
+
 /// Decode a QUIC variable-length integer from `buf`.
 ///
 /// Returns `(value, bytes_consumed)` or `None` if the buffer is too short.
@@ -61,11 +64,10 @@ pub fn decode_varint(buf: &[u8]) -> Option<(u64, usize)> {
 
 /// Encode a QUIC variable-length integer into `buf`.
 ///
-/// Returns the number of bytes written.
+/// Returns the number of bytes written, or 0 if `val` exceeds `VARINT_MAX`.
 ///
 /// # Panics
-/// Panics if `buf` is too small to hold the encoded value, or if `val` exceeds
-/// the 62-bit maximum (4611686018427387903).
+/// Panics if `buf` is too small to hold the encoded value.
 #[inline]
 pub fn encode_varint(val: u64, buf: &mut [u8]) -> usize {
     if val <= 63 {
@@ -86,12 +88,7 @@ pub fn encode_varint(val: u64, buf: &mut [u8]) -> usize {
         buf[2] = (v >> 8) as u8;
         buf[3] = (v & 0xff) as u8;
         4
-    } else {
-        assert!(
-            val <= 4_611_686_018_427_387_903,
-            "value {} exceeds 62-bit QUIC varint maximum",
-            val
-        );
+    } else if val <= VARINT_MAX {
         assert!(buf.len() >= 8, "buffer too small for 8-byte varint");
         let v = val | (0b11_u64 << 62);
         buf[0] = (v >> 56) as u8;
@@ -103,14 +100,14 @@ pub fn encode_varint(val: u64, buf: &mut [u8]) -> usize {
         buf[6] = (v >> 8) as u8;
         buf[7] = (v & 0xff) as u8;
         8
+    } else {
+        // Value exceeds 62-bit QUIC varint maximum — return 0 (no bytes written)
+        0
     }
 }
 
 /// Returns the number of bytes required to encode `val` as a QUIC varint,
-/// without writing anything.
-///
-/// # Panics
-/// Panics if `val` exceeds the 62-bit maximum.
+/// without writing anything. Returns 8 (max encoding size) for out-of-range values.
 #[inline]
 pub fn varint_len(val: u64) -> usize {
     if val <= 63 {
@@ -120,11 +117,8 @@ pub fn varint_len(val: u64) -> usize {
     } else if val <= 1_073_741_823 {
         4
     } else {
-        assert!(
-            val <= 4_611_686_018_427_387_903,
-            "value {} exceeds 62-bit QUIC varint maximum",
-            val
-        );
+        // Return 8 (max encoding size) even for out-of-range values,
+        // so callers can size buffers without panicking.
         8
     }
 }
