@@ -282,6 +282,7 @@ impl QuicHandler {
                 free_frames,
                 tx_return,
             );
+            self.sync_cid_map(conn_key);
         } else if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
             // Potential new connection — check if Initial + listener exists
             if self.listeners.contains_key(&dst_port) && datagram_len >= 1200 {
@@ -346,6 +347,7 @@ impl QuicHandler {
                         rx_return.push(frame_data);
                         let conn = &mut self.connections[key];
                         processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+                        self.sync_cid_map(key);
                     } else {
                         rx_return.push(frame);
                     }
@@ -495,6 +497,7 @@ impl QuicHandler {
                 free_frames,
                 tx_return,
             );
+            self.sync_cid_map(conn_key);
         } else if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
             // Potential new connection — check if Initial + listener exists
             if self.listeners.contains_key(&dst_port) && datagram_len >= 1200 {
@@ -555,6 +558,7 @@ impl QuicHandler {
                         rx_return.push(frame_data);
                         let conn = &mut self.connections[key];
                         processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+                        self.sync_cid_map(key);
                     } else {
                         rx_return.push(frame);
                     }
@@ -590,6 +594,7 @@ impl QuicHandler {
                     if let Some(conn) = self.connections.get_mut(key) {
                         processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
                     }
+                    self.sync_cid_map(key);
                 }
             }
         }
@@ -603,10 +608,19 @@ impl QuicHandler {
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        for (key, conn) in self.connections.iter_mut() {
-            if processor::has_pending_data_any(conn) {
-                processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+        let keys_with_data: smallvec::SmallVec<[usize; 16]> = self
+            .connections
+            .iter()
+            .filter(|(_, conn)| processor::has_pending_data_any(conn))
+            .map(|(key, _)| key)
+            .collect();
+        for key in &keys_with_data {
+            if let Some(conn) = self.connections.get_mut(*key) {
+                processor::generate_packets(conn, *key, now, wheel, free_frames, tx_return);
             }
+        }
+        for key in keys_with_data {
+            self.sync_cid_map(key);
         }
     }
 
@@ -852,6 +866,45 @@ impl QuicHandler {
         tx_return.push(frame);
     }
 
+    /// Sync CID map after generate_packets: register newly issued local CIDs,
+    /// issue replacement CIDs when peer retires one of ours, and clean up stale entries.
+    fn sync_cid_map(&mut self, conn_key: usize) {
+        if !self.connections.contains(conn_key) {
+            return;
+        }
+
+        // Issue replacement CID if peer retired one of ours
+        let conn = &mut self.connections[conn_key];
+        if conn.cid_manager.needs_replacement_cid {
+            conn.cid_manager.needs_replacement_cid = false;
+            let cid_len = conn.scid.len();
+            if cid_len > 0 {
+                let mut cid_buf = [0u8; 20];
+                use ring::rand::SecureRandom;
+                let _ = ring::rand::SystemRandom::new().fill(&mut cid_buf[..cid_len]);
+                let new_cid = crate::net::handler::quic::connection_id::ConnectionId::from_slice(
+                    &cid_buf[..cid_len],
+                );
+                if let Some(seq) = conn.cid_manager.issue_new_cid(new_cid) {
+                    let token = [0u8; 16]; // Simplified reset token
+                    conn.retransmit
+                        .pending_new_cids
+                        .push((seq, 0, new_cid, token));
+                    // Also add to scid_set for cid_map registration
+                    conn.scid_set.push(new_cid);
+                }
+            }
+        }
+
+        // Register all local CIDs (from cid_manager) into cid_map
+        let conn = &self.connections[conn_key];
+        for cid in conn.cid_manager.local_cids.iter() {
+            if !self.cid_map.contains_key(cid) {
+                self.cid_map.insert(*cid, conn_key);
+            }
+        }
+    }
+
     /// Insert a new connection, returning its slab key.
     pub fn insert_connection(&mut self, conn: QuicConnectionState) -> usize {
         let key = self.connections.insert(conn);
@@ -885,6 +938,10 @@ impl QuicHandler {
             self.cid_map.remove(&conn.dcid);
             // Also remove all SCIDs
             for cid in conn.scid_set.iter() {
+                self.cid_map.remove(cid);
+            }
+            // Also remove CIDs tracked by cid_manager
+            for cid in conn.cid_manager.local_cids.iter() {
                 self.cid_map.remove(cid);
             }
             // Clean up 5-tuple mapping if present
