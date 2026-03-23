@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use coarsetime::{Duration, Instant};
+use rustls::ClientConfig;
 
 use super::connection_id::{CidSet, ConnectionId};
 use super::crypto::key_update::KeyUpdateState;
@@ -41,6 +44,22 @@ pub enum ConnectionState {
 pub enum Side {
     Client,
     Server,
+}
+
+/// Previous path state, saved when migration is detected for potential revert.
+#[allow(dead_code)]
+pub struct PreviousPath {
+    pub remote_addr: IpAddress,
+    pub remote_port: u16,
+    pub remote_mac: MacAddress,
+    pub path: PathState,
+}
+
+/// Migration action signal from processor to handler.
+#[allow(dead_code)]
+pub struct MigrationAction {
+    pub old_cid: ConnectionId,
+    pub new_cid: ConnectionId,
 }
 
 /// Complete state for a single QUIC connection.
@@ -166,6 +185,19 @@ pub struct QuicConnectionState {
     /// Timestamp of last CONNECTION_CLOSE sent in Closing state (for rate limiting, RFC 9000 §10.2.1).
     pub last_close_sent: Option<Instant>,
 
+    /// Client TLS config (retained for version negotiation retry)
+    pub client_config: Option<Arc<ClientConfig>>,
+    /// Server name for TLS SNI (retained for version negotiation retry)
+    pub server_name: Option<String>,
+    /// Original QUIC version before any version negotiation
+    pub original_version: Option<u32>,
+    /// Pending migration action for handler to process after process_packet()
+    pub pending_migration: Option<MigrationAction>,
+    /// Previous path state for migration revert
+    pub prev_path: Option<PreviousPath>,
+    /// Whether a key update should be initiated
+    pub needs_key_update: bool,
+
     /// Handshake keys should be discarded after the next Handshake ACK is sent.
     /// Set when a 1-RTT packet is received (confirming client got the handshake).
     pub handshake_keys_pending_discard: bool,
@@ -258,6 +290,12 @@ impl QuicConnectionState {
             needs_draining_timer: false,
             needs_key_discard_timer: false,
             last_close_sent: None,
+            client_config: None,
+            server_name: None,
+            original_version: None,
+            pending_migration: None,
+            prev_path: None,
+            needs_key_update: false,
             handshake_keys_pending_discard: false,
         }
     }
