@@ -200,6 +200,7 @@ pub fn process_packet(
                         Some(s) => s,
                         None => break,
                     };
+                    let is_0rtt = long.packet_type == PacketType::ZeroRtt;
                     if long.packet_type == PacketType::Initial {
                         match packet_parser::parse_initial_fields(&remaining[long.payload_offset..])
                         {
@@ -229,7 +230,7 @@ pub fn process_packet(
                                 let pn_offset = long.payload_offset + relative_pn_offset;
                                 // Total packet = everything up to pn_offset + payload_length
                                 let packet_len = pn_offset + payload_length;
-                                Some((space, pn_offset, packet_len))
+                                Some((space, pn_offset, packet_len, is_0rtt))
                             }
                             None => None,
                         }
@@ -240,11 +241,11 @@ pub fn process_packet(
                             Some((length, consumed)) => {
                                 let pn_offset = long.payload_offset + consumed;
                                 let packet_len = pn_offset + length as usize;
-                                Some((space, pn_offset, packet_len))
+                                Some((space, pn_offset, packet_len, is_0rtt))
                             }
                             None => None,
                         }
-                    } else if long.packet_type == PacketType::ZeroRtt {
+                    } else if is_0rtt {
                         // 0-RTT: same length-prefixed format as Handshake (RFC 9000 §17.2)
                         match crate::net::handler::quic::transport::varint::decode_varint(
                             &remaining[long.payload_offset..],
@@ -253,7 +254,7 @@ pub fn process_packet(
                                 let pn_offset = long.payload_offset + consumed;
                                 let packet_len = pn_offset + length as usize;
                                 if conn.keys.zero_rtt_open.is_some() {
-                                    Some((space, pn_offset, packet_len))
+                                    Some((space, pn_offset, packet_len, is_0rtt))
                                 } else {
                                     conn.zero_rtt_rejected += 1;
                                     None
@@ -268,7 +269,7 @@ pub fn process_packet(
                 }
                 PacketHeader::Short(short) => {
                     // Short header is always the last packet in a datagram
-                    Some((2, short.pn_offset, remaining.len()))
+                    Some((2, short.pn_offset, remaining.len(), false))
                 }
                 PacketHeader::VersionNegotiation(vn) => {
                     // RFC 9000 §6.2: client processes VN from server
@@ -366,7 +367,7 @@ pub fn process_packet(
             }
         };
 
-        let (space, pn_offset, packet_len) = match parse_result {
+        let (space, pn_offset, packet_len, is_0rtt) = match parse_result {
             Some(r) => r,
             None => break,
         };
@@ -380,6 +381,7 @@ pub fn process_packet(
             space,
             pn_offset,
             datagram_len,
+            is_0rtt,
             now,
         );
 
@@ -400,6 +402,7 @@ fn decrypt_and_process(
     space: usize,
     pn_offset: usize,
     datagram_len: usize,
+    is_0rtt: bool,
     now: Instant,
 ) -> ProcessResult {
     // Select decrypt key for the space
@@ -566,7 +569,7 @@ fn decrypt_and_process(
     let plaintext = &quic_payload[payload_offset..payload_offset + plaintext_len];
     let mut ack_eliciting = false;
 
-    let result = dispatch_frames(conn, plaintext, space, &mut ack_eliciting, now);
+    let result = dispatch_frames(conn, plaintext, space, is_0rtt, &mut ack_eliciting, now);
 
     // Post-processing
     conn.ack[space].on_packet_received(pn, now);
@@ -595,6 +598,7 @@ fn dispatch_frames(
     conn: &mut QuicConnectionState,
     plaintext: &[u8],
     space: usize,
+    is_0rtt: bool,
     ack_eliciting: &mut bool,
     now: Instant,
 ) -> ProcessResult {
@@ -626,6 +630,27 @@ fn dispatch_frames(
                     conn.needs_draining_timer = true;
                     return ProcessResult::ConnectionClosed;
                 }
+            }
+        }
+
+        // 0-RTT frame restrictions (RFC 9000 §12.5, RFC 9001 §8.3):
+        // ACK, CRYPTO, HANDSHAKE_DONE, NEW_TOKEN, PATH_RESPONSE, and
+        // RETIRE_CONNECTION_ID are forbidden in 0-RTT packets.
+        if is_0rtt {
+            let forbidden = matches!(
+                &frame,
+                QuicFrame::Ack(_)
+                    | QuicFrame::Crypto(_)
+                    | QuicFrame::HandshakeDone
+                    | QuicFrame::NewToken(_)
+                    | QuicFrame::PathResponse(_)
+                    | QuicFrame::RetireConnectionId { .. }
+            );
+            if forbidden {
+                conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
+                conn.state = ConnectionState::Closing;
+                conn.needs_draining_timer = true;
+                return ProcessResult::ConnectionClosed;
             }
         }
 
