@@ -14,8 +14,10 @@ use crate::net::handler::quic::error::TransportError;
 
 /// Output from processing CRYPTO frame data.
 pub struct CryptoOutput {
-    /// CRYPTO data to send to peer (may be empty).
-    pub crypto_data: Vec<u8>,
+    /// Per-space CRYPTO data to send: [Initial, Handshake, 1-RTT].
+    /// Data is split at key change boundaries so each space gets the
+    /// correct portion of the TLS handshake.
+    pub crypto_data: [Vec<u8>; 3],
     /// New handshake-level keys, if the handshake progressed to that point.
     pub handshake_keys: Option<KeyPair>,
     /// New 1-RTT application keys, if the handshake completed.
@@ -73,17 +75,24 @@ impl CryptoState {
     ///
     /// Returns crypto data to send back and any new keys derived during this
     /// step of the handshake.
-    pub fn process_crypto_data(&mut self, data: &[u8]) -> Result<CryptoOutput, TransportError> {
-        // Feed data to rustls
+    /// Process received CRYPTO data from the peer.
+    ///
+    /// `current_space` is the encryption level at which output data should
+    /// start. Key changes advance the level (0→1→2). For the initial
+    /// ClientHello processing, pass 0. For later calls where higher keys
+    /// already exist, pass the appropriate level (e.g. 2 if 1-RTT keys
+    /// are installed).
+    pub fn process_crypto_data(
+        &mut self,
+        data: &[u8],
+        current_space: usize,
+    ) -> Result<CryptoOutput, TransportError> {
         self.read_hs(data)?;
 
-        // Get response crypto data and any key changes.
-        // rustls may produce multiple key changes in a single step (e.g.
-        // server emits Handshake keys then 1-RTT keys), so we loop until
-        // write_hs returns None.
-        let mut crypto_data = Vec::new();
+        let mut buf = Vec::new();
+        let mut current_space = current_space;
         let mut output = CryptoOutput {
-            crypto_data: Vec::new(),
+            crypto_data: [Vec::new(), Vec::new(), Vec::new()],
             handshake_keys: None,
             one_rtt_keys: None,
             handshake_complete: false,
@@ -91,13 +100,19 @@ impl CryptoState {
         };
 
         loop {
-            let key_change = self.write_hs(&mut crypto_data);
+            let before = buf.len();
+            let key_change = self.write_hs(&mut buf);
+            // Data written in this call belongs to current_space
+            if buf.len() > before {
+                output.crypto_data[current_space].extend_from_slice(&buf[before..]);
+            }
             match key_change {
                 Some(KeyChange::Handshake { keys }) => {
                     output.handshake_keys = Some(KeyPair {
                         local: DirectionalKey::from_rustls(keys.local),
                         remote: DirectionalKey::from_rustls(keys.remote),
                     });
+                    current_space = 1; // subsequent data goes to Handshake
                 }
                 Some(KeyChange::OneRtt { keys, next }) => {
                     output.one_rtt_keys = Some(KeyPair {
@@ -106,13 +121,22 @@ impl CryptoState {
                     });
                     output.handshake_complete = true;
                     output.next_secrets = Some(next);
+                    current_space = 2; // subsequent data goes to 1-RTT
                 }
                 None => break,
             }
         }
 
-        output.crypto_data = crypto_data;
         Ok(output)
+    }
+
+    /// Get 0-RTT keys if available (client presented a valid session ticket).
+    /// Returns a single DirectionalKeys — 0-RTT is unidirectional (client-to-server).
+    pub fn zero_rtt_keys(&self) -> Option<rustls::quic::DirectionalKeys> {
+        match self {
+            CryptoState::Client(c) => c.zero_rtt_keys(),
+            CryptoState::Server(c) => c.zero_rtt_keys(),
+        }
     }
 
     /// Get peer's transport parameters (available after the handshake progresses).
@@ -147,7 +171,7 @@ impl CryptoState {
             CryptoState::Client(c) => c.read_hs(data),
             CryptoState::Server(c) => c.read_hs(data),
         };
-        result.map_err(|_e| {
+        result.map_err(|_| {
             // If rustls reports an alert, map it to the QUIC crypto error range.
             let alert = self.alert();
             if let Some(code) = alert {
