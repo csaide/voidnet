@@ -1,6 +1,7 @@
 mod ack_test;
 mod aead_limits_test;
 mod cid_lifecycle_test;
+mod compat_vn_test;
 mod congestion_test;
 mod connection_id_test;
 mod crypto_test;

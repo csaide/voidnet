@@ -277,14 +277,18 @@ fn vn_ignored_for_server_side() {
 }
 
 #[test]
-fn validate_version_info_stub_always_ok() {
+fn validate_version_info_none_always_ok() {
     let params = TransportParams::default();
 
-    // The stub validation always succeeds (full parsing deferred)
-    assert!(params.validate_version_info(QUIC_VERSION_1, None).is_ok());
+    // No version_information → validation always passes
     assert!(
         params
-            .validate_version_info(QUIC_VERSION_2, Some(QUIC_VERSION_1))
+            .validate_version_info(QUIC_VERSION_1, &[QUIC_VERSION_1, QUIC_VERSION_2])
+            .is_ok()
+    );
+    assert!(
+        params
+            .validate_version_info(QUIC_VERSION_2, &[QUIC_VERSION_1])
             .is_ok()
     );
 }

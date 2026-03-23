@@ -8,7 +8,7 @@ use crate::net::handler::quic::connection_id::ConnectionId;
 use crate::net::handler::quic::error::TransportError;
 
 /// Version information for Compatible Version Negotiation (RFC 9369).
-#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionInformation {
     pub chosen_version: u32,
     pub other_versions: Vec<u32>,
@@ -31,6 +31,7 @@ const DISABLE_ACTIVE_MIGRATION: u64 = 0x0c;
 const ACTIVE_CONNECTION_ID_LIMIT: u64 = 0x0e;
 const INITIAL_SOURCE_CONNECTION_ID: u64 = 0x0f;
 const RETRY_SOURCE_CONNECTION_ID: u64 = 0x10;
+const VERSION_INFORMATION: u64 = 0x11;
 
 // RFC defaults
 const DEFAULT_MAX_UDP_PAYLOAD_SIZE: u64 = 65527;
@@ -69,6 +70,9 @@ pub struct TransportParams {
     // Tokens
     pub stateless_reset_token: Option<[u8; 16]>,
 
+    // Version negotiation (RFC 9369)
+    pub version_information: Option<VersionInformation>,
+
     // Local config (not a wire parameter — not encoded/decoded)
     /// Desired CID length for locally-generated connection IDs (0..=20).
     /// `None` means use the handler's default (`local_cid_len`).
@@ -94,6 +98,7 @@ impl Default for TransportParams {
             initial_source_connection_id: None,
             retry_source_connection_id: None,
             stateless_reset_token: None,
+            version_information: None,
             cid_length: None,
         }
     }
@@ -234,6 +239,19 @@ impl TransportParams {
             pos += cid_bytes.len();
         }
 
+        // 0x11: version_information (RFC 9369)
+        if let Some(ref vi) = self.version_information {
+            let value_len = 4 + vi.other_versions.len() * 4;
+            pos += encode_varint(VERSION_INFORMATION, &mut buf[pos..]);
+            pos += encode_varint(value_len as u64, &mut buf[pos..]);
+            buf[pos..pos + 4].copy_from_slice(&vi.chosen_version.to_be_bytes());
+            pos += 4;
+            for &v in &vi.other_versions {
+                buf[pos..pos + 4].copy_from_slice(&v.to_be_bytes());
+                pos += 4;
+            }
+        }
+
         pos
     }
 
@@ -366,6 +384,30 @@ impl TransportParams {
                     }
                     params.retry_source_connection_id = Some(ConnectionId::from_slice(value));
                 }
+                VERSION_INFORMATION => {
+                    // Wire format: chosen_version (4 bytes) + other_versions (4 bytes each)
+                    if param_len < 4 || param_len % 4 != 0 {
+                        return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+                    }
+                    let chosen_version =
+                        u32::from_be_bytes([value[0], value[1], value[2], value[3]]);
+                    let num_others = (param_len - 4) / 4;
+                    let mut other_versions = Vec::with_capacity(num_others);
+                    for i in 0..num_others {
+                        let off = 4 + i * 4;
+                        let v = u32::from_be_bytes([
+                            value[off],
+                            value[off + 1],
+                            value[off + 2],
+                            value[off + 3],
+                        ]);
+                        other_versions.push(v);
+                    }
+                    params.version_information = Some(VersionInformation {
+                        chosen_version,
+                        other_versions,
+                    });
+                }
                 _ => {
                     // Unknown parameter: skip for forward compatibility (RFC 9000 §7.4.2)
                 }
@@ -395,16 +437,28 @@ impl TransportParams {
         Ok(params)
     }
 
-    /// Validate version_information transport parameter (RFC 9369).
+    /// Validate version_information transport parameter (RFC 9369 §4.1).
     ///
-    /// Simplified stub: full version_information parsing (type 0x11) is deferred.
-    /// When implemented, this would validate that chosen_version matches the
-    /// negotiated version and that other_versions contains the original version.
+    /// Checks that:
+    /// 1. The peer's chosen_version is in our list of available versions.
+    /// 2. Our currently-used version is in the peer's list of other_versions.
+    ///
+    /// If version_information is absent, validation passes (parameter is optional).
     pub fn validate_version_info(
         &self,
-        _negotiated_version: u32,
-        _original_version: Option<u32>,
+        our_version: u32,
+        our_available: &[u32],
     ) -> Result<(), TransportError> {
+        if let Some(ref vi) = self.version_information {
+            // Peer's chosen_version must be in our available versions
+            if !our_available.contains(&vi.chosen_version) {
+                return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+            }
+            // Our version must be in peer's available versions
+            if !vi.other_versions.contains(&our_version) {
+                return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+            }
+        }
         Ok(())
     }
 
