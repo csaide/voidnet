@@ -896,6 +896,17 @@ fn handle_crypto_frame(
     data: &[u8],
     _now: Instant,
 ) {
+    // RFC 9001 §4.1.3: if this encryption level is superseded, reject data
+    // that extends past the previously recorded frontier.
+    if let Some(sealed_max) = conn.crypto_level_sealed[space] {
+        if offset + data.len() as u64 > sealed_max {
+            conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
+            conn.state = ConnectionState::Closing;
+            conn.needs_draining_timer = true;
+            return;
+        }
+    }
+
     // Write to reassembly buffer
     let written = match conn.crypto_recv[space].write(offset, data) {
         Ok(n) => n,
@@ -1103,6 +1114,20 @@ fn handle_crypto_frame(
         conn.cid_manager.active_limit = params.active_connection_id_limit;
 
         conn.peer_params = Some(params);
+    }
+
+    // RFC 9001 §4.1.3: After processing CRYPTO data, seal this level if it is
+    // now superseded by higher-level keys. This ensures any future CRYPTO data
+    // at this level that extends past the current frontier is rejected.
+    if conn.crypto_level_sealed[space].is_none() {
+        let superseded = match space {
+            0 => conn.keys.handshake.is_some() || conn.keys.one_rtt.is_some(),
+            1 => conn.keys.one_rtt.is_some(),
+            _ => false,
+        };
+        if superseded && conn.crypto_recv[space].received() > 0 {
+            conn.crypto_level_sealed[space] = Some(conn.crypto_recv[space].received());
+        }
     }
 }
 

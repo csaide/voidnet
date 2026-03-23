@@ -222,6 +222,11 @@ pub struct QuicConnectionState {
 
     /// Datagram send/recv queues (RFC 9221)
     pub datagrams: DatagramQueue,
+
+    /// Maximum CRYPTO offset received at each encryption level before it was superseded.
+    /// Once higher-level keys are installed, CRYPTO data for a lower level must not
+    /// extend past this frontier (RFC 9001 §4.1.3). `None` = level not yet superseded.
+    pub crypto_level_sealed: [Option<u64>; 3],
 }
 
 impl QuicConnectionState {
@@ -325,6 +330,7 @@ impl QuicConnectionState {
             pending_new_token: None,
             received_new_token: None,
             datagrams: DatagramQueue::new(),
+            crypto_level_sealed: [None; 3],
         }
     }
 }
