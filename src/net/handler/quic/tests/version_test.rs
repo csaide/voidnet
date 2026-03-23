@@ -1,5 +1,6 @@
 use crate::net::handler::quic::transport::version::{
-    QUIC_VERSION_1, build_version_negotiation, is_reserved_version, is_supported_version,
+    QUIC_VERSION_1, QUIC_VERSION_2, build_version_negotiation, is_initial_type,
+    is_reserved_version, is_supported_version, long_packet_type_bits,
     should_process_version_negotiation,
 };
 
@@ -66,4 +67,52 @@ fn discard_vn_after_processing() {
     assert!(!should_process_version_negotiation(true));
     // should_process returns true when we haven't processed any packet yet
     assert!(should_process_version_negotiation(false));
+}
+
+// --- long_packet_type_bits tests (RFC 9000 §17.2 / RFC 9369 §3.2) ---
+
+#[test]
+fn long_packet_type_bits_v1_initial() {
+    assert_eq!(long_packet_type_bits(0, QUIC_VERSION_1), 0x00);
+}
+
+#[test]
+fn long_packet_type_bits_v1_handshake() {
+    assert_eq!(long_packet_type_bits(1, QUIC_VERSION_1), 0x02);
+}
+
+#[test]
+fn long_packet_type_bits_v1_zero_rtt() {
+    assert_eq!(long_packet_type_bits(2, QUIC_VERSION_1), 0x01);
+}
+
+#[test]
+fn long_packet_type_bits_v2_initial() {
+    assert_eq!(long_packet_type_bits(0, QUIC_VERSION_2), 0x01);
+}
+
+#[test]
+fn long_packet_type_bits_v2_handshake() {
+    assert_eq!(long_packet_type_bits(1, QUIC_VERSION_2), 0x03);
+}
+
+#[test]
+fn long_packet_type_bits_v2_zero_rtt() {
+    assert_eq!(long_packet_type_bits(2, QUIC_VERSION_2), 0x02);
+}
+
+// --- is_initial_type tests ---
+
+#[test]
+fn is_initial_type_v1() {
+    assert!(is_initial_type(0x00, QUIC_VERSION_1));
+    assert!(!is_initial_type(0x01, QUIC_VERSION_1));
+    assert!(!is_initial_type(0x02, QUIC_VERSION_1));
+}
+
+#[test]
+fn is_initial_type_v2() {
+    assert!(is_initial_type(0x01, QUIC_VERSION_2));
+    assert!(!is_initial_type(0x00, QUIC_VERSION_2));
+    assert!(!is_initial_type(0x02, QUIC_VERSION_2));
 }

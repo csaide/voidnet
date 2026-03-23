@@ -1415,7 +1415,11 @@ pub fn generate_packets<'umem>(
                     let largest_acked = conn.ack[space as usize].largest_received().unwrap_or(0);
 
                     let builder_opt = if space <= 1 {
-                        let packet_type_bits = if space == 0 { 0x00 } else { 0x02 };
+                        let packet_type_bits =
+                            crate::net::handler::quic::transport::version::long_packet_type_bits(
+                                space,
+                                conn.version,
+                            );
                         PacketBuilder::begin_long(
                             &mut frame[quic_offset..],
                             packet_type_bits,
@@ -1641,8 +1645,11 @@ fn build_packet_in_frame(
 
     // Choose packet builder type
     let mut builder = if space <= 1 {
-        // Long header (Initial=0x00 or Handshake=0x02)
-        let packet_type_bits = if space == 0 { 0x00 } else { 0x02 };
+        // Long header (Initial or Handshake — type bits depend on version)
+        let packet_type_bits = crate::net::handler::quic::transport::version::long_packet_type_bits(
+            space,
+            conn.version,
+        );
         match PacketBuilder::begin_long(
             &mut frame[quic_offset..],
             packet_type_bits,

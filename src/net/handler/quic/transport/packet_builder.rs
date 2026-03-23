@@ -70,7 +70,7 @@ impl<'a> PacketBuilder<'a> {
         offset += scid.len();
 
         // For Initial packets: token length = 0 (no token for now)
-        if packet_type_bits == 0x00 {
+        if super::version::is_initial_type(packet_type_bits, version) {
             buf[offset] = 0; // token length varint = 0
             offset += 1;
         }

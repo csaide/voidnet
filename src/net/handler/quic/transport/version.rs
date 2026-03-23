@@ -14,6 +14,33 @@ pub fn is_supported_version(version: u32) -> bool {
     version == QUIC_VERSION_1 || version == QUIC_VERSION_2
 }
 
+/// Encode long header packet type bits for the given space and version.
+/// Returns the 2-bit type field value (RFC 9000 §17.2 / RFC 9369 §3.2).
+pub fn long_packet_type_bits(space: u8, version: u32) -> u8 {
+    if version == QUIC_VERSION_2 {
+        match space {
+            0 => 0x01, // Initial
+            1 => 0x03, // Handshake
+            _ => 0x02, // 0-RTT (space isn't used for Retry)
+        }
+    } else {
+        match space {
+            0 => 0x00, // Initial
+            1 => 0x02, // Handshake
+            _ => 0x01, // 0-RTT
+        }
+    }
+}
+
+/// Check if the given packet_type_bits represents an Initial packet for the given version.
+pub fn is_initial_type(packet_type_bits: u8, version: u32) -> bool {
+    if version == QUIC_VERSION_2 {
+        packet_type_bits == 0x01
+    } else {
+        packet_type_bits == 0x00
+    }
+}
+
 /// Check if version matches the reserved pattern for VN testing (0x?a?a?a?a)
 pub fn is_reserved_version(version: u32) -> bool {
     (version & 0x0f0f0f0f) == 0x0a0a0a0a
