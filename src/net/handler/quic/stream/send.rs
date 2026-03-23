@@ -101,6 +101,84 @@ impl SendHalf {
         self.retransmit = result;
     }
 
+    /// Record that bytes [start, end) have been acknowledged.
+    /// Advances the contiguous `acked` frontier when possible and frees
+    /// the corresponding buffer space. Returns the number of bytes freed.
+    pub fn on_ack(&mut self, start: u64, end: u64) -> usize {
+        if start >= end {
+            return 0;
+        }
+        let old_acked = self.acked;
+
+        if start <= self.acked {
+            // Extends (or overlaps) the contiguous frontier.
+            if end > self.acked {
+                self.acked = end;
+            }
+        } else {
+            // Out-of-order — store for later coalescing.
+            self.add_acked_ooo(start, end);
+        }
+
+        // Coalesce: repeatedly check if the lowest OOO range is now
+        // contiguous with (or overlapping) the acked frontier.
+        loop {
+            if let Some(&(s, e)) = self.acked_ooo.first() {
+                if s <= self.acked {
+                    if e > self.acked {
+                        self.acked = e;
+                    }
+                    self.acked_ooo.remove(0);
+                    continue;
+                }
+            }
+            break;
+        }
+
+        let freed = (self.acked - old_acked) as usize;
+        if freed > 0 {
+            self.buffer.consume(freed);
+        }
+        freed
+    }
+
+    /// Insert an out-of-order acked range, merging with overlapping or
+    /// adjacent existing ranges. Same sorted-merge pattern as retransmit.
+    fn add_acked_ooo(&mut self, start: u64, end: u64) {
+        let mut new_start = start;
+        let mut new_end = end;
+        let mut result: SmallVec<[(u64, u64); 4]> = SmallVec::new();
+        let mut inserted = false;
+
+        for &(s, e) in &self.acked_ooo {
+            if !inserted {
+                if s > new_end {
+                    result.push((new_start, new_end));
+                    inserted = true;
+                    result.push((s, e));
+                } else if e < new_start {
+                    result.push((s, e));
+                } else {
+                    new_start = new_start.min(s);
+                    new_end = new_end.max(e);
+                }
+            } else {
+                result.push((s, e));
+            }
+        }
+
+        if !inserted {
+            result.push((new_start, new_end));
+        }
+
+        self.acked_ooo = result;
+    }
+
+    /// Read-only access to out-of-order acked ranges (for testing).
+    pub fn acked_ooo_ranges(&self) -> &[(u64, u64)] {
+        &self.acked_ooo
+    }
+
     /// Read-only access to retransmit ranges.
     pub fn retransmit_ranges(&self) -> &[(u64, u64)] {
         &self.retransmit
