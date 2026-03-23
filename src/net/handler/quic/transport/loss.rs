@@ -364,6 +364,19 @@ impl LossDetector {
         self.min_rtt = latest_rtt;
     }
 
+    /// Reset RTT estimates to initial values after connection migration (RFC 9000 §9.4).
+    ///
+    /// On confirming a peer's ownership of its new address, the endpoint MUST
+    /// immediately reset the RTT estimator for the new path to initial values.
+    pub fn reset_rtt(&mut self) {
+        let initial_rtt = Duration::from_millis(K_INITIAL_RTT_MS);
+        self.latest_rtt = initial_rtt;
+        self.smoothed_rtt = initial_rtt;
+        self.rttvar = initial_rtt / 2;
+        self.min_rtt = MAX_DURATION;
+        self.first_rtt_sample = None;
+    }
+
     /// Detect lost packets in a space (RFC 9002 §6.1).
     #[inline]
     fn detect_lost_packets(

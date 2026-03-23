@@ -454,6 +454,18 @@ impl<'a> PacketBuilder<'a> {
         true
     }
 
+    /// Write a PATH_CHALLENGE frame (0x1a + 8 bytes data). Returns true if written.
+    pub fn write_path_challenge(&mut self, data: [u8; 8]) -> bool {
+        if self.remaining() < 9 {
+            return false;
+        }
+        self.buf[self.offset] = 0x1a;
+        self.offset += 1;
+        self.buf[self.offset..self.offset + 8].copy_from_slice(&data);
+        self.offset += 8;
+        true
+    }
+
     /// Write a PATH_RESPONSE frame (0x1b + 8 bytes data). Returns true if written.
     pub fn write_path_response(&mut self, data: [u8; 8]) -> bool {
         if self.remaining() < 9 {

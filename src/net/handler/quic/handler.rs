@@ -254,9 +254,19 @@ impl QuicHandler {
                     conn.remote_addr = src_addr;
                     conn.remote_port = src_port;
                     conn.remote_mac = src_mac;
-                    // Initiate path validation
+                    // Initiate path validation on the NEW path
                     let _challenge = conn.path.initiate_validation(now);
                     conn.pending_path_response = None; // clear any stale response
+
+                    // RFC 9000 §9.3.3: validate the PREVIOUS path too
+                    let prev_challenge = crate::net::handler::quic::path::generate_challenge();
+                    conn.pending_prev_path_challenge = Some(prev_challenge);
+
+                    // RFC 9000 §9.4: reset congestion controller and RTT for the new path
+                    conn.congestion =
+                        super::transport::congestion::QuicCubic::new(conn.max_udp_payload as usize);
+                    conn.loss.reset_rtt();
+
                     // CID rotation for linkability prevention
                     if let Some((new_cid, _seq)) = conn.scid_set.pick_unused(&conn.scid) {
                         use crate::net::handler::quic::connection::MigrationAction;
@@ -469,9 +479,19 @@ impl QuicHandler {
                     conn.remote_addr = src_addr;
                     conn.remote_port = src_port;
                     conn.remote_mac = src_mac;
-                    // Initiate path validation
+                    // Initiate path validation on the NEW path
                     let _challenge = conn.path.initiate_validation(now);
                     conn.pending_path_response = None; // clear any stale response
+
+                    // RFC 9000 §9.3.3: validate the PREVIOUS path too
+                    let prev_challenge = crate::net::handler::quic::path::generate_challenge();
+                    conn.pending_prev_path_challenge = Some(prev_challenge);
+
+                    // RFC 9000 §9.4: reset congestion controller and RTT for the new path
+                    conn.congestion =
+                        super::transport::congestion::QuicCubic::new(conn.max_udp_payload as usize);
+                    conn.loss.reset_rtt();
+
                     // CID rotation for linkability prevention
                     if let Some((new_cid, _seq)) = conn.scid_set.pick_unused(&conn.scid) {
                         use crate::net::handler::quic::connection::MigrationAction;

@@ -198,6 +198,10 @@ pub struct QuicConnectionState {
     pub pending_migration: Option<MigrationAction>,
     /// Previous path state for migration revert
     pub prev_path: Option<PreviousPath>,
+    /// Pending PATH_CHALLENGE for the previous path (RFC 9000 §9.3.3).
+    /// After migration, the old path must be validated too. This stores
+    /// the challenge data; the packet builder uses prev_path's address info.
+    pub pending_prev_path_challenge: Option<[u8; 8]>,
     /// Whether a key update should be initiated
     pub needs_key_update: bool,
 
@@ -331,6 +335,7 @@ impl QuicConnectionState {
             original_version: None,
             pending_migration: None,
             prev_path: None,
+            pending_prev_path_challenge: None,
             needs_key_update: false,
             pending_preferred_addr_migration: false,
             negotiated_version: None,

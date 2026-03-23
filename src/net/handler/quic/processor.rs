@@ -1469,6 +1469,8 @@ fn has_pending_data(conn: &QuicConnectionState, space: u8) -> bool {
     conn.send_handshake_done
         || conn.pending_new_token.is_some()
         || conn.pending_path_response.is_some()
+        || conn.path.challenge_pending.is_some()
+        || conn.pending_prev_path_challenge.is_some()
         || conn.streams.has_pending_send()
         || conn.datagrams.has_pending_send()
         || conn.retransmit.max_data
@@ -1725,6 +1727,28 @@ pub fn generate_packets<'umem>(
             tx_return.push(frame);
         } else {
             free_frames.push(frame); // return unused frame
+        }
+    }
+
+    // RFC 9000 §9.3.3: send PATH_CHALLENGE to the PREVIOUS path after migration.
+    // This packet must be addressed to the old remote address, not the current one.
+    if let Some(challenge_data) = conn.pending_prev_path_challenge.take() {
+        if conn.prev_path.is_some() && conn.keys.one_rtt.is_some() {
+            if let Some(mut frame) = free_frames.pop() {
+                let total_len =
+                    build_prev_path_challenge_packet(conn, challenge_data, now, &mut frame);
+                if total_len > 0 {
+                    unsafe { frame.set_len(total_len) };
+                    tx_return.push(frame);
+                } else {
+                    free_frames.push(frame);
+                    // Put it back if we couldn't build the packet
+                    conn.pending_prev_path_challenge = Some(challenge_data);
+                }
+            } else {
+                // No free frame; put the challenge back
+                conn.pending_prev_path_challenge = Some(challenge_data);
+            }
         }
     }
 
@@ -2075,6 +2099,17 @@ fn build_packet_in_frame(
         }
     }
 
+    // 4a. PATH_CHALLENGE for the new path (RFC 9000 §9)
+    if space == 2
+        && let Some(data) = conn.path.challenge_pending
+    {
+        if builder.write_path_challenge(data) {
+            wrote_ack_eliciting = true;
+            // Don't clear challenge_pending — it's needed for matching PATH_RESPONSE.
+            // It will be cleared by on_path_response() when validated.
+        }
+    }
+
     // 4g. RETIRE_CONNECTION_ID frames (1-RTT space only, RFC 9000 §5.1.2)
     if space == 2 {
         // From CidManager pending retires (queued during NEW_CONNECTION_ID processing)
@@ -2349,6 +2384,177 @@ fn build_packet_in_frame(
         }
         Err(_) => 0,
     }
+}
+
+/// Build a minimal 1-RTT packet containing only a PATH_CHALLENGE frame,
+/// addressed to the PREVIOUS path's remote address (RFC 9000 §9.3.3).
+///
+/// Returns total frame length, or 0 on failure.
+fn build_prev_path_challenge_packet(
+    conn: &mut QuicConnectionState,
+    challenge_data: [u8; 8],
+    now: Instant,
+    frame: &mut Frame<'_>,
+) -> usize {
+    let prev = match conn.prev_path.as_ref() {
+        Some(p) => p,
+        None => return 0,
+    };
+
+    let ip_len = match conn.local_addr {
+        IpAddress::V4(_) => IPV4_MIN_HEADER_LEN,
+        IpAddress::V6(_) => IPV6_HEADER_LEN,
+    };
+    let quic_offset = ETH_LEN + ip_len + UDP_HEADER_LEN;
+
+    let capacity = frame.capacity();
+    if capacity < quic_offset + 64 {
+        return 0;
+    }
+    unsafe { frame.set_len(capacity) };
+
+    let pn = conn.loss.next_pn(2); // 1-RTT space
+    let largest_acked = conn.ack[2].largest_received().unwrap_or(0);
+
+    let mut builder = match PacketBuilder::begin_short(
+        &mut frame[quic_offset..],
+        conn.dcid.as_bytes(),
+        pn,
+        largest_acked,
+        conn.key_update.key_phase,
+        &conn.frame_log,
+    ) {
+        Some(b) => b,
+        None => return 0,
+    };
+
+    if !builder.write_path_challenge(challenge_data) {
+        return 0;
+    }
+
+    // Pad to minimum: pn_offset + 4 for header protection sample
+    let min_offset = builder.pn_offset() + 4;
+    builder.pad_to(min_offset);
+
+    let pn_offset = builder.pn_offset();
+    let pn_length = builder.pn_length();
+    let frame_range = builder.frame_range(&conn.frame_log);
+    let quic_len = builder.finish();
+
+    let local_key = match conn.keys.one_rtt.as_ref() {
+        Some(kp) => &kp.local,
+        None => return 0,
+    };
+
+    let quic_buf = &mut frame[quic_offset..quic_offset + quic_len];
+    match protect_packet(local_key, quic_buf, pn_offset, pn_length, pn) {
+        Ok(protected_len) => {
+            // Record as sent (not in-flight for congestion since it's a probe)
+            conn.loss.on_packet_sent(
+                2,
+                pn,
+                SentPacket {
+                    time_sent: now,
+                    size: protected_len as u16,
+                    ack_eliciting: true,
+                    in_flight: false, // probe packet, don't count for congestion
+                    frame_range,
+                },
+            );
+            conn.packets_encrypted[2] += 1;
+
+            // Write transport headers using the PREVIOUS path's address
+            let prev_remote_addr = prev.remote_addr;
+            let prev_remote_port = prev.remote_port;
+            let prev_remote_mac = prev.remote_mac;
+            write_transport_headers_to(
+                conn.local_addr,
+                prev_remote_addr,
+                conn.local_port,
+                prev_remote_port,
+                conn.local_mac,
+                prev_remote_mac,
+                frame,
+                quic_offset,
+                protected_len,
+            )
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Write Ethernet + IP + UDP headers with explicit addresses (for old-path probing).
+/// Returns total frame length, or 0 on failure.
+fn write_transport_headers_to(
+    local_addr: IpAddress,
+    remote_addr: IpAddress,
+    local_port: u16,
+    remote_port: u16,
+    local_mac: crate::net::wire::ethernet::MacAddress,
+    remote_mac: crate::net::wire::ethernet::MacAddress,
+    frame: &mut Frame<'_>,
+    quic_offset: usize,
+    quic_len: usize,
+) -> usize {
+    let udp_len = UDP_HEADER_LEN + quic_len;
+    let total_frame_len = quic_offset + quic_len;
+
+    match local_addr {
+        IpAddress::V4(_) => {
+            write_ethernet_header(frame, remote_mac, local_mac, EtherTypes::IPv4);
+        }
+        IpAddress::V6(_) => {
+            write_ethernet_header(frame, remote_mac, local_mac, EtherTypes::IPv6);
+        }
+    }
+
+    match (local_addr, remote_addr) {
+        (IpAddress::V4(src), IpAddress::V4(dst)) => {
+            let ip = &mut frame[ETH_LEN..ETH_LEN + IPV4_MIN_HEADER_LEN];
+            ip.fill(0);
+            ip[0] = 0x45;
+            let total_ip_len = (IPV4_MIN_HEADER_LEN + udp_len) as u16;
+            ip[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
+            ip[6] = 0x40;
+            ip[8] = 64;
+            ip[9] = IpProtocols::Udp;
+            let src_bytes: [u8; 4] = src.into();
+            ip[12..16].copy_from_slice(&src_bytes);
+            let dst_bytes: [u8; 4] = dst.into();
+            ip[16..20].copy_from_slice(&dst_bytes);
+            let ip_header = Ipv4Header::from_bytes_mut(frame);
+            ip_header.fill_checksum();
+        }
+        (IpAddress::V6(src), IpAddress::V6(dst)) => {
+            let ip = &mut frame[ETH_LEN..ETH_LEN + IPV6_HEADER_LEN];
+            ip.fill(0);
+            ip[0] = 0x60;
+            let payload_len = udp_len as u16;
+            ip[4..6].copy_from_slice(&payload_len.to_be_bytes());
+            ip[6] = IpProtocols::Udp;
+            ip[7] = 64;
+            let src_bytes: [u8; 16] = src.into();
+            ip[8..24].copy_from_slice(&src_bytes);
+            let dst_bytes: [u8; 16] = dst.into();
+            ip[24..40].copy_from_slice(&dst_bytes);
+        }
+        _ => return 0,
+    }
+
+    let udp_offset = quic_offset - UDP_HEADER_LEN;
+    let udp = unsafe { UdpHeader::from_bytes_at_mut(frame, udp_offset) };
+    *udp = UdpHeader::new(local_port, remote_port, udp_len as u16, [0, 0]);
+
+    if let (IpAddress::V6(src), IpAddress::V6(dst)) = (local_addr, remote_addr) {
+        let src_bytes: [u8; 16] = src.into();
+        let dst_bytes: [u8; 16] = dst.into();
+        let udp_segment = &frame[udp_offset..udp_offset + udp_len];
+        let cksum = ipv6_udp_checksum(&src_bytes, &dst_bytes, udp_segment);
+        let udp_mut = unsafe { UdpHeader::from_bytes_at_mut(frame, udp_offset) };
+        udp_mut.checksum = cksum.to_be_bytes();
+    }
+
+    total_frame_len
 }
 
 /// Check if a stream is fully complete (both sides done) and can be removed.
