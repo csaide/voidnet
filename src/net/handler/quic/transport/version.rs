@@ -1,6 +1,14 @@
 pub const QUIC_VERSION_1: u32 = 0x00000001;
 pub const QUIC_VERSION_2: u32 = 0x6b3343cf;
 
+/// Map a QUIC version constant to the corresponding rustls quic::Version.
+pub fn rustls_quic_version(version: u32) -> rustls::quic::Version {
+    match version {
+        QUIC_VERSION_2 => rustls::quic::Version::V2,
+        _ => rustls::quic::Version::V1,
+    }
+}
+
 /// Check if a version is known/supported
 pub fn is_supported_version(version: u32) -> bool {
     version == QUIC_VERSION_1 || version == QUIC_VERSION_2

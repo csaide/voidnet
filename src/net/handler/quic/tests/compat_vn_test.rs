@@ -1,5 +1,7 @@
 use crate::net::handler::quic::transport::params::{TransportParams, VersionInformation};
-use crate::net::handler::quic::transport::version::{QUIC_VERSION_1, QUIC_VERSION_2};
+use crate::net::handler::quic::transport::version::{
+    QUIC_VERSION_1, QUIC_VERSION_2, rustls_quic_version,
+};
 
 #[test]
 fn version_info_encode_decode_roundtrip() {
@@ -110,4 +112,82 @@ fn version_info_decode_bad_length() {
 
     let result = TransportParams::decode(&buf[..pos]);
     assert!(result.is_err(), "should fail on length not divisible by 4");
+}
+
+// --- Task 13b tests ---
+
+#[test]
+fn compat_vn_both_support_v1_and_v2() {
+    // Both sides advertise v1+v2 in version_information, connection uses v1 (default).
+    // Verify version_information is exchanged correctly and validation passes.
+    let mut client_params = TransportParams::default();
+    client_params.version_information = Some(VersionInformation {
+        chosen_version: QUIC_VERSION_1,
+        other_versions: vec![QUIC_VERSION_1, QUIC_VERSION_2],
+    });
+
+    let mut server_params = TransportParams::default();
+    server_params.version_information = Some(VersionInformation {
+        chosen_version: QUIC_VERSION_1,
+        other_versions: vec![QUIC_VERSION_1, QUIC_VERSION_2],
+    });
+
+    let our_available = [QUIC_VERSION_1, QUIC_VERSION_2];
+    let current_version = QUIC_VERSION_1;
+
+    // Client validates server's version_information
+    assert!(
+        server_params
+            .validate_version_info(current_version, &our_available)
+            .is_ok()
+    );
+
+    // Server validates client's version_information
+    assert!(
+        client_params
+            .validate_version_info(current_version, &our_available)
+            .is_ok()
+    );
+
+    // Encode/decode round-trip preserves version_information
+    let mut buf = [0u8; 512];
+    let written = client_params.encode(&mut buf);
+    let decoded = TransportParams::decode(&buf[..written]).unwrap();
+    let vi = decoded.version_information.unwrap();
+    assert_eq!(vi.chosen_version, QUIC_VERSION_1);
+    assert_eq!(vi.other_versions, vec![QUIC_VERSION_1, QUIC_VERSION_2]);
+}
+
+#[test]
+fn rustls_quic_version_v1() {
+    let v = rustls_quic_version(QUIC_VERSION_1);
+    assert!(matches!(v, rustls::quic::Version::V1));
+}
+
+#[test]
+fn rustls_quic_version_v2() {
+    let v = rustls_quic_version(QUIC_VERSION_2);
+    assert!(matches!(v, rustls::quic::Version::V2));
+}
+
+#[test]
+fn rustls_quic_version_unknown_defaults_to_v1() {
+    let v = rustls_quic_version(0xdeadbeef);
+    assert!(matches!(v, rustls::quic::Version::V1));
+}
+
+#[test]
+fn negotiated_version_field_defaults_to_none() {
+    use crate::net::handler::quic::connection::{QuicConnectionState, Side};
+    use crate::net::handler::quic::connection_id::ConnectionId;
+    use crate::net::handler::quic::transport::params::TransportParams;
+
+    let conn = QuicConnectionState::new(
+        ConnectionId::empty(),
+        Side::Server,
+        TransportParams::default(),
+        1200,
+        coarsetime::Instant::now(),
+    );
+    assert!(conn.negotiated_version.is_none());
 }

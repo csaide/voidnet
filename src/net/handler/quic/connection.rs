@@ -196,6 +196,10 @@ pub struct QuicConnectionState {
     /// Whether a key update should be initiated
     pub needs_key_update: bool,
 
+    /// Negotiated version from Compatible Version Negotiation (RFC 9369).
+    /// Set when both sides support a preferred version (e.g., v2) via version_information.
+    pub negotiated_version: Option<u32>,
+
     /// Handshake keys should be discarded after the next Handshake ACK is sent.
     /// Set when a 1-RTT packet is received (confirming client got the handshake).
     pub handshake_keys_pending_discard: bool,
@@ -302,6 +306,7 @@ impl QuicConnectionState {
             pending_migration: None,
             prev_path: None,
             needs_key_update: false,
+            negotiated_version: None,
             handshake_keys_pending_discard: false,
             token_secret: None,
             pending_new_token: None,

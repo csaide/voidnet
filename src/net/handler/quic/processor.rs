@@ -945,6 +945,30 @@ fn handle_crypto_frame(
                 conn.dcid = *server_scid;
             }
         }
+
+        // RFC 9369 §4.1: Compatible Version Negotiation
+        // Validate peer's version_information and detect if we can negotiate a preferred version.
+        {
+            use crate::net::handler::quic::transport::version::{QUIC_VERSION_1, QUIC_VERSION_2};
+            let our_available = [QUIC_VERSION_1, QUIC_VERSION_2];
+            if let Err(err) = params.validate_version_info(conn.version, &our_available) {
+                conn.close_error = Some(err);
+                conn.state = ConnectionState::Closing;
+                conn.needs_draining_timer = true;
+                return;
+            }
+            // Server-side: if both sides support v2 and we're currently on v1,
+            // record the negotiated version (informational — rustls handles HKDF labels).
+            if conn.side == Side::Server {
+                if let Some(ref vi) = params.version_information {
+                    if conn.version == QUIC_VERSION_1 && vi.other_versions.contains(&QUIC_VERSION_2)
+                    {
+                        conn.negotiated_version = Some(QUIC_VERSION_2);
+                    }
+                }
+            }
+        }
+
         conn.peer_params = Some(params);
     }
 }

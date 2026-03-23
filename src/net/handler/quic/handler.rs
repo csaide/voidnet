@@ -930,11 +930,7 @@ impl QuicHandler {
         let listener = self.listeners.get(&local_port)?;
 
         let rustls_version =
-            if version == crate::net::handler::quic::transport::version::QUIC_VERSION_2 {
-                rustls::quic::Version::V2
-            } else {
-                rustls::quic::Version::V1
-            };
+            crate::net::handler::quic::transport::version::rustls_quic_version(version);
 
         // Derive initial keys from original DCID (RFC 9001 §5.2)
         let (local_dk, remote_dk) = derive_initial_keys(
@@ -969,6 +965,17 @@ impl QuicHandler {
         let mut server_params = listener.transport_params.clone();
         server_params.original_destination_connection_id = Some(*original_dcid);
         server_params.initial_source_connection_id = Some(scid);
+
+        // RFC 9369 §4.1: include version_information for Compatible VN
+        server_params.version_information = Some(
+            crate::net::handler::quic::transport::params::VersionInformation {
+                chosen_version: version,
+                other_versions: vec![
+                    crate::net::handler::quic::transport::version::QUIC_VERSION_1,
+                    crate::net::handler::quic::transport::version::QUIC_VERSION_2,
+                ],
+            },
+        );
 
         let mut params_buf = [0u8; 512];
         let params_len = server_params.encode(&mut params_buf);
@@ -1069,6 +1076,17 @@ impl QuicHandler {
         // Encode transport params with our SCID
         let mut client_params = transport_params.clone();
         client_params.initial_source_connection_id = Some(scid);
+
+        // RFC 9369 §4.1: include version_information for Compatible VN
+        client_params.version_information = Some(
+            crate::net::handler::quic::transport::params::VersionInformation {
+                chosen_version: crate::net::handler::quic::transport::version::QUIC_VERSION_1,
+                other_versions: vec![
+                    crate::net::handler::quic::transport::version::QUIC_VERSION_1,
+                    crate::net::handler::quic::transport::version::QUIC_VERSION_2,
+                ],
+            },
+        );
 
         let mut params_buf = [0u8; 512];
         let params_len = client_params.encode(&mut params_buf);
