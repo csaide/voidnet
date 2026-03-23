@@ -1707,6 +1707,44 @@ fn build_packet_in_frame(
             if let Some(entry) = conn.streams.get_mut(stream_id)
                 && let Some(ref mut send) = entry.send
             {
+                // Priority 1: Retransmit lost data before sending new data
+                if !send.retransmit.is_empty() {
+                    let (range_start, range_end) = send.retransmit[0];
+                    let offset_from_head = (range_start - send.acked) as usize;
+                    let range_len = (range_end - range_start) as usize;
+                    let max_len = builder.remaining().saturating_sub(20).min(range_len);
+                    if max_len > 0 {
+                        let mut temp_buf = [0u8; 1200];
+                        let n = send
+                            .buffer
+                            .peek_at(offset_from_head, &mut temp_buf[..max_len]);
+                        if n > 0 {
+                            let fin = send.fin_sent
+                                && range_start + n as u64 >= send.acked + send.buffer.len() as u64;
+                            let written = builder.write_stream(
+                                stream_id,
+                                range_start,
+                                &temp_buf[..n],
+                                fin,
+                                &mut conn.frame_log,
+                            );
+                            if written > 0 {
+                                wrote_ack_eliciting = true;
+                                if range_start + written as u64 >= range_end {
+                                    send.pop_retransmit_range();
+                                } else {
+                                    send.retransmit[0].0 = range_start + written as u64;
+                                }
+                            }
+                        }
+                    }
+                    continue; // fairness: one retransmit range per stream per packet
+                }
+
+                // Priority 2: New data
+                if builder.remaining() < 20 {
+                    continue;
+                }
                 let unsent_off = (send.sent - send.acked) as usize;
                 let max_len = builder.remaining().saturating_sub(20);
                 let (part1, part2) = send.buffer.peek_slices(unsent_off, max_len);
