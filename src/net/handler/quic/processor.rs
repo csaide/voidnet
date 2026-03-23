@@ -1265,11 +1265,13 @@ fn handle_ack_frame(
 
     // Process ECN if present
     if let Some(ref ecn_counts) = ack.ecn {
-        let ce_signaled = conn
-            .ecn
-            .on_ack_ecn(ecn_counts.ect0, ecn_counts.ect1, ecn_counts.ecn_ce);
-        if ce_signaled && let Some(last_acked) = acked.last() {
-            conn.congestion.on_ecn_ce(last_acked.time_sent, now);
+        let ce_signaled =
+            conn.ecn
+                .on_ack_ecn(space, ecn_counts.ect0, ecn_counts.ect1, ecn_counts.ecn_ce);
+        if ce_signaled && let Some(first_acked) = acked.first() {
+            // RFC 9002 §B.7: use sent_time of the largest_acked packet.
+            // acked is built largest-to-smallest, so first() is the largest PN.
+            conn.congestion.on_ecn_ce(first_acked.time_sent, now);
         }
     }
 
