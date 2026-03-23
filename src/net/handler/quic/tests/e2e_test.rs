@@ -7,6 +7,10 @@ use rustls::{ClientConfig, DigitallySignedStruct, Error, ServerConfig, Signature
 
 use crate::net::handler::quic::QuicHandler;
 use crate::net::handler::quic::connection::ConnectionState;
+use crate::net::handler::quic::error::TransportError;
+use crate::net::handler::quic::event::QuicEvent;
+use crate::net::handler::quic::processor::{TimerResult, handle_timeout};
+use crate::net::handler::quic::timer_kinds::QuicTimerKind;
 use crate::net::handler::quic::transport::frame::StreamId;
 use crate::net::handler::quic::transport::params::TransportParams;
 use crate::net::neighbor::NeighborHandler;
@@ -1504,4 +1508,582 @@ fn e2e_zero_rtt_reconnect() {
              NewSessionTicket may not have been delivered through handler pipeline"
         );
     }
+}
+
+// ── Connection Close + Stream Reset + Idle Timeout Tests ─────────────
+
+#[test]
+fn e2e_client_initiated_close() {
+    let now = Instant::now();
+
+    // ── Set up client ────────────────────────────────────────────────
+    let mut client_handler = QuicHandler::new(false, false);
+    let mut client_wheel = TimerWheel::new(now);
+    let client_nh = NeighborHandler::new("lo", Duration::from_secs(60)).unwrap();
+    let mut client_free_backing: Vec<Vec<u8>> = (0..32).map(|_| vec![0u8; 4096]).collect();
+    let mut client_free = BasicFrameBuffer::new(32);
+    for (i, buf) in client_free_backing.iter_mut().enumerate() {
+        let f = Frame::new((i as u64 + 1) * 4096, buf.as_mut_slice(), 1, false);
+        client_free.push(f);
+    }
+    let mut client_rx = BasicFrameBuffer::new(16);
+    let mut client_tx = BasicFrameBuffer::new(32);
+
+    let client_conn_key = client_handler
+        .initiate_connection(
+            IpAddress::V4(Ipv4Address::new(SERVER_IP)),
+            QUIC_PORT,
+            IpAddress::V4(Ipv4Address::new(CLIENT_IP)),
+            CLIENT_PORT,
+            MacAddress::new(CLIENT_MAC),
+            MacAddress::new(SERVER_MAC),
+            "localhost",
+            make_client_config(),
+            test_transport_params(),
+            now,
+        )
+        .expect("initiate_connection should succeed");
+
+    // ── Set up server ────────────────────────────────────────────────
+    let mut server_handler = QuicHandler::new(false, false);
+    let mut server_wheel = TimerWheel::new(now);
+    let server_nh = NeighborHandler::new("lo", Duration::from_secs(60)).unwrap();
+    let mut server_free_backing: Vec<Vec<u8>> = (0..32).map(|_| vec![0u8; 4096]).collect();
+    let mut server_free = BasicFrameBuffer::new(32);
+    for (i, buf) in server_free_backing.iter_mut().enumerate() {
+        let f = Frame::new((i as u64 + 100) * 4096, buf.as_mut_slice(), 1, false);
+        server_free.push(f);
+    }
+    let mut server_rx = BasicFrameBuffer::new(16);
+    let mut server_tx = BasicFrameBuffer::new(32);
+
+    server_handler
+        .listen(QUIC_PORT, make_server_config(), test_transport_params())
+        .expect("listen should succeed");
+
+    // ── Drive handshake to completion ────────────────────────────────
+    let server_conn_key = drive_handshake(
+        &mut client_handler,
+        &mut client_wheel,
+        &mut client_free,
+        &mut client_tx,
+        &mut client_rx,
+        &client_nh,
+        client_conn_key,
+        &mut server_handler,
+        &mut server_wheel,
+        &mut server_free,
+        &mut server_tx,
+        &mut server_rx,
+        &server_nh,
+        now,
+        10,
+    );
+
+    // Verify both sides are established
+    assert_eq!(
+        client_handler.connections[client_conn_key].state,
+        ConnectionState::Established,
+    );
+    assert_eq!(
+        server_handler.connections[server_conn_key].state,
+        ConnectionState::Established,
+    );
+
+    // ── Client: initiate connection close ────────────────────────────
+    {
+        let conn = &mut client_handler.connections[client_conn_key];
+        conn.close_error = Some(TransportError::NO_ERROR);
+        conn.state = ConnectionState::Closing;
+        conn.needs_draining_timer = true;
+    }
+
+    // ── Pump client → server (CONNECTION_CLOSE packet) ──────────────
+    pump_packets(
+        &mut client_handler,
+        &mut client_wheel,
+        &mut client_free,
+        &mut client_tx,
+        &mut server_handler,
+        &mut server_wheel,
+        &server_nh,
+        &mut server_free,
+        &mut server_rx,
+        &mut server_tx,
+        now,
+    );
+
+    // ── Verify server entered Draining state ────────────────────────
+    let server_state = server_handler.connections[server_conn_key].state;
+    assert_eq!(
+        server_state,
+        ConnectionState::Draining,
+        "server should enter Draining after receiving CONNECTION_CLOSE, got {:?}",
+        server_state,
+    );
+
+    // ── Verify server received ConnectionClosed event ───────────────
+    let event = server_handler.connections[server_conn_key]
+        .event_queue
+        .pop();
+    let found_close = if let Some(QuicEvent::ConnectionClosed(code)) = event {
+        assert_eq!(code, 0, "error code should be NO_ERROR (0)");
+        true
+    } else {
+        // The ConnectionClosed event might not be the first event; drain them
+        false
+    };
+    if !found_close {
+        // Try draining remaining events
+        let mut found = false;
+        for _ in 0..64 {
+            if let Some(QuicEvent::ConnectionClosed(code)) = server_handler.connections
+                [server_conn_key]
+                .event_queue
+                .pop()
+            {
+                assert_eq!(code, 0, "error code should be NO_ERROR (0)");
+                found = true;
+                break;
+            }
+        }
+        assert!(
+            found,
+            "server event_queue should contain a ConnectionClosed event"
+        );
+    }
+}
+
+#[test]
+fn e2e_server_initiated_close() {
+    let now = Instant::now();
+
+    // ── Set up client ────────────────────────────────────────────────
+    let mut client_handler = QuicHandler::new(false, false);
+    let mut client_wheel = TimerWheel::new(now);
+    let client_nh = NeighborHandler::new("lo", Duration::from_secs(60)).unwrap();
+    let mut client_free_backing: Vec<Vec<u8>> = (0..32).map(|_| vec![0u8; 4096]).collect();
+    let mut client_free = BasicFrameBuffer::new(32);
+    for (i, buf) in client_free_backing.iter_mut().enumerate() {
+        let f = Frame::new((i as u64 + 1) * 4096, buf.as_mut_slice(), 1, false);
+        client_free.push(f);
+    }
+    let mut client_rx = BasicFrameBuffer::new(16);
+    let mut client_tx = BasicFrameBuffer::new(32);
+
+    let client_conn_key = client_handler
+        .initiate_connection(
+            IpAddress::V4(Ipv4Address::new(SERVER_IP)),
+            QUIC_PORT,
+            IpAddress::V4(Ipv4Address::new(CLIENT_IP)),
+            CLIENT_PORT,
+            MacAddress::new(CLIENT_MAC),
+            MacAddress::new(SERVER_MAC),
+            "localhost",
+            make_client_config(),
+            test_transport_params(),
+            now,
+        )
+        .expect("initiate_connection should succeed");
+
+    // ── Set up server ────────────────────────────────────────────────
+    let mut server_handler = QuicHandler::new(false, false);
+    let mut server_wheel = TimerWheel::new(now);
+    let server_nh = NeighborHandler::new("lo", Duration::from_secs(60)).unwrap();
+    let mut server_free_backing: Vec<Vec<u8>> = (0..32).map(|_| vec![0u8; 4096]).collect();
+    let mut server_free = BasicFrameBuffer::new(32);
+    for (i, buf) in server_free_backing.iter_mut().enumerate() {
+        let f = Frame::new((i as u64 + 100) * 4096, buf.as_mut_slice(), 1, false);
+        server_free.push(f);
+    }
+    let mut server_rx = BasicFrameBuffer::new(16);
+    let mut server_tx = BasicFrameBuffer::new(32);
+
+    server_handler
+        .listen(QUIC_PORT, make_server_config(), test_transport_params())
+        .expect("listen should succeed");
+
+    // ── Drive handshake to completion ────────────────────────────────
+    let server_conn_key = drive_handshake(
+        &mut client_handler,
+        &mut client_wheel,
+        &mut client_free,
+        &mut client_tx,
+        &mut client_rx,
+        &client_nh,
+        client_conn_key,
+        &mut server_handler,
+        &mut server_wheel,
+        &mut server_free,
+        &mut server_tx,
+        &mut server_rx,
+        &server_nh,
+        now,
+        10,
+    );
+
+    // ── Server: initiate connection close with application error ─────
+    {
+        let conn = &mut server_handler.connections[server_conn_key];
+        conn.close_error = Some(TransportError(0x42));
+        conn.state = ConnectionState::Closing;
+        conn.needs_draining_timer = true;
+    }
+
+    // ── Pump server → client (CONNECTION_CLOSE packet) ──────────────
+    pump_packets(
+        &mut server_handler,
+        &mut server_wheel,
+        &mut server_free,
+        &mut server_tx,
+        &mut client_handler,
+        &mut client_wheel,
+        &client_nh,
+        &mut client_free,
+        &mut client_rx,
+        &mut client_tx,
+        now,
+    );
+
+    // ── Verify client entered Draining state ────────────────────────
+    let client_state = client_handler.connections[client_conn_key].state;
+    assert_eq!(
+        client_state,
+        ConnectionState::Draining,
+        "client should enter Draining after receiving CONNECTION_CLOSE, got {:?}",
+        client_state,
+    );
+
+    // ── Verify client received ConnectionClosed event ───────────────
+    let mut found_close = false;
+    for _ in 0..64 {
+        match client_handler.connections[client_conn_key]
+            .event_queue
+            .pop()
+        {
+            Some(QuicEvent::ConnectionClosed(code)) => {
+                assert_eq!(code, 0x42, "error code should be 0x42");
+                found_close = true;
+                break;
+            }
+            Some(_) => continue,
+            None => break,
+        }
+    }
+    assert!(
+        found_close,
+        "client event_queue should contain a ConnectionClosed event"
+    );
+}
+
+#[test]
+fn e2e_stream_reset() {
+    let now = Instant::now();
+
+    // ── Set up client ────────────────────────────────────────────────
+    let mut client_handler = QuicHandler::new(false, false);
+    let mut client_wheel = TimerWheel::new(now);
+    let client_nh = NeighborHandler::new("lo", Duration::from_secs(60)).unwrap();
+    let mut client_free_backing: Vec<Vec<u8>> = (0..32).map(|_| vec![0u8; 4096]).collect();
+    let mut client_free = BasicFrameBuffer::new(32);
+    for (i, buf) in client_free_backing.iter_mut().enumerate() {
+        let f = Frame::new((i as u64 + 1) * 4096, buf.as_mut_slice(), 1, false);
+        client_free.push(f);
+    }
+    let mut client_rx = BasicFrameBuffer::new(16);
+    let mut client_tx = BasicFrameBuffer::new(32);
+
+    let client_conn_key = client_handler
+        .initiate_connection(
+            IpAddress::V4(Ipv4Address::new(SERVER_IP)),
+            QUIC_PORT,
+            IpAddress::V4(Ipv4Address::new(CLIENT_IP)),
+            CLIENT_PORT,
+            MacAddress::new(CLIENT_MAC),
+            MacAddress::new(SERVER_MAC),
+            "localhost",
+            make_client_config(),
+            test_transport_params(),
+            now,
+        )
+        .expect("initiate_connection should succeed");
+
+    // ── Set up server ────────────────────────────────────────────────
+    let mut server_handler = QuicHandler::new(false, false);
+    let mut server_wheel = TimerWheel::new(now);
+    let server_nh = NeighborHandler::new("lo", Duration::from_secs(60)).unwrap();
+    let mut server_free_backing: Vec<Vec<u8>> = (0..32).map(|_| vec![0u8; 4096]).collect();
+    let mut server_free = BasicFrameBuffer::new(32);
+    for (i, buf) in server_free_backing.iter_mut().enumerate() {
+        let f = Frame::new((i as u64 + 100) * 4096, buf.as_mut_slice(), 1, false);
+        server_free.push(f);
+    }
+    let mut server_rx = BasicFrameBuffer::new(16);
+    let mut server_tx = BasicFrameBuffer::new(32);
+
+    server_handler
+        .listen(QUIC_PORT, make_server_config(), test_transport_params())
+        .expect("listen should succeed");
+
+    // ── Drive handshake to completion ────────────────────────────────
+    let server_conn_key = drive_handshake(
+        &mut client_handler,
+        &mut client_wheel,
+        &mut client_free,
+        &mut client_tx,
+        &mut client_rx,
+        &client_nh,
+        client_conn_key,
+        &mut server_handler,
+        &mut server_wheel,
+        &mut server_free,
+        &mut server_tx,
+        &mut server_rx,
+        &server_nh,
+        now,
+        10,
+    );
+
+    // ── Client: open bidi stream 0 and write partial data ────────────
+    let stream_id = StreamId(0x00);
+    {
+        let conn = &mut client_handler.connections[client_conn_key];
+        let entry = conn
+            .streams
+            .get_or_create(stream_id)
+            .expect("should be able to open stream 0");
+        let send = entry
+            .send
+            .as_mut()
+            .expect("bidi stream should have SendHalf");
+        let written = send.write(b"partial");
+        assert_eq!(written, 7, "should write 7 bytes");
+        conn.streams.pending_send_count += 1;
+    }
+
+    // ── Pump client → server to deliver the partial data ─────────────
+    pump_packets(
+        &mut client_handler,
+        &mut client_wheel,
+        &mut client_free,
+        &mut client_tx,
+        &mut server_handler,
+        &mut server_wheel,
+        &server_nh,
+        &mut server_free,
+        &mut server_rx,
+        &mut server_tx,
+        now,
+    );
+
+    // Server should have the stream with partial data
+    {
+        let conn = &server_handler.connections[server_conn_key];
+        let entry = conn
+            .streams
+            .get(stream_id)
+            .expect("server should have stream 0 after receiving data");
+        let recv = entry
+            .recv
+            .as_ref()
+            .expect("stream 0 should have RecvHalf on server");
+        assert!(!recv.is_reset, "stream should not be reset yet");
+    }
+
+    // ── Client: reset the stream with error code 0x77 ────────────────
+    {
+        let conn = &mut client_handler.connections[client_conn_key];
+        let entry = conn
+            .streams
+            .get_mut(stream_id)
+            .expect("client should have stream 0");
+        let send = entry
+            .send
+            .as_mut()
+            .expect("bidi stream should have SendHalf");
+        send.mark_reset(0x77);
+    }
+
+    // ── Pump client → server (RESET_STREAM packet) ──────────────────
+    pump_packets(
+        &mut client_handler,
+        &mut client_wheel,
+        &mut client_free,
+        &mut client_tx,
+        &mut server_handler,
+        &mut server_wheel,
+        &server_nh,
+        &mut server_free,
+        &mut server_rx,
+        &mut server_tx,
+        now,
+    );
+
+    // ── Verify server's recv half is reset ───────────────────────────
+    {
+        let conn = &server_handler.connections[server_conn_key];
+        let entry = conn
+            .streams
+            .get(stream_id)
+            .expect("server should still have stream 0");
+        let recv = entry.recv.as_ref().expect("stream 0 should have RecvHalf");
+        assert!(
+            recv.is_reset,
+            "server's recv half should be marked as reset after RESET_STREAM"
+        );
+    }
+
+    // Verify connection is still Established (stream reset does not close connection)
+    assert_eq!(
+        server_handler.connections[server_conn_key].state,
+        ConnectionState::Established,
+        "server connection should still be Established after stream reset"
+    );
+}
+
+#[test]
+fn e2e_idle_timeout() {
+    let now = Instant::now();
+
+    // ── Transport params with idle timeout ───────────────────────────
+    let params = TransportParams {
+        max_idle_timeout_ms: 5000,
+        initial_max_data: 1_000_000,
+        initial_max_stream_data_bidi_local: 100_000,
+        initial_max_stream_data_bidi_remote: 100_000,
+        initial_max_stream_data_uni: 100_000,
+        initial_max_streams_bidi: 100,
+        initial_max_streams_uni: 100,
+        ..Default::default()
+    };
+
+    // ── Set up client ────────────────────────────────────────────────
+    let mut client_handler = QuicHandler::new(false, false);
+    let mut client_wheel = TimerWheel::new(now);
+    let client_nh = NeighborHandler::new("lo", Duration::from_secs(60)).unwrap();
+    let mut client_free_backing: Vec<Vec<u8>> = (0..32).map(|_| vec![0u8; 4096]).collect();
+    let mut client_free = BasicFrameBuffer::new(32);
+    for (i, buf) in client_free_backing.iter_mut().enumerate() {
+        let f = Frame::new((i as u64 + 1) * 4096, buf.as_mut_slice(), 1, false);
+        client_free.push(f);
+    }
+    let mut client_rx = BasicFrameBuffer::new(16);
+    let mut client_tx = BasicFrameBuffer::new(32);
+
+    let client_conn_key = client_handler
+        .initiate_connection(
+            IpAddress::V4(Ipv4Address::new(SERVER_IP)),
+            QUIC_PORT,
+            IpAddress::V4(Ipv4Address::new(CLIENT_IP)),
+            CLIENT_PORT,
+            MacAddress::new(CLIENT_MAC),
+            MacAddress::new(SERVER_MAC),
+            "localhost",
+            make_client_config(),
+            params.clone(),
+            now,
+        )
+        .expect("initiate_connection should succeed");
+
+    // ── Set up server ────────────────────────────────────────────────
+    let mut server_handler = QuicHandler::new(false, false);
+    let mut server_wheel = TimerWheel::new(now);
+    let server_nh = NeighborHandler::new("lo", Duration::from_secs(60)).unwrap();
+    let mut server_free_backing: Vec<Vec<u8>> = (0..32).map(|_| vec![0u8; 4096]).collect();
+    let mut server_free = BasicFrameBuffer::new(32);
+    for (i, buf) in server_free_backing.iter_mut().enumerate() {
+        let f = Frame::new((i as u64 + 100) * 4096, buf.as_mut_slice(), 1, false);
+        server_free.push(f);
+    }
+    let mut server_rx = BasicFrameBuffer::new(16);
+    let mut server_tx = BasicFrameBuffer::new(32);
+
+    server_handler
+        .listen(QUIC_PORT, make_server_config(), params)
+        .expect("listen should succeed");
+
+    // ── Drive handshake to completion ────────────────────────────────
+    let server_conn_key = drive_handshake(
+        &mut client_handler,
+        &mut client_wheel,
+        &mut client_free,
+        &mut client_tx,
+        &mut client_rx,
+        &client_nh,
+        client_conn_key,
+        &mut server_handler,
+        &mut server_wheel,
+        &mut server_free,
+        &mut server_tx,
+        &mut server_rx,
+        &server_nh,
+        now,
+        10,
+    );
+
+    // Verify both sides are established
+    assert_eq!(
+        client_handler.connections[client_conn_key].state,
+        ConnectionState::Established,
+    );
+    assert_eq!(
+        server_handler.connections[server_conn_key].state,
+        ConnectionState::Established,
+    );
+
+    // ── Exchange some data to confirm connection is working ──────────
+    let stream_id = StreamId(0x00);
+    {
+        let conn = &mut client_handler.connections[client_conn_key];
+        let entry = conn
+            .streams
+            .get_or_create(stream_id)
+            .expect("should be able to open stream 0");
+        let send = entry
+            .send
+            .as_mut()
+            .expect("bidi stream should have SendHalf");
+        send.write(b"ping");
+        conn.streams.pending_send_count += 1;
+    }
+    pump_packets(
+        &mut client_handler,
+        &mut client_wheel,
+        &mut client_free,
+        &mut client_tx,
+        &mut server_handler,
+        &mut server_wheel,
+        &server_nh,
+        &mut server_free,
+        &mut server_rx,
+        &mut server_tx,
+        now,
+    );
+
+    // ── Simulate idle timeout on the client ──────────────────────────
+    // Advance time past the idle timeout (5 seconds + margin)
+    let timeout_instant = Instant::recent() + Duration::from_secs(10);
+    let result = handle_timeout(
+        &mut client_handler.connections[client_conn_key],
+        QuicTimerKind::Idle,
+        timeout_instant,
+    );
+
+    // handle_timeout returns TimerResult::Close for idle timeout
+    assert!(
+        matches!(result, TimerResult::Close),
+        "idle timeout should return TimerResult::Close"
+    );
+
+    // ── Simulate idle timeout on the server ──────────────────────────
+    let result = handle_timeout(
+        &mut server_handler.connections[server_conn_key],
+        QuicTimerKind::Idle,
+        timeout_instant,
+    );
+
+    assert!(
+        matches!(result, TimerResult::Close),
+        "server idle timeout should also return TimerResult::Close"
+    );
 }
