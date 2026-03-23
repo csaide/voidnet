@@ -10,7 +10,7 @@
 //!           + dcid_len(1) + dcid(0-20) + version(4)
 //!
 //! Encrypted format (on the wire / in NEW_TOKEN frame):
-//!   nonce_prefix(4) + ciphertext + AES-GCM tag(16)
+//!   nonce(12) + ciphertext + AES-GCM tag(16)
 
 use ring::aead::{self, AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 
@@ -24,7 +24,7 @@ pub enum TokenType {
 
 /// Encrypt a token for a NEW_TOKEN frame (or Retry).
 ///
-/// Returns the encrypted blob including a 4-byte nonce prefix and the
+/// Returns the encrypted blob including a 12-byte nonce and the
 /// AES-GCM tag.
 pub fn encrypt_token(
     secret: &[u8; 32],
@@ -51,10 +51,16 @@ pub fn encrypt_token(
     plaintext.extend_from_slice(dcid);
     plaintext.extend_from_slice(&version.to_be_bytes());
 
-    // Build 12-byte nonce: first 4 bytes from timestamp, rest zeroed
+    // Build 12-byte nonce: 4 bytes timestamp + 8 bytes random
     let ts_bytes = timestamp_secs.to_be_bytes();
     let mut nonce_bytes = [0u8; 12];
     nonce_bytes[..4].copy_from_slice(&ts_bytes[..4]);
+    {
+        use ring::rand::SecureRandom;
+        ring::rand::SystemRandom::new()
+            .fill(&mut nonce_bytes[4..])
+            .map_err(|_| ())?;
+    }
 
     let key = UnboundKey::new(&AES_256_GCM, secret).map_err(|_| ())?;
     let key = LessSafeKey::new(key);
@@ -64,9 +70,9 @@ pub fn encrypt_token(
     key.seal_in_place_append_tag(nonce, Aad::empty(), &mut plaintext)
         .map_err(|_| ())?;
 
-    // Output: nonce_prefix(4) + ciphertext_with_tag
-    let mut output = Vec::with_capacity(4 + plaintext.len());
-    output.extend_from_slice(&nonce_bytes[..4]);
+    // Output: nonce(12) + ciphertext_with_tag
+    let mut output = Vec::with_capacity(12 + plaintext.len());
+    output.extend_from_slice(&nonce_bytes);
     output.extend_from_slice(&plaintext);
     Ok(output)
 }
@@ -78,17 +84,14 @@ pub fn decrypt_token(
     secret: &[u8; 32],
     encrypted: &[u8],
 ) -> Result<(TokenType, Vec<u8>, u64, Vec<u8>, u32), ()> {
-    // Minimum size: 4 (nonce prefix) + 1 (type) + 1 (ip_ver) + 4 (ipv4) + 8 (ts) + 1 (dcid_len) + 4 (version) + 16 (tag)
-    if encrypted.len() < 4 + 19 + 16 {
+    // Minimum size: 12 (nonce) + 1 (type) + 1 (ip_ver) + 4 (ipv4) + 8 (ts) + 1 (dcid_len) + 4 (version) + 16 (tag)
+    if encrypted.len() < 12 + 19 + 16 {
         return Err(());
     }
 
-    let nonce_prefix = &encrypted[..4];
-    let mut ciphertext = encrypted[4..].to_vec();
-
-    // Rebuild nonce
     let mut nonce_bytes = [0u8; 12];
-    nonce_bytes[..4].copy_from_slice(nonce_prefix);
+    nonce_bytes.copy_from_slice(&encrypted[..12]);
+    let mut ciphertext = encrypted[12..].to_vec();
 
     let key = UnboundKey::new(&AES_256_GCM, secret).map_err(|_| ())?;
     let key = LessSafeKey::new(key);

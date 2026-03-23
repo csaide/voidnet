@@ -77,3 +77,39 @@ fn retry_token_expiry() {
     let future = now + Duration::from_secs(31);
     assert!(token.is_expired(future, Duration::from_secs(30)));
 }
+
+#[test]
+fn token_encrypt_unique_nonces() {
+    let secret = [0xABu8; 32];
+    let ip = &[127u8, 0, 0, 1];
+    let ts = 1000u64;
+    let dcid = &[1u8, 2, 3, 4];
+    let version = 0x00000001u32;
+
+    let t1 = crate::net::handler::quic::token_crypto::encrypt_token(
+        &secret,
+        crate::net::handler::quic::token_crypto::TokenType::Retry,
+        ip,
+        ts,
+        dcid,
+        version,
+    )
+    .unwrap();
+    let t2 = crate::net::handler::quic::token_crypto::encrypt_token(
+        &secret,
+        crate::net::handler::quic::token_crypto::TokenType::Retry,
+        ip,
+        ts,
+        dcid,
+        version,
+    )
+    .unwrap();
+
+    // Random portion of nonce (bytes 4..12) must differ across calls
+    assert_ne!(
+        &t1[4..12],
+        &t2[4..12],
+        "random nonce bytes must differ across calls"
+    );
+    assert_ne!(t1, t2);
+}
