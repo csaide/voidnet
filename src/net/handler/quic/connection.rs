@@ -196,6 +196,9 @@ pub struct QuicConnectionState {
     /// Whether a key update should be initiated
     pub needs_key_update: bool,
 
+    /// Set when client receives preferred_address and should initiate migration (RFC 9000 §9.6)
+    pub pending_preferred_addr_migration: bool,
+
     /// Negotiated version from Compatible Version Negotiation (RFC 9369).
     /// Set when both sides support a preferred version (e.g., v2) via version_information.
     pub negotiated_version: Option<u32>,
@@ -306,6 +309,7 @@ impl QuicConnectionState {
             pending_migration: None,
             prev_path: None,
             needs_key_update: false,
+            pending_preferred_addr_migration: false,
             negotiated_version: None,
             handshake_keys_pending_discard: false,
             token_secret: None,

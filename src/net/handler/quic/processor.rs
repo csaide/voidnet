@@ -969,6 +969,16 @@ fn handle_crypto_frame(
             }
         }
 
+        // RFC 9000 §9.6: Client processes preferred_address from server.
+        // Note: disable_active_migration does NOT block preferred address migration.
+        if conn.side == Side::Client {
+            if let Some(ref pa) = params.preferred_address {
+                // Register the CID from preferred_address with sequence number 1 (RFC 9000 §5.1.1)
+                conn.scid_set.push_with_seq(pa.connection_id, 1);
+                conn.pending_preferred_addr_migration = true;
+            }
+        }
+
         conn.peer_params = Some(params);
     }
 }
