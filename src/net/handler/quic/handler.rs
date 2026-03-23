@@ -54,6 +54,10 @@ pub struct QuicHandler {
     /// Connection count threshold above which new Initial packets are dropped
     /// (future work: send Retry packets for address validation).
     pub(crate) retry_threshold: usize,
+    /// Per-IP connection counter for rate limiting.
+    pub(crate) per_ip_conn_count: FxHashMap<IpAddress, u16>,
+    /// Maximum connections allowed from a single IP address.
+    pub(crate) max_connections_per_ip: u16,
 }
 
 impl QuicHandler {
@@ -68,6 +72,8 @@ impl QuicHandler {
             local_cid_len: 8,
             max_connections: 10_000,
             retry_threshold: 5_000,
+            per_ip_conn_count: FxHashMap::default(),
+            max_connections_per_ip: 100,
         }
     }
 
@@ -981,6 +987,13 @@ impl QuicHandler {
                 };
                 self.five_tuple_map.remove(&tuple);
             }
+            // Decrement per-IP connection counter
+            if let Some(count) = self.per_ip_conn_count.get_mut(&conn.remote_addr) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    self.per_ip_conn_count.remove(&conn.remote_addr);
+                }
+            }
             Some(conn)
         } else {
             None
@@ -1019,6 +1032,16 @@ impl QuicHandler {
         // DoS protection: when under load, drop without allocating state.
         // Future work: send Retry packet for address validation (RFC 9000 §8.1).
         if self.connections.len() >= self.retry_threshold {
+            return None;
+        }
+
+        // Per-IP rate limiting: reject if this IP has too many connections
+        let ip_count = self
+            .per_ip_conn_count
+            .get(&remote_addr)
+            .copied()
+            .unwrap_or(0);
+        if ip_count >= self.max_connections_per_ip {
             return None;
         }
 
@@ -1106,6 +1129,10 @@ impl QuicHandler {
         let key = self.insert_connection(conn);
         // Also map the original DCID so Initial retransmissions route here
         self.cid_map.insert(*original_dcid, key);
+
+        // Track per-IP connection count
+        *self.per_ip_conn_count.entry(remote_addr).or_insert(0) += 1;
+
         Some(key)
     }
 
