@@ -203,7 +203,29 @@ pub fn process_packet(
                     if long.packet_type == PacketType::Initial {
                         match packet_parser::parse_initial_fields(&remaining[long.payload_offset..])
                         {
-                            Some((_token, payload_length, relative_pn_offset)) => {
+                            Some((token, payload_length, relative_pn_offset)) => {
+                                // RFC 9369 §5: Server MUST validate token version.
+                                // If token is present, decrypt and check version match.
+                                if !token.is_empty() && conn.side == Side::Server {
+                                    if let Some(ref secret) = conn.token_secret {
+                                        match crate::net::handler::quic::token_crypto::decrypt_token(
+                                            secret, token,
+                                        ) {
+                                            Ok((_token_type, _ip, _ts, _dcid, token_version)) => {
+                                                if token_version == conn.version {
+                                                    // Valid token — lift amplification limit
+                                                    conn.path.amplification.set_validated();
+                                                }
+                                                // else: version mismatch — treat token as
+                                                // invalid, do not lift amplification limit
+                                            }
+                                            Err(_) => {
+                                                // Decryption failed — treat token as invalid
+                                            }
+                                        }
+                                    }
+                                }
+
                                 let pn_offset = long.payload_offset + relative_pn_offset;
                                 // Total packet = everything up to pn_offset + payload_length
                                 let packet_len = pn_offset + payload_length;

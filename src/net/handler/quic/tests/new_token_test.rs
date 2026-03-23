@@ -347,3 +347,73 @@ fn client_dispatch_stores_received_token() {
     conn.received_new_token = Some(token.to_vec());
     assert_eq!(conn.received_new_token.as_ref().unwrap(), &token.to_vec());
 }
+
+#[test]
+fn token_version_validation_accepts_matching_version() {
+    let secret = [0xAA; 32];
+    let version = crate::net::handler::quic::transport::version::QUIC_VERSION_1;
+    let encrypted = token_crypto::encrypt_token(
+        &secret,
+        TokenType::NewToken,
+        &[10, 0, 0, 1],
+        1700000000,
+        &[1, 2, 3, 4],
+        version,
+    )
+    .unwrap();
+
+    let (_, _, _, _, token_version) = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
+    assert_eq!(
+        token_version, version,
+        "token version should match connection version"
+    );
+}
+
+#[test]
+fn token_version_validation_rejects_mismatched_version() {
+    let secret = [0xAA; 32];
+    let v1 = crate::net::handler::quic::transport::version::QUIC_VERSION_1;
+    let v2 = crate::net::handler::quic::transport::version::QUIC_VERSION_2;
+
+    // Token encrypted with v1
+    let encrypted = token_crypto::encrypt_token(
+        &secret,
+        TokenType::NewToken,
+        &[10, 0, 0, 1],
+        1700000000,
+        &[1, 2, 3, 4],
+        v1,
+    )
+    .unwrap();
+
+    // Decrypt succeeds but version doesn't match v2
+    let (_, _, _, _, token_version) = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
+    assert_ne!(
+        token_version, v2,
+        "token issued for v1 must not be accepted as v2"
+    );
+}
+
+#[test]
+fn token_version_validation_v2_roundtrip() {
+    let secret = [0xBB; 32];
+    let v2 = crate::net::handler::quic::transport::version::QUIC_VERSION_2;
+
+    let encrypted = token_crypto::encrypt_token(
+        &secret,
+        TokenType::Retry,
+        &[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], // IPv6
+        1700000000,
+        &[0xAA, 0xBB],
+        v2,
+    )
+    .unwrap();
+
+    let (tt, _ip, _ts, _dcid, token_version) =
+        token_crypto::decrypt_token(&secret, &encrypted).unwrap();
+    assert_eq!(tt, TokenType::Retry);
+    assert_eq!(
+        token_version, v2,
+        "v2 token roundtrip must preserve version"
+    );
+}
