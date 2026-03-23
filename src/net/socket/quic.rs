@@ -1,4 +1,5 @@
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -19,6 +20,48 @@ use crate::net::wire::ip::IpAddress;
 use crate::rt::context::with_runtime_context;
 
 pub use crate::net::handler::quic::event::QuicEvent;
+
+/// Store for QUIC address validation tokens (RFC 9000 §8.1).
+///
+/// Tokens are keyed by (server_name, version) per RFC 9369 §5 so that
+/// version-specific tokens are not confused across version negotiation.
+pub trait TokenStore {
+    /// Retrieve a previously stored token for the given server and QUIC version.
+    fn get(&self, server_name: &str, version: u32) -> Option<Vec<u8>>;
+
+    /// Store a token received via NEW_TOKEN from the given server at a specific QUIC version.
+    fn put(&self, server_name: &str, version: u32, token: Vec<u8>);
+}
+
+/// In-memory token store using `RefCell` for interior mutability.
+///
+/// Suitable for single-threaded runtimes (which VoidNet uses).
+pub struct InMemoryTokenStore {
+    tokens: RefCell<HashMap<(String, u32), Vec<u8>>>,
+}
+
+impl InMemoryTokenStore {
+    pub fn new() -> Self {
+        Self {
+            tokens: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+impl TokenStore for InMemoryTokenStore {
+    fn get(&self, server_name: &str, version: u32) -> Option<Vec<u8>> {
+        self.tokens
+            .borrow()
+            .get(&(server_name.to_string(), version))
+            .cloned()
+    }
+
+    fn put(&self, server_name: &str, version: u32, token: Vec<u8>) {
+        self.tokens
+            .borrow_mut()
+            .insert((server_name.to_string(), version), token);
+    }
+}
 
 /// Error returned by QUIC socket operations.
 #[derive(Debug)]
