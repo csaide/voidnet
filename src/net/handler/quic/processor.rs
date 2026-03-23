@@ -1857,7 +1857,16 @@ fn build_packet_in_frame(
         return 0;
     }
 
-    // 7. Initial padding — Initial packets must be at least 1200 bytes total
+    // 7a. Minimum payload padding (RFC 9001 §5.4.2): the combined length of
+    // encoded PN + protected payload must be at least 4 bytes longer than the
+    // header protection sample (16 bytes). Equivalently, ensure offset >=
+    // pn_offset + 4 so the AEAD ciphertext covers the sample window.
+    {
+        let min_offset = builder.pn_offset() + 4;
+        builder.pad_to(min_offset);
+    }
+
+    // 7b. Initial padding — Initial packets must be at least 1200 bytes total
     // RFC 9000 §14: the 1200-byte minimum applies to the UDP payload (= QUIC packet)
     if space == 0 {
         builder.pad_to(1200);

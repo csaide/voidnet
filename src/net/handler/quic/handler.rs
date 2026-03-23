@@ -1000,6 +1000,9 @@ impl QuicHandler {
         conn.server_name = Some(server_name.to_string());
         conn.version = crate::net::handler::quic::transport::version::QUIC_VERSION_1;
 
+        // Client is not subject to anti-amplification limits (RFC 9000 §8.1)
+        conn.path.amplification.set_validated();
+
         // Buffer the ClientHello CRYPTO data for the Initial space (index 0)
         conn.pending_crypto[0] = initial_data;
 
