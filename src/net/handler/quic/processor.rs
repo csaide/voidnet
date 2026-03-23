@@ -1012,12 +1012,25 @@ fn handle_crypto_frame(
                 return;
             }
             // Server-side: if both sides support v2 and we're currently on v1,
-            // record the negotiated version (informational — rustls handles HKDF labels).
+            // negotiate v2 and switch the wire version (RFC 9369 §4.1).
             if conn.side == Side::Server {
                 if let Some(ref vi) = params.version_information {
                     if conn.version == QUIC_VERSION_1 && vi.other_versions.contains(&QUIC_VERSION_2)
                     {
                         conn.negotiated_version = Some(QUIC_VERSION_2);
+                        conn.version = QUIC_VERSION_2;
+                    }
+                }
+            }
+            // Client-side: if the server's chosen_version differs from the
+            // original version, adopt it for subsequent packets (RFC 9369 §4.1).
+            if conn.side == Side::Client {
+                if let Some(ref vi) = params.version_information {
+                    if vi.chosen_version != conn.version
+                        && our_available.contains(&vi.chosen_version)
+                    {
+                        conn.negotiated_version = Some(vi.chosen_version);
+                        conn.version = vi.chosen_version;
                     }
                 }
             }
