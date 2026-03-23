@@ -48,6 +48,7 @@ const ACTIVE_CONNECTION_ID_LIMIT: u64 = 0x0e;
 const INITIAL_SOURCE_CONNECTION_ID: u64 = 0x0f;
 const RETRY_SOURCE_CONNECTION_ID: u64 = 0x10;
 const VERSION_INFORMATION: u64 = 0x11;
+const MAX_DATAGRAM_FRAME_SIZE: u64 = 0x20;
 
 // RFC defaults
 const DEFAULT_MAX_UDP_PAYLOAD_SIZE: u64 = 65527;
@@ -92,6 +93,9 @@ pub struct TransportParams {
     // Version negotiation (RFC 9369)
     pub version_information: Option<VersionInformation>,
 
+    // DATAGRAM extension (RFC 9221)
+    pub max_datagram_frame_size: Option<u64>,
+
     // Local config (not a wire parameter — not encoded/decoded)
     /// Desired CID length for locally-generated connection IDs (0..=20).
     /// `None` means use the handler's default (`local_cid_len`).
@@ -119,6 +123,7 @@ impl Default for TransportParams {
             stateless_reset_token: None,
             preferred_address: None,
             version_information: None,
+            max_datagram_frame_size: None,
             cid_length: None,
         }
     }
@@ -294,6 +299,14 @@ impl TransportParams {
             }
         }
 
+        // 0x20: max_datagram_frame_size (RFC 9221)
+        if let Some(max_size) = self.max_datagram_frame_size {
+            let vlen = varint_len(max_size);
+            pos += encode_varint(MAX_DATAGRAM_FRAME_SIZE, &mut buf[pos..]);
+            pos += encode_varint(vlen as u64, &mut buf[pos..]);
+            pos += encode_varint(max_size, &mut buf[pos..]);
+        }
+
         pos
     }
 
@@ -459,6 +472,11 @@ impl TransportParams {
                         return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
                     }
                     params.retry_source_connection_id = Some(ConnectionId::from_slice(value));
+                }
+                MAX_DATAGRAM_FRAME_SIZE => {
+                    let (val, _) =
+                        decode_varint(value).ok_or(TransportError::TRANSPORT_PARAMETER_ERROR)?;
+                    params.max_datagram_frame_size = Some(val);
                 }
                 VERSION_INFORMATION => {
                     // Wire format: chosen_version (4 bytes) + other_versions (4 bytes each)

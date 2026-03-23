@@ -22,4 +22,6 @@ pub enum QuicEvent {
     DataAcked,
     /// Connection was closed (application error code)
     ConnectionClosed(u64),
+    /// An unreliable datagram was received (RFC 9221)
+    DatagramReceived,
 }

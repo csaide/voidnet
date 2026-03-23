@@ -2,6 +2,7 @@ pub(crate) mod cid_lifecycle;
 pub(crate) mod connection;
 pub(crate) mod connection_id;
 pub(crate) mod crypto;
+pub(crate) mod datagram;
 pub(crate) mod error;
 pub(crate) mod event;
 pub(crate) mod handler;

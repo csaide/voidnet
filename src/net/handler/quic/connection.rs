@@ -7,6 +7,7 @@ use super::connection_id::{CidSet, ConnectionId};
 use super::crypto::key_update::KeyUpdateState;
 use super::crypto::keys::PacketKeys;
 use super::crypto::tls::CryptoState;
+use super::datagram::DatagramQueue;
 use super::error::TransportError;
 use super::packet_parser::{CryptoRecvBuffer, PnBitset};
 use super::path::PathState;
@@ -214,6 +215,9 @@ pub struct QuicConnectionState {
     pub pending_new_token: Option<Vec<u8>>,
     /// Token received by the client via NEW_TOKEN frame.
     pub received_new_token: Option<Vec<u8>>,
+
+    /// Datagram send/recv queues (RFC 9221)
+    pub datagrams: DatagramQueue,
 }
 
 impl QuicConnectionState {
@@ -315,6 +319,7 @@ impl QuicConnectionState {
             token_secret: None,
             pending_new_token: None,
             received_new_token: None,
+            datagrams: DatagramQueue::new(),
         }
     }
 }

@@ -1,5 +1,7 @@
+use crate::net::handler::quic::datagram::{DatagramError, DatagramQueue};
 use crate::net::handler::quic::transport::frame::{QuicFrame, parse_frame};
 use crate::net::handler::quic::transport::frame_writer::write_datagram_with_length;
+use crate::net::handler::quic::transport::params::TransportParams;
 use crate::net::handler::quic::transport::varint::encode_varint;
 
 #[test]
@@ -112,4 +114,93 @@ fn datagram_round_trip_large() {
         }
         _ => panic!("expected Datagram frame"),
     }
+}
+
+// --- Queue tests ---
+
+#[test]
+fn datagram_queue_send_recv() {
+    let mut q = DatagramQueue::new();
+    q.max_send_size = Some(1200);
+
+    q.queue_send(b"msg1".to_vec()).unwrap();
+    q.queue_send(b"msg2".to_vec()).unwrap();
+
+    assert!(q.has_pending_send());
+    assert_eq!(q.pop_send().unwrap(), b"msg1");
+    assert_eq!(q.pop_send().unwrap(), b"msg2");
+    assert!(q.pop_send().is_none());
+    assert!(!q.has_pending_send());
+}
+
+#[test]
+fn datagram_queue_deliver_recv() {
+    let mut q = DatagramQueue::new();
+    q.max_recv_size = Some(1200);
+
+    q.deliver(b"recv1".to_vec());
+    q.deliver(b"recv2".to_vec());
+
+    assert_eq!(q.pop_recv().unwrap(), b"recv1");
+    assert_eq!(q.pop_recv().unwrap(), b"recv2");
+    assert!(q.pop_recv().is_none());
+}
+
+#[test]
+fn datagram_overflow_drops_oldest() {
+    let mut q = DatagramQueue::new();
+    q.max_send_size = Some(1200);
+
+    // Fill to capacity (64) then add one more
+    for i in 0..65u8 {
+        q.queue_send(vec![i]).unwrap();
+    }
+
+    // First item should be #1 (item #0 was dropped)
+    assert_eq!(q.pop_send().unwrap(), vec![1]);
+}
+
+#[test]
+fn datagram_too_large_rejected() {
+    let mut q = DatagramQueue::new();
+    q.max_send_size = Some(10); // max 10 bytes
+
+    let result = q.queue_send(vec![0; 11]);
+    assert_eq!(result, Err(DatagramError::TooLarge));
+
+    // Exactly 10 bytes should work
+    assert!(q.queue_send(vec![0; 10]).is_ok());
+}
+
+#[test]
+fn datagram_not_negotiated_rejected() {
+    let mut q = DatagramQueue::new();
+    // max_send_size is None (not negotiated)
+
+    let result = q.queue_send(b"test".to_vec());
+    assert_eq!(result, Err(DatagramError::NotNegotiated));
+}
+
+#[test]
+fn transport_params_datagram_round_trip() {
+    let mut params = TransportParams::default();
+    params.max_datagram_frame_size = Some(65535);
+
+    let mut buf = [0u8; 512];
+    let encoded_len = params.encode(&mut buf);
+
+    let decoded = TransportParams::decode(&buf[..encoded_len]).unwrap();
+    assert_eq!(decoded.max_datagram_frame_size, Some(65535));
+}
+
+#[test]
+fn transport_params_datagram_absent() {
+    let params = TransportParams::default();
+    assert!(params.max_datagram_frame_size.is_none());
+
+    let mut buf = [0u8; 512];
+    let encoded_len = params.encode(&mut buf);
+
+    let decoded = TransportParams::decode(&buf[..encoded_len]).unwrap();
+    assert!(decoded.max_datagram_frame_size.is_none());
 }
