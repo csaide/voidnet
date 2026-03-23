@@ -876,9 +876,24 @@ fn dispatch_frames(
                 // ack_eliciting already set above (non-Padding/ACK frame)
             }
 
-            QuicFrame::DataBlocked(_)
-            | QuicFrame::StreamDataBlocked { .. }
-            | QuicFrame::StreamsBlocked { .. } => {
+            QuicFrame::StreamDataBlocked {
+                stream_id,
+                limit: _,
+            } => {
+                // RFC 9000 §19.13: STREAM_DATA_BLOCKED on a locally-initiated
+                // unidirectional stream (send-only from our perspective) is
+                // STREAM_STATE_ERROR — the peer cannot send data on our send-only stream.
+                let we_initiated = stream_id.initiator_is_client() == (conn.side == Side::Client);
+                if !stream_id.is_bidi() && we_initiated {
+                    conn.close_error = Some(TransportError::STREAM_STATE_ERROR);
+                    conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
+                    return ProcessResult::ConnectionClosed;
+                }
+                // Otherwise informational — no action required
+            }
+
+            QuicFrame::DataBlocked(_) | QuicFrame::StreamsBlocked { .. } => {
                 // Informational — no action required
             }
 
