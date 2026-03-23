@@ -178,7 +178,6 @@ impl StreamRingBuffer {
 }
 
 /// Out-of-order range tracking. 8 inline entries, overflow to BTreeMap.
-#[allow(dead_code)]
 pub struct OooRanges {
     inline: [(u64, usize); 8],
     len: u8,

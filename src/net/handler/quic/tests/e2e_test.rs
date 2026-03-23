@@ -1499,14 +1499,6 @@ fn e2e_zero_rtt_reconnect() {
             ConnectionState::Established,
             "second server connection should be Established (1-RTT fallback)"
         );
-
-        // Log that 0-RTT was not available for diagnostic purposes.
-        // This is not a failure — 0-RTT requires NewSessionTicket delivery
-        // which depends on post-handshake message processing in the handler.
-        eprintln!(
-            "note: 0-RTT keys not available after first connection — \
-             NewSessionTicket may not have been delivered through handler pipeline"
-        );
     }
 }
 

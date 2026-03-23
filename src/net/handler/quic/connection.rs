@@ -47,7 +47,6 @@ pub enum Side {
 }
 
 /// Previous path state, saved when migration is detected for potential revert.
-#[allow(dead_code)]
 pub struct PreviousPath {
     pub remote_addr: IpAddress,
     pub remote_port: u16,
@@ -56,7 +55,6 @@ pub struct PreviousPath {
 }
 
 /// Migration action signal from processor to handler.
-#[allow(dead_code)]
 pub struct MigrationAction {
     pub old_cid: ConnectionId,
     pub new_cid: ConnectionId,
