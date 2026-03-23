@@ -1062,9 +1062,16 @@ fn handle_crypto_frame(
             .push(crate::net::handler::quic::event::QuicEvent::HandshakeComplete);
     }
 
-    // Queue per-space CRYPTO response data
+    // Queue per-space CRYPTO response data (cap at 64KB to prevent memory exhaustion)
+    const MAX_PENDING_CRYPTO: usize = 65536;
     for (space, data) in output.crypto_data.iter().enumerate() {
         if !data.is_empty() {
+            if conn.pending_crypto[space].len() + data.len() > MAX_PENDING_CRYPTO {
+                conn.close_error = Some(TransportError::INTERNAL_ERROR);
+                conn.state = ConnectionState::Closing;
+                conn.needs_draining_timer = true;
+                return;
+            }
             conn.pending_crypto[space].extend_from_slice(data);
         }
     }
