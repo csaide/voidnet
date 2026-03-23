@@ -149,50 +149,47 @@ fn client_server_handshake() {
     // Step 2: Create server, feed ClientHello
     let mut server =
         CryptoState::new_server(server_config, &server_params, rustls::quic::Version::V1).unwrap();
-    let server_output = server.process_crypto_data(&client_hello).unwrap();
+    let server_output = server.process_crypto_data(&client_hello, 0).unwrap();
+
+    // Helper: concatenate per-space crypto data for feeding to peer
+    fn concat_crypto(data: &[Vec<u8>; 3]) -> Vec<u8> {
+        data.iter().flat_map(|d| d.iter().copied()).collect()
+    }
+    fn crypto_has_data(data: &[Vec<u8>; 3]) -> bool {
+        data.iter().any(|d| !d.is_empty())
+    }
 
     // Server should produce response crypto data (ServerHello + encrypted extensions + etc.)
     assert!(
-        !server_output.crypto_data.is_empty(),
+        crypto_has_data(&server_output.crypto_data),
         "server should produce response CRYPTO data"
     );
-    // Server should have handshake keys after processing ClientHello
     assert!(
         server_output.handshake_keys.is_some(),
         "server should derive handshake keys"
     );
 
     // Step 3: Feed server response to client
-    let client_output = client
-        .process_crypto_data(&server_output.crypto_data)
-        .unwrap();
+    let server_crypto = concat_crypto(&server_output.crypto_data);
+    let client_output = client.process_crypto_data(&server_crypto, 0).unwrap();
 
-    // Client should get handshake keys
     assert!(
         client_output.handshake_keys.is_some(),
         "client should derive handshake keys"
     );
 
-    // Client may also have response data (Finished message)
-    // and may have 1-RTT keys at this point
     if !client_output.handshake_complete {
-        // If not complete yet, there should be more data to exchange
         assert!(
-            !client_output.crypto_data.is_empty(),
+            crypto_has_data(&client_output.crypto_data),
             "client should produce more CRYPTO data if not complete"
         );
 
-        // Step 4: Feed client's response to server
-        let server_output2 = server
-            .process_crypto_data(&client_output.crypto_data)
-            .unwrap();
+        let client_crypto = concat_crypto(&client_output.crypto_data);
+        let server_output2 = server.process_crypto_data(&client_crypto, 0).unwrap();
 
-        // After this round, at least one side should have 1-RTT keys
-        // The server might already be complete or need one more round
-        if !server_output2.crypto_data.is_empty() {
-            let client_output2 = client
-                .process_crypto_data(&server_output2.crypto_data)
-                .unwrap();
+        if crypto_has_data(&server_output2.crypto_data) {
+            let server2_crypto = concat_crypto(&server_output2.crypto_data);
+            let client_output2 = client.process_crypto_data(&server2_crypto, 0).unwrap();
             assert!(
                 client_output2.handshake_complete || client_output.handshake_complete,
                 "handshake should complete within a few rounds"
@@ -233,20 +230,24 @@ fn handshake_produces_one_rtt_keys() {
     let mut got_server_1rtt = false;
 
     // Round 1: ClientHello -> Server
-    let server_out = server.process_crypto_data(&client_hello).unwrap();
+    let server_out = server.process_crypto_data(&client_hello, 0).unwrap();
     if server_out.one_rtt_keys.is_some() {
         got_server_1rtt = true;
     }
 
+    fn concat_crypto2(data: &[Vec<u8>; 3]) -> Vec<u8> {
+        data.iter().flat_map(|d| d.iter().copied()).collect()
+    }
+
     // Exchange up to 5 rounds (TLS 1.3 should complete in 1-2)
-    let mut data_for_client = server_out.crypto_data;
+    let mut data_for_client: Vec<u8> = concat_crypto2(&server_out.crypto_data);
     for _ in 0..5 {
         if data_for_client.is_empty() && got_client_1rtt && got_server_1rtt {
             break;
         }
 
         if !data_for_client.is_empty() {
-            let client_out = client.process_crypto_data(&data_for_client).unwrap();
+            let client_out = client.process_crypto_data(&data_for_client, 0).unwrap();
             if client_out.one_rtt_keys.is_some() {
                 got_client_1rtt = true;
             }
@@ -254,15 +255,16 @@ fn handshake_produces_one_rtt_keys() {
                 got_client_1rtt = true;
             }
 
-            if !client_out.crypto_data.is_empty() {
-                let srv_out = server.process_crypto_data(&client_out.crypto_data).unwrap();
+            let client_crypto = concat_crypto2(&client_out.crypto_data);
+            if !client_crypto.is_empty() {
+                let srv_out = server.process_crypto_data(&client_crypto, 0).unwrap();
                 if srv_out.one_rtt_keys.is_some() {
                     got_server_1rtt = true;
                 }
                 if srv_out.handshake_complete {
                     got_server_1rtt = true;
                 }
-                data_for_client = srv_out.crypto_data;
+                data_for_client = concat_crypto2(&srv_out.crypto_data);
             } else {
                 data_for_client = vec![];
             }
@@ -273,4 +275,38 @@ fn handshake_produces_one_rtt_keys() {
 
     assert!(got_client_1rtt, "client must obtain 1-RTT keys");
     assert!(got_server_1rtt, "server must obtain 1-RTT keys");
+}
+
+#[test]
+fn no_zero_rtt_keys_without_session_ticket() {
+    let client_config = make_client_config();
+    let server_config = {
+        let (certs, key) = make_test_cert();
+        let mut config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .unwrap();
+        config.alpn_protocols = vec![b"h3".to_vec()];
+        config.max_early_data_size = u32::MAX;
+        Arc::new(config)
+    };
+    let params = encode_test_transport_params();
+
+    let (mut _client, client_hello) = CryptoState::new_client(
+        client_config,
+        "localhost",
+        &params,
+        rustls::quic::Version::V1,
+    )
+    .unwrap();
+    let mut server =
+        CryptoState::new_server(server_config, &params, rustls::quic::Version::V1).unwrap();
+
+    let server_output = server.process_crypto_data(&client_hello, 0).unwrap();
+
+    // First connection: no session ticket, so no 0-RTT keys
+    assert!(
+        server_output.zero_rtt_keys.is_none(),
+        "first connection should not have 0-RTT keys (no session ticket)"
+    );
 }

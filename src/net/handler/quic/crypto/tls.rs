@@ -22,6 +22,8 @@ pub struct CryptoOutput {
     pub handshake_keys: Option<KeyPair>,
     /// New 1-RTT application keys, if the handshake completed.
     pub one_rtt_keys: Option<KeyPair>,
+    /// 0-RTT key if client presented a valid session ticket.
+    pub zero_rtt_keys: Option<DirectionalKey>,
     /// Whether the handshake is complete (1-RTT keys available).
     pub handshake_complete: bool,
     /// Next key update secrets (for key rotation support).
@@ -95,6 +97,7 @@ impl CryptoState {
             crypto_data: [Vec::new(), Vec::new(), Vec::new()],
             handshake_keys: None,
             one_rtt_keys: None,
+            zero_rtt_keys: None,
             handshake_complete: false,
             next_secrets: None,
         };
@@ -124,6 +127,13 @@ impl CryptoState {
                     current_space = 2; // subsequent data goes to 1-RTT
                 }
                 None => break,
+            }
+        }
+
+        // Extract 0-RTT keys if available (valid session ticket presented)
+        if output.handshake_keys.is_some() {
+            if let Some(zero_rtt_dk) = self.zero_rtt_keys() {
+                output.zero_rtt_keys = Some(DirectionalKey::from_rustls(zero_rtt_dk));
             }
         }
 
