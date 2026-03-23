@@ -3,6 +3,10 @@ use super::send::SendHalf;
 use super::state::StreamState;
 use crate::net::handler::quic::transport::frame::StreamId;
 
+/// Absolute upper bound on stream indices per type to prevent memory exhaustion.
+/// Even if transport params allow more, we refuse to grow Vecs beyond this.
+const MAX_STREAMS_ABSOLUTE: u64 = 1024;
+
 /// Error returned when a stream cannot be created due to concurrency limits.
 #[derive(Debug)]
 pub struct StreamLimitError;
@@ -121,6 +125,12 @@ impl StreamMap {
     /// Returns an error if the stream would exceed concurrency limits.
     pub fn get_or_create(&mut self, id: StreamId) -> Result<&mut StreamEntry, StreamLimitError> {
         let idx = id.index() as usize;
+
+        // Hard upper bound: refuse to grow Vec beyond MAX_STREAMS_ABSOLUTE
+        if idx as u64 >= MAX_STREAMS_ABSOLUTE {
+            return Err(StreamLimitError);
+        }
+
         let is_bidi = id.is_bidi();
         let is_client = self.is_client;
         let we_initiated = id.initiator_is_client() == is_client;
