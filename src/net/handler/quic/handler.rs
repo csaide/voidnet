@@ -343,39 +343,136 @@ impl QuicHandler {
                         None => rx_return.push(frame),
                     }
                 } else {
-                    // Extract client's SCID from the long header.
-                    // RFC 9000 §7.2: server MUST use client's SCID as DCID.
-                    let client_scid = match Self::extract_cids(quic_data) {
-                        Some((_, _, scid_buf, scid_len)) => {
-                            ConnectionId::from_slice(&scid_buf[..scid_len])
-                        }
-                        None => {
-                            rx_return.push(frame);
+                    // Extract client's DCID and SCID from the long header.
+                    let (dcid_buf, dcid_len, scid_buf, scid_len) =
+                        match Self::extract_cids(quic_data) {
+                            Some(cids) => cids,
+                            None => {
+                                rx_return.push(frame);
+                                return;
+                            }
+                        };
+                    let client_scid = ConnectionId::from_slice(&scid_buf[..scid_len]);
+
+                    // RFC 9000 §8.1: Retry-based address validation when under load.
+                    // Between retry_threshold and max_connections, require a valid Retry token.
+                    let in_retry_zone = self.connections.len() >= self.retry_threshold
+                        && self.connections.len() < self.max_connections;
+
+                    if in_retry_zone {
+                        // Extract token from the Initial packet
+                        let token = Self::extract_initial_token(quic_data).unwrap_or_default();
+
+                        if token.is_empty() {
+                            // No token — send a Retry packet
+                            let client_ip = match src_addr {
+                                IpAddress::V4(v4) => v4.octets.to_vec(),
+                                IpAddress::V6(v6) => v6.octets.to_vec(),
+                            };
+                            if let Some(retry_pkt) = self.generate_retry_packet(
+                                &dcid_buf[..dcid_len],
+                                &scid_buf[..scid_len],
+                                &client_ip,
+                                dst_port,
+                                version,
+                            ) {
+                                self.send_retry_ipv4(
+                                    frame,
+                                    &retry_pkt,
+                                    quic_offset,
+                                    ip_offset,
+                                    src_addr,
+                                    dst_addr,
+                                    src_port,
+                                    dst_port,
+                                    src_mac,
+                                    dst_mac,
+                                    tx_return,
+                                    rx_return,
+                                );
+                            } else {
+                                rx_return.push(frame);
+                            }
                             return;
                         }
-                    };
-                    if let Some(key) = self.create_server_connection(
-                        &dcid,
-                        &client_scid,
-                        dst_addr,
-                        src_addr,
-                        dst_port,
-                        src_port,
-                        src_mac,
-                        dst_mac,
-                        now,
-                        version,
-                    ) {
-                        let conn = &mut self.connections[key];
-                        let mut frame_data = frame;
-                        let quic_payload = &mut frame_data[quic_offset..];
-                        processor::process_packet(conn, quic_payload, datagram_len, now);
-                        rx_return.push(frame_data);
-                        let conn = &mut self.connections[key];
-                        processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
-                        self.sync_cid_map(key);
+
+                        // Token present — validate it
+                        match self.validate_retry_token(&token, &src_addr, dst_port, version) {
+                            Some(odcid) => {
+                                // Valid Retry token — create connection with original DCID
+                                if let Some(key) = self.create_server_connection(
+                                    &odcid,
+                                    &client_scid,
+                                    dst_addr,
+                                    src_addr,
+                                    dst_port,
+                                    src_port,
+                                    src_mac,
+                                    dst_mac,
+                                    now,
+                                    version,
+                                ) {
+                                    let conn = &mut self.connections[key];
+                                    let mut frame_data = frame;
+                                    let quic_payload = &mut frame_data[quic_offset..];
+                                    processor::process_packet(
+                                        conn,
+                                        quic_payload,
+                                        datagram_len,
+                                        now,
+                                    );
+                                    rx_return.push(frame_data);
+                                    let conn = &mut self.connections[key];
+                                    processor::generate_packets(
+                                        conn,
+                                        key,
+                                        now,
+                                        wheel,
+                                        free_frames,
+                                        tx_return,
+                                    );
+                                    self.sync_cid_map(key);
+                                } else {
+                                    rx_return.push(frame);
+                                }
+                            }
+                            None => {
+                                // Invalid/expired token — drop silently
+                                rx_return.push(frame);
+                            }
+                        }
                     } else {
-                        rx_return.push(frame);
+                        // Below retry threshold — accept without token validation
+                        if let Some(key) = self.create_server_connection(
+                            &dcid,
+                            &client_scid,
+                            dst_addr,
+                            src_addr,
+                            dst_port,
+                            src_port,
+                            src_mac,
+                            dst_mac,
+                            now,
+                            version,
+                        ) {
+                            let conn = &mut self.connections[key];
+                            let mut frame_data = frame;
+                            let quic_payload = &mut frame_data[quic_offset..];
+                            processor::process_packet(conn, quic_payload, datagram_len, now);
+                            rx_return.push(frame_data);
+                            let conn = &mut self.connections[key];
+                            processor::generate_packets(
+                                conn,
+                                key,
+                                now,
+                                wheel,
+                                free_frames,
+                                tx_return,
+                            );
+                            self.sync_cid_map(key);
+                        } else {
+                            rx_return.push(frame);
+                        }
                     }
                 }
             } else {
@@ -566,37 +663,132 @@ impl QuicHandler {
                         None => rx_return.push(frame),
                     }
                 } else {
-                    let client_scid = match Self::extract_cids(quic_data) {
-                        Some((_, _, scid_buf, scid_len)) => {
-                            ConnectionId::from_slice(&scid_buf[..scid_len])
-                        }
-                        None => {
-                            rx_return.push(frame);
+                    // Extract client's DCID and SCID from the long header.
+                    let (dcid_buf, dcid_len, scid_buf, scid_len) =
+                        match Self::extract_cids(quic_data) {
+                            Some(cids) => cids,
+                            None => {
+                                rx_return.push(frame);
+                                return;
+                            }
+                        };
+                    let client_scid = ConnectionId::from_slice(&scid_buf[..scid_len]);
+
+                    // RFC 9000 §8.1: Retry-based address validation when under load.
+                    let in_retry_zone = self.connections.len() >= self.retry_threshold
+                        && self.connections.len() < self.max_connections;
+
+                    if in_retry_zone {
+                        let token = Self::extract_initial_token(quic_data).unwrap_or_default();
+
+                        if token.is_empty() {
+                            // No token — send a Retry packet
+                            let client_ip = match src_addr {
+                                IpAddress::V4(v4) => v4.octets.to_vec(),
+                                IpAddress::V6(v6) => v6.octets.to_vec(),
+                            };
+                            if let Some(retry_pkt) = self.generate_retry_packet(
+                                &dcid_buf[..dcid_len],
+                                &scid_buf[..scid_len],
+                                &client_ip,
+                                dst_port,
+                                version,
+                            ) {
+                                self.send_retry_ipv6(
+                                    frame,
+                                    &retry_pkt,
+                                    quic_offset,
+                                    udp_offset,
+                                    src_addr,
+                                    dst_addr,
+                                    src_port,
+                                    dst_port,
+                                    src_mac,
+                                    dst_mac,
+                                    tx_return,
+                                    rx_return,
+                                );
+                            } else {
+                                rx_return.push(frame);
+                            }
                             return;
                         }
-                    };
-                    if let Some(key) = self.create_server_connection(
-                        &dcid,
-                        &client_scid,
-                        dst_addr,
-                        src_addr,
-                        dst_port,
-                        src_port,
-                        src_mac,
-                        dst_mac,
-                        now,
-                        version,
-                    ) {
-                        let conn = &mut self.connections[key];
-                        let mut frame_data = frame;
-                        let quic_payload = &mut frame_data[quic_offset..];
-                        processor::process_packet(conn, quic_payload, datagram_len, now);
-                        rx_return.push(frame_data);
-                        let conn = &mut self.connections[key];
-                        processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
-                        self.sync_cid_map(key);
+
+                        // Token present — validate it
+                        match self.validate_retry_token(&token, &src_addr, dst_port, version) {
+                            Some(odcid) => {
+                                if let Some(key) = self.create_server_connection(
+                                    &odcid,
+                                    &client_scid,
+                                    dst_addr,
+                                    src_addr,
+                                    dst_port,
+                                    src_port,
+                                    src_mac,
+                                    dst_mac,
+                                    now,
+                                    version,
+                                ) {
+                                    let conn = &mut self.connections[key];
+                                    let mut frame_data = frame;
+                                    let quic_payload = &mut frame_data[quic_offset..];
+                                    processor::process_packet(
+                                        conn,
+                                        quic_payload,
+                                        datagram_len,
+                                        now,
+                                    );
+                                    rx_return.push(frame_data);
+                                    let conn = &mut self.connections[key];
+                                    processor::generate_packets(
+                                        conn,
+                                        key,
+                                        now,
+                                        wheel,
+                                        free_frames,
+                                        tx_return,
+                                    );
+                                    self.sync_cid_map(key);
+                                } else {
+                                    rx_return.push(frame);
+                                }
+                            }
+                            None => {
+                                rx_return.push(frame);
+                            }
+                        }
                     } else {
-                        rx_return.push(frame);
+                        // Below retry threshold — accept without token validation
+                        if let Some(key) = self.create_server_connection(
+                            &dcid,
+                            &client_scid,
+                            dst_addr,
+                            src_addr,
+                            dst_port,
+                            src_port,
+                            src_mac,
+                            dst_mac,
+                            now,
+                            version,
+                        ) {
+                            let conn = &mut self.connections[key];
+                            let mut frame_data = frame;
+                            let quic_payload = &mut frame_data[quic_offset..];
+                            processor::process_packet(conn, quic_payload, datagram_len, now);
+                            rx_return.push(frame_data);
+                            let conn = &mut self.connections[key];
+                            processor::generate_packets(
+                                conn,
+                                key,
+                                now,
+                                wheel,
+                                free_frames,
+                                tx_return,
+                            );
+                            self.sync_cid_map(key);
+                        } else {
+                            rx_return.push(frame);
+                        }
                     }
                 }
             } else {
@@ -736,6 +928,149 @@ impl QuicHandler {
         dcid_buf[..dcid_len].copy_from_slice(&quic_data[6..dcid_end]);
         scid_buf[..scid_len].copy_from_slice(&quic_data[scid_start..scid_end]);
         Some((dcid_buf, dcid_len, scid_buf, scid_len))
+    }
+
+    /// Extract the token from an Initial packet's QUIC payload.
+    ///
+    /// The Initial packet long header layout after version+CIDs is:
+    ///   token_length(varint) + token(token_length bytes)
+    /// Returns `None` if the payload is malformed or not an Initial packet.
+    pub(crate) fn extract_initial_token(quic_data: &[u8]) -> Option<Vec<u8>> {
+        use crate::net::handler::quic::transport::varint::decode_varint;
+
+        // Need at least: first_byte(1) + version(4) + dcid_len(1)
+        if quic_data.len() < 6 {
+            return None;
+        }
+        let dcid_len = quic_data[5] as usize;
+        if dcid_len > 20 {
+            return None;
+        }
+        let dcid_end = 6 + dcid_len;
+        if quic_data.len() < dcid_end + 1 {
+            return None;
+        }
+        let scid_len = quic_data[dcid_end] as usize;
+        if scid_len > 20 {
+            return None;
+        }
+        let scid_end = dcid_end + 1 + scid_len;
+        if quic_data.len() < scid_end {
+            return None;
+        }
+
+        // Now at the token length varint
+        let rest = &quic_data[scid_end..];
+        let (token_len, consumed) = decode_varint(rest)?;
+        let token_len = token_len as usize;
+        if token_len == 0 {
+            return Some(Vec::new());
+        }
+        if rest.len() < consumed + token_len {
+            return None;
+        }
+        Some(rest[consumed..consumed + token_len].to_vec())
+    }
+
+    /// Generate a Retry packet for the given client parameters.
+    ///
+    /// Encrypts a Retry token containing the original DCID, client IP, version,
+    /// and a timestamp, then wraps it in a Retry packet with integrity tag.
+    /// Returns `None` if the listener isn't found or token encryption fails.
+    pub(crate) fn generate_retry_packet(
+        &self,
+        odcid: &[u8],
+        client_scid: &[u8],
+        client_ip: &[u8],
+        local_port: u16,
+        version: u32,
+    ) -> Option<Vec<u8>> {
+        use crate::net::handler::quic::token_crypto::{TokenType, encrypt_token};
+        use crate::net::handler::quic::transport::packet_builder::build_retry_packet;
+        use ring::rand::SecureRandom;
+
+        let listener = self.listeners.get(&local_port)?;
+
+        // Generate a new server SCID for the Retry packet
+        let mut new_scid = [0u8; 8];
+        ring::rand::SystemRandom::new().fill(&mut new_scid).ok()?;
+
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let token = encrypt_token(
+            &listener.token_secret,
+            TokenType::Retry,
+            client_ip,
+            now_secs,
+            odcid,
+            version,
+        )
+        .ok()?;
+
+        // RFC 9000 §17.2.5: Retry packet DCID = client's SCID,
+        // Retry packet SCID = new server CID (different from original DCID)
+        Some(build_retry_packet(
+            version,
+            client_scid, // DCID in Retry = client's SCID
+            &new_scid,   // SCID in Retry = new server-chosen CID
+            odcid,       // original DCID for integrity tag
+            &token,
+        ))
+    }
+
+    /// Decrypt and validate a Retry token from an Initial packet.
+    ///
+    /// Checks that the token type is Retry, the client IP matches, the version
+    /// matches, and the token hasn't expired. Returns the original DCID on success.
+    pub(crate) fn validate_retry_token(
+        &self,
+        token_bytes: &[u8],
+        client_addr: &IpAddress,
+        local_port: u16,
+        version: u32,
+    ) -> Option<ConnectionId> {
+        use crate::net::handler::quic::token_crypto::{TokenType, decrypt_token};
+
+        let listener = self.listeners.get(&local_port)?;
+        let (token_type, token_ip, timestamp_secs, dcid, token_version) =
+            decrypt_token(&listener.token_secret, token_bytes).ok()?;
+
+        // Must be a Retry token
+        if token_type != TokenType::Retry {
+            return None;
+        }
+
+        // Version must match
+        if token_version != version {
+            return None;
+        }
+
+        // Client IP must match
+        let client_ip_bytes = match client_addr {
+            IpAddress::V4(v4) => v4.octets.to_vec(),
+            IpAddress::V6(v6) => v6.octets.to_vec(),
+        };
+        if token_ip != client_ip_bytes {
+            return None;
+        }
+
+        // Check expiry using wall-clock time (matches encrypt_token's SystemTime)
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let max_age_secs = self.retry_token_max_age.as_secs();
+        if now_secs.saturating_sub(timestamp_secs) > max_age_secs {
+            return None;
+        }
+
+        if dcid.len() > 20 {
+            return None;
+        }
+        Some(ConnectionId::from_slice(&dcid))
     }
 
     /// Build a Version Negotiation packet directly into the RX frame (IPv4).
@@ -902,6 +1237,152 @@ impl QuicHandler {
         tx_return.push(frame);
     }
 
+    /// Build and send a Retry packet using the incoming IPv4 frame buffer.
+    /// Mirrors the pattern of `build_vn_ipv4` — reuses the RX frame.
+    fn send_retry_ipv4<'umem>(
+        &self,
+        mut frame: Frame<'umem>,
+        retry_packet: &[u8],
+        quic_offset: usize,
+        ip_offset: usize,
+        src_addr: IpAddress,
+        dst_addr: IpAddress,
+        src_port: u16,
+        dst_port: u16,
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        tx_return: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        let udp_len = 8 + retry_packet.len();
+        let total = quic_offset + retry_packet.len();
+        if frame.capacity() < total {
+            rx_return.push(frame);
+            return;
+        }
+        unsafe { frame.set_len(frame.capacity()) };
+        crate::net::wire::ethernet::write_ethernet_header(
+            &mut frame,
+            src_mac,
+            dst_mac,
+            crate::net::wire::ethernet::EtherTypes::IPv4,
+        );
+        let ip_hdr_len = crate::net::wire::ip::IPV4_MIN_HEADER_LEN;
+        let total_ip_len = (ip_hdr_len + udp_len) as u16;
+        {
+            let ip = &mut frame[ip_offset..ip_offset + ip_hdr_len];
+            ip.fill(0);
+            ip[0] = 0x45;
+            ip[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
+            ip[6] = 0x40; // DF
+            ip[8] = 64; // TTL
+            ip[9] = crate::net::wire::ip::IpProtocols::Udp;
+            if let IpAddress::V4(src) = dst_addr {
+                let b: [u8; 4] = src.into();
+                ip[12..16].copy_from_slice(&b);
+            }
+            if let IpAddress::V4(dst) = src_addr {
+                let b: [u8; 4] = dst.into();
+                ip[16..20].copy_from_slice(&b);
+            }
+        }
+        let ip_header = crate::net::wire::ip::Ipv4Header::from_bytes_mut(&mut frame);
+        ip_header.fill_checksum();
+        let udp_offset = ip_offset + ip_hdr_len;
+        {
+            let udp = unsafe {
+                crate::net::wire::udp::UdpHeader::from_bytes_at_mut(&mut frame, udp_offset)
+            };
+            udp.src_port = dst_port.to_be_bytes();
+            udp.dst_port = src_port.to_be_bytes();
+            udp.length = (udp_len as u16).to_be_bytes();
+            udp.checksum = [0, 0]; // IPv4 UDP checksum optional
+        }
+        frame[quic_offset..quic_offset + retry_packet.len()].copy_from_slice(retry_packet);
+        unsafe { frame.set_len(total) };
+        tx_return.push(frame);
+    }
+
+    /// Build and send a Retry packet using the incoming IPv6 frame buffer.
+    /// Mirrors the pattern of `build_vn_ipv6` — reuses the RX frame.
+    fn send_retry_ipv6<'umem>(
+        &self,
+        mut frame: Frame<'umem>,
+        retry_packet: &[u8],
+        quic_offset: usize,
+        udp_offset: usize,
+        src_addr: IpAddress,
+        dst_addr: IpAddress,
+        src_port: u16,
+        dst_port: u16,
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        tx_return: &mut impl FrameBuffer<'umem>,
+        rx_return: &mut impl FrameBuffer<'umem>,
+    ) {
+        let udp_len = 8 + retry_packet.len();
+        let total = quic_offset + retry_packet.len();
+        if frame.capacity() < total {
+            rx_return.push(frame);
+            return;
+        }
+        unsafe { frame.set_len(frame.capacity()) };
+        let eth_len = std::mem::size_of::<crate::net::wire::ethernet::EthernetFrame>();
+        crate::net::wire::ethernet::write_ethernet_header(
+            &mut frame,
+            src_mac,
+            dst_mac,
+            crate::net::wire::ethernet::EtherTypes::IPv6,
+        );
+        {
+            let ip = &mut frame[eth_len..eth_len + crate::net::wire::ip::IPV6_HEADER_LEN];
+            ip.fill(0);
+            ip[0] = 0x60;
+            let payload_len = udp_len as u16;
+            ip[4..6].copy_from_slice(&payload_len.to_be_bytes());
+            ip[6] = crate::net::wire::ip::IpProtocols::Udp;
+            ip[7] = 64;
+            if let IpAddress::V6(src) = dst_addr {
+                ip[8..24].copy_from_slice(&src.octets);
+            }
+            if let IpAddress::V6(dst) = src_addr {
+                ip[24..40].copy_from_slice(&dst.octets);
+            }
+        }
+        {
+            let udp = unsafe {
+                crate::net::wire::udp::UdpHeader::from_bytes_at_mut(&mut frame, udp_offset)
+            };
+            udp.src_port = dst_port.to_be_bytes();
+            udp.dst_port = src_port.to_be_bytes();
+            udp.length = (udp_len as u16).to_be_bytes();
+            udp.checksum = [0, 0];
+        }
+        frame[quic_offset..quic_offset + retry_packet.len()].copy_from_slice(retry_packet);
+        // IPv6 UDP checksum (RFC 8200 §8.1)
+        {
+            use crate::net::checksum::{
+                checksum_to_bytes, fold_checksum, pseudo_header_sum_v6, sum_words,
+            };
+            if let (IpAddress::V6(src_ip), IpAddress::V6(dst_ip)) = (dst_addr, src_addr) {
+                let udp_segment = &frame[udp_offset..total];
+                let sum = pseudo_header_sum_v6(
+                    &src_ip,
+                    &dst_ip,
+                    crate::net::wire::ip::IpProtocols::Udp,
+                    udp_len as u32,
+                ) + sum_words(udp_segment);
+                let checksum = checksum_to_bytes(fold_checksum(sum));
+                let udp = unsafe {
+                    crate::net::wire::udp::UdpHeader::from_bytes_at_mut(&mut frame, udp_offset)
+                };
+                udp.checksum = checksum;
+            }
+        }
+        unsafe { frame.set_len(total) };
+        tx_return.push(frame);
+    }
+
     /// Sync CID map after generate_packets: register newly issued local CIDs,
     /// issue replacement CIDs when peer retires one of ours, and clean up stale entries.
     fn sync_cid_map(&mut self, conn_key: usize) {
@@ -1032,11 +1513,8 @@ impl QuicHandler {
             return None;
         }
 
-        // DoS protection: when under load, drop without allocating state.
-        // Future work: send Retry packet for address validation (RFC 9000 §8.1).
-        if self.connections.len() >= self.retry_threshold {
-            return None;
-        }
+        // Note: retry_threshold check is now done by the caller (process_ipv4/ipv6),
+        // which sends Retry packets for address validation (RFC 9000 §8.1).
 
         // Per-IP rate limiting: reject if this IP has too many connections
         let ip_count = self
