@@ -1,5 +1,6 @@
 //! Tests for NEW_TOKEN feature (RFC 9000 §8.1).
 
+use crate::net::handler::quic::token_crypto::{self, TokenType};
 use crate::net::handler::quic::transport::frame::{self, QuicFrame};
 use crate::net::handler::quic::transport::frame_writer;
 use crate::net::socket::quic::{InMemoryTokenStore, TokenStore};
@@ -87,4 +88,116 @@ fn new_token_frame_parse_rejects_empty_token() {
     let buf = [0x07, 0x00];
     let result = frame::parse_frame(&buf);
     assert!(result.is_err());
+}
+
+// --- Token encryption/decryption tests ---
+
+#[test]
+fn token_crypto_encrypt_decrypt_ipv4() {
+    let secret = [0xAA; 32];
+    let client_ip = [192, 168, 1, 1];
+    let timestamp = 1700000000u64;
+    let dcid = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+    let version = 0x00000001;
+
+    let encrypted = token_crypto::encrypt_token(
+        &secret,
+        TokenType::NewToken,
+        &client_ip,
+        timestamp,
+        &dcid,
+        version,
+    )
+    .unwrap();
+
+    let (token_type, ip, ts, d, v) = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
+    assert_eq!(token_type, TokenType::NewToken);
+    assert_eq!(ip, client_ip);
+    assert_eq!(ts, timestamp);
+    assert_eq!(d, dcid);
+    assert_eq!(v, version);
+}
+
+#[test]
+fn token_crypto_encrypt_decrypt_ipv6() {
+    let secret = [0xBB; 32];
+    let client_ip = [
+        0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x01,
+    ];
+    let timestamp = 1700000042u64;
+    let dcid = [0xFF; 8];
+    let version = 0x6b3343cf; // QUIC v2
+
+    let encrypted = token_crypto::encrypt_token(
+        &secret,
+        TokenType::Retry,
+        &client_ip,
+        timestamp,
+        &dcid,
+        version,
+    )
+    .unwrap();
+
+    let (token_type, ip, ts, d, v) = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
+    assert_eq!(token_type, TokenType::Retry);
+    assert_eq!(ip, client_ip);
+    assert_eq!(ts, timestamp);
+    assert_eq!(d, dcid);
+    assert_eq!(v, version);
+}
+
+#[test]
+fn token_crypto_wrong_secret_fails() {
+    let secret = [0xAA; 32];
+    let wrong_secret = [0xCC; 32];
+    let client_ip = [10, 0, 0, 1];
+
+    let encrypted =
+        token_crypto::encrypt_token(&secret, TokenType::NewToken, &client_ip, 1000, &[], 1)
+            .unwrap();
+
+    let result = token_crypto::decrypt_token(&wrong_secret, &encrypted);
+    assert!(result.is_err());
+}
+
+#[test]
+fn token_crypto_tampered_data_fails() {
+    let secret = [0xAA; 32];
+    let client_ip = [10, 0, 0, 1];
+
+    let mut encrypted =
+        token_crypto::encrypt_token(&secret, TokenType::NewToken, &client_ip, 1000, &[], 1)
+            .unwrap();
+
+    // Tamper with a byte in the ciphertext
+    if encrypted.len() > 10 {
+        encrypted[10] ^= 0xFF;
+    }
+
+    let result = token_crypto::decrypt_token(&secret, &encrypted);
+    assert!(result.is_err());
+}
+
+#[test]
+fn token_crypto_empty_dcid() {
+    let secret = [0xDD; 32];
+    let client_ip = [127, 0, 0, 1];
+
+    let encrypted =
+        token_crypto::encrypt_token(&secret, TokenType::NewToken, &client_ip, 999, &[], 1).unwrap();
+
+    let (token_type, ip, ts, d, v) = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
+    assert_eq!(token_type, TokenType::NewToken);
+    assert_eq!(ip, client_ip);
+    assert_eq!(ts, 999);
+    assert!(d.is_empty());
+    assert_eq!(v, 1);
+}
+
+#[test]
+fn token_crypto_too_short_fails() {
+    let secret = [0xAA; 32];
+    let short = [0u8; 10];
+    assert!(token_crypto::decrypt_token(&secret, &short).is_err());
 }

@@ -11,6 +11,7 @@ pub(crate) mod processor;
 pub(crate) mod stream;
 pub(crate) mod timer_kinds;
 pub(crate) mod token;
+pub(crate) mod token_crypto;
 pub(crate) mod transport;
 
 pub use handler::QuicHandler;
