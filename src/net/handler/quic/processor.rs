@@ -1203,12 +1203,13 @@ fn handle_ack_frame(
 
     // Feed to loss detector
     // Fix 1: Apply ack_delay_exponent. The ACK delay field is in microseconds / 2^exponent.
+    // RFC 9000 §18.2: ack_delay_exponent max is 20; clamp defensively to prevent overflow
     let ack_delay_exponent = conn
         .peer_params
         .as_ref()
-        .map(|p| p.ack_delay_exponent)
+        .map(|p| p.ack_delay_exponent.min(20))
         .unwrap_or(3); // default exponent is 3
-    let ack_delay_us = ack.ack_delay * (1u64 << ack_delay_exponent);
+    let ack_delay_us = ack.ack_delay.saturating_mul(1u64 << ack_delay_exponent);
     let ack_delay = coarsetime::Duration::new(
         ack_delay_us / 1_000_000,
         ((ack_delay_us % 1_000_000) * 1000) as u32,
