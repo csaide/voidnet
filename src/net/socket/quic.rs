@@ -12,6 +12,7 @@ use crate::net::handler::quic::connection::ConnectionState;
 use crate::net::handler::quic::error::TransportError;
 use crate::net::handler::quic::transport::frame::StreamId;
 use crate::net::handler::quic::transport::params::TransportParams;
+use crate::net::handler::udp::BindError;
 use crate::net::socket::LocalQueue;
 use crate::net::wire::ethernet::MacAddress;
 use crate::net::wire::ip::IpAddress;
@@ -49,7 +50,7 @@ impl QuicListener {
         addr: IpAddress,
         port: u16,
         tls_config: Arc<ServerConfig>,
-    ) -> Result<Self, QuicError> {
+    ) -> Result<Self, BindError> {
         Self::listen_with_config(addr, port, tls_config, TransportParams::default())
     }
 
@@ -59,12 +60,12 @@ impl QuicListener {
         port: u16,
         tls_config: Arc<ServerConfig>,
         params: TransportParams,
-    ) -> Result<Self, QuicError> {
+    ) -> Result<Self, BindError> {
         with_runtime_context(|ctx| {
             let handler = unsafe { &mut *ctx.quic_handler.get() };
             let accept_queue = handler
                 .listen_with_queue(port, tls_config, params)
-                .ok_or(QuicError::NotConnected)?;
+                .ok_or(BindError::AddressInUse)?;
             Ok(Self {
                 local_addr: addr,
                 port,
