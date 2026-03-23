@@ -882,8 +882,9 @@ fn dispatch_frames(
 
             QuicFrame::Datagram { data } => {
                 // RFC 9221: deliver if we advertised max_datagram_frame_size
+                // Copy from borrowed slice when delivering to the queue
                 if conn.datagrams.max_recv_size.is_some() {
-                    conn.datagrams.deliver(data);
+                    conn.datagrams.deliver(data.to_vec());
                     conn.event_queue
                         .push(crate::net::handler::quic::event::QuicEvent::DatagramReceived);
                 }

@@ -60,7 +60,7 @@ pub enum QuicFrame<'a> {
     HandshakeDone,                 // §19.20 (type 0x1e)
     /// DATAGRAM frame (RFC 9221, type 0x30/0x31)
     Datagram {
-        data: Vec<u8>,
+        data: &'a [u8],
     },
 }
 
@@ -521,7 +521,7 @@ pub fn parse_frame(buf: &[u8]) -> Result<(QuicFrame<'_>, usize), FrameParseError
 
         // DATAGRAM (0x30) — no length field, extends to end of packet (RFC 9221)
         0x30 => {
-            let data = buf[type_len..].to_vec();
+            let data = &buf[type_len..];
             Ok((QuicFrame::Datagram { data }, buf.len()))
         }
 
@@ -534,7 +534,7 @@ pub fn parse_frame(buf: &[u8]) -> Result<(QuicFrame<'_>, usize), FrameParseError
             if end > buf.len() {
                 return Err(FrameParseError::BufferTooShort);
             }
-            let data = buf[start..end].to_vec();
+            let data = &buf[start..end];
             Ok((QuicFrame::Datagram { data }, end))
         }
 
