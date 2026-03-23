@@ -5,6 +5,7 @@ mod compat_vn_test;
 mod congestion_test;
 mod connection_id_test;
 mod crypto_test;
+mod datagram_test;
 mod e2e_test;
 mod ecn_test;
 mod error_test;

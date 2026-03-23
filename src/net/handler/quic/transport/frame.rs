@@ -24,26 +24,44 @@ impl StreamId {
 /// All QUIC frame types (RFC 9000 §19).
 #[derive(Debug)]
 pub enum QuicFrame<'a> {
-    Padding,                                               // §19.1 (type 0x00)
-    Ping,                                                  // §19.2 (type 0x01)
-    Ack(AckFrame<'a>),                                     // §19.3 (type 0x02/0x03)
-    ResetStream(ResetStreamFrame),                         // §19.4 (type 0x04)
-    StopSending(StopSendingFrame),                         // §19.5 (type 0x05)
-    Crypto(CryptoFrame<'a>),                               // §19.6 (type 0x06)
-    NewToken(NewTokenFrame<'a>),                           // §19.7 (type 0x07)
-    Stream(StreamFrame<'a>),                               // §19.8 (type 0x08-0x0f)
-    MaxData(u64),                                          // §19.9 (type 0x10)
-    MaxStreamData { stream_id: StreamId, max: u64 },       // §19.10 (type 0x11)
-    MaxStreams { max: u64, bidi: bool },                   // §19.11 (type 0x12/0x13)
-    DataBlocked(u64),                                      // §19.12 (type 0x14)
-    StreamDataBlocked { stream_id: StreamId, limit: u64 }, // §19.13 (type 0x15)
-    StreamsBlocked { max: u64, bidi: bool },               // §19.14 (type 0x16/0x17)
-    NewConnectionId(NewConnectionIdFrame<'a>),             // §19.15 (type 0x18)
-    RetireConnectionId { sequence: u64 },                  // §19.16 (type 0x19)
-    PathChallenge([u8; 8]),                                // §19.17 (type 0x1a)
-    PathResponse([u8; 8]),                                 // §19.18 (type 0x1b)
-    ConnectionClose(ConnectionCloseFrame<'a>),             // §19.19 (type 0x1c/0x1d)
-    HandshakeDone,                                         // §19.20 (type 0x1e)
+    Padding,                       // §19.1 (type 0x00)
+    Ping,                          // §19.2 (type 0x01)
+    Ack(AckFrame<'a>),             // §19.3 (type 0x02/0x03)
+    ResetStream(ResetStreamFrame), // §19.4 (type 0x04)
+    StopSending(StopSendingFrame), // §19.5 (type 0x05)
+    Crypto(CryptoFrame<'a>),       // §19.6 (type 0x06)
+    NewToken(NewTokenFrame<'a>),   // §19.7 (type 0x07)
+    Stream(StreamFrame<'a>),       // §19.8 (type 0x08-0x0f)
+    MaxData(u64),                  // §19.9 (type 0x10)
+    MaxStreamData {
+        stream_id: StreamId,
+        max: u64,
+    }, // §19.10 (type 0x11)
+    MaxStreams {
+        max: u64,
+        bidi: bool,
+    }, // §19.11 (type 0x12/0x13)
+    DataBlocked(u64),              // §19.12 (type 0x14)
+    StreamDataBlocked {
+        stream_id: StreamId,
+        limit: u64,
+    }, // §19.13 (type 0x15)
+    StreamsBlocked {
+        max: u64,
+        bidi: bool,
+    }, // §19.14 (type 0x16/0x17)
+    NewConnectionId(NewConnectionIdFrame<'a>), // §19.15 (type 0x18)
+    RetireConnectionId {
+        sequence: u64,
+    }, // §19.16 (type 0x19)
+    PathChallenge([u8; 8]),        // §19.17 (type 0x1a)
+    PathResponse([u8; 8]),         // §19.18 (type 0x1b)
+    ConnectionClose(ConnectionCloseFrame<'a>), // §19.19 (type 0x1c/0x1d)
+    HandshakeDone,                 // §19.20 (type 0x1e)
+    /// DATAGRAM frame (RFC 9221, type 0x30/0x31)
+    Datagram {
+        data: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
@@ -498,6 +516,25 @@ pub fn parse_frame(buf: &[u8]) -> Result<(QuicFrame<'_>, usize), FrameParseError
 
         // HANDSHAKE_DONE (0x1e)
         0x1e => Ok((QuicFrame::HandshakeDone, type_len)),
+
+        // DATAGRAM (0x30) — no length field, extends to end of packet (RFC 9221)
+        0x30 => {
+            let data = buf[type_len..].to_vec();
+            Ok((QuicFrame::Datagram { data }, buf.len()))
+        }
+
+        // DATAGRAM_WITH_LENGTH (0x31) — has explicit length field (RFC 9221)
+        0x31 => {
+            let (length, len_size) =
+                decode_varint(&buf[type_len..]).ok_or(FrameParseError::BufferTooShort)?;
+            let start = type_len + len_size;
+            let end = start + length as usize;
+            if end > buf.len() {
+                return Err(FrameParseError::BufferTooShort);
+            }
+            let data = buf[start..end].to_vec();
+            Ok((QuicFrame::Datagram { data }, end))
+        }
 
         _ => {
             // RFC 9000 §19: unknown frame types MUST be ignored.

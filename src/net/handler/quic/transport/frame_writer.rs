@@ -228,6 +228,17 @@ pub fn write_streams_blocked(buf: &mut [u8], max: u64, bidi: bool) -> usize {
     pos
 }
 
+/// Write a DATAGRAM_WITH_LENGTH frame (type 0x31, RFC 9221). Returns bytes written.
+pub fn write_datagram_with_length(buf: &mut [u8], data: &[u8]) -> usize {
+    let mut pos = 0;
+    buf[pos] = 0x31; // DATAGRAM_WITH_LENGTH
+    pos += 1;
+    pos += encode_varint(data.len() as u64, &mut buf[pos..]);
+    buf[pos..pos + data.len()].copy_from_slice(data);
+    pos += data.len();
+    pos
+}
+
 /// Write a NEW_TOKEN frame. Returns bytes written.
 pub fn write_new_token(buf: &mut [u8], token: &[u8]) -> usize {
     let mut pos = 0;
