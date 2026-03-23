@@ -20,6 +20,7 @@ mod path_test;
 mod processor_test;
 mod retransmit_test;
 mod retry_test;
+mod send_half_test;
 mod socket_api_test;
 mod stateless_reset_test;
 mod stream_map_test;
