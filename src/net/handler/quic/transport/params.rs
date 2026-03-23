@@ -7,6 +7,13 @@ use super::varint::{decode_varint, encode_varint, varint_len};
 use crate::net::handler::quic::connection_id::ConnectionId;
 use crate::net::handler::quic::error::TransportError;
 
+/// Version information for Compatible Version Negotiation (RFC 9369).
+#[allow(dead_code)]
+pub struct VersionInformation {
+    pub chosen_version: u32,
+    pub other_versions: Vec<u32>,
+}
+
 // Parameter IDs (RFC 9000 §18.2)
 const ORIGINAL_DESTINATION_CONNECTION_ID: u64 = 0x00;
 const MAX_IDLE_TIMEOUT: u64 = 0x01;
@@ -370,6 +377,19 @@ impl TransportParams {
         }
 
         Ok(params)
+    }
+
+    /// Validate version_information transport parameter (RFC 9369).
+    ///
+    /// Simplified stub: full version_information parsing (type 0x11) is deferred.
+    /// When implemented, this would validate that chosen_version matches the
+    /// negotiated version and that other_versions contains the original version.
+    pub fn validate_version_info(
+        &self,
+        _negotiated_version: u32,
+        _original_version: Option<u32>,
+    ) -> Result<(), TransportError> {
+        Ok(())
     }
 
     /// Validate transport parameters based on which side sent them (RFC 9000 §7.3, §18.2).

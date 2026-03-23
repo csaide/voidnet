@@ -29,4 +29,5 @@ mod stream_state_test;
 mod timer_kinds_test;
 mod tls_test;
 mod varint_test;
+mod version_negotiation_test;
 mod version_test;

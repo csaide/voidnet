@@ -251,9 +251,9 @@ pub fn process_packet(
                 PacketHeader::VersionNegotiation(vn) => {
                     // RFC 9000 §6.2: client processes VN from server
                     if conn.side == Side::Client && conn.state == ConnectionState::Handshaking {
-                        // Check if any supported version is offered
+                        // Find a supported version different from current
+                        let mut negotiated_version: Option<u32> = None;
                         let mut i = 0;
-                        let mut found = false;
                         while i + 4 <= vn.versions.len() {
                             let v = u32::from_be_bytes([
                                 vn.versions[i],
@@ -265,17 +265,79 @@ pub fn process_packet(
                                 v,
                             ) && v != conn.version
                             {
-                                found = true;
+                                negotiated_version = Some(v);
                                 break;
                             }
                             i += 4;
                         }
-                        if !found {
-                            // No compatible version — close
-                            conn.state = ConnectionState::Closed;
-                            last_result = ProcessResult::VersionNegotiation;
+
+                        match negotiated_version {
+                            None => {
+                                // No compatible version — close
+                                conn.state = ConnectionState::Closed;
+                                last_result = ProcessResult::VersionNegotiation;
+                            }
+                            Some(new_version) => {
+                                use crate::net::handler::quic::crypto::initial_keys::derive_initial_keys;
+                                use crate::net::handler::quic::crypto::keys::{
+                                    DirectionalKey, KeyPair,
+                                };
+                                use crate::net::handler::quic::crypto::tls::CryptoState;
+                                use crate::net::handler::quic::transport::ack::AckState;
+                                use crate::net::handler::quic::transport::loss::LossDetector;
+                                use crate::net::handler::quic::transport::version::QUIC_VERSION_2;
+
+                                // Store original version and switch to negotiated
+                                conn.original_version = Some(conn.version);
+                                conn.version = new_version;
+
+                                let rustls_version = if new_version == QUIC_VERSION_2 {
+                                    rustls::quic::Version::V2
+                                } else {
+                                    rustls::quic::Version::V1
+                                };
+
+                                // Create fresh TLS client connection with negotiated version
+                                if let (Some(config), Some(server_name)) =
+                                    (&conn.client_config, &conn.server_name)
+                                {
+                                    let mut params_buf = [0u8; 512];
+                                    let params_len = conn.local_params.encode(&mut params_buf);
+                                    match CryptoState::new_client(
+                                        config.clone(),
+                                        server_name,
+                                        &params_buf[..params_len],
+                                        rustls_version,
+                                    ) {
+                                        Ok((crypto, initial_data)) => {
+                                            conn.crypto = Some(crypto);
+                                            // Re-derive initial keys for negotiated version
+                                            let (local_dk, remote_dk) = derive_initial_keys(
+                                                conn.dcid.as_bytes(),
+                                                rustls::Side::Client,
+                                                rustls_version,
+                                            );
+                                            conn.keys.initial = Some(KeyPair {
+                                                local: DirectionalKey::from_rustls(local_dk),
+                                                remote: DirectionalKey::from_rustls(remote_dk),
+                                            });
+                                            // Reset crypto and ack state for fresh handshake
+                                            conn.pending_crypto =
+                                                [initial_data, Vec::new(), Vec::new()];
+                                            conn.crypto_offset = [0; 3];
+                                            conn.crypto_acked = [0; 3];
+                                            conn.ack =
+                                                [AckState::new(), AckState::new(), AckState::new()];
+                                            conn.loss = LossDetector::new();
+                                        }
+                                        Err(_) => {
+                                            conn.state = ConnectionState::Closed;
+                                            last_result = ProcessResult::VersionNegotiation;
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        // TODO: retry with the negotiated version
                     }
                     None
                 }
