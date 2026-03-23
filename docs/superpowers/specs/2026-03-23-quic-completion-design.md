@@ -118,7 +118,7 @@ RFC 9000 §8.1, §19.7. Server issues tokens for address validation on future co
   - Client IP, timestamp, original DCID, QUIC version (for RFC 9369 §5 compliance)
 - Token encryption: AES-256-GCM with a server-secret key (configurable via `QuicConfig`, randomly generated if not provided). Nonce derived from timestamp. **Encryption is MUST, not optional** — RFC 9000 §8.1.3 requires that NEW_TOKEN tokens not leak linkable information; the encrypted DCID satisfies this only because it's encrypted.
 - Server sends NEW_TOKEN frame to client
-- On future Initial packets with a token, server validates: decrypts, checks type discriminator, checks IP match (configurable strictness), checks expiry (default 24 hours), checks version matches connection version (RFC 9369 §5), extracts metadata
+- On future Initial packets with a token, server validates: decrypts, checks type discriminator, checks IP match (configurable strictness), checks expiry (default 24 hours), checks version matches the negotiated version of the originating connection — RFC 9369 §5: "when a connection includes compatible version negotiation, any issued server tokens are considered to originate from the negotiated version, not the original one"
 - Valid NEW_TOKEN token lifts amplification limit and skips Retry (RFC 9000 §8.1.2)
 - Valid Retry token validates the retry exchange (different code path — already implemented)
 
