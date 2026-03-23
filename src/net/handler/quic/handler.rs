@@ -17,6 +17,15 @@ use crate::net::wire::ethernet::MacAddress;
 use crate::net::wire::ip::IpAddress;
 use crate::xdp::frame::{Frame, FrameBuffer};
 
+/// 5-tuple key for connection demux when CID is zero-length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct FiveTuple {
+    pub local_addr: IpAddress,
+    pub local_port: u16,
+    pub remote_addr: IpAddress,
+    pub remote_port: u16,
+}
+
 pub struct ListenerState {
     pub tls_config: Arc<rustls::ServerConfig>,
     pub transport_params: TransportParams,
@@ -30,6 +39,8 @@ pub struct ListenerState {
 pub struct QuicHandler {
     pub(crate) connections: Slab<QuicConnectionState>,
     pub(crate) cid_map: FxHashMap<ConnectionId, usize>,
+    /// Fallback demux for zero-length CID connections, keyed by 5-tuple.
+    pub(crate) five_tuple_map: FxHashMap<FiveTuple, usize>,
     pub(crate) listeners: FxHashMap<u16, ListenerState>,
     pub(crate) rx_offload: bool,
     pub(crate) tx_offload: bool,
@@ -42,6 +53,7 @@ impl QuicHandler {
         Self {
             connections: Slab::new(),
             cid_map: FxHashMap::default(),
+            five_tuple_map: FxHashMap::default(),
             listeners: FxHashMap::default(),
             rx_offload,
             tx_offload,
@@ -186,8 +198,18 @@ impl QuicHandler {
             )
         };
 
-        // Look up existing connection
-        if let Some(&conn_key) = self.cid_map.get(&dcid) {
+        // Look up existing connection (CID map first, then 5-tuple fallback)
+        let conn_key = self.cid_map.get(&dcid).copied().or_else(|| {
+            let tuple = FiveTuple {
+                local_addr: dst_addr,
+                local_port: dst_port,
+                remote_addr: src_addr,
+                remote_port: src_port,
+            };
+            self.five_tuple_map.get(&tuple).copied()
+        });
+
+        if let Some(conn_key) = conn_key {
             let mut frame_data = frame;
             let quic_payload = &mut frame_data[quic_offset..];
             let conn = &mut self.connections[conn_key];
@@ -389,8 +411,18 @@ impl QuicHandler {
             )
         };
 
-        // Look up existing connection
-        if let Some(&conn_key) = self.cid_map.get(&dcid) {
+        // Look up existing connection (CID map first, then 5-tuple fallback)
+        let conn_key = self.cid_map.get(&dcid).copied().or_else(|| {
+            let tuple = FiveTuple {
+                local_addr: dst_addr,
+                local_port: dst_port,
+                remote_addr: src_addr,
+                remote_port: src_port,
+            };
+            self.five_tuple_map.get(&tuple).copied()
+        });
+
+        if let Some(conn_key) = conn_key {
             let mut frame_data = frame;
             let quic_payload = &mut frame_data[quic_offset..];
             let conn = &mut self.connections[conn_key];
@@ -813,6 +845,16 @@ impl QuicHandler {
         for cid in conn.scid_set.iter() {
             self.cid_map.insert(*cid, key);
         }
+        // Register 5-tuple fallback for zero-length SCID connections
+        if conn.scid.is_empty() {
+            let tuple = FiveTuple {
+                local_addr: conn.local_addr,
+                local_port: conn.local_port,
+                remote_addr: conn.remote_addr,
+                remote_port: conn.remote_port,
+            };
+            self.five_tuple_map.insert(tuple, key);
+        }
         key
     }
 
@@ -829,6 +871,16 @@ impl QuicHandler {
             // Also remove all SCIDs
             for cid in conn.scid_set.iter() {
                 self.cid_map.remove(cid);
+            }
+            // Clean up 5-tuple mapping if present
+            if conn.scid.is_empty() {
+                let tuple = FiveTuple {
+                    local_addr: conn.local_addr,
+                    local_port: conn.local_port,
+                    remote_addr: conn.remote_addr,
+                    remote_port: conn.remote_port,
+                };
+                self.five_tuple_map.remove(&tuple);
             }
             Some(conn)
         } else {
@@ -967,11 +1019,15 @@ impl QuicHandler {
             .map(|l| l as usize)
             .unwrap_or(self.local_cid_len);
 
-        // Generate random DCID (destination, for the server) and SCID (our identifier)
+        // Generate random DCID (destination, for Initial key derivation).
+        // RFC 9000 §7.2: Initial DCID MUST be at least 8 bytes, regardless of
+        // configured CID length. The cid_length only affects our SCID.
+        let dcid_len = cid_len.max(8);
         let mut dcid_buf = [0u8; 20];
-        rng.fill(&mut dcid_buf[..cid_len.max(1)]).ok()?;
-        let dcid = ConnectionId::from_slice(&dcid_buf[..cid_len]);
+        rng.fill(&mut dcid_buf[..dcid_len]).ok()?;
+        let dcid = ConnectionId::from_slice(&dcid_buf[..dcid_len]);
 
+        // Generate random SCID (our identifier) using configured CID length
         let mut scid_buf = [0u8; 20];
         if cid_len > 0 {
             rng.fill(&mut scid_buf[..cid_len]).ok()?;

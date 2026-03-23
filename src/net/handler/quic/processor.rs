@@ -904,6 +904,12 @@ fn handle_crypto_frame(
         conn.streams.peer_send_max_bidi = params.initial_max_stream_data_bidi_local;
         conn.streams.peer_send_max_bidi_remote = params.initial_max_stream_data_bidi_remote;
         conn.streams.peer_send_max_uni = params.initial_max_stream_data_uni;
+        // RFC 9000 §7.3: client MUST switch DCID to server's initial_source_connection_id
+        if conn.side == Side::Client {
+            if let Some(ref server_scid) = params.initial_source_connection_id {
+                conn.dcid = *server_scid;
+            }
+        }
         conn.peer_params = Some(params);
     }
 }
@@ -1421,8 +1427,10 @@ pub fn generate_packets<'umem>(
         let total_len = build_packet_in_frame(conn, space, now, &mut frame);
 
         if total_len > 0 {
+            // Minimum packet size varies by CID length; 21 bytes is the absolute
+            // minimum (ETH+IP+UDP headers are separate, this is total frame size).
             debug_assert!(
-                total_len >= 64,
+                total_len >= 42,
                 "QUIC: packet too small: {} bytes (space={}, state={:?})",
                 total_len,
                 space,

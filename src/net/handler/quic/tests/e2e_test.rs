@@ -2115,3 +2115,249 @@ fn cid_length_configurable() {
     assert_eq!(default.cid_length, None);
     assert!(default.validate_cid_length().is_ok());
 }
+
+fn test_transport_params_with_cid_length(cid_len: u8) -> TransportParams {
+    TransportParams {
+        cid_length: Some(cid_len),
+        ..test_transport_params()
+    }
+}
+
+#[test]
+fn e2e_zero_length_cid() {
+    let now = Instant::now();
+
+    // ── Set up client with zero-length CID ──────────────────────────
+    let mut client_handler = QuicHandler::new(false, false);
+    let mut client_wheel = TimerWheel::new(now);
+    let client_nh = NeighborHandler::new("lo", Duration::from_secs(60)).unwrap();
+    let mut client_free_backing: Vec<Vec<u8>> = (0..32).map(|_| vec![0u8; 4096]).collect();
+    let mut client_free = BasicFrameBuffer::new(32);
+    for (i, buf) in client_free_backing.iter_mut().enumerate() {
+        let f = Frame::new((i as u64 + 1) * 4096, buf.as_mut_slice(), 1, false);
+        client_free.push(f);
+    }
+    let mut client_rx = BasicFrameBuffer::new(16);
+    let mut client_tx = BasicFrameBuffer::new(32);
+
+    let client_conn_key = client_handler
+        .initiate_connection(
+            IpAddress::V4(Ipv4Address::new(SERVER_IP)),
+            QUIC_PORT,
+            IpAddress::V4(Ipv4Address::new(CLIENT_IP)),
+            CLIENT_PORT,
+            MacAddress::new(CLIENT_MAC),
+            MacAddress::new(SERVER_MAC),
+            "localhost",
+            make_client_config(),
+            test_transport_params_with_cid_length(0),
+            now,
+        )
+        .expect("initiate_connection should succeed");
+
+    // Verify client SCID is empty
+    assert!(
+        client_handler.connections[client_conn_key].scid.is_empty(),
+        "client SCID should be zero-length"
+    );
+    // Initial DCID should still be at least 8 bytes for key derivation
+    assert!(
+        client_handler.connections[client_conn_key].dcid.len() >= 8,
+        "Initial DCID should be at least 8 bytes"
+    );
+
+    // ── Set up server with zero-length CID ──────────────────────────
+    let mut server_handler = QuicHandler::new(false, false);
+    let mut server_wheel = TimerWheel::new(now);
+    let server_nh = NeighborHandler::new("lo", Duration::from_secs(60)).unwrap();
+    let mut server_free_backing: Vec<Vec<u8>> = (0..32).map(|_| vec![0u8; 4096]).collect();
+    let mut server_free = BasicFrameBuffer::new(32);
+    for (i, buf) in server_free_backing.iter_mut().enumerate() {
+        let f = Frame::new((i as u64 + 100) * 4096, buf.as_mut_slice(), 1, false);
+        server_free.push(f);
+    }
+    let mut server_rx = BasicFrameBuffer::new(16);
+    let mut server_tx = BasicFrameBuffer::new(32);
+
+    server_handler
+        .listen(
+            QUIC_PORT,
+            make_server_config(),
+            test_transport_params_with_cid_length(0),
+        )
+        .expect("listen should succeed");
+
+    // ── Drive handshake to completion ────────────────────────────────
+    let server_conn_key = drive_handshake(
+        &mut client_handler,
+        &mut client_wheel,
+        &mut client_free,
+        &mut client_tx,
+        &mut client_rx,
+        &client_nh,
+        client_conn_key,
+        &mut server_handler,
+        &mut server_wheel,
+        &mut server_free,
+        &mut server_tx,
+        &mut server_rx,
+        &server_nh,
+        now,
+        10,
+    );
+
+    // Verify both sides are Established
+    assert_eq!(
+        client_handler.connections[client_conn_key].state,
+        ConnectionState::Established,
+        "client should be Established"
+    );
+    assert_eq!(
+        server_handler.connections[server_conn_key].state,
+        ConnectionState::Established,
+        "server should be Established"
+    );
+
+    // Verify server SCID is also zero-length
+    assert!(
+        server_handler.connections[server_conn_key].scid.is_empty(),
+        "server SCID should be zero-length"
+    );
+
+    // Verify 5-tuple maps are populated
+    assert!(
+        !client_handler.five_tuple_map.is_empty(),
+        "client should have a 5-tuple mapping for zero-length CID"
+    );
+    assert!(
+        !server_handler.five_tuple_map.is_empty(),
+        "server should have a 5-tuple mapping for zero-length CID"
+    );
+
+    // ── Client: open bidi stream 0 and write "hello" ─────────────────
+    let stream_id = StreamId(0x00);
+    {
+        let conn = &mut client_handler.connections[client_conn_key];
+        let entry = conn
+            .streams
+            .get_or_create(stream_id)
+            .expect("should be able to open stream 0");
+        let send = entry
+            .send
+            .as_mut()
+            .expect("bidi stream should have SendHalf");
+        let written = send.write(b"hello");
+        assert_eq!(written, 5, "should write all 5 bytes");
+        conn.streams.pending_send_count += 1;
+    }
+
+    // ── Pump client → server (extra rounds for zero-length CID) ──────
+    for _ in 0..3 {
+        pump_packets(
+            &mut client_handler,
+            &mut client_wheel,
+            &mut client_free,
+            &mut client_tx,
+            &mut server_handler,
+            &mut server_wheel,
+            &server_nh,
+            &mut server_free,
+            &mut server_rx,
+            &mut server_tx,
+            now,
+        );
+        pump_packets(
+            &mut server_handler,
+            &mut server_wheel,
+            &mut server_free,
+            &mut server_tx,
+            &mut client_handler,
+            &mut client_wheel,
+            &client_nh,
+            &mut client_free,
+            &mut client_rx,
+            &mut client_tx,
+            now,
+        );
+    }
+
+    // ── Server: read from stream and verify "hello" ──────────────────
+    {
+        let conn = &mut server_handler.connections[server_conn_key];
+        let entry = conn
+            .streams
+            .get_mut(stream_id)
+            .expect("server should have stream 0 after receiving data");
+        let recv = entry
+            .recv
+            .as_mut()
+            .expect("stream 0 should have RecvHalf on server");
+        let mut buf = [0u8; 64];
+        let n = recv.read(&mut buf);
+        assert_eq!(n, 5, "server should read 5 bytes");
+        assert_eq!(&buf[..n], b"hello", "server should read 'hello'");
+    }
+
+    // ── Server: write "world" back on stream 0 ──────────────────────
+    {
+        let conn = &mut server_handler.connections[server_conn_key];
+        let entry = conn
+            .streams
+            .get_mut(stream_id)
+            .expect("server should have stream 0");
+        let send = entry
+            .send
+            .as_mut()
+            .expect("bidi stream should have SendHalf on server");
+        let written = send.write(b"world");
+        assert_eq!(written, 5, "should write all 5 bytes");
+        conn.streams.pending_send_count += 1;
+    }
+
+    // ── Pump server → client (extra rounds for zero-length CID) ──────
+    for _ in 0..3 {
+        pump_packets(
+            &mut server_handler,
+            &mut server_wheel,
+            &mut server_free,
+            &mut server_tx,
+            &mut client_handler,
+            &mut client_wheel,
+            &client_nh,
+            &mut client_free,
+            &mut client_rx,
+            &mut client_tx,
+            now,
+        );
+        pump_packets(
+            &mut client_handler,
+            &mut client_wheel,
+            &mut client_free,
+            &mut client_tx,
+            &mut server_handler,
+            &mut server_wheel,
+            &server_nh,
+            &mut server_free,
+            &mut server_rx,
+            &mut server_tx,
+            now,
+        );
+    }
+
+    // ── Client: read from stream and verify "world" ──────────────────
+    {
+        let conn = &mut client_handler.connections[client_conn_key];
+        let entry = conn
+            .streams
+            .get_mut(stream_id)
+            .expect("client should have stream 0");
+        let recv = entry
+            .recv
+            .as_mut()
+            .expect("stream 0 should have RecvHalf on client");
+        let mut buf = [0u8; 64];
+        let n = recv.read(&mut buf);
+        assert_eq!(n, 5, "client should read 5 bytes");
+        assert_eq!(&buf[..n], b"world", "client should read 'world'");
+    }
+}
