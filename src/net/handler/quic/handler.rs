@@ -58,6 +58,8 @@ pub struct QuicHandler {
     pub(crate) per_ip_conn_count: FxHashMap<IpAddress, u16>,
     /// Maximum connections allowed from a single IP address.
     pub(crate) max_connections_per_ip: u16,
+    /// Maximum age of a Retry token before it's considered expired (default 30s).
+    pub(crate) retry_token_max_age: coarsetime::Duration,
 }
 
 impl QuicHandler {
@@ -74,6 +76,7 @@ impl QuicHandler {
             retry_threshold: 5_000,
             per_ip_conn_count: FxHashMap::default(),
             max_connections_per_ip: 100,
+            retry_token_max_age: coarsetime::Duration::from_secs(30),
         }
     }
 

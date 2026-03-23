@@ -240,6 +240,15 @@ pub struct QuicConnectionState {
     /// Whether this is an application-level close (0x1d) vs transport-level (0x1c).
     /// RFC 9000 §10.2.3: application close frames MUST only appear in 1-RTT space.
     pub close_is_application: bool,
+
+    /// Whether client has already processed a Retry for this connection (RFC 9000 §17.2.5.2).
+    pub retry_received: bool,
+    /// Original DCID from before Retry (for transport parameter validation, RFC 9000 §7.3).
+    pub original_dcid: Option<ConnectionId>,
+    /// Token from Retry packet (client stores for resending in Initial).
+    pub retry_token: Option<Vec<u8>>,
+    /// SCID the server used in the Retry packet (for transport param validation).
+    pub retry_source_cid: Option<ConnectionId>,
 }
 
 impl QuicConnectionState {
@@ -347,6 +356,10 @@ impl QuicConnectionState {
             crypto_level_sealed: [None; 3],
             sent_ack_eliciting_since_recv: false,
             close_is_application: false,
+            retry_received: false,
+            original_dcid: None,
+            retry_token: None,
+            retry_source_cid: None,
         }
     }
 }
