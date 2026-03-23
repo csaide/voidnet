@@ -920,6 +920,7 @@ fn handle_crypto_frame(
     // Install new keys
     if let Some(hs_keys) = output.handshake_keys {
         conn.keys.handshake = Some(hs_keys);
+        conn.loss.has_handshake_keys = true;
     }
     if let Some(zero_rtt_key) = output.zero_rtt_keys {
         conn.keys.zero_rtt_open = Some(zero_rtt_key);

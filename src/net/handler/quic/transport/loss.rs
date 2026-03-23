@@ -178,6 +178,7 @@ pub struct LossDetector {
 
     // Handshake state
     pub handshake_confirmed: bool,
+    pub has_handshake_keys: bool,
     pub peer_completed_address_validation: bool,
 
     // Bytes in flight (for congestion control interaction)
@@ -206,6 +207,7 @@ impl LossDetector {
             pto_count: 0,
             time_of_last_ack_eliciting_pkt: [None; 3],
             handshake_confirmed: false,
+            has_handshake_keys: false,
             peer_completed_address_validation: false,
             bytes_in_flight: 0,
         }
@@ -250,18 +252,15 @@ impl LossDetector {
             self.spaces[space].largest_acked = Some(largest_acked);
         }
 
-        // Grab the send time and ack-eliciting flag of the largest_acked packet before removal (for RTT).
+        // Grab the send time of the largest_acked packet before removal (for RTT).
         let largest_acked_time_sent = self.spaces[space]
             .in_flight
             .get(largest_acked)
             .map(|p| p.time_sent);
-        let largest_acked_ack_eliciting = self.spaces[space]
-            .in_flight
-            .get(largest_acked)
-            .is_some_and(|p| p.ack_eliciting);
 
         // Remove acked packets from in-flight tracking.
         let mut acked = SmallVec::<[SentPacket; 16]>::new();
+        let mut any_ack_eliciting = false;
         for &(start, end) in acked_ranges {
             for pn in start..=end {
                 if let Some(pkt) = self.spaces[space].in_flight.remove(pn) {
@@ -269,6 +268,7 @@ impl LossDetector {
                         self.bytes_in_flight -= pkt.size as usize;
                     }
                     if pkt.ack_eliciting {
+                        any_ack_eliciting = true;
                         self.spaces[space].ack_eliciting_in_flight =
                             self.spaces[space].ack_eliciting_in_flight.saturating_sub(1);
                     }
@@ -282,9 +282,10 @@ impl LossDetector {
         }
 
         // Update RTT if the largest acked packet was newly acked and we had it.
-        // RFC 9002 §5.1: only generate RTT sample from ack-eliciting packets.
+        // RFC 9002 §5.1/A.7: generate RTT sample when any newly acked packet
+        // is ack-eliciting (not just the largest_acked itself).
         if newly_acked_largest
-            && largest_acked_ack_eliciting
+            && any_ack_eliciting
             && let Some(time_sent) = largest_acked_time_sent
         {
             let latest_rtt = now.duration_since(time_sent);
@@ -539,9 +540,14 @@ impl LossDetector {
             }
         }
 
-        // RFC 9002 §A.9: probe Initial if not confirmed, else Handshake, else Application
+        // RFC 9002 §A.9: if handshake not confirmed, probe Handshake if keys
+        // are available, else probe Initial (padded). After confirmation, probe AppData.
         if !self.handshake_confirmed {
-            LossDetectionResult::SendProbe { space: 0 }
+            if self.has_handshake_keys {
+                LossDetectionResult::SendProbe { space: 1 }
+            } else {
+                LossDetectionResult::SendProbe { space: 0 }
+            }
         } else {
             LossDetectionResult::SendProbe { space: 2 }
         }
