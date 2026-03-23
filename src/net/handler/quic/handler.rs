@@ -719,6 +719,11 @@ impl QuicHandler {
     /// Remove a connection by slab key.
     pub fn remove_connection_by_key(&mut self, key: usize) -> Option<QuicConnectionState> {
         if self.connections.contains(key) {
+            // Wake any blocked futures before removal
+            let conn = &self.connections[key];
+            conn.event_queue.wake();
+            conn.stream_accept_queue.wake();
+            // Now remove
             let conn = self.connections.remove(key);
             self.cid_map.remove(&conn.dcid);
             // Also remove all SCIDs

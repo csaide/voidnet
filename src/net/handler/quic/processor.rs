@@ -592,7 +592,10 @@ fn dispatch_frames(
                 }
             }
 
-            QuicFrame::ConnectionClose(_) => {
+            QuicFrame::ConnectionClose(cc) => {
+                conn.event_queue.push(
+                    crate::net::handler::quic::event::QuicEvent::ConnectionClosed(cc.error_code),
+                );
                 conn.state = ConnectionState::Draining;
                 return ProcessResult::ConnectionClosed;
             }

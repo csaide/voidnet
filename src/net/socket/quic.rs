@@ -25,7 +25,7 @@ pub enum QuicError {
     Transport(TransportError),
     NotConnected,
     StreamReset(u64),
-    ConnectionClosed,
+    ConnectionClosed(Option<u64>),
     WouldBlock,
 }
 
@@ -338,7 +338,7 @@ impl Future for Connect {
                 }))
             }
             ConnectionState::Closing | ConnectionState::Draining | ConnectionState::Closed => {
-                Poll::Ready(Err(QuicError::ConnectionClosed))
+                Poll::Ready(Err(QuicError::ConnectionClosed(None)))
             }
             ConnectionState::Handshaking => {
                 conn.event_queue.register_waker(cx.waker());
@@ -360,7 +360,7 @@ impl<'a> Future for AcceptStream<'a> {
         let conn = match handler.connections.get(self.conn.conn_key) {
             Some(c) => c,
             None => {
-                return Poll::Ready(Err(QuicError::ConnectionClosed));
+                return Poll::Ready(Err(QuicError::ConnectionClosed(None)));
             }
         };
 
@@ -526,7 +526,7 @@ impl<'a> Future for StreamWrite<'a> {
             conn.state,
             ConnectionState::Closing | ConnectionState::Closed | ConnectionState::Draining
         ) {
-            return Poll::Ready(Err(QuicError::ConnectionClosed));
+            return Poll::Ready(Err(QuicError::ConnectionClosed(None)));
         }
         let entry = match conn.streams.get_mut(self.stream.stream_id) {
             Some(e) => e,
@@ -534,7 +534,7 @@ impl<'a> Future for StreamWrite<'a> {
         };
         if let Some(ref mut send) = entry.send {
             if send.fin_sent {
-                return Poll::Ready(Err(QuicError::ConnectionClosed));
+                return Poll::Ready(Err(QuicError::ConnectionClosed(None)));
             }
             let was_empty = send.buffer.is_empty();
             let n = send.write(self.buf);
@@ -693,7 +693,7 @@ impl<'a> Future for SendStreamWrite<'a> {
             conn.state,
             ConnectionState::Closing | ConnectionState::Closed | ConnectionState::Draining
         ) {
-            return Poll::Ready(Err(QuicError::ConnectionClosed));
+            return Poll::Ready(Err(QuicError::ConnectionClosed(None)));
         }
         let entry = match conn.streams.get_mut(self.stream.stream_id) {
             Some(e) => e,
@@ -701,7 +701,7 @@ impl<'a> Future for SendStreamWrite<'a> {
         };
         if let Some(ref mut send) = entry.send {
             if send.fin_sent {
-                return Poll::Ready(Err(QuicError::ConnectionClosed));
+                return Poll::Ready(Err(QuicError::ConnectionClosed(None)));
             }
             let was_empty = send.buffer.is_empty();
             let n = send.write(self.buf);

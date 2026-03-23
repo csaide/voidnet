@@ -110,6 +110,14 @@ impl<T> LocalQueue<T> {
         evicted
     }
 
+    /// Wake the registered waker (if any) without pushing an item.
+    pub fn wake(&self) {
+        let waker_slot = unsafe { &mut *self.waker.get() };
+        if let Some(waker) = waker_slot.take() {
+            waker.wake();
+        }
+    }
+
     /// Register a waker to be called when data is pushed to this queue.
     /// Only one waker is stored — re-registering replaces the previous.
     #[inline(always)]
