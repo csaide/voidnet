@@ -720,6 +720,7 @@ fn dispatch_frames(
                     crate::net::handler::quic::event::QuicEvent::ConnectionClosed(cc.error_code),
                 );
                 conn.state = ConnectionState::Draining;
+                conn.needs_draining_timer = true;
                 return ProcessResult::ConnectionClosed;
             }
 
@@ -1502,6 +1503,19 @@ pub fn generate_packets<'umem>(
         conn.state,
         ConnectionState::Draining | ConnectionState::Closed
     ) {
+        // Arm draining timer for Draining state cleanup (RFC 9000 §10.2.2)
+        if conn.state == ConnectionState::Draining && conn.needs_draining_timer {
+            conn.needs_draining_timer = false;
+            let max_ack_delay = conn
+                .peer_params
+                .as_ref()
+                .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
+                .unwrap_or(coarsetime::Duration::from_millis(25));
+            let pto = conn.loss.pto(2, max_ack_delay);
+            let draining_deadline = now + pto * 3;
+            conn.timers
+                .arm(QuicTimerKind::Draining, conn_key, draining_deadline, wheel);
+        }
         return;
     }
 
