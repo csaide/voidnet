@@ -21,6 +21,7 @@ mod packet_number_test;
 mod packet_parser_test;
 mod params_test;
 mod path_test;
+mod preferred_addr_test;
 mod processor_test;
 mod retransmit_test;
 mod retry_test;

@@ -7,6 +7,21 @@ use super::varint::{decode_varint, encode_varint, varint_len};
 use crate::net::handler::quic::connection_id::ConnectionId;
 use crate::net::handler::quic::error::TransportError;
 
+/// Preferred Address transport parameter (RFC 9000 §18.2).
+///
+/// Servers advertise a preferred address for clients to migrate to after
+/// the handshake completes. Both IPv4 and IPv6 addresses are always present
+/// in the wire format; unused address families are zeroed.
+#[derive(Debug, Clone)]
+pub struct PreferredAddress {
+    pub ipv4_address: [u8; 4],
+    pub ipv4_port: u16,
+    pub ipv6_address: [u8; 16],
+    pub ipv6_port: u16,
+    pub connection_id: ConnectionId,
+    pub stateless_reset_token: [u8; 16],
+}
+
 /// Version information for Compatible Version Negotiation (RFC 9369).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionInformation {
@@ -28,6 +43,7 @@ const INITIAL_MAX_STREAMS_UNI: u64 = 0x09;
 const ACK_DELAY_EXPONENT: u64 = 0x0a;
 const MAX_ACK_DELAY: u64 = 0x0b;
 const DISABLE_ACTIVE_MIGRATION: u64 = 0x0c;
+const PREFERRED_ADDRESS: u64 = 0x0d;
 const ACTIVE_CONNECTION_ID_LIMIT: u64 = 0x0e;
 const INITIAL_SOURCE_CONNECTION_ID: u64 = 0x0f;
 const RETRY_SOURCE_CONNECTION_ID: u64 = 0x10;
@@ -70,6 +86,9 @@ pub struct TransportParams {
     // Tokens
     pub stateless_reset_token: Option<[u8; 16]>,
 
+    // Server preferred address (RFC 9000 §18.2)
+    pub preferred_address: Option<PreferredAddress>,
+
     // Version negotiation (RFC 9369)
     pub version_information: Option<VersionInformation>,
 
@@ -98,6 +117,7 @@ impl Default for TransportParams {
             initial_source_connection_id: None,
             retry_source_connection_id: None,
             stateless_reset_token: None,
+            preferred_address: None,
             version_information: None,
             cid_length: None,
         }
@@ -212,6 +232,28 @@ impl TransportParams {
         if self.disable_active_migration {
             pos += encode_varint(DISABLE_ACTIVE_MIGRATION, &mut buf[pos..]);
             pos += encode_varint(0u64, &mut buf[pos..]);
+        }
+
+        // 0x0d: preferred_address
+        if let Some(ref pa) = self.preferred_address {
+            let cid_bytes = pa.connection_id.as_bytes();
+            let value_len = 4 + 2 + 16 + 2 + 1 + cid_bytes.len() + 16;
+            pos += encode_varint(PREFERRED_ADDRESS, &mut buf[pos..]);
+            pos += encode_varint(value_len as u64, &mut buf[pos..]);
+            buf[pos..pos + 4].copy_from_slice(&pa.ipv4_address);
+            pos += 4;
+            buf[pos..pos + 2].copy_from_slice(&pa.ipv4_port.to_be_bytes());
+            pos += 2;
+            buf[pos..pos + 16].copy_from_slice(&pa.ipv6_address);
+            pos += 16;
+            buf[pos..pos + 2].copy_from_slice(&pa.ipv6_port.to_be_bytes());
+            pos += 2;
+            buf[pos] = cid_bytes.len() as u8;
+            pos += 1;
+            buf[pos..pos + cid_bytes.len()].copy_from_slice(cid_bytes);
+            pos += cid_bytes.len();
+            buf[pos..pos + 16].copy_from_slice(&pa.stateless_reset_token);
+            pos += 16;
         }
 
         // 0x0e: active_connection_id_limit (default 2)
@@ -367,6 +409,40 @@ impl TransportParams {
                     }
                     params.disable_active_migration = true;
                 }
+                PREFERRED_ADDRESS => {
+                    // Minimum length: 4 + 2 + 16 + 2 + 1 + 0 + 16 = 41
+                    if param_len < 41 {
+                        return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+                    }
+                    let mut vpos = 0;
+                    let mut ipv4_address = [0u8; 4];
+                    ipv4_address.copy_from_slice(&value[vpos..vpos + 4]);
+                    vpos += 4;
+                    let ipv4_port = u16::from_be_bytes([value[vpos], value[vpos + 1]]);
+                    vpos += 2;
+                    let mut ipv6_address = [0u8; 16];
+                    ipv6_address.copy_from_slice(&value[vpos..vpos + 16]);
+                    vpos += 16;
+                    let ipv6_port = u16::from_be_bytes([value[vpos], value[vpos + 1]]);
+                    vpos += 2;
+                    let cid_len = value[vpos] as usize;
+                    vpos += 1;
+                    if cid_len > 20 || vpos + cid_len + 16 != param_len {
+                        return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
+                    }
+                    let connection_id = ConnectionId::from_slice(&value[vpos..vpos + cid_len]);
+                    vpos += cid_len;
+                    let mut stateless_reset_token = [0u8; 16];
+                    stateless_reset_token.copy_from_slice(&value[vpos..vpos + 16]);
+                    params.preferred_address = Some(PreferredAddress {
+                        ipv4_address,
+                        ipv4_port,
+                        ipv6_address,
+                        ipv6_port,
+                        connection_id,
+                        stateless_reset_token,
+                    });
+                }
                 ACTIVE_CONNECTION_ID_LIMIT => {
                     let (val, _) =
                         decode_varint(value).ok_or(TransportError::TRANSPORT_PARAMETER_ERROR)?;
@@ -474,6 +550,7 @@ impl TransportParams {
                 if self.original_destination_connection_id.is_some()
                     || self.stateless_reset_token.is_some()
                     || self.retry_source_connection_id.is_some()
+                    || self.preferred_address.is_some()
                 {
                     return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
                 }
