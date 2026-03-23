@@ -564,6 +564,8 @@ fn decrypt_and_process(
 
     // Update last activity time for idle timeout tracking (Fix 8)
     conn.last_activity = now;
+    // RFC 9000 §10.1: reset send-since-recv flag on packet receipt
+    conn.sent_ack_eliciting_since_recv = false;
 
     // Parse and dispatch frames
     let plaintext = &quic_payload[payload_offset..payload_offset + plaintext_len];
@@ -2286,6 +2288,13 @@ fn build_packet_in_frame(
             // Sync congestion controller with sent bytes
             if wrote_ack_eliciting {
                 conn.congestion.on_packets_sent(protected_len, now);
+
+                // RFC 9000 §10.1: restart idle timer on sending ack-eliciting
+                // if no other ack-eliciting packets sent since last receive
+                if !conn.sent_ack_eliciting_since_recv {
+                    conn.last_activity = now;
+                }
+                conn.sent_ack_eliciting_since_recv = true;
             }
 
             // Track key phase for key updates

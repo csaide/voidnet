@@ -227,6 +227,15 @@ pub struct QuicConnectionState {
     /// Once higher-level keys are installed, CRYPTO data for a lower level must not
     /// extend past this frontier (RFC 9001 §4.1.3). `None` = level not yet superseded.
     pub crypto_level_sealed: [Option<u64>; 3],
+
+    /// Whether an ack-eliciting packet has been sent since the last packet was received.
+    /// Used for RFC 9000 §10.1 idle timeout restart on send (only restart idle timer
+    /// on send if no ack-eliciting packet has been sent since last receive).
+    pub sent_ack_eliciting_since_recv: bool,
+
+    /// Whether this is an application-level close (0x1d) vs transport-level (0x1c).
+    /// RFC 9000 §10.2.3: application close frames MUST only appear in 1-RTT space.
+    pub close_is_application: bool,
 }
 
 impl QuicConnectionState {
@@ -331,6 +340,8 @@ impl QuicConnectionState {
             received_new_token: None,
             datagrams: DatagramQueue::new(),
             crypto_level_sealed: [None; 3],
+            sent_ack_eliciting_since_recv: false,
+            close_is_application: false,
         }
     }
 }
