@@ -702,17 +702,61 @@ fn dispatch_frames(
                     conn.needs_draining_timer = true;
                     return ProcessResult::ConnectionClosed;
                 }
-                // Store new peer CID for future use
+
+                // RFC 9000 §19.15: zero-length DCID peer MUST NOT send NEW_CONNECTION_ID
+                if conn.dcid.is_empty() {
+                    conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
+                    conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
+                    return ProcessResult::ConnectionClosed;
+                }
+
                 let new_cid = crate::net::handler::quic::connection_id::ConnectionId::from_slice(
                     ncid.connection_id.as_bytes(),
                 );
-                // Update dcid to the new CID (simple rotation)
-                conn.dcid = new_cid;
+
+                // Process via CidManager — retires old CIDs and stores new one
+                let _retired = conn.cid_manager.on_new_connection_id(
+                    ncid.sequence,
+                    ncid.retire_prior_to,
+                    new_cid,
+                );
+
+                // Queue RETIRE_CONNECTION_ID frames for retired sequences
+                let pending = conn.cid_manager.take_pending_retires();
+                conn.retransmit.retire_connection_ids.extend(pending);
+
+                // RFC 9000 §5.1.1: check active CID limit
+                if conn.cid_manager.peer_cids.len() as u64
+                    > conn.local_params.active_connection_id_limit
+                {
+                    conn.close_error = Some(TransportError::CONNECTION_ID_LIMIT_ERROR);
+                    conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
+                    return ProcessResult::ConnectionClosed;
+                }
+
+                // Update active DCID to newest available peer CID
+                if let Some((active_cid, _seq)) = conn.cid_manager.peer_cids.pick_unused(&conn.dcid)
+                {
+                    conn.dcid = active_cid;
+                }
             }
 
-            QuicFrame::RetireConnectionId { .. } => {
-                // Peer is retiring one of our CIDs — acknowledged, no action needed
-                // (we don't track per-CID state beyond the cid_map in the handler)
+            QuicFrame::RetireConnectionId { sequence } => {
+                // RFC 9000 §19.16: sequence > highest issued is PROTOCOL_VIOLATION
+                if sequence > conn.cid_manager.highest_issued_seq {
+                    conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
+                    conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
+                    return ProcessResult::ConnectionClosed;
+                }
+
+                // Remove the retired CID from our local set
+                if let Some(_retired_cid) = conn.cid_manager.local_cids.remove_by_seq(sequence) {
+                    // Mark that we need to issue a replacement CID
+                    conn.cid_manager.needs_replacement_cid = true;
+                }
             }
 
             QuicFrame::StopSending(stop) => {
