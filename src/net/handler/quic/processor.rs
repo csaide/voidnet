@@ -115,7 +115,19 @@ pub fn handle_timeout(
             TimerResult::Ok
         }
         QuicTimerKind::PathValidation => {
-            // TODO: revert to previous path
+            if !conn.path.validated {
+                if let Some(prev) = conn.prev_path.take() {
+                    conn.remote_addr = prev.remote_addr;
+                    conn.remote_port = prev.remote_port;
+                    conn.remote_mac = prev.remote_mac;
+                    conn.path = prev.path;
+                } else {
+                    // No previous path to revert to — close
+                    conn.close_error = Some(TransportError::INTERNAL_ERROR);
+                    conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
+                }
+            }
             TimerResult::Ok
         }
         QuicTimerKind::Handshake => {

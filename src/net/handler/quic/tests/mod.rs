@@ -11,6 +11,7 @@ mod frame_test;
 mod handshake_integration_test;
 mod key_update_test;
 mod loss_test;
+mod migration_test;
 mod pacing_test;
 mod packet_builder_test;
 mod packet_number_test;

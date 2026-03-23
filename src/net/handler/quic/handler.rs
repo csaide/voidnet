@@ -187,14 +187,64 @@ impl QuicHandler {
         };
 
         // Look up existing connection
-        if let Some(&key) = self.cid_map.get(&dcid) {
+        if let Some(&conn_key) = self.cid_map.get(&dcid) {
             let mut frame_data = frame;
             let quic_payload = &mut frame_data[quic_offset..];
-            let conn = &mut self.connections[key];
+            let conn = &mut self.connections[conn_key];
             processor::process_packet(conn, quic_payload, datagram_len, now);
             rx_return.push(frame_data);
-            let conn = &mut self.connections[key];
-            processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+
+            // After process_packet(), check for address change (migration detection)
+            let conn = &mut self.connections[conn_key];
+            if src_addr != conn.remote_addr || src_port != conn.remote_port {
+                // NAT rebinding vs intentional migration (RFC 9000 §9.3)
+                let port_only_change = src_addr == conn.remote_addr && src_port != conn.remote_port;
+                if port_only_change {
+                    // NAT rebinding — just update port, no validation needed
+                    conn.remote_port = src_port;
+                } else {
+                    // Full migration — snapshot, validate, rotate CID
+                    use crate::net::handler::quic::connection::PreviousPath;
+                    conn.prev_path = Some(PreviousPath {
+                        remote_addr: conn.remote_addr,
+                        remote_port: conn.remote_port,
+                        remote_mac: conn.remote_mac,
+                        path: std::mem::replace(
+                            &mut conn.path,
+                            crate::net::handler::quic::path::PathState::new(),
+                        ),
+                    });
+                    conn.remote_addr = src_addr;
+                    conn.remote_port = src_port;
+                    conn.remote_mac = src_mac;
+                    // Initiate path validation
+                    let _challenge = conn.path.initiate_validation(now);
+                    conn.pending_path_response = None; // clear any stale response
+                    // CID rotation for linkability prevention
+                    if let Some((new_cid, _seq)) = conn.scid_set.pick_unused(&conn.scid) {
+                        use crate::net::handler::quic::connection::MigrationAction;
+                        let old_cid = conn.scid;
+                        conn.scid = new_cid;
+                        conn.pending_migration = Some(MigrationAction { old_cid, new_cid });
+                    }
+                }
+            }
+
+            // Process pending migration CID map update
+            let conn = &mut self.connections[conn_key];
+            if let Some(migration) = conn.pending_migration.take() {
+                self.cid_map.remove(&migration.old_cid);
+                self.cid_map.insert(migration.new_cid, conn_key);
+            }
+
+            processor::generate_packets(
+                &mut self.connections[conn_key],
+                conn_key,
+                now,
+                wheel,
+                free_frames,
+                tx_return,
+            );
         } else if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
             // Potential new connection — check if Initial + listener exists
             if self.listeners.contains_key(&dst_port) && datagram_len >= 1200 {
@@ -340,14 +390,64 @@ impl QuicHandler {
         };
 
         // Look up existing connection
-        if let Some(&key) = self.cid_map.get(&dcid) {
+        if let Some(&conn_key) = self.cid_map.get(&dcid) {
             let mut frame_data = frame;
             let quic_payload = &mut frame_data[quic_offset..];
-            let conn = &mut self.connections[key];
+            let conn = &mut self.connections[conn_key];
             processor::process_packet(conn, quic_payload, datagram_len, now);
             rx_return.push(frame_data);
-            let conn = &mut self.connections[key];
-            processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+
+            // After process_packet(), check for address change (migration detection)
+            let conn = &mut self.connections[conn_key];
+            if src_addr != conn.remote_addr || src_port != conn.remote_port {
+                // NAT rebinding vs intentional migration (RFC 9000 §9.3)
+                let port_only_change = src_addr == conn.remote_addr && src_port != conn.remote_port;
+                if port_only_change {
+                    // NAT rebinding — just update port, no validation needed
+                    conn.remote_port = src_port;
+                } else {
+                    // Full migration — snapshot, validate, rotate CID
+                    use crate::net::handler::quic::connection::PreviousPath;
+                    conn.prev_path = Some(PreviousPath {
+                        remote_addr: conn.remote_addr,
+                        remote_port: conn.remote_port,
+                        remote_mac: conn.remote_mac,
+                        path: std::mem::replace(
+                            &mut conn.path,
+                            crate::net::handler::quic::path::PathState::new(),
+                        ),
+                    });
+                    conn.remote_addr = src_addr;
+                    conn.remote_port = src_port;
+                    conn.remote_mac = src_mac;
+                    // Initiate path validation
+                    let _challenge = conn.path.initiate_validation(now);
+                    conn.pending_path_response = None; // clear any stale response
+                    // CID rotation for linkability prevention
+                    if let Some((new_cid, _seq)) = conn.scid_set.pick_unused(&conn.scid) {
+                        use crate::net::handler::quic::connection::MigrationAction;
+                        let old_cid = conn.scid;
+                        conn.scid = new_cid;
+                        conn.pending_migration = Some(MigrationAction { old_cid, new_cid });
+                    }
+                }
+            }
+
+            // Process pending migration CID map update
+            let conn = &mut self.connections[conn_key];
+            if let Some(migration) = conn.pending_migration.take() {
+                self.cid_map.remove(&migration.old_cid);
+                self.cid_map.insert(migration.new_cid, conn_key);
+            }
+
+            processor::generate_packets(
+                &mut self.connections[conn_key],
+                conn_key,
+                now,
+                wheel,
+                free_frames,
+                tx_return,
+            );
         } else if !quic_data.is_empty() && wire_quic::is_long_header(quic_data[0]) {
             // Potential new connection — check if Initial + listener exists
             if self.listeners.contains_key(&dst_port) && datagram_len >= 1200 {

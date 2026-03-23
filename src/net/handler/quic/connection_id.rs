@@ -175,6 +175,17 @@ impl CidSet {
     pub fn len(&self) -> usize {
         self.count as usize
     }
+
+    /// Pick an unused CID from the set (one that isn't the current active CID).
+    /// Returns (cid, sequence) or None if no spares.
+    pub fn pick_unused(&self, active: &ConnectionId) -> Option<(ConnectionId, u64)> {
+        for i in 0..self.count as usize {
+            if &self.cids[i] != active {
+                return Some((self.cids[i], self.seqs[i]));
+            }
+        }
+        None
+    }
 }
 
 impl Default for CidSet {
