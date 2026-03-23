@@ -326,7 +326,7 @@ impl StreamMap {
             vec.iter_mut().enumerate().filter_map(move |(idx, slot)| {
                 let entry = slot.as_mut()?;
                 if let Some(ref send) = entry.send
-                    && (!send.buffer.is_empty() || send.fin_sent)
+                    && (!send.buffer.is_empty() || !send.retransmit.is_empty() || send.fin_sent)
                 {
                     let stream_id = StreamId((idx as u64) << 2 | type_bits);
                     return Some((stream_id, entry));

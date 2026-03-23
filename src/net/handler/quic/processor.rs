@@ -973,19 +973,21 @@ fn handle_ack_frame(
                 if let Some(entry) = conn.streams.get_mut(*id)
                     && let Some(ref mut send) = entry.send
                 {
-                    if end > send.acked {
-                        let advance = (end - send.acked) as usize;
-                        send.buffer.consume(advance);
-                        send.acked = end;
-                        // When buffer fully consumed and all in-flight data acked,
-                        // the stream is no longer pending (data case).
-                        if send.buffer.is_empty() && send.acked == send.sent {
-                            conn.streams.pending_send_count =
-                                conn.streams.pending_send_count.saturating_sub(1);
-                        }
+                    let freed = send.on_ack(*offset, end);
+                    send.trim_retransmit_for_ack(*offset, end);
+                    if freed > 0 {
+                        conn.event_queue
+                            .push(crate::net::handler::quic::event::QuicEvent::DataAcked);
                     }
-                    // FIN-only frame acked: decrement the counter that was incremented
-                    // by finish() when the buffer was empty at FIN time.
+                    // pending_send_count: decrement when stream has no more pending data
+                    if send.buffer.is_empty()
+                        && send.retransmit.is_empty()
+                        && send.acked == send.sent
+                    {
+                        conn.streams.pending_send_count =
+                            conn.streams.pending_send_count.saturating_sub(1);
+                    }
+                    // FIN-only frame acked
                     if *fin && *len == 0 {
                         conn.streams.pending_send_count =
                             conn.streams.pending_send_count.saturating_sub(1);
