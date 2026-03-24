@@ -35,15 +35,7 @@ impl CidManager {
 
     /// Process a received NEW_CONNECTION_ID frame (RFC 9000 §5.1.1).
     /// Stores the new CID, retires old ones per retire_prior_to.
-    /// Returns sequence numbers that need RETIRE_CONNECTION_ID frames.
-    pub fn on_new_connection_id(
-        &mut self,
-        sequence: u64,
-        retire_prior_to: u64,
-        cid: ConnectionId,
-    ) -> Vec<u64> {
-        let mut retired = Vec::new();
-
+    pub fn on_new_connection_id(&mut self, sequence: u64, retire_prior_to: u64, cid: ConnectionId) {
         // Retire all peer CIDs with sequence < retire_prior_to
         // Iterate over existing entries (bounded by CidSet capacity), not the sequence range
         let seqs_to_retire: smallvec::SmallVec<[u64; 8]> = self
@@ -52,8 +44,8 @@ impl CidManager {
             .filter(|&s| s < retire_prior_to)
             .collect();
         for seq in seqs_to_retire {
-            if let Some(_removed) = self.peer_cids.remove_by_seq(seq) {
-                retired.push(seq);
+            if self.peer_cids.remove_by_seq(seq).is_some() {
+                self.pending_retire.push(seq);
             }
         }
 
@@ -61,11 +53,8 @@ impl CidManager {
         if sequence >= retire_prior_to {
             self.peer_cids.push_with_seq(cid, sequence);
         } else {
-            retired.push(sequence);
+            self.pending_retire.push(sequence);
         }
-
-        self.pending_retire.extend_from_slice(&retired);
-        retired
     }
 
     /// Get pending RetireConnectionId sequences to send.

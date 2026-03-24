@@ -26,8 +26,9 @@ fn on_new_connection_id_retires_old() {
 
     let new_cid = ConnectionId::from_slice(&[0xbb]);
     // sequence=3, retire_prior_to=3 means sequences 0, 1, 2 should be retired
-    let retired = mgr.on_new_connection_id(3, 3, new_cid);
+    mgr.on_new_connection_id(3, 3, new_cid);
 
+    let retired = mgr.take_pending_retires();
     assert_eq!(retired.len(), 3);
     assert!(retired.contains(&0));
     assert!(retired.contains(&1));
@@ -86,7 +87,7 @@ fn retire_prior_to_large_value_does_not_loop() {
     // retire_prior_to = 2^60 should NOT cause a long loop
     let new_cid = ConnectionId::from_slice(&[0xbb]);
     let start = std::time::Instant::now();
-    let retired = mgr.on_new_connection_id(
+    mgr.on_new_connection_id(
         1_152_921_504_606_846_976,
         1_152_921_504_606_846_976,
         new_cid,
@@ -100,6 +101,7 @@ fn retire_prior_to_large_value_does_not_loop() {
         elapsed
     );
     // Should have retired cid0 (seq 5 < retire_prior_to)
+    let retired = mgr.take_pending_retires();
     assert!(retired.contains(&5));
     assert!(mgr.peer_cids.contains(&new_cid));
 }
@@ -200,16 +202,13 @@ fn retire_prior_to_queues_retire_frames() {
 
     // Peer sends NEW_CONNECTION_ID with retire_prior_to=2
     let new_cid = ConnectionId::from_slice(&[0x13]);
-    let retired = mgr.on_new_connection_id(3, 2, new_cid);
+    mgr.on_new_connection_id(3, 2, new_cid);
 
-    // Sequences 0 and 1 should be retired
-    assert_eq!(retired.len(), 2);
-    assert!(retired.contains(&0));
-    assert!(retired.contains(&1));
-
-    // Pending retires should include them
+    // Sequences 0 and 1 should be retired and queued as pending
     let pending = mgr.take_pending_retires();
     assert_eq!(pending.len(), 2);
+    assert!(pending.contains(&0));
+    assert!(pending.contains(&1));
 
     // Remaining peer CIDs: seq 2 and seq 3
     assert_eq!(mgr.peer_cids.len(), 2);

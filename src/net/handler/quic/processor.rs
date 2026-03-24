@@ -917,11 +917,8 @@ fn dispatch_frames(
                 );
 
                 // Process via CidManager — retires old CIDs and stores new one
-                let _retired = conn.cid_manager.on_new_connection_id(
-                    ncid.sequence,
-                    ncid.retire_prior_to,
-                    new_cid,
-                );
+                conn.cid_manager
+                    .on_new_connection_id(ncid.sequence, ncid.retire_prior_to, new_cid);
 
                 // Queue RETIRE_CONNECTION_ID frames for retired sequences
                 let pending = conn.cid_manager.take_pending_retires();
