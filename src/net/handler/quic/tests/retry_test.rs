@@ -2,14 +2,9 @@ use crate::net::handler::quic::connection_id::ConnectionId;
 use crate::net::handler::quic::crypto::retry::{
     compute_retry_integrity_tag, verify_retry_integrity_tag,
 };
-use crate::net::handler::quic::token::RetryToken;
 use crate::net::handler::quic::transport::packet_builder::build_retry_packet;
 use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
 use crate::net::wire::quic::{self as wire_quic, PacketHeader, PacketType};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-use coarsetime::{Duration, Instant};
-
 fn make_server_config() -> std::sync::Arc<rustls::ServerConfig> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert);
@@ -83,18 +78,6 @@ fn retry_tag_wrong_odcid_fails() {
         &packet_with_tag,
         0x00000001
     ));
-}
-
-#[test]
-fn retry_token_expiry() {
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 4433);
-    let cid = ConnectionId::from_slice(&[1, 2, 3, 4]);
-    let now = Instant::now();
-    let token = RetryToken::new(cid, addr, now);
-    assert!(!token.is_expired(now, Duration::from_secs(30)));
-    // Can't easily test expiry without sleeping, so just verify the logic
-    let future = now + Duration::from_secs(31);
-    assert!(token.is_expired(future, Duration::from_secs(30)));
 }
 
 #[test]

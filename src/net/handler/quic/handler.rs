@@ -46,8 +46,6 @@ pub struct QuicHandler {
     /// Fallback demux for zero-length CID connections, keyed by 5-tuple.
     pub(crate) five_tuple_map: FxHashMap<FiveTuple, usize>,
     pub(crate) listeners: FxHashMap<u16, ListenerState>,
-    pub(crate) rx_offload: bool,
-    pub(crate) tx_offload: bool,
     /// Length of SCIDs we generate (used for short-header DCID parsing).
     pub(crate) local_cid_len: usize,
     /// Maximum number of concurrent connections (DoS protection).
@@ -64,14 +62,12 @@ pub struct QuicHandler {
 }
 
 impl QuicHandler {
-    pub fn new(rx_offload: bool, tx_offload: bool) -> Self {
+    pub fn new(_rx_offload: bool, _tx_offload: bool) -> Self {
         Self {
             connections: Slab::new(),
             cid_map: FxHashMap::default(),
             five_tuple_map: FxHashMap::default(),
             listeners: FxHashMap::default(),
-            rx_offload,
-            tx_offload,
             local_cid_len: 8,
             max_connections: 10_000,
             retry_threshold: 5_000,

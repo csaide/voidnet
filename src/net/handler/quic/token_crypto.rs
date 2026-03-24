@@ -12,7 +12,7 @@
 //! Encrypted format (on the wire / in NEW_TOKEN frame):
 //!   nonce(12) + ciphertext + AES-GCM tag(16)
 
-use ring::aead::{self, AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 
 /// Distinguishes Retry tokens from NEW_TOKEN tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

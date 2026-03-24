@@ -12,8 +12,6 @@ pub struct PacketBuilder<'a> {
     pn_length: usize,
     /// Current write position (after PN)
     offset: usize,
-    /// Packet number for this packet
-    packet_number: u64,
     /// Whether this is a long header packet
     is_long_header: bool,
     /// Offset of the Length field in long-header packets (2-byte varint)
@@ -91,7 +89,6 @@ impl<'a> PacketBuilder<'a> {
             pn_offset,
             pn_length: pn_len as usize,
             offset,
-            packet_number,
             is_long_header: true,
             length_offset,
             frame_start: frame_log.head(),
@@ -134,7 +131,6 @@ impl<'a> PacketBuilder<'a> {
             pn_offset,
             pn_length: pn_len as usize,
             offset,
-            packet_number,
             is_long_header: false,
             length_offset: 0, // unused for short headers
             frame_start: frame_log.head(),
@@ -553,11 +549,6 @@ impl<'a> PacketBuilder<'a> {
         }
     }
 
-    /// Get the packet number.
-    pub fn packet_number(&self) -> u64 {
-        self.packet_number
-    }
-
     /// Get pn_offset (needed for encryption).
     pub fn pn_offset(&self) -> usize {
         self.pn_offset
@@ -571,11 +562,6 @@ impl<'a> PacketBuilder<'a> {
     /// Get frame range in the FrameLog.
     pub fn frame_range(&self, frame_log: &FrameLog) -> (u32, u32) {
         (self.frame_start, frame_log.head())
-    }
-
-    /// Total bytes written so far (header + payload, before AEAD tag).
-    pub fn written(&self) -> usize {
-        self.offset
     }
 
     /// Finalize: returns the total packet length including space for AEAD tag.
