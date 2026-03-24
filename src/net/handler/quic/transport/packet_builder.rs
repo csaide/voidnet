@@ -181,6 +181,7 @@ impl<'a> PacketBuilder<'a> {
     }
 
     /// Write a STREAM frame. Returns bytes of stream data written.
+    #[allow(dead_code)]
     pub fn write_stream(
         &mut self,
         id: StreamId,
