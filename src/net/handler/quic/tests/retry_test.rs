@@ -194,7 +194,7 @@ fn extract_initial_token_empty() {
     pkt.push(0x00); // token length = 0
 
     let token = QuicHandler::extract_initial_token(&pkt);
-    assert_eq!(token, Some(Vec::new()));
+    assert_eq!(token, Some([].as_slice()));
 }
 
 #[test]
@@ -213,7 +213,7 @@ fn extract_initial_token_with_data() {
     pkt.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE]);
 
     let token = QuicHandler::extract_initial_token(&pkt);
-    assert_eq!(token, Some(vec![0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE]));
+    assert_eq!(token, Some([0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE].as_slice()));
 }
 
 #[test]

@@ -387,7 +387,7 @@ impl QuicHandler {
 
                     if in_retry_zone {
                         // Extract token from the Initial packet
-                        let token = Self::extract_initial_token(quic_data).unwrap_or_default();
+                        let token = Self::extract_initial_token(quic_data).unwrap_or(&[]);
 
                         if token.is_empty() {
                             // No token — send a Retry packet
@@ -786,7 +786,7 @@ impl QuicHandler {
                         && self.connections.len() < self.max_connections;
 
                     if in_retry_zone {
-                        let token = Self::extract_initial_token(quic_data).unwrap_or_default();
+                        let token = Self::extract_initial_token(quic_data).unwrap_or(&[]);
 
                         if token.is_empty() {
                             // No token — send a Retry packet
@@ -1046,7 +1046,7 @@ impl QuicHandler {
     /// The Initial packet long header layout after version+CIDs is:
     ///   token_length(varint) + token(token_length bytes)
     /// Returns `None` if the payload is malformed or not an Initial packet.
-    pub(crate) fn extract_initial_token(quic_data: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn extract_initial_token(quic_data: &[u8]) -> Option<&[u8]> {
         use crate::net::handler::quic::transport::varint::decode_varint;
 
         // Need at least: first_byte(1) + version(4) + dcid_len(1)
@@ -1075,12 +1075,12 @@ impl QuicHandler {
         let (token_len, consumed) = decode_varint(rest)?;
         let token_len = token_len as usize;
         if token_len == 0 {
-            return Some(Vec::new());
+            return Some(&[]);
         }
         if rest.len() < consumed + token_len {
             return None;
         }
-        Some(rest[consumed..consumed + token_len].to_vec())
+        Some(&rest[consumed..consumed + token_len])
     }
 
     /// Generate a Retry packet for the given client parameters.
