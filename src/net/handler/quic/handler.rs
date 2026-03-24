@@ -525,14 +525,14 @@ impl QuicHandler {
                 let token = self.generate_reset_token_for_cid(&dcid);
                 let reset_len = 21usize.min(quic_data.len() - 1);
                 let random_len = reset_len - 16;
-                let mut reset_buf = vec![0u8; reset_len];
+                let mut reset_buf = [0u8; 64];
                 // First byte: bit 7 = 0, bit 6 = 1, rest random (looks like short header)
                 use ring::rand::SecureRandom;
                 let _ = ring::rand::SystemRandom::new().fill(&mut reset_buf[..random_len]);
                 // Ensure it looks like a short header (bit 7 clear, fixed bit set)
                 reset_buf[0] = (reset_buf[0] & 0x3F) | 0x40;
                 // Last 16 bytes = stateless reset token
-                reset_buf[random_len..].copy_from_slice(&token);
+                reset_buf[random_len..reset_len].copy_from_slice(&token);
                 // Rewrite the frame in-place with the reset packet
                 let eth_len = std::mem::size_of::<crate::net::wire::ethernet::EthernetFrame>();
                 let ip_len = crate::net::wire::ip::IPV4_MIN_HEADER_LEN;
@@ -542,7 +542,8 @@ impl QuicHandler {
                 if frame.capacity() >= total_len {
                     let mut frame_data = frame;
                     unsafe { frame_data.set_len(frame_data.capacity()) };
-                    frame_data[quic_start..quic_start + reset_len].copy_from_slice(&reset_buf);
+                    frame_data[quic_start..quic_start + reset_len]
+                        .copy_from_slice(&reset_buf[..reset_len]);
                     // Swap src/dst for response
                     {
                         use crate::net::wire::ethernet::EthernetFrame;
