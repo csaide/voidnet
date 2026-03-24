@@ -45,7 +45,7 @@ fn pmtu_probe_loss_lowers_ceiling() {
     state.set_probe_pn(42);
     state.on_probe_lost(STEP_THRESHOLD);
     state.on_probe_lost(STEP_THRESHOLD);
-    let result = state.on_probe_lost(STEP_THRESHOLD);
+    let _result = state.on_probe_lost(STEP_THRESHOLD);
     assert_eq!(state.ceiling(), probe_size);
 }
 

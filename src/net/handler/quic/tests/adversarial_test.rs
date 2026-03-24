@@ -26,7 +26,7 @@ use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
 use crate::net::neighbor::NeighborHandler;
 use crate::net::timer_wheel::TimerWheel;
 use crate::net::wire::ethernet::EthernetFrame;
-use crate::net::wire::ip::{IPV4_MIN_HEADER_LEN, IpAddress, Ipv4Address};
+use crate::net::wire::ip::IPV4_MIN_HEADER_LEN;
 use crate::net::wire::udp::UDP_HEADER_LEN;
 use crate::xdp::frame::{BasicFrameBuffer, Frame, FrameBuffer};
 
@@ -396,7 +396,7 @@ fn duplicate_packet_number() {
     let now = Instant::now();
 
     // Build a valid Initial packet
-    let (quic_packet, dcid_bytes, _) = build_valid_initial();
+    let (quic_packet, _dcid_bytes, _) = build_valid_initial();
     assert!(quic_packet.len() >= 1200);
 
     // Set up handler

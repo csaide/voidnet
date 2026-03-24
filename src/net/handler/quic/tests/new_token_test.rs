@@ -272,7 +272,7 @@ fn new_token_frame_emitted_by_packet_builder() {
     use crate::net::handler::quic::transport::packet_builder::PacketBuilder;
 
     let mut buf = [0u8; 512];
-    let mut frame_log = FrameLog::new(64);
+    let frame_log = FrameLog::new(64);
 
     // Build a short header packet
     let mut builder = PacketBuilder::begin_short(
@@ -321,7 +321,6 @@ fn new_token_frame_emitted_by_packet_builder() {
 #[test]
 fn client_dispatch_stores_received_token() {
     use crate::net::handler::quic::connection::ConnectionState;
-    use crate::net::handler::quic::processor;
 
     let mut conn = QuicConnectionState::new(
         crate::net::handler::quic::connection_id::ConnectionId::from_slice(&[1, 2, 3, 4]),
@@ -335,7 +334,7 @@ fn client_dispatch_stores_received_token() {
     // Build a NEW_TOKEN frame manually
     let token = b"received-token-from-server";
     let mut frame_buf = [0u8; 128];
-    let frame_len = frame_writer::write_new_token(&mut frame_buf, token);
+    let _frame_len = frame_writer::write_new_token(&mut frame_buf, token);
 
     // Process the frame through dispatch
     // We need to call process_packet but that needs encrypted data.
