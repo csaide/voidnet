@@ -2573,17 +2573,16 @@ fn build_quic_packet(
                     let range_len = (range_end - range_start) as usize;
                     let max_len = builder.remaining().saturating_sub(20).min(range_len);
                     if max_len > 0 {
-                        let mut temp_buf = [0u8; 1200];
-                        let n = send
-                            .buffer
-                            .peek_at(offset_from_head, &mut temp_buf[..max_len]);
+                        let (part1, part2) = send.buffer.peek_slices(offset_from_head, max_len);
+                        let n = part1.len() + part2.len();
                         if n > 0 {
                             let fin = send.fin_sent
                                 && range_start + n as u64 >= send.acked + send.buffer.len() as u64;
-                            let written = builder.write_stream(
+                            let written = builder.write_stream_parts(
                                 stream_id,
                                 range_start,
-                                &temp_buf[..n],
+                                part1,
+                                part2,
                                 fin,
                                 &mut conn.frame_log,
                             );
