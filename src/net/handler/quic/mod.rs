@@ -24,6 +24,18 @@ pub mod bench {
     pub use super::transport::frame::{StreamId, parse_frame};
     pub use super::transport::varint::{decode_varint, encode_varint};
 
+    /// Crypto primitives exposed for benchmarks.
+    pub mod crypto {
+        pub use crate::net::handler::quic::crypto::initial_keys::derive_initial_keys;
+        pub use crate::net::handler::quic::crypto::keys::DirectionalKey;
+        pub use crate::net::handler::quic::crypto::packet_protection::{
+            decrypt_payload, protect_packet, unprotect_header,
+        };
+        // Re-export rustls types needed to call derive_initial_keys.
+        pub use rustls::Side;
+        pub use rustls::quic::Version;
+    }
+
     /// Frame encoding functions exposed for benchmarks.
     pub mod frame_writer {
         pub use crate::net::handler::quic::transport::frame_writer::{write_crypto, write_stream};
