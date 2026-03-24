@@ -34,7 +34,6 @@ pub enum ProcessResult {
     Ok,
     ConnectionClosed,
     VersionNegotiation,
-    StatelessReset,
 }
 
 /// Result returned by `handle_timeout`.
@@ -972,8 +971,6 @@ fn dispatch_frames(
             QuicFrame::DataBlocked(_) | QuicFrame::StreamsBlocked { .. } => {
                 // Informational — no action required
             }
-
-            _ => {}
         }
     }
 
@@ -2915,6 +2912,7 @@ fn ipv6_udp_checksum(src: &[u8; 16], dst: &[u8; 16], udp_segment: &[u8]) -> u16 
 
 /// Handle an incoming Retry packet on the client side (RFC 9000 §17.2.5.2).
 /// Returns true if the Retry was accepted and state was updated.
+#[allow(dead_code)] // Wired when client processes incoming Retry packets
 pub fn handle_retry_packet(
     conn: &mut QuicConnectionState,
     retry_packet: &[u8],

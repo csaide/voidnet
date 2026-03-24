@@ -8,12 +8,14 @@ use super::varint::encode_varint;
 use crate::net::handler::quic::connection_id::ConnectionIdRef;
 
 /// Write a PADDING frame (single zero byte). Returns 1.
+#[allow(dead_code)]
 pub fn write_padding(buf: &mut [u8]) -> usize {
     buf[0] = 0x00;
     1
 }
 
 /// Write a PING frame. Returns 1.
+#[allow(dead_code)]
 pub fn write_ping(buf: &mut [u8]) -> usize {
     buf[0] = 0x01;
     1
@@ -123,12 +125,14 @@ pub fn write_connection_close_app(buf: &mut [u8], error_code: u64, reason: &[u8]
 }
 
 /// Write a HANDSHAKE_DONE frame. Returns 1.
+#[allow(dead_code)]
 pub fn write_handshake_done(buf: &mut [u8]) -> usize {
     buf[0] = 0x1e;
     1
 }
 
 /// Write a PATH_CHALLENGE frame. Returns 9.
+#[allow(dead_code)]
 pub fn write_path_challenge(buf: &mut [u8], data: [u8; 8]) -> usize {
     buf[0] = 0x1a;
     buf[1..9].copy_from_slice(&data);
@@ -136,6 +140,7 @@ pub fn write_path_challenge(buf: &mut [u8], data: [u8; 8]) -> usize {
 }
 
 /// Write a PATH_RESPONSE frame. Returns 9.
+#[allow(dead_code)]
 pub fn write_path_response(buf: &mut [u8], data: [u8; 8]) -> usize {
     buf[0] = 0x1b;
     buf[1..9].copy_from_slice(&data);
@@ -201,6 +206,7 @@ pub fn write_retire_connection_id(buf: &mut [u8], sequence: u64) -> usize {
 }
 
 /// Write a DATA_BLOCKED frame. Returns bytes written.
+#[allow(dead_code)]
 pub fn write_data_blocked(buf: &mut [u8], limit: u64) -> usize {
     let mut pos = 0;
     buf[pos] = 0x14;
@@ -210,6 +216,7 @@ pub fn write_data_blocked(buf: &mut [u8], limit: u64) -> usize {
 }
 
 /// Write a STREAM_DATA_BLOCKED frame. Returns bytes written.
+#[allow(dead_code)]
 pub fn write_stream_data_blocked(buf: &mut [u8], stream_id: StreamId, limit: u64) -> usize {
     let mut pos = 0;
     buf[pos] = 0x15;
@@ -220,6 +227,7 @@ pub fn write_stream_data_blocked(buf: &mut [u8], stream_id: StreamId, limit: u64
 }
 
 /// Write a STREAMS_BLOCKED frame. Returns bytes written.
+#[allow(dead_code)]
 pub fn write_streams_blocked(buf: &mut [u8], max: u64, bidi: bool) -> usize {
     let mut pos = 0;
     buf[pos] = if bidi { 0x16 } else { 0x17 };

@@ -42,6 +42,7 @@ pub fn is_initial_type(packet_type_bits: u8, version: u32) -> bool {
 }
 
 /// Check if version matches the reserved pattern for VN testing (0x?a?a?a?a)
+#[allow(dead_code)] // Used by VN testing infrastructure
 pub fn is_reserved_version(version: u32) -> bool {
     (version & 0x0f0f0f0f) == 0x0a0a0a0a
 }
@@ -94,6 +95,7 @@ pub fn retry_packet_type_bits(version: u32) -> u8 {
 
 /// Client-side: check if a VN packet should be processed.
 /// Discard if we've already successfully processed any packet on this connection.
+#[allow(dead_code)] // Guard for client-side VN packet processing
 pub fn should_process_version_negotiation(has_processed_packet: bool) -> bool {
     !has_processed_packet
 }

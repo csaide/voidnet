@@ -55,6 +55,7 @@ pub fn compute_retry_integrity_tag(odcid: &[u8], retry_packet: &[u8], version: u
 }
 
 /// Verify a Retry integrity tag.
+#[allow(dead_code)] // Client-side retry validation — wired when client handles Retry packets
 pub fn verify_retry_integrity_tag(
     odcid: &[u8],
     retry_packet_with_tag: &[u8],

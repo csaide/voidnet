@@ -746,7 +746,6 @@ fn connection_close_unknown_error_code() {
             processor::ProcessResult::Ok => "Ok",
             processor::ProcessResult::ConnectionClosed => "ConnectionClosed",
             processor::ProcessResult::VersionNegotiation => "VersionNegotiation",
-            processor::ProcessResult::StatelessReset => "StatelessReset",
         }
     );
 
