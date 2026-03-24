@@ -34,19 +34,22 @@ pub fn compute_retry_integrity_tag(odcid: &[u8], retry_packet: &[u8], version: u
     };
 
     // Build AAD: ODCID_len(1) + ODCID + retry_packet
-    let mut aad = Vec::with_capacity(1 + odcid.len() + retry_packet.len());
-    aad.push(odcid.len() as u8);
-    aad.extend_from_slice(odcid);
-    aad.extend_from_slice(retry_packet);
+    let aad_len = 1 + odcid.len() + retry_packet.len();
+    let mut aad_buf = [0u8; 512];
+    assert!(aad_len <= aad_buf.len(), "retry AAD exceeds stack buffer");
+    aad_buf[0] = odcid.len() as u8;
+    aad_buf[1..1 + odcid.len()].copy_from_slice(odcid);
+    aad_buf[1 + odcid.len()..aad_len].copy_from_slice(retry_packet);
+    let aad = &aad_buf[..aad_len];
 
     // AES-128-GCM encrypt with empty plaintext → tag is the output
     let key = aead::UnboundKey::new(&aead::AES_128_GCM, key_bytes).unwrap();
     let nonce = aead::Nonce::assume_unique_for_key(*nonce_bytes);
     let key = aead::LessSafeKey::new(key);
 
-    let mut in_out = Vec::new(); // empty plaintext
+    let mut in_out = [0u8; 0];
     let tag = key
-        .seal_in_place_separate_tag(nonce, aead::Aad::from(&aad), &mut in_out)
+        .seal_in_place_separate_tag(nonce, aead::Aad::from(aad), &mut in_out[..])
         .unwrap();
 
     let mut result = [0u8; 16];
