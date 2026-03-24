@@ -11,7 +11,7 @@ use super::crypto::tls::CryptoState;
 use super::datagram::DatagramQueue;
 use super::error::TransportError;
 use super::packet_parser::{CryptoRecvBuffer, PnBitset};
-use super::path::PathState;
+use super::path::{PathState, PmtuState};
 use super::stream::map::StreamMap;
 use super::stream::pool::StreamPool;
 use super::timer_kinds::QuicTimerHandles;
@@ -249,6 +249,14 @@ pub struct QuicConnectionState {
     pub retry_token: Option<Vec<u8>>,
     /// SCID the server used in the Retry packet (for transport param validation).
     pub retry_source_cid: Option<ConnectionId>,
+    /// PMTU discovery state (DPLPMTUD, RFC 8899).
+    pub pmtu: PmtuState,
+    /// Whether PMTU probing is enabled for this connection.
+    pub pmtu_probing_enabled: bool,
+    /// Configured PMTU ceiling (default 1452).
+    pub pmtu_ceiling: u16,
+    /// Flag: a PMTU probe needs to be sent (separate from needs_probe which is for PTO).
+    pub needs_pmtu_probe: bool,
 }
 
 impl QuicConnectionState {
@@ -360,6 +368,10 @@ impl QuicConnectionState {
             original_dcid: None,
             retry_token: None,
             retry_source_cid: None,
+            pmtu: PmtuState::new(1452),
+            pmtu_probing_enabled: true,
+            pmtu_ceiling: 1452,
+            needs_pmtu_probe: false,
         }
     }
 }

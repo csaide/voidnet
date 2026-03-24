@@ -8,6 +8,7 @@ fn make_sent_packet(size: u16, ack_eliciting: bool) -> SentPacket {
         ack_eliciting,
         in_flight: true,
         frame_range: (0, 0),
+        is_pmtu_probe: false,
     }
 }
 
@@ -18,6 +19,7 @@ fn make_sent_packet_at(time: Instant, size: u16, ack_eliciting: bool) -> SentPac
         ack_eliciting,
         in_flight: true,
         frame_range: (0, 0),
+        is_pmtu_probe: false,
     }
 }
 
@@ -388,6 +390,7 @@ fn on_packet_sent_tracks_bytes() {
         ack_eliciting: false,
         in_flight: false,
         frame_range: (0, 0),
+        is_pmtu_probe: false,
     };
     ld.on_packet_sent(2, 2, pkt3);
     assert_eq!(ld.bytes_in_flight, 350);

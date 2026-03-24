@@ -213,6 +213,13 @@ impl CongestionController for QuicCubic {
     }
 
     fn on_mtu_update(&mut self, new_mtu: usize) {
+        if self.max_datagram_size > 0 && new_mtu != self.max_datagram_size {
+            self.cwnd = self.cwnd * new_mtu / self.max_datagram_size;
+            let min = K_MINIMUM_WINDOW_PACKETS * new_mtu;
+            if self.cwnd < min {
+                self.cwnd = min;
+            }
+        }
         self.max_datagram_size = new_mtu;
     }
 

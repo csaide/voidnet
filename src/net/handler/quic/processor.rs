@@ -2443,6 +2443,7 @@ fn build_quic_packet(
                     ack_eliciting: wrote_ack_eliciting,
                     in_flight: wrote_ack_eliciting,
                     frame_range,
+                    is_pmtu_probe: false,
                 },
             );
             conn.packets_encrypted[space as usize] += 1;
@@ -2579,6 +2580,7 @@ fn build_prev_path_challenge_packet(
                     ack_eliciting: true,
                     in_flight: false, // probe packet, don't count for congestion
                     frame_range,
+                    is_pmtu_probe: false,
                 },
             );
             conn.packets_encrypted[2] += 1;

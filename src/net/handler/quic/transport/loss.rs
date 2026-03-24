@@ -34,6 +34,8 @@ pub struct SentPacket {
     pub in_flight: bool,
     /// Indices into FrameLog (Task 23). (start, end) range.
     pub frame_range: (u32, u32),
+    /// Whether this packet was a PMTU probe (excluded from congestion on loss).
+    pub is_pmtu_probe: bool,
 }
 
 // --- InFlightRing ---

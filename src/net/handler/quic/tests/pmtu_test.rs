@@ -1,4 +1,6 @@
+use crate::net::congestion::CongestionController;
 use crate::net::handler::quic::path::{PmtuPhase, PmtuState};
+use crate::net::handler::quic::transport::congestion::QuicCubic;
 
 const DEFAULT_FLOOR: u16 = 1200;
 const DEFAULT_CEILING: u16 = 1452;
@@ -153,4 +155,22 @@ fn pmtu_binary_search_iterations() {
         iterations
     );
     assert_eq!(state.phase(), PmtuPhase::SearchComplete);
+}
+
+#[test]
+fn on_mtu_update_scales_cwnd() {
+    let mut cc = QuicCubic::new(1200);
+    let initial_cwnd = cc.window();
+    cc.on_mtu_update(1452);
+    let expected = initial_cwnd * 1452 / 1200;
+    assert_eq!(cc.window(), expected);
+}
+
+#[test]
+fn on_mtu_update_scales_cwnd_down() {
+    let mut cc = QuicCubic::new(1452);
+    let initial_cwnd = cc.window();
+    cc.on_mtu_update(1200);
+    let expected = initial_cwnd * 1200 / 1452;
+    assert_eq!(cc.window(), expected);
 }
