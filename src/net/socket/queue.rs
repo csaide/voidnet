@@ -122,7 +122,13 @@ impl<T> LocalQueue<T> {
     /// Only one waker is stored — re-registering replaces the previous.
     #[inline(always)]
     pub fn register_waker(&self, waker: &Waker) {
-        unsafe { *self.waker.get() = Some(waker.clone()) };
+        let slot = unsafe { &mut *self.waker.get() };
+        match slot {
+            &mut Some(ref existing) if existing.will_wake(waker) => {}
+            _ => {
+                *slot = Some(waker.clone());
+            }
+        }
     }
 
     /// Pop an item. Returns the oldest item if the queue was not empty.
