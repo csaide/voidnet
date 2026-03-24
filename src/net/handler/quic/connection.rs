@@ -108,6 +108,9 @@ pub struct QuicConnectionState {
 
     // Config
     pub idle_timeout: Duration,
+    /// Cached max_ack_delay from peer's transport params (default 25ms per RFC 9000).
+    /// Updated when peer_params are set.
+    pub max_ack_delay: Duration,
     pub max_udp_payload: u16,
 
     // Created time
@@ -227,6 +230,10 @@ pub struct QuicConnectionState {
     /// Datagram send/recv queues (RFC 9221)
     pub datagrams: DatagramQueue,
 
+    /// Known stateless reset tokens from peer (RFC 9000 §10.3).
+    /// Populated from transport params and NEW_CONNECTION_ID frames.
+    pub peer_reset_tokens: smallvec::SmallVec<[[u8; 16]; 4]>,
+
     /// Maximum CRYPTO offset received at each encryption level before it was superseded.
     /// Once higher-level keys are installed, CRYPTO data for a lower level must not
     /// extend past this frontier (RFC 9001 §4.1.3). `None` = level not yet superseded.
@@ -243,6 +250,12 @@ pub struct QuicConnectionState {
 
     /// Whether client has already processed a Retry for this connection (RFC 9000 §17.2.5.2).
     pub retry_received: bool,
+    /// The DCID the client used in its very first Initial packet (for §7.3 validation).
+    /// Set at connection creation for clients; for servers this is the client's original DCID.
+    pub initial_dcid: ConnectionId,
+    /// The peer's SCID from the first received long header (for §7.3 validation).
+    /// Client stores the server's Initial SCID here.
+    pub peer_initial_scid: Option<ConnectionId>,
     /// Original DCID from before Retry (for transport parameter validation, RFC 9000 §7.3).
     pub original_dcid: Option<ConnectionId>,
     /// Token from Retry packet (client stores for resending in Initial).
@@ -309,6 +322,7 @@ impl QuicConnectionState {
             zero_rtt_rejected: 0,
             zero_rtt_accepted: 0,
             idle_timeout,
+            max_ack_delay: Duration::from_millis(25),
             max_udp_payload: 1200,
             created_at: now,
             last_activity: now,
@@ -361,10 +375,13 @@ impl QuicConnectionState {
             pending_new_token: None,
             received_new_token: None,
             datagrams: DatagramQueue::new(),
+            peer_reset_tokens: smallvec::SmallVec::new(),
             crypto_level_sealed: [None; 3],
             sent_ack_eliciting_since_recv: false,
             close_is_application: false,
             retry_received: false,
+            initial_dcid: dcid,
+            peer_initial_scid: None,
             original_dcid: None,
             retry_token: None,
             retry_source_cid: None,

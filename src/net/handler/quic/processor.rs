@@ -71,11 +71,7 @@ pub fn handle_timeout(
 ) -> TimerResult {
     match kind {
         QuicTimerKind::LossDetection => {
-            let max_ack_delay = conn
-                .peer_params
-                .as_ref()
-                .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
-                .unwrap_or(coarsetime::Duration::from_millis(25));
+            let max_ack_delay = conn.max_ack_delay;
             let result = conn.loss.on_loss_detection_timeout(now, max_ack_delay);
             match result {
                 crate::net::handler::quic::transport::loss::LossDetectionResult::LostPackets(
@@ -233,11 +229,7 @@ pub fn process_packet(
         let should_retransmit = match conn.last_close_sent {
             None => true,
             Some(last) => {
-                let max_ack_delay = conn
-                    .peer_params
-                    .as_ref()
-                    .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
-                    .unwrap_or(coarsetime::Duration::from_millis(25));
+                let max_ack_delay = conn.max_ack_delay;
                 let pto = conn.loss.pto(2, max_ack_delay);
                 now.duration_since(last) >= pto
             }
@@ -1365,6 +1357,7 @@ fn handle_crypto_frame(
             conn.peer_reset_tokens.push(token);
         }
 
+        conn.max_ack_delay = coarsetime::Duration::from_millis(params.max_ack_delay_ms);
         conn.peer_params = Some(params);
     }
 
@@ -1410,11 +1403,7 @@ fn handle_ack_frame(
         ack_delay_us / 1_000_000,
         ((ack_delay_us % 1_000_000) * 1000) as u32,
     );
-    let max_ack_delay = conn
-        .peer_params
-        .as_ref()
-        .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
-        .unwrap_or(coarsetime::Duration::from_millis(25));
+    let max_ack_delay = conn.max_ack_delay;
 
     let handshake_confirmed = conn.state == ConnectionState::Established;
 
@@ -1472,11 +1461,7 @@ fn handle_ack_frame(
                 .filter(|pkt| pkt.ack_eliciting && pkt.time_sent > first_rtt)
                 .collect();
             if eligible.len() >= 2 {
-                let max_ack_delay_pc = conn
-                    .peer_params
-                    .as_ref()
-                    .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
-                    .unwrap_or(coarsetime::Duration::from_millis(25));
+                let max_ack_delay_pc = conn.max_ack_delay;
                 let pc_threshold = QuicCubic::persistent_congestion_threshold(
                     conn.loss.smoothed_rtt,
                     conn.loss.rttvar,
@@ -1760,11 +1745,7 @@ pub fn generate_packets<'umem>(
         // Arm draining timer for Draining state cleanup (RFC 9000 §10.2.2)
         if conn.state == ConnectionState::Draining && conn.needs_draining_timer {
             conn.needs_draining_timer = false;
-            let max_ack_delay = conn
-                .peer_params
-                .as_ref()
-                .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
-                .unwrap_or(coarsetime::Duration::from_millis(25));
+            let max_ack_delay = conn.max_ack_delay;
             let pto = conn.loss.pto(2, max_ack_delay);
             let draining_deadline = now + pto * 3;
             conn.timers
@@ -1893,11 +1874,7 @@ pub fn generate_packets<'umem>(
         // Arm draining timer for Closing state cleanup (RFC 9000 §10.2)
         if conn.needs_draining_timer {
             conn.needs_draining_timer = false;
-            let max_ack_delay = conn
-                .peer_params
-                .as_ref()
-                .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
-                .unwrap_or(coarsetime::Duration::from_millis(25));
+            let max_ack_delay = conn.max_ack_delay;
             let pto = conn.loss.pto(2, max_ack_delay);
             let draining_deadline = now + pto * 3;
             conn.timers
@@ -1912,11 +1889,7 @@ pub fn generate_packets<'umem>(
     // Arm key discard timer after key update (RFC 9001 §6.5: 3×PTO)
     if conn.needs_key_discard_timer {
         conn.needs_key_discard_timer = false;
-        let max_ack_delay = conn
-            .peer_params
-            .as_ref()
-            .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
-            .unwrap_or(coarsetime::Duration::from_millis(25));
+        let max_ack_delay = conn.max_ack_delay;
         let pto = conn.loss.pto(2, max_ack_delay);
         let discard_deadline = now + pto * 3;
         conn.timers
@@ -2092,11 +2065,7 @@ pub fn generate_packets<'umem>(
     }
 
     // Arm loss detection timer
-    let max_ack_delay = conn
-        .peer_params
-        .as_ref()
-        .map(|p| coarsetime::Duration::from_millis(p.max_ack_delay_ms))
-        .unwrap_or(coarsetime::Duration::from_millis(25));
+    let max_ack_delay = conn.max_ack_delay;
     if let Some(deadline) = conn.loss.loss_detection_timer(max_ack_delay) {
         conn.timers
             .arm(QuicTimerKind::LossDetection, conn_key, deadline, wheel);

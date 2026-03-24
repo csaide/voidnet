@@ -1,4 +1,4 @@
-use coarsetime::{Duration, Instant};
+use coarsetime::Instant;
 use rustc_hash::FxHashMap;
 use slab::Slab;
 use std::sync::Arc;
@@ -977,11 +977,7 @@ impl QuicHandler {
                 if conn.idle_timeout.as_millis() == 0 {
                     return false;
                 }
-                let max_ack_delay = conn
-                    .peer_params
-                    .as_ref()
-                    .map(|p| Duration::from_millis(p.max_ack_delay_ms))
-                    .unwrap_or(Duration::from_millis(25));
+                let max_ack_delay = conn.max_ack_delay;
                 let pto_3x = conn.loss.pto(2, max_ack_delay) * 3;
                 // RFC 9000 §10.1: effective timeout is at least 3×PTO
                 let effective_timeout = if pto_3x > conn.idle_timeout {
