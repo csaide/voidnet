@@ -15,33 +15,66 @@ The QUIC implementation is feature-complete (~12.7K lines, 435 tests, all 5 RFCs
 - API parity with TCP/UDP socket patterns
 - Working client example alongside the existing server example
 
+**Acceptance Criteria:**
+- Zero warnings under both `cargo check` and `cargo test --no-run`
+- All existing tests pass under `cargo test`
+- All new hardening tests pass
+- Criterion benchmarks establish baseline latency numbers for hot paths
+- Client example compiles and connects to server example
+
 ---
 
 ## Section 1: Production Hardening
 
-### 1.1 Compiler Warnings Cleanup (22 warnings)
+### 1.1 Compiler Warnings Cleanup
 
-**Unused imports:**
+29 warnings total: 22 in lib (`cargo check`) + 7 additional in test mode (`cargo test --no-run`).
+
+For each item: decide whether the code is dead (remove it) or intentionally unused infrastructure that will be wired up soon (annotate with `#[allow(dead_code)]` and a comment explaining when it will be used). The frame_writer functions and crypto utilities are the key decision point — several are infrastructure for frame types that are parsed but not yet emitted by the packet builder.
+
+**Lib warnings (22):**
+
+*Unused imports:*
 - `token_crypto.rs` — remove unused `self` from `use ring::aead::{self, ...}`
-- `tests/adversarial_test.rs` — remove unused `IpAddress`, `Ipv4Address`
-- `tests/new_token_test.rs` — remove unused `processor` import
 
-**Unused variables (in tests):**
+*Dead fields:*
+- `handler.rs` — `rx_offload`, `tx_offload` fields never read
+- `transport/packet_builder.rs` — `packet_number` field never read
+
+*Dead struct:*
+- `token.rs` — `RetryToken` struct never constructed; `new()` and `is_expired()` methods unused. Note: `original_dcid` and `client_addr` fields are also dead but only warned in test mode (the struct itself is the root cause)
+
+*Unused functions (crypto):*
+- `crypto/retry.rs` — `verify_retry_integrity_tag()`
+- `crypto/stateless_reset.rs` — `generate_reset_token()`, `detect_stateless_reset()`
+- `processor.rs` — `handle_retry_packet()`
+
+*Unused functions (frame_writer — 8 functions):*
+- `transport/frame_writer.rs` — `write_padding()`, `write_ping()`, `write_handshake_done()`, `write_path_challenge()`, `write_path_response()`, `write_data_blocked()`, `write_stream_data_blocked()`, `write_streams_blocked()`
+
+*Unused functions (version):*
+- `transport/version.rs` — `is_reserved_version()`, `should_process_version_negotiation()`
+
+*Unused methods:*
+- `transport/packet_builder.rs` — `packet_number()`, `written()`
+
+*Dead variants/patterns:*
+- `processor.rs` — never-constructed `StatelessReset` variant
+- `processor.rs` — unreachable catch-all `_ => {}` pattern
+
+**Test-mode additional warnings (7):**
+
+*Unused imports:*
+- `tests/adversarial_test.rs` — `IpAddress`, `Ipv4Address`
+- `tests/new_token_test.rs` — `processor` import
+
+*Unused variables:*
 - `tests/adversarial_test.rs` — `dcid_bytes`
-- `tests/new_token_test.rs` — `frame_log`, `frame_len`
+- `tests/new_token_test.rs` — `frame_len`
 - `tests/pmtu_test.rs` — `result`
 
-**Dead fields:**
-- `handler.rs` — remove `rx_offload`, `tx_offload` fields (never read)
-- `token.rs` — remove `original_dcid`, `client_addr` fields (never read)
-
-**Unused functions:**
-- `transport/version.rs` — remove `is_reserved_version()`, `should_process_version_negotiation()`
-- `transport/packet_builder.rs` — remove `packet_number()`, `written()` methods
-
-**Dead variants/patterns:**
-- `processor.rs` — remove never-constructed `StatelessReset` variant
-- `processor.rs` — remove unreachable catch-all `_ => {}` pattern
+*Unnecessary mutability:*
+- `tests/new_token_test.rs` — `frame_log` declared `mut` but never mutated
 
 ### 1.2 Structured Edge Case Tests
 
@@ -78,9 +111,11 @@ New test file `tests/hardening_test.rs` within `src/net/handler/quic/tests/`.
 
 ## Section 2: Latency Optimization
 
+Sections 2.2–2.5 are investigation items, not guaranteed implementation. Changes are only made if benchmarks reveal a measurable problem. The benchmarks in 2.1 are the mandatory deliverable; the rest are conditional.
+
 ### 2.1 Criterion Benchmarks
 
-New benchmark file `benches/quic_latency.rs` with micro-benchmarks for:
+Extend the existing `benches/quic.rs` with new benchmark groups for:
 - **Inbound hot path:** packet decrypt + header unprotect
 - **Frame parsing:** decrypted payload → parsed frames
 - **ACK processing:** range walk + loss detection update
@@ -119,11 +154,12 @@ Profile `generate_packets()` and `process_packet()` for per-packet heap allocati
 ### 3.1 API Parity with TCP/UDP
 
 **Error types:**
-- `QuicListener::listen()` should return `Result<Self, BindError>` instead of `Result<Self, QuicError>`, matching TCP's pattern
+- Confirm `QuicListener::listen()` already returns `Result<Self, BindError>` (verified — matches TCP pattern)
 - Keep `QuicError` for connection/stream operations
+- Audit remaining `QuicError` variants for semantic correctness
 
 **Naming consistency audit:**
-- Verify `QuicListener`, `QuicConnection`, `QuicStream`, `QuicRecvStream`, `QuicSendStream` exports from `socket/mod.rs`
+- Verify `QuicListener`, `QuicConnection`, `QuicStream`, `QuicRecvStream`, `QuicSendStream` exports from `src/net/socket/quic.rs` and re-exports in `src/net/socket/mod.rs`
 - Verify future types (`Accept`, `Connect`) follow TCP patterns
 
 **Lifecycle:**
