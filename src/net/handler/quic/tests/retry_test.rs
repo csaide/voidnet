@@ -506,3 +506,23 @@ fn client_rejects_retry_with_bad_tag() {
     assert!(!handled);
     assert!(!conn.retry_received); // should not be set
 }
+
+#[test]
+fn server_includes_retry_transport_params() {
+    use crate::net::handler::quic::transport::params::TransportParams;
+
+    let mut params = TransportParams::default();
+    let odcid = ConnectionId::from_slice(&[0x01, 0x02, 0x03, 0x04]);
+    let retry_scid = ConnectionId::from_slice(&[0xF0, 0xF1, 0xF2, 0xF3]);
+
+    params.original_destination_connection_id = Some(odcid);
+    params.retry_source_connection_id = Some(retry_scid);
+
+    let mut buf = [0u8; 512];
+    let len = params.encode(&mut buf);
+    assert!(len > 0);
+
+    let decoded = TransportParams::decode(&buf[..len]).unwrap();
+    assert_eq!(decoded.original_destination_connection_id, Some(odcid));
+    assert_eq!(decoded.retry_source_connection_id, Some(retry_scid));
+}

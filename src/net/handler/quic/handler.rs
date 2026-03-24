@@ -399,7 +399,9 @@ impl QuicHandler {
                         // Token present — validate it
                         match self.validate_retry_token(&token, &src_addr, dst_port, version) {
                             Some(odcid) => {
-                                // Valid Retry token — create connection with original DCID
+                                // Valid Retry token — create connection with original DCID.
+                                // The current dcid is the SCID from the Retry packet (RFC 9000 §7.3).
+                                let retry_scid = ConnectionId::from_slice(&dcid_buf[..dcid_len]);
                                 if let Some(key) = self.create_server_connection(
                                     &odcid,
                                     &client_scid,
@@ -411,6 +413,8 @@ impl QuicHandler {
                                     dst_mac,
                                     now,
                                     version,
+                                    Some(&odcid),
+                                    Some(&retry_scid),
                                 ) {
                                     let conn = &mut self.connections[key];
                                     let mut frame_data = frame;
@@ -454,6 +458,8 @@ impl QuicHandler {
                             dst_mac,
                             now,
                             version,
+                            None,
+                            None,
                         ) {
                             let conn = &mut self.connections[key];
                             let mut frame_data = frame;
@@ -717,6 +723,8 @@ impl QuicHandler {
                         // Token present — validate it
                         match self.validate_retry_token(&token, &src_addr, dst_port, version) {
                             Some(odcid) => {
+                                // The current dcid is the SCID from the Retry packet (RFC 9000 §7.3).
+                                let retry_scid = ConnectionId::from_slice(&dcid_buf[..dcid_len]);
                                 if let Some(key) = self.create_server_connection(
                                     &odcid,
                                     &client_scid,
@@ -728,6 +736,8 @@ impl QuicHandler {
                                     dst_mac,
                                     now,
                                     version,
+                                    Some(&odcid),
+                                    Some(&retry_scid),
                                 ) {
                                     let conn = &mut self.connections[key];
                                     let mut frame_data = frame;
@@ -770,6 +780,8 @@ impl QuicHandler {
                             dst_mac,
                             now,
                             version,
+                            None,
+                            None,
                         ) {
                             let conn = &mut self.connections[key];
                             let mut frame_data = frame;
@@ -1488,6 +1500,10 @@ impl QuicHandler {
     ///
     /// `original_dcid` is the client's Initial DCID (for key derivation, RFC 9001 §5.2).
     /// `client_scid` is the client's SCID (used as our DCID per RFC 9000 §7.2).
+    /// `retry_odcid`: if this connection was validated via Retry, the original DCID from the Retry
+    ///   token (used for `original_destination_connection_id` transport param, RFC 9000 §7.3).
+    /// `retry_scid`: the SCID from the Retry packet (= client's new DCID, used for
+    ///   `retry_source_connection_id` transport param, RFC 9000 §7.3).
     /// Returns the slab key on success.
     fn create_server_connection(
         &mut self,
@@ -1501,6 +1517,8 @@ impl QuicHandler {
         local_mac: MacAddress,
         now: Instant,
         version: u32,
+        retry_odcid: Option<&ConnectionId>,
+        retry_scid: Option<&ConnectionId>,
     ) -> Option<usize> {
         use crate::net::handler::quic::connection::Side;
         use crate::net::handler::quic::crypto::initial_keys::derive_initial_keys;
@@ -1562,7 +1580,14 @@ impl QuicHandler {
 
         // RFC 9000 §18.2: server MUST include these CID params in the TLS handshake
         let mut server_params = listener.transport_params.clone();
-        server_params.original_destination_connection_id = Some(*original_dcid);
+        // RFC 9000 §7.3: after Retry, use the original DCID from the token and include
+        // retry_source_connection_id (the SCID from the Retry packet).
+        if let (Some(rodcid), Some(rscid)) = (retry_odcid, retry_scid) {
+            server_params.original_destination_connection_id = Some(*rodcid);
+            server_params.retry_source_connection_id = Some(*rscid);
+        } else {
+            server_params.original_destination_connection_id = Some(*original_dcid);
+        }
         server_params.initial_source_connection_id = Some(scid);
 
         // RFC 9369 §4.1: include version_information for Compatible VN
