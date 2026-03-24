@@ -110,12 +110,12 @@ fn token_crypto_encrypt_decrypt_ipv4() {
     )
     .unwrap();
 
-    let (token_type, ip, ts, d, v) = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
-    assert_eq!(token_type, TokenType::NewToken);
-    assert_eq!(ip, client_ip);
-    assert_eq!(ts, timestamp);
-    assert_eq!(d, dcid);
-    assert_eq!(v, version);
+    let dt = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
+    assert_eq!(dt.token_type, TokenType::NewToken);
+    assert_eq!(dt.client_ip_bytes(), client_ip);
+    assert_eq!(dt.timestamp_secs, timestamp);
+    assert_eq!(dt.dcid_bytes(), dcid);
+    assert_eq!(dt.version, version);
 }
 
 #[test]
@@ -139,12 +139,12 @@ fn token_crypto_encrypt_decrypt_ipv6() {
     )
     .unwrap();
 
-    let (token_type, ip, ts, d, v) = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
-    assert_eq!(token_type, TokenType::Retry);
-    assert_eq!(ip, client_ip);
-    assert_eq!(ts, timestamp);
-    assert_eq!(d, dcid);
-    assert_eq!(v, version);
+    let dt = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
+    assert_eq!(dt.token_type, TokenType::Retry);
+    assert_eq!(dt.client_ip_bytes(), client_ip);
+    assert_eq!(dt.timestamp_secs, timestamp);
+    assert_eq!(dt.dcid_bytes(), dcid);
+    assert_eq!(dt.version, version);
 }
 
 #[test]
@@ -187,12 +187,12 @@ fn token_crypto_empty_dcid() {
     let encrypted =
         token_crypto::encrypt_token(&secret, TokenType::NewToken, &client_ip, 999, &[], 1).unwrap();
 
-    let (token_type, ip, ts, d, v) = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
-    assert_eq!(token_type, TokenType::NewToken);
-    assert_eq!(ip, client_ip);
-    assert_eq!(ts, 999);
-    assert!(d.is_empty());
-    assert_eq!(v, 1);
+    let dt = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
+    assert_eq!(dt.token_type, TokenType::NewToken);
+    assert_eq!(dt.client_ip_bytes(), client_ip);
+    assert_eq!(dt.timestamp_secs, 999);
+    assert!(dt.dcid_bytes().is_empty());
+    assert_eq!(dt.version, 1);
 }
 
 #[test]
@@ -238,10 +238,8 @@ fn server_generates_new_token_when_secret_set() {
     conn.version = 0x00000001;
 
     // Simulate what processor does after handshake
-    let client_ip_bytes: Vec<u8> = match conn.remote_addr {
-        crate::net::wire::ip::IpAddress::V4(v4) => v4.octets.to_vec(),
-        crate::net::wire::ip::IpAddress::V6(v6) => v6.octets.to_vec(),
-    };
+    let mut ip_buf = [0u8; 16];
+    let client_ip_bytes = conn.remote_addr.ip_bytes(&mut ip_buf);
     let timestamp = 1700000000u64;
     let encrypted = token_crypto::encrypt_token(
         &secret,
@@ -258,12 +256,12 @@ fn server_generates_new_token_when_secret_set() {
     assert!(conn.pending_new_token.is_some());
 
     // Verify it can be decrypted back
-    let (tt, ip, ts, _dcid, v) =
+    let dt =
         token_crypto::decrypt_token(&secret, conn.pending_new_token.as_ref().unwrap()).unwrap();
-    assert_eq!(tt, TokenType::NewToken);
-    assert_eq!(ip, [10, 0, 0, 1]);
-    assert_eq!(ts, 1700000000);
-    assert_eq!(v, 0x00000001);
+    assert_eq!(dt.token_type, TokenType::NewToken);
+    assert_eq!(dt.client_ip_bytes(), [10, 0, 0, 1]);
+    assert_eq!(dt.timestamp_secs, 1700000000);
+    assert_eq!(dt.version, 0x00000001);
 }
 
 #[test]
@@ -361,9 +359,9 @@ fn token_version_validation_accepts_matching_version() {
     )
     .unwrap();
 
-    let (_, _, _, _, token_version) = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
+    let dt = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
     assert_eq!(
-        token_version, version,
+        dt.version, version,
         "token version should match connection version"
     );
 }
@@ -386,9 +384,9 @@ fn token_version_validation_rejects_mismatched_version() {
     .unwrap();
 
     // Decrypt succeeds but version doesn't match v2
-    let (_, _, _, _, token_version) = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
+    let dt = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
     assert_ne!(
-        token_version, v2,
+        dt.version, v2,
         "token issued for v1 must not be accepted as v2"
     );
 }
@@ -408,11 +406,7 @@ fn token_version_validation_v2_roundtrip() {
     )
     .unwrap();
 
-    let (tt, _ip, _ts, _dcid, token_version) =
-        token_crypto::decrypt_token(&secret, &encrypted).unwrap();
-    assert_eq!(tt, TokenType::Retry);
-    assert_eq!(
-        token_version, v2,
-        "v2 token roundtrip must preserve version"
-    );
+    let dt = token_crypto::decrypt_token(&secret, &encrypted).unwrap();
+    assert_eq!(dt.token_type, TokenType::Retry);
+    assert_eq!(dt.version, v2, "v2 token roundtrip must preserve version");
 }

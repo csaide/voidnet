@@ -59,6 +59,9 @@ pub struct QuicHandler {
     pub(crate) max_connections_per_ip: u16,
     /// Maximum age of a Retry token before it's considered expired (default 30s).
     pub(crate) retry_token_max_age: coarsetime::Duration,
+    /// Server secret for generating stateless reset tokens (RFC 9000 §10.3).
+    /// Used to deterministically derive reset tokens from CIDs.
+    pub(crate) stateless_reset_secret: [u8; 32],
 }
 
 impl QuicHandler {
@@ -74,6 +77,7 @@ impl QuicHandler {
             per_ip_conn_count: FxHashMap::default(),
             max_connections_per_ip: 100,
             retry_token_max_age: coarsetime::Duration::from_secs(30),
+            stateless_reset_secret: Self::generate_token_secret(),
         }
     }
 
@@ -91,6 +95,14 @@ impl QuicHandler {
             .fill(&mut secret)
             .expect("failed to generate random token secret");
         secret
+    }
+
+    /// Generate a stateless reset token for a given CID (RFC 9000 §10.3.2).
+    pub(crate) fn generate_reset_token_for_cid(&self, cid: &ConnectionId) -> [u8; 16] {
+        crate::net::handler::quic::crypto::stateless_reset::generate_reset_token(
+            cid.as_bytes(),
+            &self.stateless_reset_secret,
+        )
     }
 
     /// Register a QUIC listener on a port.
@@ -246,13 +258,22 @@ impl QuicHandler {
 
             // After process_packet(), check for address change (migration detection)
             let conn = &mut self.connections[conn_key];
-            if src_addr != conn.remote_addr || src_port != conn.remote_port {
+            if (src_addr != conn.remote_addr || src_port != conn.remote_port)
+                && conn.key_update.handshake_confirmed
+            {
+                // RFC 9000 §9: ignore migration if peer set disable_active_migration
+                // (NAT rebinding is still allowed per §9.3).
+                let peer_disabled = conn
+                    .peer_params
+                    .as_ref()
+                    .is_some_and(|p| p.disable_active_migration);
+
                 // NAT rebinding vs intentional migration (RFC 9000 §9.3)
                 let port_only_change = src_addr == conn.remote_addr && src_port != conn.remote_port;
                 if port_only_change {
                     // NAT rebinding — just update port, no validation needed
                     conn.remote_port = src_port;
-                } else {
+                } else if !peer_disabled {
                     // Full migration — snapshot, validate, rotate CID
                     use crate::net::handler::quic::connection::PreviousPath;
                     conn.prev_path = Some(PreviousPath {
@@ -295,6 +316,7 @@ impl QuicHandler {
                         conn.pending_migration = Some(MigrationAction { old_cid, new_cid });
                     }
                 }
+                // else: peer disabled migration and this is a full address change — ignore
             }
 
             // Process pending migration CID map update
@@ -369,14 +391,12 @@ impl QuicHandler {
 
                         if token.is_empty() {
                             // No token — send a Retry packet
-                            let client_ip = match src_addr {
-                                IpAddress::V4(v4) => v4.octets.to_vec(),
-                                IpAddress::V6(v6) => v6.octets.to_vec(),
-                            };
+                            let mut ip_buf = [0u8; 16];
+                            let client_ip = src_addr.ip_bytes(&mut ip_buf);
                             if let Some(retry_pkt) = self.generate_retry_packet(
                                 &dcid_buf[..dcid_len],
                                 &scid_buf[..scid_len],
-                                &client_ip,
+                                client_ip,
                                 dst_port,
                                 version,
                             ) {
@@ -489,7 +509,67 @@ impl QuicHandler {
                 rx_return.push(frame);
             }
         } else {
-            rx_return.push(frame);
+            // Short-header packet for unknown CID — send stateless reset (RFC 9000 §10.3).
+            // Only send if there are listeners (we're acting as a server) and packet is
+            // large enough to hide the reset token (must be shorter than triggering packet).
+            if !quic_data.is_empty()
+                && !wire_quic::is_long_header(quic_data[0])
+                && !self.listeners.is_empty()
+                && quic_data.len() > 41
+            {
+                // RFC 9000 §10.3.1: stateless reset is at least 21 bytes
+                // (1 byte unpredictable + 16 byte token + some random).
+                // Must be shorter than the packet that triggered it.
+                let token = self.generate_reset_token_for_cid(&dcid);
+                let reset_len = 21usize.min(quic_data.len() - 1);
+                let random_len = reset_len - 16;
+                let mut reset_buf = vec![0u8; reset_len];
+                // First byte: bit 7 = 0, bit 6 = 1, rest random (looks like short header)
+                use ring::rand::SecureRandom;
+                let _ = ring::rand::SystemRandom::new().fill(&mut reset_buf[..random_len]);
+                // Ensure it looks like a short header (bit 7 clear, fixed bit set)
+                reset_buf[0] = (reset_buf[0] & 0x3F) | 0x40;
+                // Last 16 bytes = stateless reset token
+                reset_buf[random_len..].copy_from_slice(&token);
+                // Rewrite the frame in-place with the reset packet
+                let eth_len = std::mem::size_of::<crate::net::wire::ethernet::EthernetFrame>();
+                let ip_len = crate::net::wire::ip::IPV4_MIN_HEADER_LEN;
+                let udp_start = eth_len + ip_len;
+                let quic_start = udp_start + 8;
+                let total_len = quic_start + reset_len;
+                if frame.capacity() >= total_len {
+                    let mut frame_data = frame;
+                    unsafe { frame_data.set_len(frame_data.capacity()) };
+                    frame_data[quic_start..quic_start + reset_len].copy_from_slice(&reset_buf);
+                    // Swap src/dst for response
+                    {
+                        use crate::net::wire::ethernet::EthernetFrame;
+                        use crate::net::wire::ip::Ipv4Header;
+                        use crate::net::wire::udp::UdpHeader;
+                        let eth = EthernetFrame::from_bytes_mut(&mut frame_data);
+                        std::mem::swap(&mut eth.src_mac, &mut eth.dst_mac);
+                        let ip = Ipv4Header::from_bytes_mut(&mut frame_data);
+                        std::mem::swap(&mut ip.src_addr, &mut ip.dst_addr);
+                        let total_ip_len = (ip_len + 8 + reset_len) as u16;
+                        ip.total_length = total_ip_len.to_be_bytes();
+                        ip.fill_checksum();
+                        let udp =
+                            unsafe { UdpHeader::from_bytes_at_mut(&mut frame_data, udp_start) };
+                        let old_src = udp.src_port();
+                        let old_dst = udp.dst_port();
+                        udp.src_port = old_dst.to_be_bytes();
+                        udp.dst_port = old_src.to_be_bytes();
+                        udp.length = ((8 + reset_len) as u16).to_be_bytes();
+                        udp.checksum = [0, 0]; // UDP checksum optional for IPv4
+                    }
+                    unsafe { frame_data.set_len(total_len) };
+                    tx_return.push(frame_data);
+                } else {
+                    rx_return.push(frame);
+                }
+            } else {
+                rx_return.push(frame);
+            }
         }
     }
 
@@ -581,13 +661,22 @@ impl QuicHandler {
 
             // After process_packet(), check for address change (migration detection)
             let conn = &mut self.connections[conn_key];
-            if src_addr != conn.remote_addr || src_port != conn.remote_port {
+            if (src_addr != conn.remote_addr || src_port != conn.remote_port)
+                && conn.key_update.handshake_confirmed
+            {
+                // RFC 9000 §9: ignore migration if peer set disable_active_migration
+                // (NAT rebinding is still allowed per §9.3).
+                let peer_disabled = conn
+                    .peer_params
+                    .as_ref()
+                    .is_some_and(|p| p.disable_active_migration);
+
                 // NAT rebinding vs intentional migration (RFC 9000 §9.3)
                 let port_only_change = src_addr == conn.remote_addr && src_port != conn.remote_port;
                 if port_only_change {
                     // NAT rebinding — just update port, no validation needed
                     conn.remote_port = src_port;
-                } else {
+                } else if !peer_disabled {
                     // Full migration — snapshot, validate, rotate CID
                     use crate::net::handler::quic::connection::PreviousPath;
                     conn.prev_path = Some(PreviousPath {
@@ -630,6 +719,7 @@ impl QuicHandler {
                         conn.pending_migration = Some(MigrationAction { old_cid, new_cid });
                     }
                 }
+                // else: peer disabled migration and this is a full address change — ignore
             }
 
             // Process pending migration CID map update
@@ -700,14 +790,12 @@ impl QuicHandler {
 
                         if token.is_empty() {
                             // No token — send a Retry packet
-                            let client_ip = match src_addr {
-                                IpAddress::V4(v4) => v4.octets.to_vec(),
-                                IpAddress::V6(v6) => v6.octets.to_vec(),
-                            };
+                            let mut ip_buf = [0u8; 16];
+                            let client_ip = src_addr.ip_bytes(&mut ip_buf);
                             if let Some(retry_pkt) = self.generate_retry_packet(
                                 &dcid_buf[..dcid_len],
                                 &scid_buf[..scid_len],
-                                &client_ip,
+                                client_ip,
                                 dst_port,
                                 version,
                             ) {
@@ -1058,25 +1146,22 @@ impl QuicHandler {
         use crate::net::handler::quic::token_crypto::{TokenType, decrypt_token};
 
         let listener = self.listeners.get(&local_port)?;
-        let (token_type, token_ip, timestamp_secs, dcid, token_version) =
-            decrypt_token(&listener.token_secret, token_bytes).ok()?;
+        let dt = decrypt_token(&listener.token_secret, token_bytes).ok()?;
 
         // Must be a Retry token
-        if token_type != TokenType::Retry {
+        if dt.token_type != TokenType::Retry {
             return None;
         }
 
         // Version must match
-        if token_version != version {
+        if dt.version != version {
             return None;
         }
 
         // Client IP must match
-        let client_ip_bytes = match client_addr {
-            IpAddress::V4(v4) => v4.octets.to_vec(),
-            IpAddress::V6(v6) => v6.octets.to_vec(),
-        };
-        if token_ip != client_ip_bytes {
+        let mut ip_buf = [0u8; 16];
+        let client_ip_bytes = client_addr.ip_bytes(&mut ip_buf);
+        if dt.client_ip_bytes() != client_ip_bytes {
             return None;
         }
 
@@ -1086,14 +1171,14 @@ impl QuicHandler {
             .unwrap_or_default()
             .as_secs();
         let max_age_secs = self.retry_token_max_age.as_secs();
-        if now_secs.saturating_sub(timestamp_secs) > max_age_secs {
+        if now_secs.saturating_sub(dt.timestamp_secs) > max_age_secs {
             return None;
         }
 
-        if dcid.len() > 20 {
+        if dt.dcid_len > 20 {
             return None;
         }
-        Some(ConnectionId::from_slice(&dcid))
+        Some(ConnectionId::from_slice(dt.dcid_bytes()))
     }
 
     /// Build a Version Negotiation packet directly into the RX frame (IPv4).
@@ -1600,6 +1685,8 @@ impl QuicHandler {
             server_params.original_destination_connection_id = Some(*original_dcid);
         }
         server_params.initial_source_connection_id = Some(scid);
+        // RFC 9000 §10.3.2: include stateless reset token for our SCID
+        server_params.stateless_reset_token = Some(self.generate_reset_token_for_cid(&scid));
 
         // RFC 9369 §4.1: include version_information for Compatible VN
         server_params.version_information = Some(

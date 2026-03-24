@@ -36,6 +36,24 @@ pub enum ProcessResult {
     VersionNegotiation,
 }
 
+/// Check if a short-header packet is a stateless reset (RFC 9000 §10.3.1).
+/// The last 16 bytes of the UDP payload are the stateless reset token.
+fn check_stateless_reset(conn: &mut QuicConnectionState, quic_payload: &[u8]) -> bool {
+    if quic_payload.len() < 17 || conn.peer_reset_tokens.is_empty() {
+        return false;
+    }
+    if crate::net::handler::quic::crypto::stateless_reset::detect_stateless_reset(
+        quic_payload,
+        &conn.peer_reset_tokens,
+    ) {
+        // Stateless reset detected — enter draining state
+        conn.state = ConnectionState::Draining;
+        conn.needs_draining_timer = true;
+        return true;
+    }
+    false
+}
+
 /// Result returned by `handle_timeout`.
 pub enum TimerResult {
     /// Connection should continue.
@@ -250,11 +268,27 @@ pub fn process_packet(
 
             match header {
                 PacketHeader::Long(long) => {
+                    // RFC 9000 §17.2.5: Handle Retry packets (client only)
+                    if long.packet_type == PacketType::Retry {
+                        if conn.side == Side::Client {
+                            handle_retry_packet(conn, remaining, long.version);
+                        }
+                        break; // Retry consumes entire datagram
+                    }
+
                     let space = match packet_space(long.packet_type) {
                         Some(s) => s,
                         None => break,
                     };
                     let is_0rtt = long.packet_type == PacketType::ZeroRtt;
+
+                    // RFC 9000 §7.3: Client captures server's SCID from the first
+                    // received long header for transport parameter validation.
+                    if conn.side == Side::Client && conn.peer_initial_scid.is_none() {
+                        conn.peer_initial_scid =
+                            Some(ConnectionId::from_slice(long.scid.as_bytes()));
+                    }
+
                     if long.packet_type == PacketType::Initial {
                         match packet_parser::parse_initial_fields(&remaining[long.payload_offset..])
                         {
@@ -266,8 +300,8 @@ pub fn process_packet(
                                         match crate::net::handler::quic::token_crypto::decrypt_token(
                                             secret, token,
                                         ) {
-                                            Ok((_token_type, _ip, _ts, _dcid, token_version)) => {
-                                                if token_version == conn.version {
+                                            Ok(dt) => {
+                                                if dt.version == conn.version {
                                                     // Valid token — lift amplification limit
                                                     conn.path.amplification.set_validated();
                                                 }
@@ -326,8 +360,13 @@ pub fn process_packet(
                     Some((2, short.pn_offset, remaining.len(), false))
                 }
                 PacketHeader::VersionNegotiation(vn) => {
-                    // RFC 9000 §6.2: client processes VN from server
-                    if conn.side == Side::Client && conn.state == ConnectionState::Handshaking {
+                    // RFC 9000 §6.2: client processes VN from server.
+                    // RFC 8999 §6: VN packet's DCID must match our SCID and SCID must match our DCID.
+                    if conn.side == Side::Client
+                        && conn.state == ConnectionState::Handshaking
+                        && vn.dcid.as_bytes() == conn.scid.as_bytes()
+                        && vn.scid.as_bytes() == conn.dcid.as_bytes()
+                    {
                         // Find a supported version different from current
                         let mut negotiated_version: Option<u32> = None;
                         let mut i = 0;
@@ -487,6 +526,23 @@ fn decrypt_and_process(
             }
         };
 
+    // RFC 9000 §17.2/§17.3.1: Reserved bits MUST be zero after header protection removal.
+    // Long header: bits 0x0C (bits 2-3). Short header: bits 0x18 (bits 3-4).
+    {
+        let first_byte = quic_payload[0];
+        let reserved_mask = if is_0rtt || space < 2 {
+            0x0C // long header reserved bits
+        } else {
+            0x18 // short header reserved bits
+        };
+        if first_byte & reserved_mask != 0 {
+            conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
+            conn.state = ConnectionState::Closing;
+            conn.needs_draining_timer = true;
+            return ProcessResult::ConnectionClosed;
+        }
+    }
+
     // Reconstruct full PN
     let largest_acked = conn.ack[space].largest_received().unwrap_or(0);
     let pn = decode_pn(largest_acked, truncated_pn, (pn_length * 8) as u32);
@@ -535,9 +591,25 @@ fn decrypt_and_process(
                         &header_buf[..header_len],
                         &mut quic_payload[payload_offset..payload_offset + saved_len],
                     ) {
-                        Ok(plaintext) => plaintext.len(),
+                        Ok(plaintext) => {
+                            // RFC 9001 §6.4: packet decrypted with old keys MUST have
+                            // PN lower than lowest_pn_current_phase. Otherwise it's a
+                            // KEY_UPDATE_ERROR.
+                            if let Some(lowest) = conn.key_update.lowest_pn_current_phase {
+                                if pn >= lowest {
+                                    conn.close_error = Some(TransportError::KEY_UPDATE_ERROR);
+                                    conn.state = ConnectionState::Closing;
+                                    conn.needs_draining_timer = true;
+                                    return ProcessResult::ConnectionClosed;
+                                }
+                            }
+                            plaintext.len()
+                        }
                         Err(_) => {
-                            // Both keys failed — genuine authentication failure
+                            // Both keys failed — check for stateless reset (RFC 9000 §10.3)
+                            if space == 2 && check_stateless_reset(conn, quic_payload) {
+                                return ProcessResult::ConnectionClosed;
+                            }
                             conn.failed_decryptions += 1;
                             let limits = conn.aead_limits;
                             if limits.must_close(conn.failed_decryptions) {
@@ -550,6 +622,10 @@ fn decrypt_and_process(
                         }
                     }
                 } else {
+                    // No previous key — check for stateless reset (RFC 9000 §10.3)
+                    if space == 2 && check_stateless_reset(conn, quic_payload) {
+                        return ProcessResult::ConnectionClosed;
+                    }
                     conn.failed_decryptions += 1;
                     let limits = conn.aead_limits;
                     if limits.must_close(conn.failed_decryptions) {
@@ -561,6 +637,10 @@ fn decrypt_and_process(
                     return ProcessResult::Ok;
                 }
             } else {
+                // Primary decryption failed, no previous key — check for stateless reset
+                if space == 2 && check_stateless_reset(conn, quic_payload) {
+                    return ProcessResult::ConnectionClosed;
+                }
                 conn.failed_decryptions += 1;
                 let limits = conn.aead_limits;
                 if limits.must_close(conn.failed_decryptions) {
@@ -857,6 +937,9 @@ fn dispatch_frames(
                     return ProcessResult::ConnectionClosed;
                 }
 
+                // Store peer's stateless reset token (RFC 9000 §10.3.2)
+                conn.peer_reset_tokens.push(ncid.stateless_reset_token);
+
                 // Update active DCID to newest available peer CID
                 if let Some((active_cid, _seq)) = conn.cid_manager.peer_cids.pick_unused(&conn.dcid)
                 {
@@ -1099,10 +1182,8 @@ fn handle_crypto_frame(
 
             // Generate NEW_TOKEN for the client (RFC 9000 §8.1)
             if let Some(ref secret) = conn.token_secret {
-                let client_ip_bytes: Vec<u8> = match conn.remote_addr {
-                    IpAddress::V4(v4) => v4.octets.to_vec(),
-                    IpAddress::V6(v6) => v6.octets.to_vec(),
-                };
+                let mut ip_buf = [0u8; 16];
+                let client_ip_bytes = conn.remote_addr.ip_bytes(&mut ip_buf);
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
@@ -1159,6 +1240,49 @@ fn handle_crypto_frame(
             conn.needs_draining_timer = true;
             return;
         }
+
+        // RFC 9000 §7.3: Client MUST validate connection ID transport parameters.
+        // Only validate when processing Handshake or 1-RTT CRYPTO data (space >= 1).
+        // During 0-RTT resumption, rustls provides cached params from the session
+        // ticket in space 0, which contain stale CID values from a prior connection.
+        // The server's fresh EncryptedExtensions with correct CIDs arrive in space 1.
+        if conn.side == Side::Client && space >= 1 {
+            // original_destination_connection_id must match the DCID the client
+            // used in its first Initial (before any Retry).
+            let expected_odcid = conn.original_dcid.unwrap_or(conn.initial_dcid);
+            if params.original_destination_connection_id.as_ref() != Some(&expected_odcid) {
+                conn.close_error = Some(TransportError::TRANSPORT_PARAMETER_ERROR);
+                conn.state = ConnectionState::Closing;
+                conn.needs_draining_timer = true;
+                return;
+            }
+            // initial_source_connection_id must match the SCID from the server's
+            // first long header packet.
+            if let Some(ref peer_scid) = conn.peer_initial_scid {
+                if params.initial_source_connection_id.as_ref() != Some(peer_scid) {
+                    conn.close_error = Some(TransportError::TRANSPORT_PARAMETER_ERROR);
+                    conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
+                    return;
+                }
+            }
+            // retry_source_connection_id: if Retry was received, must match the
+            // Retry packet's SCID. If no Retry, param must be absent.
+            if conn.retry_received {
+                if params.retry_source_connection_id != conn.retry_source_cid {
+                    conn.close_error = Some(TransportError::TRANSPORT_PARAMETER_ERROR);
+                    conn.state = ConnectionState::Closing;
+                    conn.needs_draining_timer = true;
+                    return;
+                }
+            } else if params.retry_source_connection_id.is_some() {
+                conn.close_error = Some(TransportError::TRANSPORT_PARAMETER_ERROR);
+                conn.state = ConnectionState::Closing;
+                conn.needs_draining_timer = true;
+                return;
+            }
+        }
+
         conn.flow.update_max_data_send(params.initial_max_data);
         conn.streams.peer_max_bidi = params.initial_max_streams_bidi;
         conn.streams.peer_max_uni = params.initial_max_streams_uni;
@@ -1233,6 +1357,11 @@ fn handle_crypto_frame(
 
         // Update CidManager with peer's active_connection_id_limit
         conn.cid_manager.active_limit = params.active_connection_id_limit;
+
+        // Store peer's stateless reset token (RFC 9000 §10.3.2)
+        if let Some(token) = params.stateless_reset_token {
+            conn.peer_reset_tokens.push(token);
+        }
 
         conn.peer_params = Some(params);
     }
@@ -1533,7 +1662,12 @@ fn handle_stream_frame(
                     }
                 }
             }
-            Err(_) => return Some(TransportError::FLOW_CONTROL_ERROR),
+            Err(crate::net::handler::quic::stream::recv::RecvError::FinalSizeMismatch) => {
+                return Some(TransportError::FINAL_SIZE_ERROR);
+            }
+            Err(crate::net::handler::quic::stream::recv::RecvError::FlowControlExceeded) => {
+                return Some(TransportError::FLOW_CONTROL_ERROR);
+            }
         }
     }
 
@@ -1685,6 +1819,7 @@ pub fn generate_packets<'umem>(
                             pn,
                             largest_acked,
                             &conn.frame_log,
+                            &[], // closing frame, no token needed
                         )
                     } else {
                         PacketBuilder::begin_short(
@@ -1806,8 +1941,9 @@ pub fn generate_packets<'umem>(
             continue;
         }
 
-        // Gate: congestion window (RFC 9002 §7) — only gate 1-RTT data
-        if space == 2 && !conn.congestion.can_send() {
+        // Gate: congestion window (RFC 9002 §7) — only gate 1-RTT data.
+        // RFC 9002 §7.5: Probe packets MUST NOT be blocked by the congestion controller.
+        if space == 2 && !conn.congestion.can_send() && !conn.needs_probe {
             continue;
         }
 
@@ -2024,6 +2160,19 @@ fn build_quic_packet(
             space,
             conn.version,
         );
+        // RFC 9000 §17.2.2: Initial packets carry the token (Retry or NEW_TOKEN).
+        // Handshake/0-RTT packets have no token field.
+        let token: &[u8] = if space == 0 {
+            if let Some(ref t) = conn.retry_token {
+                t
+            } else if let Some(ref t) = conn.received_new_token {
+                t
+            } else {
+                &[]
+            }
+        } else {
+            &[]
+        };
         match PacketBuilder::begin_long(
             buf,
             packet_type_bits,
@@ -2033,6 +2182,7 @@ fn build_quic_packet(
             pn,
             largest_acked,
             &conn.frame_log,
+            token,
         ) {
             Some(b) => b,
             None => return 0,
@@ -2595,6 +2745,16 @@ fn build_quic_packet(
                 conn.key_update.on_update_initiated();
                 conn.packets_encrypted[2] = 0;
                 conn.needs_key_discard_timer = true;
+            } else if space == 2
+                && limits.needs_key_update(conn.packets_encrypted[2])
+                && !conn.key_update.can_initiate_update()
+            {
+                // RFC 9001 §6.6: confidentiality limit reached but key update
+                // is not possible — MUST close the connection.
+                conn.close_error = Some(TransportError::AEAD_LIMIT_REACHED);
+                conn.state = ConnectionState::Closing;
+                conn.needs_draining_timer = true;
+                return 0;
             }
 
             protected_len
@@ -2666,7 +2826,7 @@ fn build_prev_path_challenge_packet(
     let quic_buf = &mut frame[quic_offset..quic_offset + quic_len];
     match protect_packet(local_key, quic_buf, pn_offset, pn_length, pn) {
         Ok(protected_len) => {
-            // Record as sent (not in-flight for congestion since it's a probe)
+            // RFC 9002 §7.5: probe packets MUST be counted as in-flight.
             conn.loss.on_packet_sent(
                 2,
                 pn,
@@ -2674,12 +2834,13 @@ fn build_prev_path_challenge_packet(
                     time_sent: now,
                     size: protected_len as u16,
                     ack_eliciting: true,
-                    in_flight: false, // probe packet, don't count for congestion
+                    in_flight: true,
                     frame_range,
                     is_pmtu_probe: false,
                 },
             );
             conn.packets_encrypted[2] += 1;
+            conn.congestion.on_packets_sent(protected_len, now);
 
             // Write transport headers using the PREVIOUS path's address
             let prev_remote_addr = prev.remote_addr;
@@ -2912,7 +3073,6 @@ fn ipv6_udp_checksum(src: &[u8; 16], dst: &[u8; 16], udp_segment: &[u8]) -> u16 
 
 /// Handle an incoming Retry packet on the client side (RFC 9000 §17.2.5.2).
 /// Returns true if the Retry was accepted and state was updated.
-#[allow(dead_code)] // Wired when client processes incoming Retry packets
 pub fn handle_retry_packet(
     conn: &mut QuicConnectionState,
     retry_packet: &[u8],

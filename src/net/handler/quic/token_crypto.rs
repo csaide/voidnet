@@ -77,13 +77,32 @@ pub fn encrypt_token(
     Ok(output)
 }
 
+/// Decrypted token fields with stack-allocated IP (up to 16 bytes) and DCID (up to 20 bytes).
+pub struct DecryptedToken {
+    pub token_type: TokenType,
+    pub client_ip: [u8; 16],
+    pub ip_len: usize,
+    pub timestamp_secs: u64,
+    pub dcid: [u8; 20],
+    pub dcid_len: usize,
+    pub version: u32,
+}
+
+impl DecryptedToken {
+    #[inline]
+    pub fn client_ip_bytes(&self) -> &[u8] {
+        &self.client_ip[..self.ip_len]
+    }
+    #[inline]
+    pub fn dcid_bytes(&self) -> &[u8] {
+        &self.dcid[..self.dcid_len]
+    }
+}
+
 /// Decrypt a token received in a NEW_TOKEN frame or Initial packet.
 ///
-/// Returns `(token_type, client_ip, timestamp_secs, dcid, version)`.
-pub fn decrypt_token(
-    secret: &[u8; 32],
-    encrypted: &[u8],
-) -> Result<(TokenType, Vec<u8>, u64, Vec<u8>, u32), ()> {
+/// Returns a `DecryptedToken` with stack-allocated fields.
+pub fn decrypt_token(secret: &[u8; 32], encrypted: &[u8]) -> Result<DecryptedToken, ()> {
     // Minimum size: 12 (nonce) + 1 (type) + 1 (ip_ver) + 4 (ipv4) + 8 (ts) + 1 (dcid_len) + 4 (version) + 16 (tag)
     if encrypted.len() < 12 + 19 + 16 {
         return Err(());
@@ -124,7 +143,8 @@ pub fn decrypt_token(
         return Err(());
     }
 
-    let client_ip = plaintext[pos..pos + ip_len].to_vec();
+    let mut client_ip = [0u8; 16];
+    client_ip[..ip_len].copy_from_slice(&plaintext[pos..pos + ip_len]);
     pos += ip_len;
 
     let mut ts_bytes = [0u8; 8];
@@ -139,12 +159,21 @@ pub fn decrypt_token(
         return Err(());
     }
 
-    let dcid = plaintext[pos..pos + dcid_len].to_vec();
+    let mut dcid = [0u8; 20];
+    dcid[..dcid_len].copy_from_slice(&plaintext[pos..pos + dcid_len]);
     pos += dcid_len;
 
     let mut ver_bytes = [0u8; 4];
     ver_bytes.copy_from_slice(&plaintext[pos..pos + 4]);
     let version = u32::from_be_bytes(ver_bytes);
 
-    Ok((token_type, client_ip, timestamp_secs, dcid, version))
+    Ok(DecryptedToken {
+        token_type,
+        client_ip,
+        ip_len,
+        timestamp_secs,
+        dcid,
+        dcid_len,
+        version,
+    })
 }

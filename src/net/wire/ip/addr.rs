@@ -268,6 +268,24 @@ impl IpAddress {
             IpAddress::V6(v6) => v6.is_unspecified(),
         }
     }
+
+    /// Return the raw octets as a slice without heap allocation.
+    ///
+    /// Uses a caller-provided stack buffer to hold up to 16 bytes.
+    /// Returns the subslice containing the actual address bytes.
+    #[inline]
+    pub fn ip_bytes<'a>(&self, buf: &'a mut [u8; 16]) -> &'a [u8] {
+        match self {
+            IpAddress::V4(v4) => {
+                buf[..4].copy_from_slice(&v4.octets);
+                &buf[..4]
+            }
+            IpAddress::V6(v6) => {
+                *buf = v6.octets;
+                buf
+            }
+        }
+    }
 }
 
 impl From<Ipv4Address> for IpAddress {

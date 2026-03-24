@@ -525,14 +525,13 @@ fn token_validation_valid() {
     let version = QUIC_VERSION_1;
 
     let encrypted = encrypt_token(&secret, TokenType::Retry, ip, now_secs, dcid, version).unwrap();
-    let (token_type, token_ip, ts, token_dcid, token_ver) =
-        decrypt_token(&secret, &encrypted).unwrap();
+    let dt = decrypt_token(&secret, &encrypted).unwrap();
 
-    assert_eq!(token_type, TokenType::Retry);
-    assert_eq!(token_ip, ip);
-    assert_eq!(ts, now_secs);
-    assert_eq!(token_dcid, dcid);
-    assert_eq!(token_ver, version);
+    assert_eq!(dt.token_type, TokenType::Retry);
+    assert_eq!(dt.client_ip_bytes(), ip);
+    assert_eq!(dt.timestamp_secs, now_secs);
+    assert_eq!(dt.dcid_bytes(), dcid);
+    assert_eq!(dt.version, version);
 }
 
 #[test]
@@ -551,13 +550,13 @@ fn token_validation_expired() {
         QUIC_VERSION_1,
     )
     .unwrap();
-    let (_, _, ts, _, _) = decrypt_token(&secret, &encrypted).unwrap();
+    let dt = decrypt_token(&secret, &encrypted).unwrap();
 
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let age = now_secs.saturating_sub(ts);
+    let age = now_secs.saturating_sub(dt.timestamp_secs);
     assert!(age > 30, "token should be expired (age={}s)", age);
 }
 
@@ -580,10 +579,10 @@ fn token_validation_wrong_address() {
         QUIC_VERSION_1,
     )
     .unwrap();
-    let (_, ip, _, _, _) = decrypt_token(&secret, &encrypted).unwrap();
+    let dt = decrypt_token(&secret, &encrypted).unwrap();
 
     // Token was for 10.0.0.1 — different client IP should be rejected by validator
-    assert_ne!(ip.as_slice(), &[192u8, 168, 0, 1]);
+    assert_ne!(dt.client_ip_bytes(), &[192u8, 168, 0, 1]);
 }
 
 #[test]
@@ -605,9 +604,9 @@ fn token_validation_version_mismatch() {
         QUIC_VERSION_1,
     )
     .unwrap();
-    let (_, _, _, _, ver) = decrypt_token(&secret, &encrypted).unwrap();
+    let dt = decrypt_token(&secret, &encrypted).unwrap();
 
-    assert_ne!(ver, QUIC_VERSION_2);
+    assert_ne!(dt.version, QUIC_VERSION_2);
 }
 
 #[test]
