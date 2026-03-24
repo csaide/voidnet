@@ -13,6 +13,7 @@ mod error_test;
 mod flow_control_test;
 mod frame_test;
 mod handshake_integration_test;
+mod hardening_test;
 mod key_update_test;
 mod loss_test;
 mod migration_test;
