@@ -124,3 +124,146 @@ impl PathState {
         !self.validated
     }
 }
+
+/// PMTU discovery phase (DPLPMTUD, RFC 8899).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PmtuPhase {
+    Disabled,
+    Searching,
+    SearchComplete,
+}
+
+/// Result from a PMTU probe event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PmtuProbeResult {
+    Searching,
+    Complete,
+}
+
+impl PmtuProbeResult {
+    pub fn is_searching(self) -> bool {
+        self == PmtuProbeResult::Searching
+    }
+    pub fn is_complete(self) -> bool {
+        self == PmtuProbeResult::Complete
+    }
+}
+
+const BASE_PLPMTU: u16 = 1200;
+const MAX_PROBE_ATTEMPTS: u8 = 3;
+
+/// DPLPMTUD state for a single connection path.
+pub struct PmtuState {
+    phase: PmtuPhase,
+    floor: u16,
+    ceiling: u16,
+    probe_pn: Option<u64>,
+    probe_count: u8,
+}
+
+impl PmtuState {
+    pub fn new(ceiling: u16) -> Self {
+        Self {
+            phase: PmtuPhase::Disabled,
+            floor: BASE_PLPMTU,
+            ceiling,
+            probe_pn: None,
+            probe_count: 0,
+        }
+    }
+
+    pub fn phase(&self) -> PmtuPhase {
+        self.phase
+    }
+    pub fn floor(&self) -> u16 {
+        self.floor
+    }
+    pub fn ceiling(&self) -> u16 {
+        self.ceiling
+    }
+    pub fn current_mtu(&self) -> u16 {
+        self.floor
+    }
+
+    pub fn next_probe_size(&self) -> u16 {
+        (self.floor + self.ceiling) / 2
+    }
+
+    pub fn set_probe_pn(&mut self, pn: u64) {
+        self.probe_pn = Some(pn);
+        self.probe_count = 0;
+    }
+
+    pub fn start_searching(&mut self) {
+        self.phase = PmtuPhase::Searching;
+        self.probe_count = 0;
+        self.probe_pn = None;
+    }
+
+    pub fn on_probe_acked(&mut self, pn: u64, step_threshold: u16) -> PmtuProbeResult {
+        if self.probe_pn != Some(pn) {
+            return if self.phase == PmtuPhase::SearchComplete {
+                PmtuProbeResult::Complete
+            } else {
+                PmtuProbeResult::Searching
+            };
+        }
+        self.floor = self.next_probe_size();
+        self.probe_pn = None;
+        self.probe_count = 0;
+        if self.ceiling - self.floor < step_threshold {
+            self.phase = PmtuPhase::SearchComplete;
+            PmtuProbeResult::Complete
+        } else {
+            PmtuProbeResult::Searching
+        }
+    }
+
+    pub fn on_probe_lost(&mut self, step_threshold: u16) -> PmtuProbeResult {
+        self.probe_count += 1;
+        if self.probe_count >= MAX_PROBE_ATTEMPTS {
+            self.ceiling = self.next_probe_size();
+            self.probe_count = 0;
+            self.probe_pn = None;
+            if self.ceiling - self.floor < step_threshold {
+                self.phase = PmtuPhase::SearchComplete;
+                return PmtuProbeResult::Complete;
+            }
+        }
+        PmtuProbeResult::Searching
+    }
+
+    pub fn on_icmp_reduction(&mut self, new_mtu: u16) {
+        let clamped = new_mtu.max(BASE_PLPMTU);
+        if clamped < self.floor {
+            self.floor = clamped;
+            self.phase = PmtuPhase::Searching;
+        } else if clamped < self.ceiling {
+            self.ceiling = clamped;
+            if self.phase == PmtuPhase::SearchComplete {
+                self.phase = PmtuPhase::Searching;
+            }
+        }
+        self.probe_pn = None;
+        self.probe_count = 0;
+    }
+
+    pub fn reset(&mut self, ceiling: u16) {
+        *self = Self::new(ceiling);
+    }
+
+    pub fn start_reprobing(&mut self, ceiling: u16) {
+        self.ceiling = ceiling;
+        self.phase = PmtuPhase::Searching;
+        self.probe_pn = None;
+        self.probe_count = 0;
+    }
+
+    pub fn has_outstanding_probe(&self) -> bool {
+        self.probe_pn.is_some()
+    }
+
+    pub fn outstanding_probe_pn(&self) -> Option<u64> {
+        self.probe_pn
+    }
+}
