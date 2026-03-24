@@ -70,35 +70,22 @@ impl SendHalf {
         let mut new_start = start;
         let mut new_end = end;
 
-        // Build a new list, merging as we go.
-        let mut result: SmallVec<[(u64, u64); 4]> = SmallVec::new();
-        let mut inserted = false;
-
-        for &(s, e) in &self.retransmit {
-            if !inserted {
-                if s > new_end {
-                    // Current range is fully past new range — insert new first.
-                    result.push((new_start, new_end));
-                    inserted = true;
-                    result.push((s, e));
-                } else if e < new_start {
-                    // Current range is fully before new range.
-                    result.push((s, e));
-                } else {
-                    // Overlap or adjacency — merge into new range.
-                    new_start = new_start.min(s);
-                    new_end = new_end.max(e);
-                }
+        // Remove all overlapping/adjacent ranges, expanding the new range.
+        let mut i = 0;
+        while i < self.retransmit.len() {
+            let (s, e) = self.retransmit[i];
+            if e < new_start {
+                i += 1; // fully before — skip
+            } else if s > new_end {
+                break; // fully after — stop (list is sorted)
             } else {
-                result.push((s, e));
+                // Overlap or adjacent — absorb and remove
+                new_start = new_start.min(s);
+                new_end = new_end.max(e);
+                self.retransmit.remove(i);
             }
         }
-
-        if !inserted {
-            result.push((new_start, new_end));
-        }
-
-        self.retransmit = result;
+        self.retransmit.insert(i, (new_start, new_end));
     }
 
     /// Record that bytes [start, end) have been acknowledged.
@@ -147,31 +134,21 @@ impl SendHalf {
     fn add_acked_ooo(&mut self, start: u64, end: u64) {
         let mut new_start = start;
         let mut new_end = end;
-        let mut result: SmallVec<[(u64, u64); 4]> = SmallVec::new();
-        let mut inserted = false;
 
-        for &(s, e) in &self.acked_ooo {
-            if !inserted {
-                if s > new_end {
-                    result.push((new_start, new_end));
-                    inserted = true;
-                    result.push((s, e));
-                } else if e < new_start {
-                    result.push((s, e));
-                } else {
-                    new_start = new_start.min(s);
-                    new_end = new_end.max(e);
-                }
+        let mut i = 0;
+        while i < self.acked_ooo.len() {
+            let (s, e) = self.acked_ooo[i];
+            if e < new_start {
+                i += 1;
+            } else if s > new_end {
+                break;
             } else {
-                result.push((s, e));
+                new_start = new_start.min(s);
+                new_end = new_end.max(e);
+                self.acked_ooo.remove(i);
             }
         }
-
-        if !inserted {
-            result.push((new_start, new_end));
-        }
-
-        self.acked_ooo = result;
+        self.acked_ooo.insert(i, (new_start, new_end));
     }
 
     /// Read-only access to out-of-order acked ranges (for testing).
