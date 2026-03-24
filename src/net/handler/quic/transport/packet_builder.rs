@@ -23,6 +23,7 @@ pub struct PacketBuilder<'a> {
 impl<'a> PacketBuilder<'a> {
     /// Begin building a long header packet (Initial, Handshake, 0-RTT).
     /// Writes the header up to and including the packet number.
+    /// For Initial packets, `token` carries the Retry or NEW_TOKEN token.
     /// Returns None if buffer is too small.
     pub fn begin_long(
         buf: &'a mut [u8],
@@ -33,15 +34,20 @@ impl<'a> PacketBuilder<'a> {
         packet_number: u64,
         largest_acked: u64,
         frame_log: &FrameLog,
+        token: &[u8],
     ) -> Option<Self> {
         let (truncated_pn, pn_len) = encode_pn(packet_number, largest_acked);
 
         // Calculate header size: 1 + 4(version) + 1(dcid_len) + dcid + 1(scid_len) + scid
         let header_len = 1 + 4 + 1 + dcid.len() + 1 + scid.len();
-        // For Initial: + token_length(varint) + length(varint) + pn
-        // Simplified: we'll add token and length fields as part of frame writing
+        // For Initial: + token_length(varint) + token + length(varint) + pn
+        let token_overhead = if super::version::is_initial_type(packet_type_bits, version) {
+            varint_len(token.len() as u64) + token.len()
+        } else {
+            0
+        };
 
-        if buf.len() < header_len + 2 + pn_len as usize + 16 {
+        if buf.len() < header_len + token_overhead + 2 + pn_len as usize + 16 {
             return None; // too small
         }
 
@@ -67,10 +73,13 @@ impl<'a> PacketBuilder<'a> {
         buf[offset..offset + scid.len()].copy_from_slice(scid);
         offset += scid.len();
 
-        // For Initial packets: token length = 0 (no token for now)
+        // For Initial packets: encode token length + token (RFC 9000 §17.2.2)
         if super::version::is_initial_type(packet_type_bits, version) {
-            buf[offset] = 0; // token length varint = 0
-            offset += 1;
+            offset += encode_varint(token.len() as u64, &mut buf[offset..]);
+            if !token.is_empty() {
+                buf[offset..offset + token.len()].copy_from_slice(token);
+                offset += token.len();
+            }
         }
 
         // Length field placeholder (2-byte varint, filled in finish())
@@ -579,23 +588,22 @@ impl<'a> PacketBuilder<'a> {
     }
 }
 
-/// Build a complete Retry packet (RFC 9000 §17.2.5).
+/// Build a complete Retry packet (RFC 9000 §17.2.5) into `buf`.
 ///
-/// Standalone function — Retry packets lack Length and Packet Number fields
-/// so they cannot use PacketBuilder.
+/// Returns the number of bytes written, or `None` if `buf` is too small.
 pub fn build_retry_packet(
+    buf: &mut [u8],
     version: u32,
     dcid: &[u8],
     scid: &[u8],
     odcid: &[u8],
     token: &[u8],
-) -> Vec<u8> {
+) -> Option<usize> {
     use super::version::retry_packet_type_bits;
     use crate::net::handler::quic::crypto::retry::compute_retry_integrity_tag;
 
     let type_bits = retry_packet_type_bits(version);
 
-    // First byte: form(1)=1, fixed(1)=1, type(2), unused(4)=random
     let unused: u8 = {
         use ring::rand::SecureRandom;
         let mut b = [0u8; 1];
@@ -604,19 +612,31 @@ pub fn build_retry_packet(
     };
     let first_byte: u8 = 0xC0 | (type_bits << 4) | unused;
 
-    let packet_len = 1 + 4 + 1 + dcid.len() + 1 + scid.len() + token.len() + 16;
-    let mut packet = Vec::with_capacity(packet_len);
+    let header_len = 1 + 4 + 1 + dcid.len() + 1 + scid.len() + token.len();
+    let packet_len = header_len + 16;
+    if buf.len() < packet_len {
+        return None;
+    }
 
-    packet.push(first_byte);
-    packet.extend_from_slice(&version.to_be_bytes());
-    packet.push(dcid.len() as u8);
-    packet.extend_from_slice(dcid);
-    packet.push(scid.len() as u8);
-    packet.extend_from_slice(scid);
-    packet.extend_from_slice(token);
+    let mut offset = 0;
+    buf[offset] = first_byte;
+    offset += 1;
+    buf[offset..offset + 4].copy_from_slice(&version.to_be_bytes());
+    offset += 4;
+    buf[offset] = dcid.len() as u8;
+    offset += 1;
+    buf[offset..offset + dcid.len()].copy_from_slice(dcid);
+    offset += dcid.len();
+    buf[offset] = scid.len() as u8;
+    offset += 1;
+    buf[offset..offset + scid.len()].copy_from_slice(scid);
+    offset += scid.len();
+    buf[offset..offset + token.len()].copy_from_slice(token);
+    offset += token.len();
 
-    let tag = compute_retry_integrity_tag(odcid, &packet, version);
-    packet.extend_from_slice(&tag);
+    let tag = compute_retry_integrity_tag(odcid, &buf[..offset], version);
+    buf[offset..offset + 16].copy_from_slice(&tag);
+    offset += 16;
 
-    packet
+    Some(offset)
 }

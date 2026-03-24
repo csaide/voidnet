@@ -124,9 +124,11 @@ fn build_retry_packet_roundtrip_v1() {
     let odcid = &[0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
     let token = &[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
 
-    let packet = build_retry_packet(version, dcid, scid, odcid, token);
+    let mut buf = [0u8; 512];
+    let len = build_retry_packet(&mut buf, version, dcid, scid, odcid, token).unwrap();
+    let packet = &buf[..len];
 
-    let (header, _consumed) = wire_quic::parse_header(&packet, 0).unwrap();
+    let (header, _consumed) = wire_quic::parse_header(packet, 0).unwrap();
     match header {
         PacketHeader::Long(long) => {
             assert_eq!(long.packet_type, PacketType::Retry);
@@ -137,7 +139,7 @@ fn build_retry_packet_roundtrip_v1() {
         _ => panic!("expected long header"),
     }
 
-    assert!(verify_retry_integrity_tag(odcid, &packet, version));
+    assert!(verify_retry_integrity_tag(odcid, packet, version));
 }
 
 #[test]
@@ -150,9 +152,11 @@ fn build_retry_packet_roundtrip_v2() {
     let odcid = &[0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
     let token = &[0xDE, 0xAD, 0xBE, 0xEF];
 
-    let packet = build_retry_packet(version, dcid, scid, odcid, token);
+    let mut buf = [0u8; 512];
+    let len = build_retry_packet(&mut buf, version, dcid, scid, odcid, token).unwrap();
+    let packet = &buf[..len];
 
-    let (header, _) = wire_quic::parse_header(&packet, 0).unwrap();
+    let (header, _) = wire_quic::parse_header(packet, 0).unwrap();
     match header {
         PacketHeader::Long(long) => {
             assert_eq!(long.packet_type, PacketType::Retry);
@@ -160,7 +164,7 @@ fn build_retry_packet_roundtrip_v2() {
         }
         _ => panic!("expected long header"),
     }
-    assert!(verify_retry_integrity_tag(odcid, &packet, version));
+    assert!(verify_retry_integrity_tag(odcid, packet, version));
 }
 
 #[test]
@@ -171,9 +175,11 @@ fn build_retry_packet_tampered_tag_fails() {
     let odcid = &[0x83, 0x94, 0xc8, 0xf0];
     let token = &[0xCA, 0xFE];
 
-    let mut packet = build_retry_packet(version, dcid, scid, odcid, token);
-    let len = packet.len();
-    packet[len - 1] ^= 0xFF;
+    let mut buf = [0u8; 512];
+    let len = build_retry_packet(&mut buf, version, dcid, scid, odcid, token).unwrap();
+    let mut packet = buf[..len].to_vec();
+    let plen = packet.len();
+    packet[plen - 1] ^= 0xFF;
 
     assert!(!verify_retry_integrity_tag(odcid, &packet, version));
 }
@@ -365,12 +371,14 @@ fn generate_retry_packet_produces_valid_retry() {
     let client_ip = &[127u8, 0, 0, 1];
     let version = 0x00000001u32;
 
-    let retry_pkt = handler
-        .generate_retry_packet(odcid, client_scid, client_ip, 4433, version)
+    let mut retry_buf = [0u8; 512];
+    let retry_len = handler
+        .generate_retry_packet(&mut retry_buf, odcid, client_scid, client_ip, 4433, version)
         .expect("should generate retry packet");
+    let retry_pkt = &retry_buf[..retry_len];
 
     // Parse the Retry packet and verify structure
-    let (header, _) = wire_quic::parse_header(&retry_pkt, 0).unwrap();
+    let (header, _) = wire_quic::parse_header(retry_pkt, 0).unwrap();
     match header {
         PacketHeader::Long(long) => {
             assert_eq!(long.packet_type, PacketType::Retry);
@@ -384,7 +392,7 @@ fn generate_retry_packet_produces_valid_retry() {
     // Verify integrity tag
     assert!(
         crate::net::handler::quic::crypto::retry::verify_retry_integrity_tag(
-            odcid, &retry_pkt, version,
+            odcid, retry_pkt, version,
         )
     );
 }
@@ -408,17 +416,21 @@ fn client_handles_retry_packet() {
     // Build a Retry packet
     let server_scid = &[0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7];
     let token = &[0xDE, 0xAD, 0xBE, 0xEF];
-    let retry_packet = build_retry_packet(
+    let mut retry_buf = [0u8; 512];
+    let retry_len = build_retry_packet(
+        &mut retry_buf,
         QUIC_VERSION_1,
         scid.as_bytes(),
         server_scid,
         dcid.as_bytes(),
         token,
-    );
+    )
+    .unwrap();
+    let retry_packet = &retry_buf[..retry_len];
 
     let handled = crate::net::handler::quic::processor::handle_retry_packet(
         &mut conn,
-        &retry_packet,
+        retry_packet,
         QUIC_VERSION_1,
     );
     assert!(handled);
@@ -442,17 +454,21 @@ fn client_rejects_second_retry() {
         QuicConnectionState::new(dcid, Side::Client, TransportParams::default(), 1200, now);
     conn.retry_received = true;
 
-    let retry_packet = build_retry_packet(
+    let mut retry_buf = [0u8; 512];
+    let retry_len = build_retry_packet(
+        &mut retry_buf,
         QUIC_VERSION_1,
         &[0x0A],
         &[0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7],
         dcid.as_bytes(),
         &[0xCA, 0xFE],
-    );
+    )
+    .unwrap();
+    let retry_packet = &retry_buf[..retry_len];
 
     let handled = crate::net::handler::quic::processor::handle_retry_packet(
         &mut conn,
-        &retry_packet,
+        retry_packet,
         QUIC_VERSION_1,
     );
     assert!(!handled);
@@ -471,13 +487,17 @@ fn client_rejects_retry_with_bad_tag() {
     let mut conn =
         QuicConnectionState::new(dcid, Side::Client, TransportParams::default(), 1200, now);
 
-    let mut retry_packet = build_retry_packet(
+    let mut retry_buf = [0u8; 512];
+    let retry_len = build_retry_packet(
+        &mut retry_buf,
         QUIC_VERSION_1,
         &[0x0A],
         &[0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7],
         dcid.as_bytes(),
         &[0xCA, 0xFE],
-    );
+    )
+    .unwrap();
+    let mut retry_packet = retry_buf[..retry_len].to_vec();
     let len = retry_packet.len();
     retry_packet[len - 1] ^= 0xFF; // tamper tag
 

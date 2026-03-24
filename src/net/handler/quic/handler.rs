@@ -393,7 +393,9 @@ impl QuicHandler {
                             // No token — send a Retry packet
                             let mut ip_buf = [0u8; 16];
                             let client_ip = src_addr.ip_bytes(&mut ip_buf);
-                            if let Some(retry_pkt) = self.generate_retry_packet(
+                            let mut retry_buf = [0u8; 512];
+                            if let Some(retry_len) = self.generate_retry_packet(
+                                &mut retry_buf,
                                 &dcid_buf[..dcid_len],
                                 &scid_buf[..scid_len],
                                 client_ip,
@@ -402,7 +404,7 @@ impl QuicHandler {
                             ) {
                                 self.send_retry_ipv4(
                                     frame,
-                                    &retry_pkt,
+                                    &retry_buf[..retry_len],
                                     quic_offset,
                                     ip_offset,
                                     src_addr,
@@ -792,7 +794,9 @@ impl QuicHandler {
                             // No token — send a Retry packet
                             let mut ip_buf = [0u8; 16];
                             let client_ip = src_addr.ip_bytes(&mut ip_buf);
-                            if let Some(retry_pkt) = self.generate_retry_packet(
+                            let mut retry_buf = [0u8; 512];
+                            if let Some(retry_len) = self.generate_retry_packet(
+                                &mut retry_buf,
                                 &dcid_buf[..dcid_len],
                                 &scid_buf[..scid_len],
                                 client_ip,
@@ -801,7 +805,7 @@ impl QuicHandler {
                             ) {
                                 self.send_retry_ipv6(
                                     frame,
-                                    &retry_pkt,
+                                    &retry_buf[..retry_len],
                                     quic_offset,
                                     udp_offset,
                                     src_addr,
@@ -1090,12 +1094,13 @@ impl QuicHandler {
     /// Returns `None` if the listener isn't found or token encryption fails.
     pub(crate) fn generate_retry_packet(
         &self,
+        out_buf: &mut [u8],
         odcid: &[u8],
         client_scid: &[u8],
         client_ip: &[u8],
         local_port: u16,
         version: u32,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<usize> {
         use crate::net::handler::quic::token_crypto::{TokenType, encrypt_token};
         use crate::net::handler::quic::transport::packet_builder::build_retry_packet;
         use ring::rand::SecureRandom;
@@ -1123,13 +1128,14 @@ impl QuicHandler {
 
         // RFC 9000 §17.2.5: Retry packet DCID = client's SCID,
         // Retry packet SCID = new server CID (different from original DCID)
-        Some(build_retry_packet(
+        build_retry_packet(
+            out_buf,
             version,
             client_scid, // DCID in Retry = client's SCID
             &new_scid,   // SCID in Retry = new server-chosen CID
             odcid,       // original DCID for integrity tag
             &token,
-        ))
+        )
     }
 
     /// Decrypt and validate a Retry token from an Initial packet.
