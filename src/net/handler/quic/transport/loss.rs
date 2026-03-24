@@ -250,7 +250,10 @@ impl LossDetector {
         max_ack_delay: Duration,
         handshake_confirmed: bool,
         now: Instant,
-    ) -> (SmallVec<[SentPacket; 16]>, SmallVec<[(u64, SentPacket); 8]>) {
+    ) -> (
+        SmallVec<[(u64, SentPacket); 16]>,
+        SmallVec<[(u64, SentPacket); 8]>,
+    ) {
         let newly_acked_largest = self.spaces[space]
             .largest_acked
             .is_none_or(|la| largest_acked > la);
@@ -266,7 +269,7 @@ impl LossDetector {
             .map(|p| p.time_sent);
 
         // Remove acked packets from in-flight tracking.
-        let mut acked = SmallVec::<[SentPacket; 16]>::new();
+        let mut acked = SmallVec::<[(u64, SentPacket); 16]>::new();
         let mut any_ack_eliciting = false;
         for &(start, end) in acked_ranges {
             for pn in start..=end {
@@ -279,7 +282,7 @@ impl LossDetector {
                         self.spaces[space].ack_eliciting_in_flight =
                             self.spaces[space].ack_eliciting_in_flight.saturating_sub(1);
                     }
-                    acked.push(pkt);
+                    acked.push((pn, pkt));
                 }
             }
         }

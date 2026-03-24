@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use rustls::ClientConfig;
 
+use crate::net::congestion::CongestionController;
 use crate::net::handler::quic::connection::QuicConnectionState;
 use crate::net::handler::quic::connection_id::ConnectionId;
 use crate::net::handler::quic::timer_kinds::*;
@@ -282,6 +283,13 @@ impl QuicHandler {
                     conn.congestion =
                         super::transport::congestion::QuicCubic::new(conn.max_udp_payload as usize);
                     conn.loss.reset_rtt();
+
+                    // Reset PMTU state for the new path
+                    if conn.pmtu_probing_enabled {
+                        conn.pmtu.reset(conn.pmtu_ceiling);
+                        conn.max_udp_payload = 1200;
+                        conn.congestion.on_mtu_update(1200);
+                    }
 
                     // CID rotation for linkability prevention
                     if let Some((new_cid, _seq)) = conn.scid_set.pick_unused(&conn.scid) {
@@ -610,6 +618,13 @@ impl QuicHandler {
                     conn.congestion =
                         super::transport::congestion::QuicCubic::new(conn.max_udp_payload as usize);
                     conn.loss.reset_rtt();
+
+                    // Reset PMTU state for the new path
+                    if conn.pmtu_probing_enabled {
+                        conn.pmtu.reset(conn.pmtu_ceiling);
+                        conn.max_udp_payload = 1200;
+                        conn.congestion.on_mtu_update(1200);
+                    }
 
                     // CID rotation for linkability prevention
                     if let Some((new_cid, _seq)) = conn.scid_set.pick_unused(&conn.scid) {
@@ -1753,5 +1768,23 @@ impl QuicHandler {
 
         let key = self.insert_connection(conn);
         Some(key)
+    }
+
+    /// Notify QUIC connections about a PMTU change for a given peer IP.
+    pub fn notify_pmtu_update(&mut self, peer_addr: &IpAddress, new_link_mtu: u32) {
+        let ip_overhead: u32 = match peer_addr {
+            IpAddress::V4(_) => 20 + 8,
+            IpAddress::V6(_) => 40 + 8,
+        };
+        let quic_mtu = new_link_mtu.saturating_sub(ip_overhead) as u16;
+
+        for (_key, conn) in self.connections.iter_mut() {
+            if conn.remote_addr == *peer_addr && conn.pmtu_probing_enabled {
+                conn.pmtu.on_icmp_reduction(quic_mtu);
+                conn.max_udp_payload = conn.pmtu.current_mtu();
+                conn.congestion
+                    .on_mtu_update(conn.pmtu.current_mtu() as usize);
+            }
+        }
     }
 }

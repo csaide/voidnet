@@ -66,12 +66,36 @@ pub fn handle_timeout(
                 ) => {
                     let frame_ranges: smallvec::SmallVec<[(u32, u32); 8]> =
                         lost.iter().map(|(_, pkt)| pkt.frame_range).collect();
-                    // Single congestion event per loss round (Fix 10)
-                    if let Some(max_sent_time) = lost.iter().map(|(_, pkt)| pkt.time_sent).max() {
-                        let total_lost_bytes: usize =
-                            lost.iter().map(|(_, pkt)| pkt.size as usize).sum();
-                        conn.congestion
-                            .on_congestion_event(total_lost_bytes, now, max_sent_time);
+                    // Handle PMTU probe losses separately (don't trigger congestion)
+                    for (_, lost_pkt) in &lost {
+                        if lost_pkt.is_pmtu_probe {
+                            let result = conn.pmtu.on_probe_lost(20);
+                            if result.is_complete() {
+                                conn.max_udp_payload = conn.pmtu.current_mtu();
+                                conn.congestion
+                                    .on_mtu_update(conn.pmtu.current_mtu() as usize);
+                            }
+                        }
+                    }
+                    // Single congestion event per loss round (Fix 10) — skip PMTU probes
+                    let non_pmtu_lost = lost.iter().filter(|(_, pkt)| !pkt.is_pmtu_probe);
+                    let total_lost_bytes: usize = non_pmtu_lost
+                        .clone()
+                        .map(|(_, pkt)| pkt.size as usize)
+                        .sum();
+                    if total_lost_bytes > 0 {
+                        if let Some(max_sent_time) = lost
+                            .iter()
+                            .filter(|(_, pkt)| !pkt.is_pmtu_probe)
+                            .map(|(_, pkt)| pkt.time_sent)
+                            .max()
+                        {
+                            conn.congestion.on_congestion_event(
+                                total_lost_bytes,
+                                now,
+                                max_sent_time,
+                            );
+                        }
                     }
                     let retransmit = build_retransmit_queue(&conn.frame_log, &frame_ranges);
                     // Rewind crypto_offset for CRYPTO retransmission
@@ -148,7 +172,32 @@ pub fn handle_timeout(
             }
             TimerResult::Ok
         }
-        QuicTimerKind::PmtuProbe => TimerResult::Ok,
+        QuicTimerKind::PmtuProbe => {
+            if conn.state != ConnectionState::Established {
+                return TimerResult::Ok;
+            }
+            match conn.pmtu.phase() {
+                crate::net::handler::quic::path::PmtuPhase::Searching => {
+                    if conn.pmtu.has_outstanding_probe() {
+                        // Probe timed out — treat as loss
+                        let result = conn.pmtu.on_probe_lost(20);
+                        if result.is_complete() {
+                            conn.max_udp_payload = conn.pmtu.current_mtu();
+                            conn.congestion
+                                .on_mtu_update(conn.pmtu.current_mtu() as usize);
+                        }
+                    }
+                    conn.needs_pmtu_probe = true;
+                }
+                crate::net::handler::quic::path::PmtuPhase::SearchComplete => {
+                    // Re-probe timer fired
+                    conn.pmtu.start_reprobing(conn.pmtu_ceiling);
+                    conn.needs_pmtu_probe = true;
+                }
+                _ => {}
+            }
+            TimerResult::Ok
+        }
     }
 }
 
@@ -748,6 +797,12 @@ fn dispatch_frames(
             QuicFrame::HandshakeDone => {
                 if conn.side == Side::Client {
                     conn.state = ConnectionState::Established;
+                    if conn.pmtu_probing_enabled
+                        && conn.pmtu.phase() == crate::net::handler::quic::path::PmtuPhase::Disabled
+                    {
+                        conn.pmtu.start_searching();
+                        conn.needs_pmtu_probe = true;
+                    }
                     conn.keys.handshake = None;
                     conn.loss.handshake_confirmed = true;
                     conn.key_update.handshake_confirmed = true;
@@ -1033,6 +1088,12 @@ fn handle_crypto_frame(
         }
         if conn.side == Side::Server {
             conn.state = ConnectionState::Established;
+            if conn.pmtu_probing_enabled
+                && conn.pmtu.phase() == crate::net::handler::quic::path::PmtuPhase::Disabled
+            {
+                conn.pmtu.start_searching();
+                conn.needs_pmtu_probe = true;
+            }
             conn.send_handshake_done = true;
             conn.notify_established = true;
             conn.path.amplification.set_validated();
@@ -1245,11 +1306,30 @@ fn handle_ack_frame(
         let frame_ranges: smallvec::SmallVec<[(u32, u32); 8]> =
             lost.iter().map(|(_, pkt)| pkt.frame_range).collect();
 
-        // Fix 10: Single congestion event per loss round — use max sent_time
-        let max_sent_time = lost.iter().map(|(_, pkt)| pkt.time_sent).max().unwrap();
-        let total_lost_bytes: usize = lost.iter().map(|(_, pkt)| pkt.size as usize).sum();
-        conn.congestion
-            .on_congestion_event(total_lost_bytes, now, max_sent_time);
+        // Handle PMTU probe losses separately (don't trigger congestion)
+        for (_pn, lost_pkt) in &lost {
+            if lost_pkt.is_pmtu_probe {
+                let result = conn.pmtu.on_probe_lost(20);
+                if result.is_complete() {
+                    conn.max_udp_payload = conn.pmtu.current_mtu();
+                    conn.congestion
+                        .on_mtu_update(conn.pmtu.current_mtu() as usize);
+                }
+            }
+        }
+
+        // Fix 10: Single congestion event per loss round — use max sent_time (skip PMTU probes)
+        let non_pmtu_lost = lost.iter().filter(|(_, pkt)| !pkt.is_pmtu_probe);
+        let total_lost_bytes: usize = non_pmtu_lost
+            .clone()
+            .map(|(_, pkt)| pkt.size as usize)
+            .sum();
+        if total_lost_bytes > 0 {
+            if let Some(max_sent_time) = non_pmtu_lost.map(|(_, pkt)| pkt.time_sent).max() {
+                conn.congestion
+                    .on_congestion_event(total_lost_bytes, now, max_sent_time);
+            }
+        }
 
         // Persistent congestion (RFC 9002 §7.6.2): requires two ack-eliciting lost packets
         // spanning the threshold, with NO acknowledged packets sent between them.
@@ -1282,7 +1362,7 @@ fn handle_ack_frame(
                     // of these two packets are acknowledged"
                     let any_acked_between = acked
                         .iter()
-                        .any(|pkt| pkt.time_sent > earliest && pkt.time_sent < latest);
+                        .any(|(_, pkt)| pkt.time_sent > earliest && pkt.time_sent < latest);
                     if !any_acked_between {
                         conn.congestion.on_persistent_congestion();
                         conn.loss.reset_min_rtt(conn.loss.latest_rtt);
@@ -1314,7 +1394,7 @@ fn handle_ack_frame(
     }
 
     // Update congestion for acked packets (after loss processing per RFC 9002 §A.7)
-    for pkt in &acked {
+    for (pn, pkt) in &acked {
         conn.congestion.on_ack(
             pkt.size as usize,
             conn.loss.latest_rtt,
@@ -1323,6 +1403,14 @@ fn handle_ack_frame(
             pkt.in_flight,
             pkt.time_sent,
         );
+
+        // PMTU probe acked — update MTU state
+        if pkt.is_pmtu_probe {
+            let _result = conn.pmtu.on_probe_acked(*pn, 20);
+            conn.max_udp_payload = conn.pmtu.current_mtu();
+            conn.congestion
+                .on_mtu_update(conn.pmtu.current_mtu() as usize);
+        }
 
         // Advance stream send.acked and consume from buffer for acked stream data
         for frame in conn.frame_log.range(pkt.frame_range.0, pkt.frame_range.1) {
@@ -1382,7 +1470,7 @@ fn handle_ack_frame(
         let ce_signaled =
             conn.ecn
                 .on_ack_ecn(space, ecn_counts.ect0, ecn_counts.ect1, ecn_counts.ecn_ce);
-        if ce_signaled && let Some(first_acked) = acked.first() {
+        if ce_signaled && let Some((_, first_acked)) = acked.first() {
             // RFC 9002 §B.7: use sent_time of the largest_acked packet.
             // acked is built largest-to-smallest, so first() is the largest PN.
             conn.congestion.on_ecn_ce(first_acked.time_sent, now);
@@ -1855,6 +1943,17 @@ pub fn generate_packets<'umem>(
         if let Some(ref accept_queue) = conn.accept_queue {
             accept_queue.push(conn_key);
         }
+    }
+
+    // Arm re-probe timer when PMTU search completes
+    if conn.pmtu_probing_enabled
+        && conn.state == ConnectionState::Established
+        && conn.pmtu.phase() == crate::net::handler::quic::path::PmtuPhase::SearchComplete
+        && !conn.timers.is_armed(QuicTimerKind::PmtuProbe)
+    {
+        let reprobe_deadline = now + coarsetime::Duration::from_secs(600);
+        conn.timers
+            .arm(QuicTimerKind::PmtuProbe, conn_key, reprobe_deadline, wheel);
     }
 
     // Arm loss detection timer
