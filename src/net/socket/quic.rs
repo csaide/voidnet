@@ -1,5 +1,4 @@
 use std::cell::{RefCell, UnsafeCell};
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -37,13 +36,13 @@ pub trait TokenStore {
 ///
 /// Suitable for single-threaded runtimes (which VoidNet uses).
 pub struct InMemoryTokenStore {
-    tokens: RefCell<HashMap<(String, u32), Vec<u8>>>,
+    tokens: RefCell<Vec<(String, u32, Vec<u8>)>>,
 }
 
 impl InMemoryTokenStore {
     pub fn new() -> Self {
         Self {
-            tokens: RefCell::new(HashMap::new()),
+            tokens: RefCell::new(Vec::new()),
         }
     }
 }
@@ -52,14 +51,21 @@ impl TokenStore for InMemoryTokenStore {
     fn get(&self, server_name: &str, version: u32) -> Option<Vec<u8>> {
         self.tokens
             .borrow()
-            .get(&(server_name.to_string(), version))
-            .cloned()
+            .iter()
+            .find(|(name, ver, _)| name == server_name && *ver == version)
+            .map(|(_, _, tok)| tok.clone())
     }
 
     fn put(&self, server_name: &str, version: u32, token: Vec<u8>) {
-        self.tokens
-            .borrow_mut()
-            .insert((server_name.to_string(), version), token);
+        let mut tokens = self.tokens.borrow_mut();
+        if let Some(entry) = tokens
+            .iter_mut()
+            .find(|(name, ver, _)| name == server_name && *ver == version)
+        {
+            entry.2 = token;
+        } else {
+            tokens.push((server_name.to_string(), version, token));
+        }
     }
 }
 
