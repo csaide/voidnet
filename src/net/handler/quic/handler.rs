@@ -952,19 +952,17 @@ impl QuicHandler {
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        let keys_with_data: smallvec::SmallVec<[usize; 16]> = self
-            .connections
-            .iter()
-            .filter(|(_, conn)| processor::has_pending_data_any(conn))
-            .map(|(key, _)| key)
-            .collect();
-        for key in &keys_with_data {
-            if let Some(conn) = self.connections.get_mut(*key) {
-                processor::generate_packets(conn, *key, now, wheel, free_frames, tx_return);
+        // Single-pass: iterate by slab index to avoid collecting keys.
+        let mut key = 0;
+        while key < self.connections.capacity() {
+            if let Some(conn) = self.connections.get(key) {
+                if processor::has_pending_data_any(conn) {
+                    let conn = self.connections.get_mut(key).unwrap();
+                    processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+                    self.sync_cid_map(key);
+                }
             }
-        }
-        for key in keys_with_data {
-            self.sync_cid_map(key);
+            key += 1;
         }
     }
 
