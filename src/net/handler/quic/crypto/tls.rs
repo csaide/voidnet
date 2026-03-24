@@ -14,10 +14,10 @@ use crate::net::handler::quic::error::TransportError;
 
 /// Output from processing CRYPTO frame data.
 pub struct CryptoOutput {
-    /// Per-space CRYPTO data to send: [Initial, Handshake, 1-RTT].
-    /// Data is split at key change boundaries so each space gets the
-    /// correct portion of the TLS handshake.
-    pub crypto_data: [Vec<u8>; 3],
+    /// Single buffer holding all CRYPTO data for all spaces.
+    /// `space_ranges` records [start, end) for each space.
+    pub crypto_buf: Vec<u8>,
+    pub space_ranges: [(usize, usize); 3],
     /// New handshake-level keys, if the handshake progressed to that point.
     pub handshake_keys: Option<KeyPair>,
     /// New 1-RTT application keys, if the handshake completed.
@@ -28,6 +28,15 @@ pub struct CryptoOutput {
     pub handshake_complete: bool,
     /// Next key update secrets (for key rotation support).
     pub next_secrets: Option<rustls::quic::Secrets>,
+}
+
+impl CryptoOutput {
+    /// Get the CRYPTO data for a given space (0=Initial, 1=Handshake, 2=1-RTT).
+    #[inline]
+    pub fn crypto_data(&self, space: usize) -> &[u8] {
+        let (start, end) = self.space_ranges[space];
+        &self.crypto_buf[start..end]
+    }
 }
 
 /// Wraps a rustls QUIC connection for TLS 1.3 handshake management.
@@ -91,10 +100,10 @@ impl CryptoState {
     ) -> Result<CryptoOutput, TransportError> {
         self.read_hs(data)?;
 
-        let mut buf = Vec::new();
         let mut current_space = current_space;
         let mut output = CryptoOutput {
-            crypto_data: [Vec::new(), Vec::new(), Vec::new()],
+            crypto_buf: Vec::new(),
+            space_ranges: [(0, 0); 3],
             handshake_keys: None,
             one_rtt_keys: None,
             zero_rtt_keys: None,
@@ -103,11 +112,14 @@ impl CryptoState {
         };
 
         loop {
-            let before = buf.len();
-            let key_change = self.write_hs(&mut buf);
-            // Data written in this call belongs to current_space
-            if buf.len() > before {
-                output.crypto_data[current_space].extend_from_slice(&buf[before..]);
+            let before = output.crypto_buf.len();
+            let key_change = self.write_hs(&mut output.crypto_buf);
+            if output.crypto_buf.len() > before {
+                let (ref mut start, ref mut end) = output.space_ranges[current_space];
+                if *start == *end {
+                    *start = before;
+                }
+                *end = output.crypto_buf.len();
             }
             match key_change {
                 Some(KeyChange::Handshake { keys }) => {

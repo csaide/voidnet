@@ -266,24 +266,21 @@ fn complete_tls_handshake() -> (KeyPair, KeyPair) {
     .unwrap();
 
     let server_out = server_crypto.process_crypto_data(&client_hello, 0).unwrap();
+    // Extract crypto data before moving keys out
+    let server_crypto_data: Vec<u8> = (0..3)
+        .flat_map(|s| server_out.crypto_data(s).to_vec())
+        .collect();
     let mut server_one_rtt = server_out.one_rtt_keys;
     let _server_hs_keys = server_out.handshake_keys;
 
-    let server_crypto_data: Vec<u8> = server_out
-        .crypto_data
-        .iter()
-        .flat_map(|d| d.iter().copied())
-        .collect();
     let client_out = client_crypto
         .process_crypto_data(&server_crypto_data, 0)
         .unwrap();
-    let client_one_rtt = client_out.one_rtt_keys;
-
-    let client_crypto_data: Vec<u8> = client_out
-        .crypto_data
-        .iter()
-        .flat_map(|d| d.iter().copied())
+    // Extract crypto data before moving keys out
+    let client_crypto_data: Vec<u8> = (0..3)
+        .flat_map(|s| client_out.crypto_data(s).to_vec())
         .collect();
+    let client_one_rtt = client_out.one_rtt_keys;
     if !client_crypto_data.is_empty() {
         let server_out2 = server_crypto
             .process_crypto_data(&client_crypto_data, 0)

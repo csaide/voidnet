@@ -1125,6 +1125,9 @@ fn handle_crypto_frame(
 
     conn.crypto_recv[space].drain(data_len);
 
+    // Snapshot per-space crypto ranges before partial-moving keys out of `output`.
+    let crypto_spaces: [(usize, usize); 3] = output.space_ranges;
+
     // Install new keys
     if let Some(hs_keys) = output.handshake_keys {
         // RFC 9001 §4.1.3: unconsumed data at Initial level is PROTOCOL_VIOLATION
@@ -1210,7 +1213,9 @@ fn handle_crypto_frame(
 
     // Queue per-space CRYPTO response data (cap at 64KB to prevent memory exhaustion)
     const MAX_PENDING_CRYPTO: usize = 65536;
-    for (space, data) in output.crypto_data.iter().enumerate() {
+    for space in 0..3 {
+        let (start, end) = crypto_spaces[space];
+        let data = &output.crypto_buf[start..end];
         if !data.is_empty() {
             if conn.pending_crypto[space].len() + data.len() > MAX_PENDING_CRYPTO {
                 conn.close_error = Some(TransportError::INTERNAL_ERROR);

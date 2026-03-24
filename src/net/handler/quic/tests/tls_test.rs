@@ -4,7 +4,7 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, Error, ServerConfig, SignatureScheme};
 
-use crate::net::handler::quic::crypto::tls::CryptoState;
+use crate::net::handler::quic::crypto::tls::{CryptoOutput, CryptoState};
 use crate::net::handler::quic::transport::params::TransportParams;
 
 /// A cert verifier that accepts everything (test only).
@@ -152,16 +152,20 @@ fn client_server_handshake() {
     let server_output = server.process_crypto_data(&client_hello, 0).unwrap();
 
     // Helper: concatenate per-space crypto data for feeding to peer
-    fn concat_crypto(data: &[Vec<u8>; 3]) -> Vec<u8> {
-        data.iter().flat_map(|d| d.iter().copied()).collect()
+    fn concat_crypto(output: &CryptoOutput) -> Vec<u8> {
+        let mut v = Vec::new();
+        for space in 0..3 {
+            v.extend_from_slice(output.crypto_data(space));
+        }
+        v
     }
-    fn crypto_has_data(data: &[Vec<u8>; 3]) -> bool {
-        data.iter().any(|d| !d.is_empty())
+    fn crypto_has_data(output: &CryptoOutput) -> bool {
+        (0..3).any(|s| !output.crypto_data(s).is_empty())
     }
 
     // Server should produce response crypto data (ServerHello + encrypted extensions + etc.)
     assert!(
-        crypto_has_data(&server_output.crypto_data),
+        crypto_has_data(&server_output),
         "server should produce response CRYPTO data"
     );
     assert!(
@@ -170,7 +174,7 @@ fn client_server_handshake() {
     );
 
     // Step 3: Feed server response to client
-    let server_crypto = concat_crypto(&server_output.crypto_data);
+    let server_crypto = concat_crypto(&server_output);
     let client_output = client.process_crypto_data(&server_crypto, 0).unwrap();
 
     assert!(
@@ -180,15 +184,15 @@ fn client_server_handshake() {
 
     if !client_output.handshake_complete {
         assert!(
-            crypto_has_data(&client_output.crypto_data),
+            crypto_has_data(&client_output),
             "client should produce more CRYPTO data if not complete"
         );
 
-        let client_crypto = concat_crypto(&client_output.crypto_data);
+        let client_crypto = concat_crypto(&client_output);
         let server_output2 = server.process_crypto_data(&client_crypto, 0).unwrap();
 
-        if crypto_has_data(&server_output2.crypto_data) {
-            let server2_crypto = concat_crypto(&server_output2.crypto_data);
+        if crypto_has_data(&server_output2) {
+            let server2_crypto = concat_crypto(&server_output2);
             let client_output2 = client.process_crypto_data(&server2_crypto, 0).unwrap();
             assert!(
                 client_output2.handshake_complete || client_output.handshake_complete,
@@ -235,12 +239,16 @@ fn handshake_produces_one_rtt_keys() {
         got_server_1rtt = true;
     }
 
-    fn concat_crypto2(data: &[Vec<u8>; 3]) -> Vec<u8> {
-        data.iter().flat_map(|d| d.iter().copied()).collect()
+    fn concat_crypto2(output: &CryptoOutput) -> Vec<u8> {
+        let mut v = Vec::new();
+        for space in 0..3 {
+            v.extend_from_slice(output.crypto_data(space));
+        }
+        v
     }
 
     // Exchange up to 5 rounds (TLS 1.3 should complete in 1-2)
-    let mut data_for_client: Vec<u8> = concat_crypto2(&server_out.crypto_data);
+    let mut data_for_client: Vec<u8> = concat_crypto2(&server_out);
     for _ in 0..5 {
         if data_for_client.is_empty() && got_client_1rtt && got_server_1rtt {
             break;
@@ -255,7 +263,7 @@ fn handshake_produces_one_rtt_keys() {
                 got_client_1rtt = true;
             }
 
-            let client_crypto = concat_crypto2(&client_out.crypto_data);
+            let client_crypto = concat_crypto2(&client_out);
             if !client_crypto.is_empty() {
                 let srv_out = server.process_crypto_data(&client_crypto, 0).unwrap();
                 if srv_out.one_rtt_keys.is_some() {
@@ -264,7 +272,7 @@ fn handshake_produces_one_rtt_keys() {
                 if srv_out.handshake_complete {
                     got_server_1rtt = true;
                 }
-                data_for_client = concat_crypto2(&srv_out.crypto_data);
+                data_for_client = concat_crypto2(&srv_out);
             } else {
                 data_for_client = vec![];
             }
