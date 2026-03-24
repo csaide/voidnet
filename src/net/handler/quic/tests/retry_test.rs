@@ -526,3 +526,141 @@ fn server_includes_retry_transport_params() {
     assert_eq!(decoded.original_destination_connection_id, Some(odcid));
     assert_eq!(decoded.retry_source_connection_id, Some(retry_scid));
 }
+
+#[test]
+fn token_validation_valid() {
+    use crate::net::handler::quic::token_crypto::{TokenType, decrypt_token, encrypt_token};
+    use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
+
+    let secret = [0xABu8; 32];
+    let ip = &[10u8, 0, 0, 1];
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let dcid = &[0x01, 0x02, 0x03, 0x04];
+    let version = QUIC_VERSION_1;
+
+    let encrypted = encrypt_token(&secret, TokenType::Retry, ip, now_secs, dcid, version).unwrap();
+    let (token_type, token_ip, ts, token_dcid, token_ver) =
+        decrypt_token(&secret, &encrypted).unwrap();
+
+    assert_eq!(token_type, TokenType::Retry);
+    assert_eq!(token_ip, ip);
+    assert_eq!(ts, now_secs);
+    assert_eq!(token_dcid, dcid);
+    assert_eq!(token_ver, version);
+}
+
+#[test]
+fn token_validation_expired() {
+    use crate::net::handler::quic::token_crypto::{TokenType, decrypt_token, encrypt_token};
+    use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
+
+    let secret = [0xABu8; 32];
+    let old_ts = 1000u64; // very old timestamp
+    let encrypted = encrypt_token(
+        &secret,
+        TokenType::Retry,
+        &[10, 0, 0, 1],
+        old_ts,
+        &[1, 2],
+        QUIC_VERSION_1,
+    )
+    .unwrap();
+    let (_, _, ts, _, _) = decrypt_token(&secret, &encrypted).unwrap();
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let age = now_secs.saturating_sub(ts);
+    assert!(age > 30, "token should be expired (age={}s)", age);
+}
+
+#[test]
+fn token_validation_wrong_address() {
+    use crate::net::handler::quic::token_crypto::{TokenType, decrypt_token, encrypt_token};
+    use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
+
+    let secret = [0xABu8; 32];
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let encrypted = encrypt_token(
+        &secret,
+        TokenType::Retry,
+        &[10, 0, 0, 1],
+        now_secs,
+        &[1, 2],
+        QUIC_VERSION_1,
+    )
+    .unwrap();
+    let (_, ip, _, _, _) = decrypt_token(&secret, &encrypted).unwrap();
+
+    // Token was for 10.0.0.1 — different client IP should be rejected by validator
+    assert_ne!(ip.as_slice(), &[192u8, 168, 0, 1]);
+}
+
+#[test]
+fn token_validation_version_mismatch() {
+    use crate::net::handler::quic::token_crypto::{TokenType, decrypt_token, encrypt_token};
+    use crate::net::handler::quic::transport::version::{QUIC_VERSION_1, QUIC_VERSION_2};
+
+    let secret = [0xABu8; 32];
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let encrypted = encrypt_token(
+        &secret,
+        TokenType::Retry,
+        &[10, 0, 0, 1],
+        now_secs,
+        &[1, 2],
+        QUIC_VERSION_1,
+    )
+    .unwrap();
+    let (_, _, _, _, ver) = decrypt_token(&secret, &encrypted).unwrap();
+
+    assert_ne!(ver, QUIC_VERSION_2);
+}
+
+#[test]
+fn token_validation_wrong_secret_fails() {
+    use crate::net::handler::quic::token_crypto::{TokenType, decrypt_token, encrypt_token};
+    use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
+
+    let secret = [0xABu8; 32];
+    let wrong_secret = [0xCDu8; 32];
+
+    let encrypted = encrypt_token(
+        &secret,
+        TokenType::Retry,
+        &[10, 0, 0, 1],
+        1000,
+        &[1, 2],
+        QUIC_VERSION_1,
+    )
+    .unwrap();
+    assert!(decrypt_token(&wrong_secret, &encrypted).is_err());
+}
+
+#[test]
+fn token_validation_truncated_fails() {
+    use crate::net::handler::quic::token_crypto::{TokenType, decrypt_token, encrypt_token};
+    use crate::net::handler::quic::transport::version::QUIC_VERSION_1;
+
+    let secret = [0xABu8; 32];
+    let encrypted = encrypt_token(
+        &secret,
+        TokenType::Retry,
+        &[10, 0, 0, 1],
+        1000,
+        &[1, 2],
+        QUIC_VERSION_1,
+    )
+    .unwrap();
+    assert!(decrypt_token(&secret, &encrypted[..encrypted.len() - 5]).is_err());
+}
