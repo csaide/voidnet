@@ -188,3 +188,190 @@ fn frame_crypto_length_overflow_returns_buffer_too_short() {
     let err = parse_frame(&buf).expect_err("CRYPTO frame with length overflow must return error");
     assert_eq!(err, FrameParseError::BufferTooShort);
 }
+
+/// STREAM frame (type 0x0F = OFF+LEN+FIN) with a maximum-varint offset
+/// (2^62 - 1) and a declared data length larger than the remaining buffer.
+///
+/// The parser stores offset and length independently; it never computes
+/// `offset + length` at parse time. The declared length (4 bytes) exceeds the
+/// zero bytes actually present after the length varint, so the parser must
+/// return `BufferTooShort` without panicking.
+#[test]
+fn frame_stream_large_offset_length_overflow_returns_buffer_too_short() {
+    use crate::net::handler::quic::transport::varint::encode_varint;
+
+    // VARINT_MAX = 2^62 - 1, encoded as an 8-byte varint (prefix 0b11).
+    const VARINT_MAX: u64 = (1 << 62) - 1;
+
+    let mut buf = Vec::new();
+    buf.push(0x0Fu8); // STREAM type: OFF(1) + LEN(1) + FIN(1)
+
+    // stream_id = 0 (1-byte varint)
+    buf.push(0x00);
+
+    // offset = VARINT_MAX (8-byte varint)
+    let mut tmp = [0u8; 8];
+    let n = encode_varint(VARINT_MAX, &mut tmp);
+    assert_eq!(n, 8);
+    buf.extend_from_slice(&tmp[..n]);
+
+    // length = 4 (1-byte varint) — but NO data bytes follow
+    buf.push(0x04);
+
+    // No data bytes — the buffer ends here, triggering BufferTooShort.
+    let err = parse_frame(&buf)
+        .expect_err("STREAM with large offset and truncated data must return BufferTooShort");
+    assert_eq!(err, FrameParseError::BufferTooShort);
+}
+
+/// ACK frame where the additional gap/range pairs contain very large varint
+/// values (close to 2^62 - 1). The parser only decodes gap/range varints for
+/// iteration and borrows the raw bytes; it never subtracts them from
+/// `largest_acked`. The frame must parse successfully without overflow or panic.
+#[test]
+fn frame_ack_large_gap_and_range_parses_ok() {
+    use crate::net::handler::quic::transport::frame::QuicFrame;
+    use crate::net::handler::quic::transport::varint::encode_varint;
+
+    const VARINT_MAX: u64 = (1 << 62) - 1;
+
+    let mut buf = Vec::new();
+    buf.push(0x02u8); // ACK type (no ECN)
+
+    // largest_acked = 50 (fits in a 1-byte varint, value <= 63)
+    buf.push(50u8);
+
+    // ack_delay = 0
+    buf.push(0x00);
+
+    // range_count = 1 (one additional gap+range pair; fits in 1-byte varint)
+    buf.push(0x01);
+
+    // first_ack_range = 0
+    buf.push(0x00);
+
+    // gap = VARINT_MAX (8-byte varint) — would underflow if subtracted naively
+    let mut tmp = [0u8; 8];
+    let n = encode_varint(VARINT_MAX, &mut tmp);
+    assert_eq!(n, 8, "VARINT_MAX must encode to 8 bytes");
+    buf.extend_from_slice(&tmp[..n]);
+
+    // ack range = VARINT_MAX (8-byte varint)
+    let n = encode_varint(VARINT_MAX, &mut tmp);
+    assert_eq!(n, 8, "VARINT_MAX must encode to 8 bytes");
+    buf.extend_from_slice(&tmp[..n]);
+
+    let (frame, consumed) =
+        parse_frame(&buf).expect("ACK with large gap/range values must parse without error");
+    assert_eq!(consumed, buf.len());
+    match frame {
+        QuicFrame::Ack(ack) => {
+            assert_eq!(ack.largest_acked, 50);
+            assert_eq!(ack.range_count, 1);
+            // The raw gap+range bytes are borrowed; each field is 8 bytes.
+            assert_eq!(ack.ranges.len(), 16);
+        }
+        other => panic!("expected Ack frame, got {:?}", other),
+    }
+}
+
+/// MAX_STREAMS frame (type 0x12 = bidi) with the maximum varint value (2^62 - 1).
+///
+/// The parser decodes the value directly into a u64 without range-checking it
+/// against the QUIC stream limit (2^60). Limit enforcement is a higher-level
+/// concern; the frame parser must return `Ok` here.
+#[test]
+fn frame_max_streams_varint_max_parses_ok() {
+    use crate::net::handler::quic::transport::frame::QuicFrame;
+    use crate::net::handler::quic::transport::varint::encode_varint;
+
+    const VARINT_MAX: u64 = (1 << 62) - 1;
+
+    let mut buf = Vec::new();
+    buf.push(0x12u8); // MAX_STREAMS bidi
+
+    let mut tmp = [0u8; 8];
+    let n = encode_varint(VARINT_MAX, &mut tmp);
+    buf.extend_from_slice(&tmp[..n]);
+
+    let (frame, consumed) =
+        parse_frame(&buf).expect("MAX_STREAMS with VARINT_MAX must parse without error");
+    assert_eq!(consumed, buf.len());
+    match frame {
+        QuicFrame::MaxStreams { max, bidi } => {
+            assert_eq!(max, VARINT_MAX);
+            assert!(bidi, "type 0x12 must be bidi");
+        }
+        other => panic!("expected MaxStreams frame, got {:?}", other),
+    }
+}
+
+/// CRYPTO frame where the offset is VARINT_MAX and the declared length exceeds
+/// the remaining buffer. The parser bounds-checks `rest.len() < pos + length`
+/// before slicing, so this must return `BufferTooShort` rather than panicking.
+#[test]
+fn frame_crypto_large_offset_truncated_data_returns_buffer_too_short() {
+    use crate::net::handler::quic::transport::varint::encode_varint;
+
+    const VARINT_MAX: u64 = (1 << 62) - 1;
+
+    let mut buf = Vec::new();
+    buf.push(0x06u8); // CRYPTO type
+
+    // offset = VARINT_MAX (8-byte varint)
+    let mut tmp = [0u8; 8];
+    let n = encode_varint(VARINT_MAX, &mut tmp);
+    buf.extend_from_slice(&tmp[..n]);
+
+    // length = 16 (1-byte varint) — but NO data bytes follow
+    buf.push(0x10);
+
+    let err = parse_frame(&buf)
+        .expect_err("CRYPTO with large offset and truncated data must return BufferTooShort");
+    assert_eq!(err, FrameParseError::BufferTooShort);
+}
+
+/// A frame type in the reserved range (0x20) that is not a known frame and is
+/// not a GREASE value (type % 0x1f == 0x1e) must return `UnknownFrameType`.
+///
+/// 0x20 % 0x1f = 1, so it is not GREASE. RFC 9000 §12.4 requires treating
+/// unknown frame types as FRAME_ENCODING_ERROR.
+#[test]
+fn frame_unknown_type_returns_unknown_frame_type_error() {
+    // 0x20 is not assigned and not GREASE (0x20 % 0x1f = 1).
+    let buf = [0x20u8];
+    let err = parse_frame(&buf).expect_err("unknown frame type must return UnknownFrameType");
+    assert_eq!(err, FrameParseError::UnknownFrameType(0x20));
+}
+
+/// STREAM frame type 0x09 = FIN(1) + no LEN(0) + no OFF(0).
+///
+/// With no LEN bit, the data field extends to the end of the packet. With
+/// stream_id = 0 and no remaining bytes after it, the data slice is empty.
+/// This is a valid per-RFC edge case (FIN-only stream segment with no data).
+/// The parser must succeed and return an empty data slice with fin=true.
+#[test]
+fn frame_stream_fin_only_zero_length_data_parses_ok() {
+    use crate::net::handler::quic::transport::frame::QuicFrame;
+
+    let buf = [
+        0x09u8, // STREAM type: FIN(1), no LEN, no OFF
+        0x00,   // stream_id = 0 (1-byte varint)
+                // No offset field (has_off = false).
+                // No length field (has_len = false) — data extends to end of buf.
+                // No data bytes — empty slice.
+    ];
+
+    let (frame, consumed) =
+        parse_frame(&buf).expect("FIN-only STREAM frame must parse without error");
+    assert_eq!(consumed, buf.len());
+    match frame {
+        QuicFrame::Stream(sf) => {
+            assert_eq!(sf.stream_id.0, 0);
+            assert_eq!(sf.offset, 0);
+            assert!(sf.fin, "FIN bit must be set");
+            assert!(sf.data.is_empty(), "data must be empty (no payload bytes)");
+        }
+        other => panic!("expected Stream frame, got {:?}", other),
+    }
+}
