@@ -235,20 +235,7 @@ fn frame_ack_large_gap_and_range_parses_ok() {
 
     const VARINT_MAX: u64 = (1 << 62) - 1;
 
-    let mut buf = Vec::new();
-    buf.push(0x02u8); // ACK type (no ECN)
-
-    // largest_acked = 50 (fits in a 1-byte varint, value <= 63)
-    buf.push(50u8);
-
-    // ack_delay = 0
-    buf.push(0x00);
-
-    // range_count = 1 (one additional gap+range pair; fits in 1-byte varint)
-    buf.push(0x01);
-
-    // first_ack_range = 0
-    buf.push(0x00);
+    let mut buf = vec![0x02, 50, 0x00, 0x01, 0x00];
 
     // gap = VARINT_MAX (8-byte varint) — would underflow if subtracted naively
     let mut tmp = [0u8; 8];

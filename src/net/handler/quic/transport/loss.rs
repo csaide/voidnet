@@ -151,6 +151,7 @@ impl PacketNumberSpace {
 // --- LossDetectionResult ---
 
 /// Result of processing a loss detection timeout.
+#[allow(clippy::large_enum_variant)]
 pub enum LossDetectionResult {
     /// Lost packets detected.
     LostPackets(SmallVec<[(u64, SentPacket); 8]>),
@@ -241,6 +242,7 @@ impl LossDetector {
 
     /// Process an ACK frame. Returns (newly acked packets, lost packets with pn).
     #[inline]
+    #[allow(clippy::type_complexity)]
     pub fn on_ack_received(
         &mut self,
         space: usize,

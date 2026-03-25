@@ -3,6 +3,8 @@
 //! Each parameter is encoded as TLV: varint type, varint length, value bytes.
 //! Unknown parameter IDs are skipped for forward compatibility.
 
+use smallvec::SmallVec;
+
 use super::varint::{decode_varint, encode_varint, varint_len};
 use crate::net::handler::quic::connection_id::ConnectionId;
 use crate::net::handler::quic::error::TransportError;
@@ -26,7 +28,8 @@ pub struct PreferredAddress {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionInformation {
     pub chosen_version: u32,
-    pub other_versions: Vec<u32>,
+    /// Stack-allocated for the typical case (≤4 versions, currently only v1 and v2).
+    pub other_versions: SmallVec<[u32; 4]>,
 }
 
 // Parameter IDs (RFC 9000 §18.2)
@@ -132,10 +135,10 @@ impl Default for TransportParams {
 impl TransportParams {
     /// Validate `cid_length` if set. Returns an error if the value exceeds 20.
     pub fn validate_cid_length(&self) -> Result<(), TransportError> {
-        if let Some(len) = self.cid_length {
-            if len > 20 {
-                return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
-            }
+        if let Some(len) = self.cid_length
+            && len > 20
+        {
+            return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
         }
         Ok(())
     }
@@ -317,8 +320,8 @@ impl TransportParams {
     pub fn decode(buf: &[u8]) -> Result<Self, TransportError> {
         let mut params = TransportParams::default();
         let mut pos = 0;
-        // Track seen parameter IDs for duplicate detection (covers IDs 0x00-0x1f)
-        let mut seen_ids = [false; 32];
+        // Track seen parameter IDs for duplicate detection (covers IDs 0x00-0x20)
+        let mut seen_ids = [false; 33];
 
         while pos < buf.len() {
             // Decode parameter type
@@ -342,7 +345,7 @@ impl TransportParams {
             pos += param_len;
 
             // Detect duplicate transport parameter IDs (RFC 9000 §7.4)
-            if id < 32 {
+            if id < 33 {
                 if seen_ids[id as usize] {
                     return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
                 }
@@ -480,13 +483,13 @@ impl TransportParams {
                 }
                 VERSION_INFORMATION => {
                     // Wire format: chosen_version (4 bytes) + other_versions (4 bytes each)
-                    if param_len < 4 || param_len % 4 != 0 {
+                    if param_len < 4 || !param_len.is_multiple_of(4) {
                         return Err(TransportError::TRANSPORT_PARAMETER_ERROR);
                     }
                     let chosen_version =
                         u32::from_be_bytes([value[0], value[1], value[2], value[3]]);
                     let num_others = (param_len - 4) / 4;
-                    let mut other_versions = Vec::with_capacity(num_others);
+                    let mut other_versions = SmallVec::with_capacity(num_others);
                     for i in 0..num_others {
                         let off = 4 + i * 4;
                         let v = u32::from_be_bytes([

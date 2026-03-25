@@ -1049,12 +1049,12 @@ fn e2e_large_transfer() {
         // and flow control updates get sent
         {
             let conn = &mut server_handler.connections[server_conn_key];
-            if let Some(entry) = conn.streams.get_mut(stream_id) {
-                if let Some(recv) = entry.recv.as_mut() {
-                    let mut drain_buf = [0u8; 8192];
-                    recv.read(&mut drain_buf);
-                    // We'll do final verification from a fresh transfer below
-                }
+            if let Some(entry) = conn.streams.get_mut(stream_id)
+                && let Some(recv) = entry.recv.as_mut()
+            {
+                let mut drain_buf = [0u8; 8192];
+                recv.read(&mut drain_buf);
+                // We'll do final verification from a fresh transfer below
             }
         }
     }
@@ -1196,13 +1196,13 @@ fn e2e_large_transfer() {
         // Server: read available data
         {
             let conn = &mut server_handler.connections[server_conn_key];
-            if let Some(entry) = conn.streams.get_mut(stream_id2) {
-                if let Some(recv) = entry.recv.as_mut() {
-                    let mut buf = [0u8; 8192];
-                    let n = recv.read(&mut buf);
-                    if n > 0 {
-                        received_data.extend_from_slice(&buf[..n]);
-                    }
+            if let Some(entry) = conn.streams.get_mut(stream_id2)
+                && let Some(recv) = entry.recv.as_mut()
+            {
+                let mut buf = [0u8; 8192];
+                let n = recv.read(&mut buf);
+                if n > 0 {
+                    received_data.extend_from_slice(&buf[..n]);
                 }
             }
         }

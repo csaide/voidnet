@@ -91,6 +91,7 @@ fn decode_ack_ranges_roundtrip() {
     state.on_packet_received(6, now);
     state.on_packet_received(10, now);
 
+    state.ensure_encoded();
     let largest = state.largest_received().unwrap();
     let first = state.first_ack_range();
     let count = state.ack_range_count();
@@ -114,5 +115,6 @@ fn ack_state_encoded_ranges_not_empty() {
     // Two ranges — gap/range pair encoded
     // encoded_ranges covers only additional ranges (gaps+ranges after first)
     // With 2 ranges there is 1 additional range → encoded bytes should be non-empty
+    state.ensure_encoded();
     assert!(!state.encoded_ranges().is_empty());
 }

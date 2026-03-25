@@ -29,6 +29,9 @@ pub struct AckState {
 
     /// Whether an ack-eliciting packet has been received since the last ACK.
     ack_eliciting_received: bool,
+
+    /// Whether ranges have changed since the last encode_ranges() call.
+    ranges_dirty: bool,
 }
 
 impl AckState {
@@ -41,6 +44,7 @@ impl AckState {
             largest_received: None,
             largest_received_time: None,
             ack_eliciting_received: false,
+            ranges_dirty: false,
         }
     }
 
@@ -53,7 +57,17 @@ impl AckState {
             self.largest_received_time = Some(now);
         }
         self.insert_range(pn);
-        self.encode_ranges();
+        self.ranges_dirty = true;
+    }
+
+    /// Ensure the pre-encoded ranges buffer is up-to-date.
+    /// Called lazily before sending an ACK, not on every packet receipt.
+    #[inline]
+    pub fn ensure_encoded(&mut self) {
+        if self.ranges_dirty {
+            self.encode_ranges();
+            self.ranges_dirty = false;
+        }
     }
 
     /// Whether we need to send an ACK.

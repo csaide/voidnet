@@ -395,12 +395,15 @@ fn parse_grease_frame_type_ignored() {
     use crate::net::handler::quic::transport::frame::parse_frame;
     use crate::net::handler::quic::transport::varint::encode_varint;
     // RFC 9000 §19.21: GREASE frames (type % 0x1f == 0x1e) MUST be silently ignored.
-    // 0x1e (30) is a GREASE type: 30 % 31 == 30 == 0x1e. Also HANDSHAKE_DONE.
     // Use 0x3d (61): 61 % 31 == 30 == 0x1e — a GREASE frame.
-    let mut buf = [0u8; 16];
+    // GREASE frames are encoded as: type(varint) + length(varint) + data(length bytes).
+    let mut buf = [0u8; 32];
     let mut pos = 0;
-    pos += encode_varint(0x3d, &mut buf[pos..]);
-    buf[pos] = 0x01; // PING
+    pos += encode_varint(0x3d, &mut buf[pos..]); // GREASE type
+    pos += encode_varint(3, &mut buf[pos..]); // payload length = 3
+    buf[pos..pos + 3].copy_from_slice(&[0xAA, 0xBB, 0xCC]); // 3 bytes of payload
+    pos += 3;
+    buf[pos] = 0x01; // PING frame after the GREASE frame
     pos += 1;
     // GREASE frame should be silently ignored (treated as Padding)
     let result = parse_frame(&buf[..pos]);
@@ -413,10 +416,30 @@ fn parse_grease_frame_type_ignored() {
     assert!(matches!(frame, QuicFrame::Padding));
     // Verify we can parse the next frame (PING) from the remaining bytes
     let remaining = &buf[consumed..pos];
-    if !remaining.is_empty() {
-        let result2 = parse_frame(remaining);
-        assert!(result2.is_ok());
-    }
+    assert!(
+        !remaining.is_empty(),
+        "should have remaining bytes for PING"
+    );
+    let result2 = parse_frame(remaining);
+    assert!(result2.is_ok(), "PING after GREASE should parse");
+    let (frame2, _) = result2.unwrap();
+    assert!(matches!(frame2, QuicFrame::Ping));
+}
+
+#[test]
+fn parse_grease_frame_empty_payload() {
+    use crate::net::handler::quic::transport::frame::parse_frame;
+    use crate::net::handler::quic::transport::varint::encode_varint;
+    // GREASE frame with zero-length payload
+    let mut buf = [0u8; 16];
+    let mut pos = 0;
+    pos += encode_varint(0x3d, &mut buf[pos..]); // GREASE type
+    pos += encode_varint(0, &mut buf[pos..]); // payload length = 0
+    let result = parse_frame(&buf[..pos]);
+    assert!(result.is_ok());
+    let (frame, consumed) = result.unwrap();
+    assert!(matches!(frame, QuicFrame::Padding));
+    assert_eq!(consumed, pos);
 }
 
 #[test]

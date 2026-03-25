@@ -2,7 +2,6 @@ use ring::hmac;
 
 /// Generate a stateless reset token from a CID and server secret.
 /// Token must be unpredictable (RFC 9000 §10.3).
-#[allow(dead_code)] // Wired when handler emits stateless reset packets
 pub fn generate_reset_token(cid: &[u8], server_secret: &[u8]) -> [u8; 16] {
     let key = hmac::Key::new(hmac::HMAC_SHA256, server_secret);
     let tag = hmac::sign(&key, cid);
@@ -12,7 +11,6 @@ pub fn generate_reset_token(cid: &[u8], server_secret: &[u8]) -> [u8; 16] {
 }
 
 /// Check if the last 16 bytes of a packet match any known reset token.
-#[allow(dead_code)] // Wired when handler detects incoming stateless resets
 pub fn detect_stateless_reset(packet: &[u8], known_tokens: &[[u8; 16]]) -> bool {
     if packet.len() < 16 + 1 {
         // minimum: 1 byte + 16 byte token

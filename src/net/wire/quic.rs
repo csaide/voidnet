@@ -173,6 +173,13 @@ fn parse_long_header(
         ));
     }
 
+    // RFC 9000 §17.2: Fixed bit MUST be 1 for known QUIC versions.
+    // RFC 8999 §5.1: Version-independent properties don't mandate fixed bit,
+    // so only enforce for versions we process (not Unknown).
+    if first_byte & 0x40 == 0 {
+        return Err(HeaderParseError::BufferTooShort);
+    }
+
     let packet_type = decode_long_packet_type(first_byte, version)?;
 
     Ok((

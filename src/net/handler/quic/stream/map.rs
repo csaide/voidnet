@@ -323,6 +323,28 @@ impl StreamMap {
         self.pending_send_count > 0
     }
 
+    /// Collect stream IDs with pending send data using index-based iteration.
+    /// Returns a SmallVec to avoid holding borrows during iteration.
+    pub fn collect_pending_send_ids(&self) -> smallvec::SmallVec<[StreamId; 16]> {
+        let mut ids = smallvec::SmallVec::new();
+        for (type_bits, vec) in [
+            (0u64, &self.client_bidi),
+            (1, &self.server_bidi),
+            (2, &self.client_uni),
+            (3, &self.server_uni),
+        ] {
+            for (idx, slot) in vec.iter().enumerate() {
+                if let Some(entry) = slot
+                    && let Some(ref send) = entry.send
+                    && (!send.buffer.is_empty() || !send.retransmit.is_empty() || send.fin_sent)
+                {
+                    ids.push(StreamId((idx as u64) << 2 | type_bits));
+                }
+            }
+        }
+        ids
+    }
+
     /// Iterate over all streams that have send data pending.
     /// Yields (StreamId, &mut StreamEntry) for each stream with data in SendHalf.
     pub fn iter_send_mut(&mut self) -> impl Iterator<Item = (StreamId, &mut StreamEntry)> {

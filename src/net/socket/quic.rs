@@ -47,6 +47,12 @@ impl InMemoryTokenStore {
     }
 }
 
+impl Default for InMemoryTokenStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TokenStore for InMemoryTokenStore {
     fn get(&self, server_name: &str, version: u32) -> Option<Vec<u8>> {
         self.tokens
@@ -361,7 +367,7 @@ impl QuicConnection {
             .get_mut(self.conn_key)
             .ok_or(QuicError::NotConnected)?;
         conn.datagrams
-            .queue_send(data.to_vec())
+            .queue_send(data)
             .map_err(|_| QuicError::WouldBlock)
     }
 

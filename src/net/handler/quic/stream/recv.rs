@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use smallvec::SmallVec;
+
 /// Power-of-two ring buffer for stream data. No wakers (socket layer handles those).
 pub struct StreamRingBuffer {
     buf: Vec<u8>,
@@ -278,8 +280,8 @@ impl OooRanges {
         let mut merged_start = offset;
         let mut merged_end = new_end;
 
-        // Collect overlapping/adjacent entries
-        let to_remove: Vec<u64> = map
+        // Collect overlapping/adjacent entries (stack-allocated for typical case)
+        let to_remove: SmallVec<[u64; 8]> = map
             .range(..=new_end)
             .rev()
             .take_while(|e| *e.0 + *e.1 as u64 >= offset)
@@ -307,7 +309,7 @@ impl OooRanges {
 
     pub fn remove_up_to(&mut self, offset: u64) {
         if let Some(ref mut map) = self.overflow {
-            let to_remove: Vec<u64> = map
+            let to_remove: SmallVec<[u64; 8]> = map
                 .range(..offset)
                 .filter(|e| *e.0 + *e.1 as u64 <= offset)
                 .map(|e| *e.0)

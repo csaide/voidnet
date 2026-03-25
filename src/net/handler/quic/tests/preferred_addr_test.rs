@@ -16,10 +16,11 @@ fn preferred_address_encode_decode_round_trip() {
         stateless_reset_token: [0xaa; 16],
     };
 
-    let mut params = TransportParams::default();
-    params.preferred_address = Some(pa);
-    // Server-only param requires original_destination_connection_id for validation
-    params.original_destination_connection_id = Some(ConnectionId::from_slice(&[0x01]));
+    let params = TransportParams {
+        preferred_address: Some(pa),
+        original_destination_connection_id: Some(ConnectionId::from_slice(&[0x01])),
+        ..Default::default()
+    };
 
     let mut buf = [0u8; 512];
     let len = params.encode(&mut buf);
@@ -58,9 +59,11 @@ fn preferred_address_different_cid_lengths() {
         stateless_reset_token: [0xbb; 16],
     };
 
-    let mut params = TransportParams::default();
-    params.preferred_address = Some(pa_empty);
-    params.original_destination_connection_id = Some(ConnectionId::from_slice(&[0x01]));
+    let params = TransportParams {
+        preferred_address: Some(pa_empty),
+        original_destination_connection_id: Some(ConnectionId::from_slice(&[0x01])),
+        ..Default::default()
+    };
 
     let mut buf = [0u8; 512];
     let len = params.encode(&mut buf);
@@ -80,9 +83,11 @@ fn preferred_address_different_cid_lengths() {
         stateless_reset_token: [0xcc; 16],
     };
 
-    let mut params2 = TransportParams::default();
-    params2.preferred_address = Some(pa_max);
-    params2.original_destination_connection_id = Some(ConnectionId::from_slice(&[0x01]));
+    let params2 = TransportParams {
+        preferred_address: Some(pa_max),
+        original_destination_connection_id: Some(ConnectionId::from_slice(&[0x01])),
+        ..Default::default()
+    };
 
     let mut buf2 = [0u8; 512];
     let len2 = params2.encode(&mut buf2);
@@ -126,10 +131,12 @@ fn preferred_address_with_disable_active_migration() {
         stateless_reset_token: [0x11; 16],
     };
 
-    let mut params = TransportParams::default();
-    params.preferred_address = Some(pa);
-    params.disable_active_migration = true;
-    params.original_destination_connection_id = Some(ConnectionId::from_slice(&[0x01]));
+    let params = TransportParams {
+        preferred_address: Some(pa),
+        disable_active_migration: true,
+        original_destination_connection_id: Some(ConnectionId::from_slice(&[0x01])),
+        ..Default::default()
+    };
 
     // Server-side validation should pass — preferred_address with disable_active_migration is valid
     assert!(params.validate_for_side(Side::Server).is_ok());
@@ -155,8 +162,10 @@ fn preferred_address_client_must_not_send() {
         stateless_reset_token: [0; 16],
     };
 
-    let mut params = TransportParams::default();
-    params.preferred_address = Some(pa);
+    let params = TransportParams {
+        preferred_address: Some(pa),
+        ..Default::default()
+    };
 
     // preferred_address is server-only; client MUST NOT send it (RFC 9000 §18.2)
     assert!(params.validate_for_side(Side::Client).is_err());

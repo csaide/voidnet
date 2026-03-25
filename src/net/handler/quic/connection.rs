@@ -30,6 +30,41 @@ use crate::net::socket::LocalQueue;
 use crate::net::wire::ethernet::MacAddress;
 use crate::net::wire::ip::{IpAddress, Ipv4Address};
 
+/// Fixed-size inline token buffer (avoids heap allocation for NEW_TOKEN).
+/// Max token size: 12 (nonce) + 51 (plaintext) + 16 (tag) = 79 bytes.
+/// 128 bytes provides generous headroom.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InlineToken {
+    data: [u8; 128],
+    len: u8,
+}
+
+impl InlineToken {
+    /// Create from a byte slice. Panics if `src` exceeds 128 bytes.
+    pub fn from_slice(src: &[u8]) -> Self {
+        assert!(
+            src.len() <= 128,
+            "InlineToken: length {} exceeds max 128",
+            src.len()
+        );
+        let mut data = [0u8; 128];
+        data[..src.len()].copy_from_slice(src);
+        Self {
+            data,
+            len: src.len() as u8,
+        }
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data[..self.len as usize]
+    }
+
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+}
+
 /// High-level connection state (RFC 9000 §17.2.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -118,8 +153,8 @@ pub struct QuicConnectionState {
     /// Last activity time (for idle timeout tracking)
     pub last_activity: Instant,
 
-    // Handshake CRYPTO buffering
-    pub crypto_recv: [CryptoRecvBuffer; 3],
+    // Handshake CRYPTO buffering (boxed to reduce per-connection inline size by ~30KB)
+    pub crypto_recv: Box<[CryptoRecvBuffer; 3]>,
     pub pending_crypto: [Vec<u8>; 3],
     pub crypto_offset: [u64; 3],
     pub crypto_acked: [u64; 3],
@@ -223,9 +258,10 @@ pub struct QuicConnectionState {
     pub token_secret: Option<[u8; 32]>,
     /// Encrypted token to send to the client in a NEW_TOKEN frame.
     /// Set by the server after handshake completes; cleared once emitted.
-    pub pending_new_token: Option<Vec<u8>>,
+    /// Fixed-size inline buffer to avoid heap allocation (max token ~80 bytes).
+    pub pending_new_token: Option<InlineToken>,
     /// Token received by the client via NEW_TOKEN frame.
-    pub received_new_token: Option<Vec<u8>>,
+    pub received_new_token: Option<InlineToken>,
 
     /// Datagram send/recv queues (RFC 9221)
     pub datagrams: DatagramQueue,
@@ -326,11 +362,11 @@ impl QuicConnectionState {
             max_udp_payload: 1200,
             created_at: now,
             last_activity: now,
-            crypto_recv: [
+            crypto_recv: Box::new([
                 CryptoRecvBuffer::new(),
                 CryptoRecvBuffer::new(),
                 CryptoRecvBuffer::new(),
-            ],
+            ]),
             pending_crypto: [Vec::new(), Vec::new(), Vec::new()],
             crypto_offset: [0; 3],
             crypto_acked: [0; 3],

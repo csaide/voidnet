@@ -5,11 +5,13 @@ use crate::net::handler::quic::transport::version::{
 
 #[test]
 fn version_info_encode_decode_roundtrip() {
-    let mut params = TransportParams::default();
-    params.version_information = Some(VersionInformation {
-        chosen_version: QUIC_VERSION_1,
-        other_versions: vec![QUIC_VERSION_1, QUIC_VERSION_2],
-    });
+    let params = TransportParams {
+        version_information: Some(VersionInformation {
+            chosen_version: QUIC_VERSION_1,
+            other_versions: smallvec::smallvec![QUIC_VERSION_1, QUIC_VERSION_2],
+        }),
+        ..Default::default()
+    };
 
     let mut buf = [0u8; 512];
     let written = params.encode(&mut buf);
@@ -20,16 +22,21 @@ fn version_info_encode_decode_roundtrip() {
         .version_information
         .expect("version_information should be present");
     assert_eq!(vi.chosen_version, QUIC_VERSION_1);
-    assert_eq!(vi.other_versions, vec![QUIC_VERSION_1, QUIC_VERSION_2]);
+    assert_eq!(
+        vi.other_versions.as_slice(),
+        &[QUIC_VERSION_1, QUIC_VERSION_2]
+    );
 }
 
 #[test]
 fn version_info_encode_decode_single_version() {
-    let mut params = TransportParams::default();
-    params.version_information = Some(VersionInformation {
-        chosen_version: QUIC_VERSION_2,
-        other_versions: vec![QUIC_VERSION_2],
-    });
+    let params = TransportParams {
+        version_information: Some(VersionInformation {
+            chosen_version: QUIC_VERSION_2,
+            other_versions: smallvec::smallvec![QUIC_VERSION_2],
+        }),
+        ..Default::default()
+    };
 
     let mut buf = [0u8; 512];
     let written = params.encode(&mut buf);
@@ -39,7 +46,7 @@ fn version_info_encode_decode_single_version() {
         .version_information
         .expect("version_information should be present");
     assert_eq!(vi.chosen_version, QUIC_VERSION_2);
-    assert_eq!(vi.other_versions, vec![QUIC_VERSION_2]);
+    assert_eq!(vi.other_versions.as_slice(), &[QUIC_VERSION_2]);
 }
 
 #[test]
@@ -56,11 +63,13 @@ fn version_info_none_not_encoded() {
 
 #[test]
 fn validate_version_info_peer_chosen_not_in_our_list() {
-    let mut params = TransportParams::default();
-    params.version_information = Some(VersionInformation {
-        chosen_version: QUIC_VERSION_2,
-        other_versions: vec![QUIC_VERSION_1, QUIC_VERSION_2],
-    });
+    let params = TransportParams {
+        version_information: Some(VersionInformation {
+            chosen_version: QUIC_VERSION_2,
+            other_versions: smallvec::smallvec![QUIC_VERSION_1, QUIC_VERSION_2],
+        }),
+        ..Default::default()
+    };
 
     // We only support v1, but peer chose v2
     let result = params.validate_version_info(QUIC_VERSION_1, &[QUIC_VERSION_1]);
@@ -72,11 +81,13 @@ fn validate_version_info_peer_chosen_not_in_our_list() {
 
 #[test]
 fn validate_version_info_our_version_not_in_peer_list() {
-    let mut params = TransportParams::default();
-    params.version_information = Some(VersionInformation {
-        chosen_version: QUIC_VERSION_1,
-        other_versions: vec![QUIC_VERSION_2], // peer only lists v2
-    });
+    let params = TransportParams {
+        version_information: Some(VersionInformation {
+            chosen_version: QUIC_VERSION_1,
+            other_versions: smallvec::smallvec![QUIC_VERSION_2],
+        }),
+        ..Default::default()
+    };
 
     // We're using v1, peer lists v1 as chosen but only v2 in other_versions
     let result = params.validate_version_info(QUIC_VERSION_1, &[QUIC_VERSION_1, QUIC_VERSION_2]);
@@ -88,11 +99,13 @@ fn validate_version_info_our_version_not_in_peer_list() {
 
 #[test]
 fn validate_version_info_valid() {
-    let mut params = TransportParams::default();
-    params.version_information = Some(VersionInformation {
-        chosen_version: QUIC_VERSION_1,
-        other_versions: vec![QUIC_VERSION_1, QUIC_VERSION_2],
-    });
+    let params = TransportParams {
+        version_information: Some(VersionInformation {
+            chosen_version: QUIC_VERSION_1,
+            other_versions: smallvec::smallvec![QUIC_VERSION_1, QUIC_VERSION_2],
+        }),
+        ..Default::default()
+    };
 
     let result = params.validate_version_info(QUIC_VERSION_1, &[QUIC_VERSION_1, QUIC_VERSION_2]);
     assert!(result.is_ok());
@@ -120,17 +133,21 @@ fn version_info_decode_bad_length() {
 fn compat_vn_both_support_v1_and_v2() {
     // Both sides advertise v1+v2 in version_information, connection uses v1 (default).
     // Verify version_information is exchanged correctly and validation passes.
-    let mut client_params = TransportParams::default();
-    client_params.version_information = Some(VersionInformation {
-        chosen_version: QUIC_VERSION_1,
-        other_versions: vec![QUIC_VERSION_1, QUIC_VERSION_2],
-    });
+    let client_params = TransportParams {
+        version_information: Some(VersionInformation {
+            chosen_version: QUIC_VERSION_1,
+            other_versions: smallvec::smallvec![QUIC_VERSION_1, QUIC_VERSION_2],
+        }),
+        ..Default::default()
+    };
 
-    let mut server_params = TransportParams::default();
-    server_params.version_information = Some(VersionInformation {
-        chosen_version: QUIC_VERSION_1,
-        other_versions: vec![QUIC_VERSION_1, QUIC_VERSION_2],
-    });
+    let server_params = TransportParams {
+        version_information: Some(VersionInformation {
+            chosen_version: QUIC_VERSION_1,
+            other_versions: smallvec::smallvec![QUIC_VERSION_1, QUIC_VERSION_2],
+        }),
+        ..Default::default()
+    };
 
     let our_available = [QUIC_VERSION_1, QUIC_VERSION_2];
     let current_version = QUIC_VERSION_1;
@@ -155,7 +172,10 @@ fn compat_vn_both_support_v1_and_v2() {
     let decoded = TransportParams::decode(&buf[..written]).unwrap();
     let vi = decoded.version_information.unwrap();
     assert_eq!(vi.chosen_version, QUIC_VERSION_1);
-    assert_eq!(vi.other_versions, vec![QUIC_VERSION_1, QUIC_VERSION_2]);
+    assert_eq!(
+        vi.other_versions.as_slice(),
+        &[QUIC_VERSION_1, QUIC_VERSION_2]
+    );
 }
 
 #[test]

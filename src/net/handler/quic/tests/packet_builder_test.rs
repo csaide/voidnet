@@ -38,7 +38,8 @@ fn packet_builder_long_header_initial() {
     let scid = [9, 10, 11, 12];
 
     let builder =
-        PacketBuilder::begin_long(&mut buf, 0x00, 0x00000001, &dcid, &scid, 0, 0, &log).unwrap();
+        PacketBuilder::begin_long(&mut buf, 0x00, 0x00000001, &dcid, &scid, 0, 0, &log, &[])
+            .unwrap();
 
     assert!(builder.remaining() > 0);
     assert!(buf[0] & 0x80 != 0); // long header
@@ -64,7 +65,8 @@ fn packet_builder_write_crypto_and_finish() {
     let scid: [u8; 0] = [];
 
     let mut builder =
-        PacketBuilder::begin_long(&mut buf, 0x00, 0x00000001, &dcid, &scid, 0, 0, &log).unwrap();
+        PacketBuilder::begin_long(&mut buf, 0x00, 0x00000001, &dcid, &scid, 0, 0, &log, &[])
+            .unwrap();
 
     let crypto_data = b"ClientHello data here";
     let written = builder.write_crypto(0, crypto_data, 0, &mut log);
@@ -84,7 +86,7 @@ fn packet_builder_pad_to_1200() {
     let dcid = [1, 2, 3, 4, 5, 6, 7, 8];
 
     let mut builder =
-        PacketBuilder::begin_long(&mut buf, 0x00, 0x00000001, &dcid, &[], 0, 0, &log).unwrap();
+        PacketBuilder::begin_long(&mut buf, 0x00, 0x00000001, &dcid, &[], 0, 0, &log, &[]).unwrap();
 
     builder.write_crypto(0, b"hello", 0, &mut log);
     builder.pad_to(1200);

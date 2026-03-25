@@ -423,7 +423,7 @@ impl QuicHandler {
                         }
 
                         // Token present — validate it
-                        match self.validate_retry_token(&token, &src_addr, dst_port, version) {
+                        match self.validate_retry_token(token, &src_addr, dst_port, version) {
                             Some(odcid) => {
                                 // Valid Retry token — create connection with original DCID.
                                 // The current dcid is the SCID from the Retry packet (RFC 9000 §7.3).
@@ -825,7 +825,7 @@ impl QuicHandler {
                         }
 
                         // Token present — validate it
-                        match self.validate_retry_token(&token, &src_addr, dst_port, version) {
+                        match self.validate_retry_token(token, &src_addr, dst_port, version) {
                             Some(odcid) => {
                                 // The current dcid is the SCID from the Retry packet (RFC 9000 §7.3).
                                 let retry_scid = ConnectionId::from_slice(&dcid_buf[..dcid_len]);
@@ -952,17 +952,18 @@ impl QuicHandler {
         free_frames: &mut impl FrameBuffer<'umem>,
         tx_return: &mut impl FrameBuffer<'umem>,
     ) {
-        // Single-pass: iterate by slab index to avoid collecting keys.
-        let mut key = 0;
-        while key < self.connections.capacity() {
-            if let Some(conn) = self.connections.get(key) {
-                if processor::has_pending_data_any(conn) {
-                    let conn = self.connections.get_mut(key).unwrap();
-                    processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
-                    self.sync_cid_map(key);
-                }
-            }
-            key += 1;
+        // Collect keys with pending data, then generate packets.
+        // Uses slab::iter() which skips empty slots — O(active) not O(capacity).
+        let pending_keys: smallvec::SmallVec<[usize; 32]> = self
+            .connections
+            .iter()
+            .filter(|(_, conn)| processor::has_pending_data_any(conn))
+            .map(|(key, _)| key)
+            .collect();
+        for key in pending_keys {
+            let conn = self.connections.get_mut(key).unwrap();
+            processor::generate_packets(conn, key, now, wheel, free_frames, tx_return);
+            self.sync_cid_map(key);
         }
     }
 
@@ -1693,7 +1694,7 @@ impl QuicHandler {
         server_params.version_information = Some(
             crate::net::handler::quic::transport::params::VersionInformation {
                 chosen_version: version,
-                other_versions: vec![
+                other_versions: smallvec::smallvec![
                     crate::net::handler::quic::transport::version::QUIC_VERSION_1,
                     crate::net::handler::quic::transport::version::QUIC_VERSION_2,
                 ],
@@ -1809,7 +1810,7 @@ impl QuicHandler {
         client_params.version_information = Some(
             crate::net::handler::quic::transport::params::VersionInformation {
                 chosen_version: crate::net::handler::quic::transport::version::QUIC_VERSION_1,
-                other_versions: vec![
+                other_versions: smallvec::smallvec![
                     crate::net::handler::quic::transport::version::QUIC_VERSION_1,
                     crate::net::handler::quic::transport::version::QUIC_VERSION_2,
                 ],

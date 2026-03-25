@@ -34,6 +34,7 @@ impl SendHalf {
         }
     }
 
+    #[inline]
     pub fn can_send(&self) -> bool {
         self.sent < self.max_stream_data && !self.buffer.is_empty()
     }
@@ -110,14 +111,14 @@ impl SendHalf {
         // Coalesce: repeatedly check if the lowest OOO range is now
         // contiguous with (or overlapping) the acked frontier.
         loop {
-            if let Some(&(s, e)) = self.acked_ooo.first() {
-                if s <= self.acked {
-                    if e > self.acked {
-                        self.acked = e;
-                    }
-                    self.acked_ooo.remove(0);
-                    continue;
+            if let Some(&(s, e)) = self.acked_ooo.first()
+                && s <= self.acked
+            {
+                if e > self.acked {
+                    self.acked = e;
                 }
+                self.acked_ooo.remove(0);
+                continue;
             }
             break;
         }
@@ -173,6 +174,16 @@ impl SendHalf {
     /// Remove or trim retransmit ranges that overlap with an acked region.
     /// Builds a new list to avoid borrow conflicts from splits.
     pub fn trim_retransmit_for_ack(&mut self, ack_start: u64, ack_end: u64) {
+        // Fast path: no overlap possible if ack is entirely before or after all ranges.
+        if self.retransmit.is_empty() {
+            return;
+        }
+        let first_start = self.retransmit[0].0;
+        let last_end = self.retransmit[self.retransmit.len() - 1].1;
+        if ack_end <= first_start || ack_start >= last_end {
+            return;
+        }
+
         let mut result: SmallVec<[(u64, u64); 4]> = SmallVec::new();
 
         for &(s, e) in &self.retransmit {
@@ -199,6 +210,7 @@ impl SendHalf {
 
     /// Returns true if there is any data pending to send: retransmit ranges,
     /// unsent buffered data, or a FIN that hasn't been sent yet.
+    #[inline]
     pub fn has_pending_data(&self) -> bool {
         !self.retransmit.is_empty() || !self.buffer.is_empty()
     }

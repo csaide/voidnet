@@ -244,20 +244,22 @@ fn server_generates_new_token_when_secret_set() {
     let encrypted = token_crypto::encrypt_token(
         &secret,
         TokenType::NewToken,
-        &client_ip_bytes,
+        client_ip_bytes,
         timestamp,
         conn.dcid.as_bytes(),
         conn.version,
     )
     .unwrap();
-    conn.pending_new_token = Some(encrypted.clone());
+    conn.pending_new_token =
+        Some(crate::net::handler::quic::connection::InlineToken::from_slice(&encrypted));
 
     // Verify the token is set
     assert!(conn.pending_new_token.is_some());
 
     // Verify it can be decrypted back
     let dt =
-        token_crypto::decrypt_token(&secret, conn.pending_new_token.as_ref().unwrap()).unwrap();
+        token_crypto::decrypt_token(&secret, conn.pending_new_token.as_ref().unwrap().as_bytes())
+            .unwrap();
     assert_eq!(dt.token_type, TokenType::NewToken);
     assert_eq!(dt.client_ip_bytes(), [10, 0, 0, 1]);
     assert_eq!(dt.timestamp_secs, 1700000000);
@@ -341,8 +343,9 @@ fn client_dispatch_stores_received_token() {
     assert!(conn.received_new_token.is_none());
 
     // Simulate what dispatch_frames does for NewToken
-    conn.received_new_token = Some(token.to_vec());
-    assert_eq!(conn.received_new_token.as_ref().unwrap(), &token.to_vec());
+    conn.received_new_token =
+        Some(crate::net::handler::quic::connection::InlineToken::from_slice(token));
+    assert_eq!(conn.received_new_token.as_ref().unwrap().as_bytes(), token);
 }
 
 #[test]

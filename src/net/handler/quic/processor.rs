@@ -96,19 +96,15 @@ pub fn handle_timeout(
                         .clone()
                         .map(|(_, pkt)| pkt.size as usize)
                         .sum();
-                    if total_lost_bytes > 0 {
-                        if let Some(max_sent_time) = lost
+                    if total_lost_bytes > 0
+                        && let Some(max_sent_time) = lost
                             .iter()
                             .filter(|(_, pkt)| !pkt.is_pmtu_probe)
                             .map(|(_, pkt)| pkt.time_sent)
                             .max()
-                        {
-                            conn.congestion.on_congestion_event(
-                                total_lost_bytes,
-                                now,
-                                max_sent_time,
-                            );
-                        }
+                    {
+                        conn.congestion
+                            .on_congestion_event(total_lost_bytes, now, max_sent_time);
                     }
                     let retransmit = build_retransmit_queue(&conn.frame_log, &frame_ranges);
                     // Rewind crypto_offset for CRYPTO retransmission
@@ -287,22 +283,23 @@ pub fn process_packet(
                             Some((token, payload_length, relative_pn_offset)) => {
                                 // RFC 9369 §5: Server MUST validate token version.
                                 // If token is present, decrypt and check version match.
-                                if !token.is_empty() && conn.side == Side::Server {
-                                    if let Some(ref secret) = conn.token_secret {
-                                        match crate::net::handler::quic::token_crypto::decrypt_token(
-                                            secret, token,
-                                        ) {
-                                            Ok(dt) => {
-                                                if dt.version == conn.version {
-                                                    // Valid token — lift amplification limit
-                                                    conn.path.amplification.set_validated();
-                                                }
-                                                // else: version mismatch — treat token as
-                                                // invalid, do not lift amplification limit
+                                if !token.is_empty()
+                                    && conn.side == Side::Server
+                                    && let Some(ref secret) = conn.token_secret
+                                {
+                                    match crate::net::handler::quic::token_crypto::decrypt_token(
+                                        secret, token,
+                                    ) {
+                                        Ok(dt) => {
+                                            if dt.version == conn.version {
+                                                // Valid token — lift amplification limit
+                                                conn.path.amplification.set_validated();
                                             }
-                                            Err(_) => {
-                                                // Decryption failed — treat token as invalid
-                                            }
+                                            // else: version mismatch — treat token as
+                                            // invalid, do not lift amplification limit
+                                        }
+                                        Err(_) => {
+                                            // Decryption failed — treat token as invalid
                                         }
                                     }
                                 }
@@ -587,13 +584,13 @@ fn decrypt_and_process(
                             // RFC 9001 §6.4: packet decrypted with old keys MUST have
                             // PN lower than lowest_pn_current_phase. Otherwise it's a
                             // KEY_UPDATE_ERROR.
-                            if let Some(lowest) = conn.key_update.lowest_pn_current_phase {
-                                if pn >= lowest {
-                                    conn.close_error = Some(TransportError::KEY_UPDATE_ERROR);
-                                    conn.state = ConnectionState::Closing;
-                                    conn.needs_draining_timer = true;
-                                    return ProcessResult::ConnectionClosed;
-                                }
+                            if let Some(lowest) = conn.key_update.lowest_pn_current_phase
+                                && pn >= lowest
+                            {
+                                conn.close_error = Some(TransportError::KEY_UPDATE_ERROR);
+                                conn.state = ConnectionState::Closing;
+                                conn.needs_draining_timer = true;
+                                return ProcessResult::ConnectionClosed;
                             }
                             plaintext.len()
                         }
@@ -668,26 +665,26 @@ fn decrypt_and_process(
         if conn.key_update.is_peer_update(received_key_phase) {
             // Peer initiated key update — use pre-cached next remote key (RFC 9001 §6.3:
             // avoid timing side-channel by not deriving keys on-the-fly).
-            if let Some(cached_remote_key) = conn.key_update.next_remote_packet_key.take() {
-                if let Some(ref mut secrets) = conn.key_update_secrets {
-                    // Derive new local key (needed for sending) and pre-cache the NEXT
-                    // remote key for the subsequent key update.
-                    let new_keys = secrets.next_packet_keys();
-                    conn.key_update.next_remote_packet_key = Some(new_keys.remote);
+            if let Some(cached_remote_key) = conn.key_update.next_remote_packet_key.take()
+                && let Some(ref mut secrets) = conn.key_update_secrets
+            {
+                // Derive new local key (needed for sending) and pre-cache the NEXT
+                // remote key for the subsequent key update.
+                let new_keys = secrets.next_packet_keys();
+                conn.key_update.next_remote_packet_key = Some(new_keys.remote);
 
-                    // Retain old remote packet key for reordered packets (RFC 9001 §6.1).
-                    // Header protection keys are unchanged by key updates (RFC 9001 §5.4),
-                    // so we only need to save the old packet key.
-                    if let Some(ref mut kp) = conn.keys.one_rtt {
-                        let old_remote_pkt_key =
-                            std::mem::replace(&mut kp.remote.packet_key, cached_remote_key);
-                        conn.key_update.prev_remote_packet_key = Some(old_remote_pkt_key);
-                        kp.local.update_packet_key(new_keys.local);
-                    }
-                    conn.key_update.on_update_initiated();
-                    conn.packets_encrypted[2] = 0;
-                    conn.needs_key_discard_timer = true;
+                // Retain old remote packet key for reordered packets (RFC 9001 §6.1).
+                // Header protection keys are unchanged by key updates (RFC 9001 §5.4),
+                // so we only need to save the old packet key.
+                if let Some(ref mut kp) = conn.keys.one_rtt {
+                    let old_remote_pkt_key =
+                        std::mem::replace(&mut kp.remote.packet_key, cached_remote_key);
+                    conn.key_update.prev_remote_packet_key = Some(old_remote_pkt_key);
+                    kp.local.update_packet_key(new_keys.local);
                 }
+                conn.key_update.on_update_initiated();
+                conn.packets_encrypted[2] = 0;
+                conn.needs_key_discard_timer = true;
             }
         }
     }
@@ -1002,7 +999,9 @@ fn dispatch_frames(
             QuicFrame::NewToken(nt) => {
                 // RFC 9000 §19.7: only clients should receive NEW_TOKEN
                 if conn.side == Side::Client {
-                    conn.received_new_token = Some(nt.token.to_vec());
+                    conn.received_new_token = Some(
+                        crate::net::handler::quic::connection::InlineToken::from_slice(nt.token),
+                    );
                 } else {
                     // Server receiving NEW_TOKEN is a protocol violation
                     conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
@@ -1016,7 +1015,7 @@ fn dispatch_frames(
                 // RFC 9221: deliver if we advertised max_datagram_frame_size
                 // Copy from borrowed slice when delivering to the queue
                 if conn.datagrams.max_recv_size.is_some() {
-                    conn.datagrams.deliver(data.to_vec());
+                    conn.datagrams.deliver(data);
                     conn.event_queue
                         .push(crate::net::handler::quic::event::QuicEvent::DatagramReceived);
                 }
@@ -1058,13 +1057,13 @@ fn handle_crypto_frame(
 ) {
     // RFC 9001 §4.1.3: if this encryption level is superseded, reject data
     // that extends past the previously recorded frontier.
-    if let Some(sealed_max) = conn.crypto_level_sealed[space] {
-        if offset + data.len() as u64 > sealed_max {
-            conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
-            conn.state = ConnectionState::Closing;
-            conn.needs_draining_timer = true;
-            return;
-        }
+    if let Some(sealed_max) = conn.crypto_level_sealed[space]
+        && offset + data.len() as u64 > sealed_max
+    {
+        conn.close_error = Some(TransportError::PROTOCOL_VIOLATION);
+        conn.state = ConnectionState::Closing;
+        conn.needs_draining_timer = true;
+        return;
     }
 
     // Write to reassembly buffer
@@ -1183,12 +1182,14 @@ fn handle_crypto_frame(
                 if let Ok(encrypted) = crate::net::handler::quic::token_crypto::encrypt_token(
                     secret,
                     crate::net::handler::quic::token_crypto::TokenType::NewToken,
-                    &client_ip_bytes,
+                    client_ip_bytes,
                     timestamp,
                     conn.dcid.as_bytes(),
                     conn.version,
                 ) {
-                    conn.pending_new_token = Some(encrypted);
+                    conn.pending_new_token = Some(
+                        crate::net::handler::quic::connection::InlineToken::from_slice(&encrypted),
+                    );
                 }
             }
             // Fix 6: DON'T discard handshake keys yet — wait until we
@@ -1202,9 +1203,8 @@ fn handle_crypto_frame(
 
     // Queue per-space CRYPTO response data (cap at 64KB to prevent memory exhaustion)
     const MAX_PENDING_CRYPTO: usize = 65536;
-    for space in 0..3 {
-        let (start, end) = crypto_spaces[space];
-        let data = &output.crypto_buf[start..end];
+    for (space, (start, end)) in crypto_spaces.iter().enumerate() {
+        let data = &output.crypto_buf[*start..*end];
         if !data.is_empty() {
             if conn.pending_crypto[space].len() + data.len() > MAX_PENDING_CRYPTO {
                 conn.close_error = Some(TransportError::INTERNAL_ERROR);
@@ -1252,13 +1252,13 @@ fn handle_crypto_frame(
             }
             // initial_source_connection_id must match the SCID from the server's
             // first long header packet.
-            if let Some(ref peer_scid) = conn.peer_initial_scid {
-                if params.initial_source_connection_id.as_ref() != Some(peer_scid) {
-                    conn.close_error = Some(TransportError::TRANSPORT_PARAMETER_ERROR);
-                    conn.state = ConnectionState::Closing;
-                    conn.needs_draining_timer = true;
-                    return;
-                }
+            if let Some(ref peer_scid) = conn.peer_initial_scid
+                && params.initial_source_connection_id.as_ref() != Some(peer_scid)
+            {
+                conn.close_error = Some(TransportError::TRANSPORT_PARAMETER_ERROR);
+                conn.state = ConnectionState::Closing;
+                conn.needs_draining_timer = true;
+                return;
             }
             // retry_source_connection_id: if Retry was received, must match the
             // Retry packet's SCID. If no Retry, param must be absent.
@@ -1292,10 +1292,10 @@ fn handle_crypto_frame(
         conn.streams.peer_send_max_bidi_remote = params.initial_max_stream_data_bidi_remote;
         conn.streams.peer_send_max_uni = params.initial_max_stream_data_uni;
         // RFC 9000 §7.3: client MUST switch DCID to server's initial_source_connection_id
-        if conn.side == Side::Client {
-            if let Some(ref server_scid) = params.initial_source_connection_id {
-                conn.dcid = *server_scid;
-            }
+        if conn.side == Side::Client
+            && let Some(ref server_scid) = params.initial_source_connection_id
+        {
+            conn.dcid = *server_scid;
         }
 
         // RFC 9369 §4.1: Compatible Version Negotiation
@@ -1311,37 +1311,34 @@ fn handle_crypto_frame(
             }
             // Server-side: if both sides support v2 and we're currently on v1,
             // negotiate v2 and switch the wire version (RFC 9369 §4.1).
-            if conn.side == Side::Server {
-                if let Some(ref vi) = params.version_information {
-                    if conn.version == QUIC_VERSION_1 && vi.other_versions.contains(&QUIC_VERSION_2)
-                    {
-                        conn.negotiated_version = Some(QUIC_VERSION_2);
-                        conn.version = QUIC_VERSION_2;
-                    }
-                }
+            if conn.side == Side::Server
+                && let Some(ref vi) = params.version_information
+                && conn.version == QUIC_VERSION_1
+                && vi.other_versions.contains(&QUIC_VERSION_2)
+            {
+                conn.negotiated_version = Some(QUIC_VERSION_2);
+                conn.version = QUIC_VERSION_2;
             }
             // Client-side: if the server's chosen_version differs from the
             // original version, adopt it for subsequent packets (RFC 9369 §4.1).
-            if conn.side == Side::Client {
-                if let Some(ref vi) = params.version_information {
-                    if vi.chosen_version != conn.version
-                        && our_available.contains(&vi.chosen_version)
-                    {
-                        conn.negotiated_version = Some(vi.chosen_version);
-                        conn.version = vi.chosen_version;
-                    }
-                }
+            if conn.side == Side::Client
+                && let Some(ref vi) = params.version_information
+                && vi.chosen_version != conn.version
+                && our_available.contains(&vi.chosen_version)
+            {
+                conn.negotiated_version = Some(vi.chosen_version);
+                conn.version = vi.chosen_version;
             }
         }
 
         // RFC 9000 §9.6: Client processes preferred_address from server.
         // Note: disable_active_migration does NOT block preferred address migration.
-        if conn.side == Side::Client {
-            if let Some(ref pa) = params.preferred_address {
-                // Register the CID from preferred_address with sequence number 1 (RFC 9000 §5.1.1)
-                conn.scid_set.push_with_seq(pa.connection_id, 1);
-                conn.pending_preferred_addr_migration = true;
-            }
+        if conn.side == Side::Client
+            && let Some(ref pa) = params.preferred_address
+        {
+            // Register the CID from preferred_address with sequence number 1 (RFC 9000 §5.1.1)
+            conn.scid_set.push_with_seq(pa.connection_id, 1);
+            conn.pending_preferred_addr_migration = true;
         }
 
         // RFC 9221: if peer advertised max_datagram_frame_size, enable sending
@@ -1441,11 +1438,11 @@ fn handle_ack_frame(
             .clone()
             .map(|(_, pkt)| pkt.size as usize)
             .sum();
-        if total_lost_bytes > 0 {
-            if let Some(max_sent_time) = non_pmtu_lost.map(|(_, pkt)| pkt.time_sent).max() {
-                conn.congestion
-                    .on_congestion_event(total_lost_bytes, now, max_sent_time);
-            }
+        if total_lost_bytes > 0
+            && let Some(max_sent_time) = non_pmtu_lost.map(|(_, pkt)| pkt.time_sent).max()
+        {
+            conn.congestion
+                .on_congestion_event(total_lost_bytes, now, max_sent_time);
         }
 
         // Persistent congestion (RFC 9002 §7.6.2): requires two ack-eliciting lost packets
@@ -2017,23 +2014,23 @@ pub fn generate_packets<'umem>(
 
     // RFC 9000 §9.3.3: send PATH_CHALLENGE to the PREVIOUS path after migration.
     // This packet must be addressed to the old remote address, not the current one.
-    if let Some(challenge_data) = conn.pending_prev_path_challenge.take() {
-        if conn.prev_path.is_some() && conn.keys.one_rtt.is_some() {
-            if let Some(mut frame) = free_frames.pop() {
-                let total_len =
-                    build_prev_path_challenge_packet(conn, challenge_data, now, &mut frame);
-                if total_len > 0 {
-                    unsafe { frame.set_len(total_len) };
-                    tx_return.push(frame);
-                } else {
-                    free_frames.push(frame);
-                    // Put it back if we couldn't build the packet
-                    conn.pending_prev_path_challenge = Some(challenge_data);
-                }
+    if let Some(challenge_data) = conn.pending_prev_path_challenge.take()
+        && conn.prev_path.is_some()
+        && conn.keys.one_rtt.is_some()
+    {
+        if let Some(mut frame) = free_frames.pop() {
+            let total_len = build_prev_path_challenge_packet(conn, challenge_data, now, &mut frame);
+            if total_len > 0 {
+                unsafe { frame.set_len(total_len) };
+                tx_return.push(frame);
             } else {
-                // No free frame; put the challenge back
+                free_frames.push(frame);
+                // Put it back if we couldn't build the packet
                 conn.pending_prev_path_challenge = Some(challenge_data);
             }
+        } else {
+            // No free frame; put the challenge back
+            conn.pending_prev_path_challenge = Some(challenge_data);
         }
     }
 
@@ -2137,7 +2134,7 @@ fn build_quic_packet(
             if let Some(ref t) = conn.retry_token {
                 t
             } else if let Some(ref t) = conn.received_new_token {
-                t
+                t.as_bytes()
             } else {
                 &[]
             }
@@ -2207,6 +2204,7 @@ fn build_quic_packet(
         } else {
             0
         };
+        conn.ack[space as usize].ensure_encoded();
         let first_ack_range = conn.ack[space as usize].first_ack_range();
         let ack_range_count = conn.ack[space as usize].ack_range_count();
         let ranges_slice = conn.ack[space as usize].encoded_ranges();
@@ -2236,13 +2234,13 @@ fn build_quic_packet(
     }
 
     // 3b. NEW_TOKEN (server, 1-RTT space only, RFC 9000 §8.1)
-    if space == 2 && conn.side == Side::Server {
-        if let Some(ref token) = conn.pending_new_token {
-            if builder.write_new_token(token) {
-                conn.pending_new_token = None;
-                wrote_ack_eliciting = true;
-            }
-        }
+    if space == 2
+        && conn.side == Side::Server
+        && let Some(ref token) = conn.pending_new_token
+        && builder.write_new_token(token.as_bytes())
+    {
+        conn.pending_new_token = None;
+        wrote_ack_eliciting = true;
     }
 
     // 4b. MAX_DATA — expand peer's send window (RFC 9000 §4.2)
@@ -2264,8 +2262,7 @@ fn build_quic_packet(
     // 4c. MAX_STREAM_DATA — expand per-stream windows (RFC 9000 §4.2)
     if space == 2 {
         // Retransmit lost MAX_STREAM_DATA first
-        let retransmit_ids: smallvec::SmallVec<[StreamId; 4]> =
-            conn.retransmit.max_stream_data.drain(..).collect();
+        let retransmit_ids = std::mem::take(&mut conn.retransmit.max_stream_data);
         for stream_id in retransmit_ids {
             if let Some(entry) = conn.streams.get_mut(stream_id)
                 && let Some(ref recv) = entry.recv
@@ -2337,8 +2334,7 @@ fn build_quic_packet(
     // 4e. RESET_STREAM — abort individual streams (RFC 9000 §3.1)
     if space == 2 {
         // Retransmit lost RESET_STREAMs
-        let retransmit_resets: smallvec::SmallVec<[(StreamId, u64, u64); 4]> =
-            conn.retransmit.reset_streams.drain(..).collect();
+        let retransmit_resets = std::mem::take(&mut conn.retransmit.reset_streams);
         for (id, error_code, final_size) in retransmit_resets {
             if builder.write_reset_stream(id, error_code, final_size, &mut conn.frame_log) {
                 wrote_ack_eliciting = true;
@@ -2379,8 +2375,7 @@ fn build_quic_packet(
 
     // 4f. STOP_SENDING — request peer stops sending on a stream (RFC 9000 §3.5)
     if space == 2 {
-        let retransmit_stops: smallvec::SmallVec<[(StreamId, u64); 4]> =
-            conn.retransmit.stop_sending.drain(..).collect();
+        let retransmit_stops = std::mem::take(&mut conn.retransmit.stop_sending);
         for (id, error_code) in retransmit_stops {
             if builder.write_stop_sending(id, error_code, &mut conn.frame_log) {
                 wrote_ack_eliciting = true;
@@ -2431,12 +2426,11 @@ fn build_quic_packet(
     // 4a. PATH_CHALLENGE for the new path (RFC 9000 §9)
     if space == 2
         && let Some(data) = conn.path.challenge_pending
+        && builder.write_path_challenge(data)
     {
-        if builder.write_path_challenge(data) {
-            wrote_ack_eliciting = true;
-            // Don't clear challenge_pending — it's needed for matching PATH_RESPONSE.
-            // It will be cleared by on_path_response() when validated.
-        }
+        wrote_ack_eliciting = true;
+        // Don't clear challenge_pending — it's needed for matching PATH_RESPONSE.
+        // It will be cleared by on_path_response() when validated.
     }
 
     // 4g. RETIRE_CONNECTION_ID frames (1-RTT space only, RFC 9000 §5.1.2)
@@ -2522,9 +2516,8 @@ fn build_quic_packet(
 
     // 6. Stream data (1-RTT space only)
     if space == 2 {
-        // Collect stream IDs with pending data first to avoid borrow conflicts
-        let pending_streams: smallvec::SmallVec<[StreamId; 16]> =
-            conn.streams.iter_send_mut().map(|(id, _)| id).collect();
+        // Index-based iteration to avoid collecting stream IDs (borrow-checker workaround).
+        let pending_streams = conn.streams.collect_pending_send_ids();
         for stream_id in pending_streams {
             if builder.remaining() < 20 {
                 break; // not enough space for a meaningful STREAM frame
@@ -2595,12 +2588,22 @@ fn build_quic_packet(
 
     // 7. DATAGRAM frames (1-RTT space only, RFC 9221)
     if space == 2 {
-        while let Some(data) = conn.datagrams.pop_send() {
-            if !builder.write_datagram_with_length(&data) {
-                // Couldn't fit; put it back at the front
-                conn.datagrams.send.push_front(data);
-                break;
+        while let Some((part1, part2)) = conn.datagrams.peek_send() {
+            // Concatenate ring-buffer slices into a contiguous view for the builder.
+            if part2.is_empty() {
+                if !builder.write_datagram_with_length(part1) {
+                    break;
+                }
+            } else {
+                let mut tmp = [0u8; 1500];
+                let len = part1.len() + part2.len();
+                tmp[..part1.len()].copy_from_slice(part1);
+                tmp[part1.len()..len].copy_from_slice(part2);
+                if !builder.write_datagram_with_length(&tmp[..len]) {
+                    break;
+                }
             }
+            conn.datagrams.advance_send();
             wrote_ack_eliciting = true;
         }
     }
@@ -3004,34 +3007,38 @@ fn write_transport_headers(
 /// Compute the UDP checksum over an IPv6 pseudo-header and UDP segment.
 /// The UDP segment includes the UDP header and payload. The checksum field
 /// at bytes 6-7 of the segment is skipped during summation.
+#[inline]
 fn ipv6_udp_checksum(src: &[u8; 16], dst: &[u8; 16], udp_segment: &[u8]) -> u16 {
+    #[inline]
+    fn sum_slice(mut sum: u32, data: &[u8]) -> u32 {
+        let mut i = 0;
+        while i + 1 < data.len() {
+            sum += u16::from_be_bytes([data[i], data[i + 1]]) as u32;
+            i += 2;
+        }
+        if i < data.len() {
+            sum += (data[i] as u32) << 8;
+        }
+        sum
+    }
+
     let mut sum: u32 = 0;
-    // Pseudo-header: source address
-    for chunk in src.chunks(2) {
-        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
-    }
-    // Pseudo-header: destination address
-    for chunk in dst.chunks(2) {
-        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
-    }
+    // Pseudo-header: source + destination addresses (no branching)
+    sum = sum_slice(sum, src);
+    sum = sum_slice(sum, dst);
     // Pseudo-header: UDP length (32-bit for jumbo)
     let udp_len = udp_segment.len() as u32;
     sum += udp_len >> 16;
     sum += udp_len & 0xFFFF;
     // Pseudo-header: Next Header = UDP (17)
     sum += 17u32;
-    // UDP segment (skip checksum field at bytes 6-7)
-    let mut i = 0;
-    while i + 1 < udp_segment.len() {
-        if i == 6 {
-            i += 2;
-            continue;
-        }
-        sum += u16::from_be_bytes([udp_segment[i], udp_segment[i + 1]]) as u32;
-        i += 2;
-    }
-    if i < udp_segment.len() {
-        sum += (udp_segment[i] as u32) << 8;
+    // UDP segment: three contiguous slices (skip checksum field at bytes 6-7)
+    if udp_segment.len() >= 8 {
+        sum = sum_slice(sum, &udp_segment[..6]);
+        sum = sum_slice(sum, &udp_segment[8..]);
+    } else {
+        // Short segment (shouldn't happen in practice, but be safe)
+        sum = sum_slice(sum, &udp_segment[..udp_segment.len().min(6)]);
     }
     // Fold carry bits
     while sum > 0xFFFF {

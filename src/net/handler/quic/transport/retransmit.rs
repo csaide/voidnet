@@ -28,6 +28,7 @@ pub struct RetransmitQueue {
     /// Streams needing STOP_SENDING re-send
     pub stop_sending: SmallVec<[(StreamId, u64); 4]>,
     /// NEW_CONNECTION_ID frames to send: (sequence, retire_prior_to, cid, reset_token)
+    #[allow(clippy::type_complexity)]
     pub pending_new_cids: SmallVec<[(u64, u64, ConnectionId, [u8; 16]); 4]>,
     /// Sequences of CIDs to retire via RETIRE_CONNECTION_ID (RFC 9000 §5.1.2)
     pub pending_retire_cids: SmallVec<[u64; 8]>,

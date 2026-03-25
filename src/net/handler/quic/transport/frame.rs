@@ -10,12 +10,15 @@ use crate::net::handler::quic::connection_id::ConnectionIdRef;
 pub struct StreamId(pub u64);
 
 impl StreamId {
+    #[inline]
     pub fn initiator_is_client(&self) -> bool {
         self.0 & 0x01 == 0
     }
+    #[inline]
     pub fn is_bidi(&self) -> bool {
         self.0 & 0x02 == 0
     }
+    #[inline]
     pub fn index(&self) -> u64 {
         self.0 >> 2
     }
@@ -541,9 +544,16 @@ pub fn parse_frame(buf: &[u8]) -> Result<(QuicFrame<'_>, usize), FrameParseError
         _ => {
             // RFC 9000 §19.21: GREASE frames (type % 0x1f == 0x1e) MUST be ignored.
             if frame_type % 0x1f == 0x1e {
-                // GREASE frame — silently skip the type varint only.
-                // These have no defined payload, so consume just the type.
-                Ok((QuicFrame::Padding, type_len))
+                // GREASE frame: type(varint) + length(varint) + data(length bytes).
+                // Consume the entire frame including payload so subsequent frames
+                // in the same packet are parsed correctly.
+                let (payload_len, len_bytes) =
+                    decode_varint(rest).ok_or(FrameParseError::BufferTooShort)?;
+                let total = type_len + len_bytes + payload_len as usize;
+                if total > buf.len() {
+                    return Err(FrameParseError::BufferTooShort);
+                }
+                Ok((QuicFrame::Padding, total))
             } else {
                 // RFC 9000 §12.4: unknown frame type is FRAME_ENCODING_ERROR.
                 Err(FrameParseError::UnknownFrameType(frame_type))

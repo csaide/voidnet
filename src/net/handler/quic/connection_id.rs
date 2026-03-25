@@ -18,6 +18,7 @@ impl ConnectionId {
     }
 
     /// Constructs a `ConnectionId` from a byte slice. Panics if `src` is longer than 20 bytes.
+    #[inline]
     pub fn from_slice(src: &[u8]) -> Self {
         assert!(
             src.len() <= 20,
