@@ -15,23 +15,23 @@ The system prioritizes:
 ```
                         Client
                           |
-                    [Any Node] ──── DSR ────→ [Owner Node] ──→ Client
-                          |                        |
-                    ┌─────┴─────┐            ┌─────┴─────┐
-                    │  Routing  │            │  Storage   │
-                    │  Layer    │            │  Engine    │
-                    │           │            │            │
-                    │ Shard Map │            │ WAL        │
-                    │ (cached)  │            │ Memtable   │
-                    │           │            │ LSM (keys) │
-                    └───────────┘            │ VLog (vals)│
-                                             └────────────┘
+                    [Any Node] ── redirect ──→ Client opens connection to [Owner Node]
+                          |                                                    |
+                    ┌─────┴─────┐                                        ┌─────┴─────┐
+                    │  Routing  │                                        │  Storage   │
+                    │  Layer    │                                        │  Engine    │
+                    │           │                                        │            │
+                    │ Shard Map │                                        │ WAL/Raft   │
+                    │ (cached)  │                                        │ Memtable   │
+                    │           │                                        │ LSM (keys) │
+                    └───────────┘                                        │ VLog (vals)│
+                                                                         └────────────┘
 ```
 
 ### System Layers
 
 1. **Client Protocol Layer** — binary protocol over QUIC (performance) + HTTP REST (accessibility)
-2. **Routing Layer** — any-node ingress, shard-based forwarding, DSR responses
+2. **Routing Layer** — any-node ingress, shard-based forwarding with redirect-to-owner
 3. **Cluster Layer** — SWIM membership, consistent hashing, ephemeral Raft groups
 4. **Metadata Layer** — `_catalog` namespace for authoritative config
 5. **Storage Engine** — WiscKey-style hybrid LSM + value log with direct I/O
@@ -64,11 +64,11 @@ All inter-node communication uses QUIC:
 - Datagrams for SWIM protocol messages
 - Connection migration for rolling upgrades
 
-**Intra-cluster:** null-cipher mode (no TLS encryption overhead). A shared cluster secret or HMAC on the handshake prevents accidental cross-cluster connections or rogue nodes. Per-packet encryption is skipped.
+**Intra-cluster:** null-cipher mode (no TLS encryption overhead). Authentication uses a pre-shared cluster key to derive an HMAC included in the QUIC handshake. This validates cluster membership at connection establishment without per-packet crypto cost. The handshake HMAC covers the connection IDs and a timestamp to prevent replay. Once a connection is established, packets flow without encryption or authentication — the connection itself is the trust boundary.
 
 **Cross-region (public internet):** full TLS 1.3 encryption.
 
-This is a non-RFC-compliant QUIC mode, but we own the stack and compliance only matters for external interop.
+This is a non-RFC-compliant QUIC mode. The QUIC stack will need a pluggable crypto provider interface: the existing Rustls-based provider for external connections, and a null-cipher provider for intra-cluster that implements the same trait but skips encryption/decryption while still performing header parsing and packet number management. We own the stack and compliance only matters for external interop.
 
 ## Consistency Model
 
@@ -85,7 +85,8 @@ Consistency is configured **per-namespace**, not per-operation. A namespace's co
 
 ### Linearizable Namespaces
 
-- Ephemeral Raft group per namespace manages consensus
+- Multi-Raft: all Raft groups on a node share infrastructure (batched heartbeats, multiplexed replication streams over a single QUIC connection per peer, shared timer management). This is essential for scaling to hundreds/thousands of linearizable namespaces without per-group overhead becoming a bottleneck.
+- Raft group per namespace manages consensus
 - Writes go through Raft leader, committed on quorum acknowledgment
 - Strong reads go to leader (lease-based or quorum verified)
 - Stale reads optionally served by any replica
@@ -119,7 +120,9 @@ A partitioned node sees other nodes as dead via SWIM. It recomputes the ring and
 
 **Total group failure (all Raft members lost):**
 
-If a Raft group has been unreachable for longer than a conservative timeout (e.g., 10x SWIM failure detection window), surviving cluster nodes can form a new group based on the hash ring. Committed-but-unreplicated data from the dead group is lost. An operator override allows faster recovery. This is rare enough to tolerate manual intervention.
+If a Raft group has been unreachable for longer than a conservative timeout (e.g., 10x SWIM failure detection window), surviving cluster nodes can form a new group based on the hash ring. Any data that was committed only to the now-dead nodes is lost — by Raft's definition, committed entries exist on a quorum, so data loss only occurs if the entire quorum is gone. An operator override allows faster recovery.
+
+Recovery procedure: the hash ring determines new responsible nodes. One of them (deterministically chosen, e.g., lowest node ID) initiates a new Raft group at term 0. If any of the old nodes recover later, they detect a newer group exists for the same namespace (via gossip) and discard their stale state rather than attempting to rejoin. This prevents split-brain between the resurrected old group and the new one.
 
 ## Metadata: The `_catalog` Namespace
 
@@ -130,8 +133,10 @@ Namespace metadata (what namespaces exist, their consistency level, replication 
 ### What lives in `_catalog`
 
 - Namespace name → {consistency_level, replication_factor, version, created_at}
-- Shard map: shard_id → owning node set (per namespace)
+- Shard map: shard_id → owning node set (for linearizable namespaces)
 - Shard split records
+
+For eventually consistent namespaces, the consistent hash ring is authoritative for shard placement — no shard map entry in `_catalog` is needed. `_catalog` stores only the namespace config (consistency level, replication factor). If `_catalog` is unreachable, EC namespaces continue operating using the locally cached config and the hash ring. Only namespace creation/deletion/reconfiguration is blocked.
 
 ### What does NOT live in `_catalog`
 
@@ -141,11 +146,13 @@ Namespace metadata (what namespaces exist, their consistency level, replication 
 
 ### Bootstrap Sequence
 
-1. First node starts. Creates `_catalog` as a single-node Raft group.
+1. First node starts. Creates `_catalog` as a single-node Raft group. The `_catalog` state is persisted to disk immediately.
 2. Additional nodes join via SWIM. The `_catalog` Raft leader adds them via standard membership change.
 3. `_catalog` stabilizes at a small fixed replication factor (3 or 5 nodes). Never auto-rebalances.
 4. All namespace create/delete/reconfig operations are writes to `_catalog`, serialized through Raft.
 5. Gossip disseminates the catalog for read optimization — nodes cache it locally. But the Raft group is the source of truth.
+
+**Bootstrap failure recovery:** If the first node crashes before `_catalog` reaches target replication factor, the bootstrap is idempotent — the node restarts, replays its persisted Raft log, and resumes as leader. If the first node is permanently lost before any replication occurred, a new node can re-bootstrap from scratch (no data existed yet). The cluster cannot serve namespace operations until `_catalog` is available, but this is only during initial cluster formation.
 
 ### Degradation
 
@@ -203,17 +210,18 @@ When a shard receives sustained writes from a remote region, the entire shard ca
 
 ## Client Routing
 
-### Any-Node Ingress with DSR
+### Any-Node Ingress with Redirect-to-Owner
 
 Clients connect to any node. If the node is not the shard owner:
 
-1. Node forwards the request to the owner via QUIC (null-cipher intra-cluster)
-2. Owner processes the request
-3. Owner responds **directly to the client** (Direct Server Return), skipping the forwarding node on the return path
-4. Response includes a routing hint: "for this shard, talk to node X next time"
-5. Client caches the hint. Subsequent requests go directly to the owner.
+1. Node looks up the shard owner from its locally cached shard map
+2. Node responds with a **redirect**: "this shard is owned by node X at address:port"
+3. Client opens a QUIC connection to the owner (or reuses an existing one) and retries
+4. Client caches the shard→node mapping. Subsequent requests for the same shard go directly to the owner.
 
-The forwarding hop only costs latency on the request path, and only until the client learns the topology organically through usage. No need to ship the full membership or hash ring to clients.
+True DSR (owner responding on the forwarder's QUIC connection) is not possible — QUIC connections are bound to their cryptographic handshake context. Instead, the redirect model gives the same end result: clients learn the topology organically through usage, and after the initial redirect, all requests are direct. The redirect response is small and fast — no request forwarding or proxying needed.
+
+If the owner has changed (stale cache), the client gets another redirect. Convergence is fast — typically one redirect per shard per topology change.
 
 ## Client Protocol
 
@@ -223,6 +231,7 @@ Primary path for production traffic. One QUIC stream per request, multiplexed ov
 
 Wire format (minimal, fixed-cost parsing):
 ```
+[version: u8]          // protocol version (starts at 1)
 [request_type: u8]
 [flags: u8]
 [namespace_len: u16] [namespace: bytes]
@@ -230,7 +239,9 @@ Wire format (minimal, fixed-cost parsing):
 [value_len: u64] [value: bytes]  // omitted for reads
 ```
 
-Request types: GET, PUT, DELETE, LIST (range scan), WATCH (future)
+Request types: GET, PUT, DELETE, WATCH (future)
+
+Note: LIST/range scan over hash-partitioned shards requires scatter-gather across all shards since hashing destroys key ordering. This is a fundamentally different operation from point reads/writes and will be added alongside the range partitioning extension, which preserves key order within partitions.
 
 Response includes:
 - Status code
@@ -288,7 +299,11 @@ Write Path:
 
 ### WAL (Write-Ahead Log)
 
-Every write appends to the WAL before any other action. The WAL is the replication unit — Raft ships WAL entries for linearizable namespaces, async replication ships them for eventually consistent ones.
+Every write appends to the WAL before any other action.
+
+**For linearizable namespaces, the WAL and Raft log are unified.** Each WAL entry carries Raft metadata (term, index) and the WAL is the Raft log. This avoids double write amplification — a write is persisted exactly once before replication. The Raft leader ships WAL entries directly to followers, who append them to their own WAL. On commit, both leader and followers apply from the same log.
+
+**For eventually consistent namespaces,** the WAL is a plain append log without Raft metadata. Async replication ships WAL segments to replicas.
 
 - Sequential writes via direct I/O (`O_DIRECT | O_DSYNC`)
 - Aligned write buffers (4KB minimum, tunable)
@@ -318,7 +333,12 @@ Append-only log for values exceeding the separation threshold.
 
 - Sequential append writes (direct I/O)
 - Reads by offset: one I/O per value fetch
-- Background garbage collection: scan for dead entries (overwritten/deleted keys), rewrite live entries to a new segment, update LSM pointers
+- Background garbage collection with crash-safe ordering:
+  1. Scan old segment, identify live entries (cross-reference against LSM)
+  2. Write live entries to a new segment (direct I/O, fsync)
+  3. Update LSM pointers to reference new segment offsets (written as a batch memtable update that flushes through the normal LSM write path, ensuring atomicity)
+  4. Only after LSM flush confirms the pointer updates are durable, delete the old segment
+  If the process crashes at any point: steps 1-2 leave an orphan new segment (harmless, cleaned up on restart). Step 3 is atomic via the LSM write path. Step 4 is safe because pointers already point to the new segment.
 - GC is rate-limited to avoid interfering with foreground I/O
 
 ### I/O Engine: io_uring + Direct I/O
@@ -348,13 +368,15 @@ Loop:
 
 Storage engine operations (WAL write, memtable flush, SST read, compaction) are submitted as io_uring ops and completed asynchronously within the same busy-loop.
 
+**Backpressure:** When disk I/O cannot keep up (WAL write queue grows beyond a configurable threshold), the node applies backpressure to the network layer by pausing request acceptance. For linearizable namespaces, the Raft leader stops proposing new entries until the WAL drains. For eventually consistent namespaces, the node responds with a "busy" status, causing clients to redirect to another replica. This prevents unbounded memory growth from queued writes.
+
 ## Data Path: End to End
 
 ### Write (Linearizable Namespace)
 
 1. Client sends `PUT namespace=orders key=abc value=...` to any node
 2. Node hashes key → shard ID, looks up shard map (locally cached from `_catalog`) → Raft leader
-3. If not the leader: forward via QUIC, DSR response back to client with routing hint
+3. If not the leader: respond with redirect to leader (client retries directly)
 4. Leader appends to WAL (direct I/O, io_uring)
 5. Leader replicates WAL entry to Raft followers
 6. Quorum of followers acknowledge
@@ -386,6 +408,10 @@ Storage engine operations (WAL write, memtable flush, SST read, compaction) are 
 1. Route to any replica
 2. Read from local state
 3. Respond
+
+## Edge Cases
+
+**Replication factor exceeds node count:** During initial deployment or after catastrophic failure, the cluster may have fewer nodes than a namespace's configured replication factor. The system operates in degraded mode: the namespace is available with reduced redundancy (as many replicas as nodes exist). `_catalog` records the target replication factor, and as nodes join, the system converges toward the target.
 
 ## Future Extensions
 
