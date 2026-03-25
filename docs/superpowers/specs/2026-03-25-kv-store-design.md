@@ -64,7 +64,7 @@ All inter-node communication uses QUIC:
 - Datagrams for SWIM protocol messages
 - Connection migration for rolling upgrades
 
-**Intra-cluster:** null-cipher mode (no TLS encryption overhead). Authentication uses a pre-shared cluster key to derive an HMAC included in the QUIC handshake. This validates cluster membership at connection establishment without per-packet crypto cost. The handshake HMAC covers the connection IDs and a timestamp to prevent replay. Once a connection is established, packets flow without encryption or authentication — the connection itself is the trust boundary.
+**Intra-cluster:** null-cipher mode (no TLS encryption overhead). Authentication uses a pre-shared cluster key to derive an HMAC included in the QUIC handshake. This validates cluster membership at connection establishment without per-packet crypto cost. The handshake HMAC covers the initial connection IDs (from the Initial packet) and a timestamp to prevent replay (clock skew tolerance: 30 seconds). Once a connection is established, packets flow without encryption or authentication — the connection itself is the trust boundary.
 
 **Cross-region (public internet):** full TLS 1.3 encryption.
 
@@ -203,7 +203,7 @@ When a key/shard is repeatedly read from a remote region, a read replica migrate
 
 When a shard receives sustained writes from a remote region, the entire shard can migrate:
 
-- For linearizable namespaces: Raft leader preference shifts to the region with the most writes. The Raft group membership may not change, but the leader being local saves a cross-region hop per write.
+- For linearizable namespaces: Raft leader preference shifts to the region with the most writes via voluntary leadership transfer — the current leader sends a TimeoutNow message to the preferred node, triggering an immediate election. The Raft group membership may not change, but the leader being local saves a cross-region hop per write.
 - Shard migration is committed through `_catalog`
 - Old replicas transition to followers or drop the shard
 - In-flight requests during migration get redirected
@@ -309,6 +309,7 @@ Every write appends to the WAL before any other action.
 - Aligned write buffers (4KB minimum, tunable)
 - Batching: group multiple writes into a single WAL entry when possible
 - WAL segments rotate at a configurable size (e.g., 64MB)
+- **Raft log compaction:** Periodic snapshots of the memtable/LSM state allow WAL/Raft log truncation. Once a snapshot is persisted, WAL segments older than the snapshot's last included index can be reclaimed. This is essential for bounding disk usage and for catching up slow followers — if a follower is too far behind for log replay, it receives a snapshot instead. Snapshot frequency is a trade-off between WAL disk usage and snapshot I/O cost.
 
 ### Memtable
 
@@ -379,7 +380,7 @@ Storage engine operations (WAL write, memtable flush, SST read, compaction) are 
 3. If not the leader: respond with redirect to leader (client retries directly)
 4. Leader appends to WAL (direct I/O, io_uring)
 5. Leader replicates WAL entry to Raft followers
-6. Quorum of followers acknowledge
+6. Quorum acknowledges (leader's own WAL persist counts as one vote — for RF=3, only one follower ack is needed)
 7. Leader applies to memtable, responds to client
 8. Background: memtable flushes to SST + value log, compaction runs
 
